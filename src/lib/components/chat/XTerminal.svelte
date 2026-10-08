@@ -6,6 +6,7 @@
 	import '@xterm/xterm/css/xterm.css';
 	import { terminalRequest, type TerminalConnection } from '$lib/apis/terminal';
 	import { connectedUserTerminals } from '$lib/stores';
+	import { getBuddyFontSize } from '$lib/utils/typography';
 
 	export let connection: TerminalConnection;
 	export let chatId: string | null = null;
@@ -44,6 +45,12 @@
 	}
 
 	function fit() {
+		if (term) {
+			const fontSize = getBuddyFontSize(13);
+			if (term.options.fontSize !== fontSize) {
+				term.options.fontSize = fontSize;
+			}
+		}
 		if (active && terminalEl?.clientWidth && terminalEl?.clientHeight) fitAddon?.fit();
 	}
 
@@ -116,7 +123,7 @@
 		term = new Terminal({
 			cursorBlink: !readOnly,
 			disableStdin: readOnly,
-			fontSize: 15,
+			fontSize: getBuddyFontSize(13),
 			fontFamily:
 				"'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New', monospace",
 			theme: {

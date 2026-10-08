@@ -15,7 +15,7 @@
 .owui-chat-header .owui-header-leading { flex-shrink:0; margin:0 !important; }
 .owui-chat-header .owui-header-title-wrap { flex:1 1 0%; min-width:0; margin:0 !important; padding:0 !important; overflow:hidden; }
 .owui-chat-header .owui-header-title-row { min-width:0; margin:0 !important; gap:4px !important; }
-.owui-chat-header .owui-header-title { flex:1 1 0%; min-width:0; margin:0; padding-block:0 !important; font-size: calc(.9375rem + var(--buddy-font-size-offset, 2px)); line-height:1.5; font-weight:500; color:#334155; }
+.owui-chat-header .owui-header-title { flex:1 1 0%; min-width:0; margin:0; padding-block:0 !important; font-size: calc(.9375rem + var(--buddy-font-size-offset, 0px)); line-height:1.5; font-weight:500; color:#334155; }
 .owui-chat-header .owui-header-controls { flex-shrink:0; gap:4px !important; margin:0 !important; }
 #chat-container nav.owui-chat-header .owui-header-control {
  display:inline-flex !important; align-items:center; justify-content:center; flex-shrink:0;
@@ -41,7 +41,7 @@
 }
 @media (max-width:767px), (pointer:coarse) {
  #chat-container nav.owui-chat-header { min-height:52px; }
- .owui-chat-header .owui-header-title { font-size: calc(1rem + var(--buddy-font-size-offset, 2px)); }
+ .owui-chat-header .owui-header-title { font-size: calc(1rem + var(--buddy-font-size-offset, 0px)); }
  #chat-container nav.owui-chat-header .owui-header-control { width:44px !important; height:44px !important; min-width:44px !important; min-height:44px !important; border-radius:12px !important; }
  #chat-container nav.owui-chat-header .owui-header-control svg { width:24px !important; height:24px !important; }
 }

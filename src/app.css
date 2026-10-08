@@ -15,13 +15,20 @@
 /* --app-text-scale is updated via the UI Scale slider (Interface.svelte) */
 :root {
 	--app-text-scale: 1;
-	--buddy-font-size-offset: 2px;
+	--buddy-font-size-offset: 0px;
 	--buddy-forest: #27634b;
 	--buddy-mint: #ddf3e4;
 	--buddy-ivory: #faf8f5;
 	--buddy-ink: #202321;
 	--buddy-accent: var(--buddy-forest);
 	--buddy-canvas: var(--buddy-ivory);
+}
+
+/* Keep the readability increase on phone layouts only. */
+@media (max-width: 767px) {
+	:root {
+		--buddy-font-size-offset: 2px;
+	}
 }
 
 html {

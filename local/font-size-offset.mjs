@@ -1,5 +1,5 @@
 // Increase text sizes without changing the rem-based layout or UI Scale setting.
-const fontOffset = 'var(--buddy-font-size-offset, 2px)';
+const fontOffset = 'var(--buddy-font-size-offset, 0px)';
 
 export function addFontSizeOffset(value) {
 	const original = value.trim();

@@ -42,6 +42,18 @@
 		/>
 		<meta name="robots" content="noindex,nofollow" />
 
+		<style>
+			:root {
+				--buddy-font-size-offset: 0px;
+			}
+
+			@media (max-width: 767px) {
+				:root {
+					--buddy-font-size-offset: 2px;
+				}
+			}
+		</style>
+
 		<script src="/static/loader.js" defer crossorigin="use-credentials"></script>
 		<link rel="stylesheet" href="/static/custom.css" crossorigin="use-credentials" />
 
@@ -217,7 +229,7 @@
 					width: min(90%, 24rem);
 					text-align: center;
 					font:
-						16px/1.5 system-ui,
+						calc(14px + var(--buddy-font-size-offset, 0px))/1.5 system-ui,
 						sans-serif;
 					color: #788579;
 				"
