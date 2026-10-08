@@ -2762,40 +2762,18 @@ async def oauth_client_authorize(
     response: Response,
     user=Depends(get_verified_user),
 ):
-    # ensure_valid_client_registration
-    client = await oauth_client_manager.get_client(client_id)
-    client_info = await oauth_client_manager.get_client_info(client_id)
-    if client is None or client_info is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
-
-    if not await oauth_client_manager._preflight_authorization_url(client, client_info):
-        log.info(
-            'Detected invalid OAuth client %s; attempting re-registration',
-            client_id,
-        )
-
-        registered = await register_client(request, client_id)
-        if not registered:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail='Failed to re-register OAuth client',
-            )
-
-        client = await oauth_client_manager.get_client(client_id)
-        client_info = await oauth_client_manager.get_client_info(client_id)
-        if client is None or client_info is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail='OAuth client unavailable after re-registration',
-            )
-
-        if not await oauth_client_manager._preflight_authorization_url(client, client_info):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail='OAuth client registration is still invalid after re-registration',
-            )
-
+    # Select and validate the registration for this request's exact callback URI.
     return await oauth_client_manager.handle_authorize(request, client_id=client_id, user_id=user.id)
+
+
+@app.post('/oauth/clients/{client_id}/cancel')
+async def oauth_client_cancel(
+    client_id: str,
+    request: Request,
+    user=Depends(get_verified_user),
+):
+    cancelled = await oauth_client_manager.cancel_authorization(request, client_id=client_id, user_id=user.id)
+    return {'status': True, 'cancelled': cancelled}
 
 
 @app.get('/oauth/clients/{client_id}/callback')
@@ -2872,10 +2850,12 @@ async def get_manifest_json():
         # Do not alter, remove, obscure, or replace it except as LICENSE permits:
         # https://docs.openwebui.com/license.
         return {
+            'id': '/',
             'name': app.state.WEBUI_NAME,
             'short_name': app.state.WEBUI_NAME,
             'description': 'Your AI companion for ideas, answers, and getting things done.',
             'start_url': '/',
+            'scope': '/',
             'display': 'standalone',
             'theme_color': '#27634B',
             'background_color': '#FAF8F5',

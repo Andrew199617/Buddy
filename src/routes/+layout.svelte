@@ -54,6 +54,9 @@
 	import { executeToolServer, getBackendConfig, getModels, getVersion } from '$lib/apis';
 	import { getSessionUser, updateUserTimezone, userSignOut } from '$lib/apis/auths';
 	import { getAllTags } from '$lib/apis/chats';
+	import { completeOAuthConnectRedirect, restoreOAuthConnectOverlay } from '$lib/apis/configs';
+	import { showOAuthConnect } from '$lib/stores/oauth-connect';
+	import BuddyAuthConnect from '$lib/components/buddy/BuddyAuthConnect.svelte';
 	import { chatCompletion } from '$lib/apis/openai';
 	import { isTemporaryChatId } from '$lib/utils/chatId';
 	import {
@@ -1069,7 +1072,12 @@
 		}
 	};
 
+	function handleOAuthPageShow() {
+		restoreOAuthConnectOverlay();
+	}
+
 	onMount(async () => {
+		window.addEventListener('pageshow', handleOAuthPageShow);
 		const originalFetch = window.fetch.bind(window);
 		window.fetch = async (input, init) => {
 			const response = await originalFetch(input, init);
@@ -1311,6 +1319,14 @@
 			await goto(`/error`);
 		}
 
+		const connectionResult = await completeOAuthConnectRedirect();
+		if (connectionResult === 'error') {
+			toast.error($i18n.t('The connection could not be completed. You can try again.'));
+		}
+		if (!connectionResult) {
+			restoreOAuthConnectOverlay();
+		}
+
 		await tick();
 
 		if (
@@ -1361,6 +1377,7 @@
 			document.removeEventListener('visibilitychange', handleVisibilityChange);
 			window.removeEventListener('pagehide', handlePageHidden);
 			window.removeEventListener('pageshow', handlePageVisible);
+			window.removeEventListener('pageshow', handleOAuthPageShow);
 		};
 	});
 
@@ -1409,16 +1426,25 @@
 {/if}
 
 {#if loaded}
-	{#if $isApp}
-		<div class="flex flex-row h-screen">
-			<AppSidebar />
+	<div
+		class="contents"
+		inert={$showOAuthConnect || undefined}
+		aria-hidden={$showOAuthConnect || undefined}
+	>
+		{#if $isApp}
+			<div class="flex flex-row h-screen">
+				<AppSidebar />
 
-			<div class="w-full flex-1 max-w-[calc(100%-4.5rem)]">
-				<slot />
+				<div class="w-full flex-1 max-w-[calc(100%-4.5rem)]">
+					<slot />
+				</div>
 			</div>
-		</div>
-	{:else}
-		<slot />
+		{:else}
+			<slot />
+		{/if}
+	</div>
+	{#if $showOAuthConnect}
+		<BuddyAuthConnect />
 	{/if}
 {/if}
 

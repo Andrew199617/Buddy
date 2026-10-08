@@ -67,6 +67,59 @@ The installer updates the Functions in `local/functions/` in your local
 database. Re-run it after changing those files. See [local customization
 details](local/README.md) for the individual features and update instructions.
 
+## Install Buddy on iPhone
+
+For the current Buddy redesign, open `http://100.122.80.32:8082/` in Safari on
+an iPhone connected to the same Tailscale network. Install from this exact
+address so the home-screen app uses the redesign's port.
+
+1. Open Buddy in Safari and sign in.
+2. Tap the Share button, or open the Page Menu and choose **Share**.
+3. Choose **Add to Home Screen**.
+4. On iOS 26 or later, leave **Open as Web App** enabled.
+5. Tap **Add**, then launch Buddy using its new home-screen icon.
+
+If an older Buddy icon opens a different host or port, remove that home-screen
+icon and add Buddy again from the address above. Changing the port changes the
+app's origin; an existing installation cannot cover another port through its
+manifest scope.
+
+Buddy's manifest covers the entire app on the installed origin. External
+sign-in and other links outside that scope can open an iOS browser panel.
+Buddy navigation and OAuth returns should stay on the address used to install
+the app. The panel's browser controls belong to iOS and cannot be hidden by
+Buddy's styles.
+
+See Apple's [home-screen installation instructions](https://support.apple.com/guide/iphone/iphea86e5236/ios)
+and [web app scope guidance](https://developer.apple.com/videos/play/wwdc2023/10120/).
+
+## MCP tool OAuth callback addresses
+
+Buddy registers and uses the actual browser-facing request scheme, host, and port
+for MCP tool OAuth, including Slack. Open the app at the address where you want
+to return after sign-in. Reverse proxies must preserve the original `Host` and
+configure trusted proxy handling in the application server; forwarding `/api`
+and `/oauth` must not replace the browser's host with the backend target.
+
+Loopback hosts (`localhost`, `127.0.0.1`, and `::1`) and the hostname in the
+administrator's configured app URL are trusted by default. To use Tailscale or
+another local hostname, set the allowed hosts before starting Buddy:
+
+```powershell
+$env:MCP_OAUTH_ALLOWED_REDIRECT_HOSTS = '100.122.80.32,sd-anvelez-03.tail83dea0.ts.net'
+.\start-buddy.ps1 -Port 8081 -DataDir "$PWD\buddy-data-8081" -CacheDir "$PWD\open-webui-data\cache"
+```
+
+These host entries allow HTTP or HTTPS on any valid port. The current local
+runtime uses the two Tailscale hosts shown above. Optional
+`MCP_OAUTH_ALLOWED_REDIRECT_ORIGINS` accepts comma-separated full origins such as
+`https://buddy.example:9443` when only a particular scheme and port should be
+allowed. Each OAuth flow keeps its exact registered callback URI through token
+exchange and returns to the initiating app address. Existing tool registrations
+and saved tokens stay intact; Buddy registers a separate dynamic client when a
+new callback address is needed. For static OAuth credentials, the provider must
+also allow that exact callback URI.
+
 ## Research tools
 
 Import each tool's JSON bundle through **Workspace → Tools → Import JSON**.
