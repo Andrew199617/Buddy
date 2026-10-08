@@ -616,7 +616,7 @@
 		const focusTrapOptions = {
 			allowOutsideClick: true,
 			escapeDeactivates: false,
-			initialFocus: '#buddy-sidebar-close',
+			initialFocus: '#sidebar-new-chat-link',
 			fallbackFocus: node
 		};
 		const trap: FocusTrap = createFocusTrap(node, focusTrapOptions);
@@ -1035,27 +1035,29 @@
 						{$WEBUI_NAME}
 					</div>
 				</a>
-				<Tooltip
-					content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
-					placement="bottom"
-					touch={false}
-					tippyOptions={{ trigger: 'mouseenter' }}
-				>
-					<button
-						id="buddy-sidebar-close"
-						type="button"
-						class="buddy-sidebar-close"
-						aria-expanded={$showSidebar}
-						on:click={() => {
-							showSidebar.set(!$showSidebar);
-						}}
-						aria-label={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
+				{#if !$mobile}
+					<Tooltip
+						content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
+						placement="bottom"
+						touch={false}
+						tippyOptions={{ trigger: 'mouseenter' }}
 					>
-						<div class=" self-center">
-							<Sidebar className="size-6" />
-						</div>
-					</button>
-				</Tooltip>
+						<button
+							id="buddy-sidebar-close"
+							type="button"
+							class="buddy-sidebar-close"
+							aria-expanded={$showSidebar}
+							on:click={() => {
+								showSidebar.set(!$showSidebar);
+							}}
+							aria-label={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
+						>
+							<div class=" self-center">
+								<Sidebar className="size-6" />
+							</div>
+						</button>
+					</Tooltip>
+				{/if}
 
 				<div
 					class="{scrollTop > 0
