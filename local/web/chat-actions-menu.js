@@ -25,12 +25,12 @@ html:not(:has(.buddy-chat, .buddy-shell)) #chat-context-menu-button:focus-visibl
  box-shadow:0 16px 48px rgba(15,23,42,.14),0 3px 12px rgba(15,23,42,.08) !important;
 }
 .owui-chat-actions-heading { padding:10px 12px 12px; margin:0 0 6px; border-bottom:1px solid #e5e7eb; }
-.owui-chat-actions-heading h2 { margin:0; font-size:1rem; line-height:1.5; font-weight:600; letter-spacing:-.01em; }
-.owui-chat-actions-heading p { margin:3px 0 0; font-size:.8125rem; line-height:1.5; color:#64748b; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.owui-chat-actions-heading h2 { margin:0; font-size: calc(1rem + var(--buddy-font-size-offset, 2px)); line-height:1.5; font-weight:600; letter-spacing:-.01em; }
+.owui-chat-actions-heading p { margin:3px 0 0; font-size: calc(.8125rem + var(--buddy-font-size-offset, 2px)); line-height:1.5; color:#64748b; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .owui-chat-actions-panel .owui-chat-action {
  display:flex !important; align-items:center !important; gap:12px !important; width:100% !important;
  min-height:38px !important; height:auto !important; padding:9px 12px !important; border-radius:12px !important;
- font-size:.9375rem !important; font-weight:400; line-height:1.35 !important; text-align:start; color:inherit;
+ font-size: calc(.9375rem + var(--buddy-font-size-offset, 2px)) !important; font-weight:400; line-height:1.35 !important; text-align:start; color:inherit;
  white-space:normal; transition:background-color .12s;
 }
 .owui-chat-actions-panel .owui-chat-action:hover { background:#f1f5f9 !important; }
@@ -44,7 +44,7 @@ html:not(:has(.buddy-chat, .buddy-shell)) #chat-context-menu-button:focus-visibl
 .owui-chat-actions-panel .owui-chat-delete:hover, .owui-chat-actions-panel .owui-chat-delete:focus-visible { background:#fef2f2 !important; }
 .owui-chat-actions-panel > hr { margin:7px 12px !important; border-color:#e5e7eb !important; }
 .owui-chat-actions-panel .owui-chat-tags { max-height:150px !important; padding:7px 12px 5px !important; }
-.owui-chat-actions-panel .owui-chat-tags input { font-size:1rem !important; min-width:0; }
+.owui-chat-actions-panel .owui-chat-tags input { font-size: calc(1rem + var(--buddy-font-size-offset, 2px)) !important; min-width:0; }
 .owui-chat-submenu-portal {
  position:fixed !important; left:var(--owui-chat-menu-left) !important; top:var(--owui-chat-menu-top) !important;
  right:auto !important; bottom:auto !important; padding:0 !important; width:var(--owui-chat-menu-width) !important;
@@ -62,7 +62,7 @@ html.dark:not(:has(.buddy-chat, .buddy-shell)) #chat-context-menu-button:hover, 
 .dark .owui-chat-actions-panel .owui-chat-delete:hover, .dark .owui-chat-actions-panel .owui-chat-delete:focus-visible { background:#3d2828 !important; }
 @media (max-width:767px), (pointer:coarse) {
  html:not(:has(.buddy-chat, .buddy-shell)) #chat-context-menu-button { width:40px !important; height:40px !important; border-radius:12px !important; }
- .owui-chat-actions-panel .owui-chat-action { min-height:46px !important; padding:12px !important; font-size:1rem !important; }
+ .owui-chat-actions-panel .owui-chat-action { min-height:46px !important; padding:12px !important; font-size: calc(1rem + var(--buddy-font-size-offset, 2px)) !important; }
  .owui-chat-actions-panel .owui-chat-action > svg, .owui-chat-actions-panel .owui-chat-action > div > svg { width:20px !important; height:20px !important; }
  .owui-chat-actions-panel .owui-chat-tags button { min-height:36px; }
 }

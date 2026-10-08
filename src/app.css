@@ -15,6 +15,7 @@
 /* --app-text-scale is updated via the UI Scale slider (Interface.svelte) */
 :root {
 	--app-text-scale: 1;
+	--buddy-font-size-offset: 2px;
 	--buddy-forest: #27634b;
 	--buddy-mint: #ddf3e4;
 	--buddy-ivory: #faf8f5;
@@ -28,6 +29,11 @@ html {
 	font-variant-ligatures: no-contextual;
 	/* font-size scales the entire document via the same UI control */
 	font-size: calc(1rem * var(--app-text-scale, 1));
+}
+
+/* The font offset is applied at build time; rem spacing stays unchanged. */
+body {
+	font-size: 1rem;
 }
 
 #sidebar-chat-item {

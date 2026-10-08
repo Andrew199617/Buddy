@@ -809,7 +809,7 @@
 											</Tooltip>
 										</div>
 										{#if 'digest' in $MODEL_DOWNLOAD_POOL[model]}
-											<div class="mt-1 text-xs dark:text-gray-500" style="font-size: 0.5rem;">
+											<div class="mt-1 text-xs dark:text-gray-500" style="font-size: calc(0.5rem + var(--buddy-font-size-offset, 2px));">
 												{$MODEL_DOWNLOAD_POOL[model].digest}
 											</div>
 										{/if}
@@ -931,7 +931,7 @@
 									</div>
 								</div>
 								{#if createModelDigest}
-									<div class="mt-1 text-xs dark:text-gray-500" style="font-size: 0.5rem;">
+									<div class="mt-1 text-xs dark:text-gray-500" style="font-size: calc(0.5rem + var(--buddy-font-size-offset, 2px));">
 										{createModelDigest}
 									</div>
 								{/if}
@@ -1113,7 +1113,7 @@
 										{uploadMessage}
 									</div>
 								</div>
-								<div class="mt-1 text-xs dark:text-gray-500" style="font-size: 0.5rem;">
+								<div class="mt-1 text-xs dark:text-gray-500" style="font-size: calc(0.5rem + var(--buddy-font-size-offset, 2px));">
 									{modelFileDigest}
 								</div>
 							</div>
@@ -1129,7 +1129,7 @@
 										{uploadProgress ?? 0}%
 									</div>
 								</div>
-								<div class="mt-1 text-xs dark:text-gray-500" style="font-size: 0.5rem;">
+								<div class="mt-1 text-xs dark:text-gray-500" style="font-size: calc(0.5rem + var(--buddy-font-size-offset, 2px));">
 									{modelFileDigest}
 								</div>
 							</div>

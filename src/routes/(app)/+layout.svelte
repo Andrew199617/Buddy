@@ -88,10 +88,12 @@
 	let viewportTop = 0;
 
 	afterNavigate(() => {
-		showSidebar.set(false);
+		if ($mobile) {
+			showSidebar.set(false);
+		}
 	});
 
-	$: if ($showSearch || $showSettings) {
+	$: if ($mobile && ($showSearch || $showSettings)) {
 		showSidebar.set(false);
 	}
 
@@ -502,6 +504,7 @@
 			id="app-layout"
 			class="buddy-shell text-gray-700 dark:text-gray-100"
 			class:buddy-keyboard-open={keyboardOpen}
+			class:buddy-sidebar-open={!$mobile && $showSidebar}
 			style:--buddy-visible-height={viewportHeight ? `${viewportHeight}px` : undefined}
 			style:height={viewportHeight ? `${viewportHeight}px` : undefined}
 			style:top={`${viewportTop}px`}
@@ -515,8 +518,8 @@
 					<main
 						id="main-content"
 						class="buddy-page-content"
-						inert={$showSidebar}
-						aria-hidden={$showSidebar}
+						inert={$mobile && $showSidebar}
+						aria-hidden={$mobile && $showSidebar}
 					>
 						<slot />
 					</main>
@@ -546,7 +549,7 @@
 	.buddy-startup-avatar {
 		position: absolute;
 		top: calc(var(--buddy-safe-top, 0px) + 10px);
-		left: 50%;
+		left: calc(50% + var(--buddy-content-inset, 0px) / 2);
 		transform: translateX(-50%);
 		display: flex;
 		flex-direction: column;
@@ -576,6 +579,7 @@
 		outline-offset: 2px;
 	}
 	.buddy-shell {
+		--buddy-content-inset: 0px;
 		--buddy-dock-space: calc(88px + var(--buddy-safe-bottom, 0px));
 		position: fixed;
 		top: 0;
@@ -598,6 +602,13 @@
 
 	.buddy-shell.buddy-keyboard-open {
 		--buddy-dock-space: 0px;
+	}
+
+	@media (min-width: 768px) {
+		.buddy-shell.buddy-sidebar-open {
+			--buddy-content-inset: var(--sidebar-width, 245px);
+			padding-left: calc(var(--buddy-safe-left, 0px) + var(--buddy-content-inset));
+		}
 	}
 
 	.buddy-page-content {

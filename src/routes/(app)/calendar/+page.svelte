@@ -226,11 +226,7 @@
 
 <CreateCalendarModal bind:show={showCreateCalendarModal} on:created={handleCalendarCreated} />
 
-<div
-	class="flex flex-col w-full h-screen max-h-[100dvh] transition-width duration-200 ease-in-out {$showSidebar
-		? 'md:max-w-[calc(100%-var(--sidebar-width))]'
-		: ''} max-w-full"
->
+<div class="flex flex-col w-full h-screen max-h-[100dvh] max-w-full">
 	{#if loaded}
 		<!-- Top Navbar — spans above sidebar and calendar -->
 		<nav class="px-3 pt-2 pb-2 backdrop-blur-xl drag-region select-none shrink-0">

@@ -23,9 +23,9 @@
  window.__owuiModelActivity = true;
 
  const css = `
-.owui-model-activity { display:flex; align-items:center; gap:8px; min-height:28px; margin:5px 0; color:#4b5563; font-size:.875rem; line-height:1.5; }
+.owui-model-activity { display:flex; align-items:center; gap:8px; min-height:28px; margin:5px 0; color:#4b5563; font-size: calc(.875rem + var(--buddy-font-size-offset, 2px)); line-height:1.5; }
 .owui-model-activity-spinner { width:16px; height:16px; flex-shrink:0; border:2px solid rgba(107,114,128,.22); border-top-color:#0284c7; border-radius:50%; animation:owui-model-activity-spin .9s linear infinite; }
-.owui-model-activity-elapsed { color:#6b7280; font-size:.8125rem; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.owui-model-activity-elapsed { color:#6b7280; font-size: calc(.8125rem + var(--buddy-font-size-offset, 2px)); font-variant-numeric:tabular-nums; white-space:nowrap; }
 .owui-model-activity-elapsed:not(:empty)::before { content:'·'; margin-right:8px; }
 .owui-model-activity-cursor { display:none !important; }
 .dark .owui-model-activity { color:#d1d5db; }

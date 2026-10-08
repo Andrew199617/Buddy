@@ -14,7 +14,7 @@ html.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) {
 	font-size: calc(16px * max(1, var(--app-text-scale, 1)));
 }
 .owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar[role="navigation"] {
-	font-size: .9375rem;
+	font-size: calc(.9375rem + var(--buddy-font-size-offset, 2px));
 	line-height: 1.4;
 	top: var(--owui-chat-viewport-top, 0px);
 	height: var(--owui-chat-viewport-height, 100dvh);
@@ -27,7 +27,7 @@ html.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) {
 	min-height: 0;
 }
 .owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar-webui-name {
-	font-size: 1rem;
+	font-size: calc(1rem + var(--buddy-font-size-offset, 2px));
 	font-weight: 500;
 }
 .owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar-chat-item {
@@ -35,14 +35,14 @@ html.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) {
 	align-items: center;
 	min-height: 44px;
 	padding-block: 10px;
-	font-size: .9375rem;
+	font-size: calc(.9375rem + var(--buddy-font-size-offset, 2px));
 }
 .owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar-chat-item div[dir="auto"] {
 	height: auto;
 	line-height: 1.4;
 }
 .owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar-chat-item input {
-	font-size: 1rem;
+	font-size: calc(1rem + var(--buddy-font-size-offset, 2px));
 }
 .owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar-chat-item-menu button {
 	width: 40px;
@@ -63,14 +63,14 @@ html.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) {
 	min-height: 44px;
 }
 .owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar [id^="sidebar-"][id$="-button"] div {
-	font-size: .9375rem;
+	font-size: calc(.9375rem + var(--buddy-font-size-offset, 2px));
 }
 .owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar [id^="sidebar-"][id$="-button"] svg {
 	width: 20px;
 	height: 20px;
 }
 .owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar .sidebar button [class*="text-[0.8125rem]"] {
-	font-size: .9375rem;
+	font-size: calc(.9375rem + var(--buddy-font-size-offset, 2px));
 }
 .owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar .sidebar button img {
 	width: 28px;
@@ -85,7 +85,7 @@ html.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) {
 	height: 20px;
 }
 .owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #messages-container .markdown-prose {
-	font-size: 1rem !important;
+	font-size: calc(1rem + var(--buddy-font-size-offset, 2px)) !important;
 	line-height: 1.6;
 }
 .owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #chat-input {
@@ -167,7 +167,7 @@ html.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) {
 	min-height: 40px;
 }
 .owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #message-input-container button[id^="model-selector-"] > div {
-	font-size: .875rem;
+	font-size: calc(.875rem + var(--buddy-font-size-offset, 2px));
 	padding-inline: 4px;
 }
 .owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #message-input-container button[id^="model-selector-"] svg {
@@ -212,7 +212,7 @@ html.owui-model-screen-open, html.owui-model-screen-open body {
 	border-color: #374151;
 }
 .owui-model-picker-header h2 {
-	font-size: 1.0625rem;
+	font-size: calc(1.0625rem + var(--buddy-font-size-offset, 2px));
 	font-weight: 600;
 	line-height: 1.4;
 	margin: 0;
@@ -221,7 +221,7 @@ html.owui-model-screen-open, html.owui-model-screen-open body {
 	min-width: 44px;
 	min-height: 44px;
 	border-radius: 12px;
-	font-size: .9375rem;
+	font-size: calc(.9375rem + var(--buddy-font-size-offset, 2px));
 	font-weight: 500;
 	display: inline-flex;
 	align-items: center;
@@ -243,7 +243,7 @@ html.owui-model-screen-open, html.owui-model-screen-open body {
 	background: #1f2937;
 }
 .owui-model-picker-phone #model-search-input {
-	font-size: 1rem;
+	font-size: calc(1rem + var(--buddy-font-size-offset, 2px));
 	min-width: 0;
 }
 .owui-model-picker-phone .owui-model-picker-search > svg {
@@ -253,7 +253,7 @@ html.owui-model-screen-open, html.owui-model-screen-open body {
 .owui-model-picker-phone .owui-model-picker-search button {
 	min-height: 36px;
 	min-width: 36px;
-	font-size: .8125rem;
+	font-size: calc(.8125rem + var(--buddy-font-size-offset, 2px));
 }
 .owui-model-picker-phone .owui-model-picker-search button svg {
 	width: 18px;
@@ -269,7 +269,7 @@ html.owui-model-screen-open, html.owui-model-screen-open body {
 .owui-model-picker-phone [role="listbox"] [role="option"] {
 	height: 32px !important;
 	min-height: 32px;
-	font-size: calc(1rem / var(--owui-model-row-zoom));
+	font-size: calc(calc(1rem / var(--owui-model-row-zoom)) + var(--buddy-font-size-offset, 2px) / var(--owui-model-row-zoom));
 	line-height: 1.4;
 	border-radius: 10px;
 }
@@ -296,10 +296,10 @@ html.owui-model-screen-open, html.owui-model-screen-open body {
 }
 .owui-model-picker-child .app-dropdown-menu > button {
 	min-height: 40px;
-	font-size: .875rem;
+	font-size: calc(.875rem + var(--buddy-font-size-offset, 2px));
 }
 .owui-model-picker-phone [role="option"] [class*="text-[0.6875rem]"] {
-	font-size: calc(.75rem / var(--owui-model-row-zoom));
+	font-size: calc(calc(.75rem / var(--owui-model-row-zoom)) + var(--buddy-font-size-offset, 2px) / var(--owui-model-row-zoom));
 }
 .owui-model-picker-phone .owui-model-picker-footer {
 	min-height: 44px;
@@ -307,7 +307,7 @@ html.owui-model-screen-open, html.owui-model-screen-open body {
 }
 .owui-model-picker-phone .owui-model-picker-footer button {
 	min-height: 40px;
-	font-size: .8125rem;
+	font-size: calc(.8125rem + var(--buddy-font-size-offset, 2px));
 }
 .owui-model-picker-segment {
 	left: var(--owui-picker-left) !important;

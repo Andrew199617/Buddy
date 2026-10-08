@@ -687,7 +687,7 @@
 			/>
 		</div>
 
-		<div class="buddy-assistant-card flex-auto w-0 pl-1 relative">
+		<div class="buddy-assistant-stack flex-auto w-0 pl-1 relative">
 			{#if !compactPreview}
 				<Name>
 					<Tooltip content={localizedModelName} placement="top-start">
@@ -699,7 +699,7 @@
 			{/if}
 
 			<div>
-				<div class="chat-{message.role} w-full min-w-full">
+				<div class="buddy-assistant-card chat-{message.role} w-full min-w-full">
 					<div>
 						{#if model?.info?.meta?.capabilities?.status_updates ?? true}
 							<StatusHistory statusHistory={message?.statusHistory} />
@@ -1648,7 +1648,7 @@
 					{/if}
 
 					{#if (isLastMessage || ($settings?.keepFollowUpPrompts ?? false)) && message.done && !readOnly && (message?.followUps ?? []).length > 0}
-						<div class="my-2.5" in:fade={{ duration: 100 }}>
+						<div class="buddy-follow-ups my-2.5" in:fade={{ duration: 100 }}>
 							<FollowUps
 								followUps={message?.followUps}
 								onClick={(prompt) => {

@@ -105,6 +105,9 @@
 						display: false // Hide legend for cleaner look
 					},
 					tooltip: {
+						titleFont: { size: 14 },
+						bodyFont: { size: 14 },
+						footerFont: { size: 14 },
 						backgroundColor: 'rgba(17, 24, 39, 0.9)',
 						titleColor: '#f3f4f6',
 						bodyColor: '#d1d5db',
@@ -144,7 +147,7 @@
 						ticks: {
 							color: '#6b7280',
 							font: {
-								size: 10
+								size: 12
 							},
 							padding: 8,
 							stepSize: 1,

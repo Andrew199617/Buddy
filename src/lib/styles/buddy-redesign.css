@@ -26,6 +26,7 @@
 }
 
 .buddy-chat {
+	--buddy-conversation-width: 1200px;
 	height: 100%;
 	max-height: 100%;
 	min-height: 0;
@@ -53,31 +54,54 @@
 .buddy-chat #messages-container {
 	min-height: 0;
 	overscroll-behavior: contain;
-	padding: 10px 0 4px;
+	padding: 12px 0 4px;
 }
 
 .buddy-chat .message-listitem {
-	max-width: 780px;
-	padding-inline: 22px;
-	margin-bottom: 22px;
+	max-width: var(--buddy-conversation-width);
+	padding-inline: clamp(14px, 2vw, 28px);
+	margin-bottom: 14px;
 }
 
 .buddy-chat #messages-container section + div {
-	padding-bottom: 18px;
+	padding-bottom: 10px;
 }
 
 .buddy-chat .assistant-message > .shrink-0 {
 	display: none;
 }
 
-.buddy-chat .buddy-assistant-card {
+.buddy-chat .buddy-assistant-stack {
 	min-width: 0;
-	padding: 20px 22px 12px;
+	padding-left: 0;
+}
+
+.buddy-chat .buddy-assistant-card {
+	width: fit-content;
+	min-width: 0;
+	max-width: 94%;
+	padding: 12px 16px;
 	border: 1px solid var(--buddy-edge);
-	border-radius: 26px;
+	border-radius: 21px 21px 21px 6px;
 	background: var(--buddy-panel);
-	box-shadow: 0 4px 20px rgba(24, 44, 31, 0.025);
 	animation: buddy-message-arrive 260ms ease-out;
+}
+
+/* Rich answers use the canvas; short replies keep their natural message width. */
+.buddy-chat .buddy-assistant-card:has(pre, table, iframe, textarea, .structured-output) {
+	width: 94%;
+}
+
+.buddy-chat .buddy-assistant-stack > .self-center {
+	margin-bottom: 5px;
+}
+
+.buddy-chat .buddy-assistant-card .markdown-prose {
+	overflow-wrap: anywhere;
+}
+
+.buddy-chat .buddy-assistant-card pre {
+	overflow-wrap: normal;
 }
 
 .buddy-chat #response-message-model-name {
@@ -88,7 +112,7 @@
 }
 
 .buddy-chat .buddy-assistant-card #response-content-container {
-	margin-top: 9px;
+	margin-top: 6px;
 }
 
 .buddy-chat .buddy-assistant-card .markdown-prose {
@@ -96,25 +120,94 @@
 	line-height: 1.7;
 }
 
-.buddy-chat .buddy-assistant-card .buttons {
+.buddy-chat .buddy-assistant-stack .buttons {
 	gap: 1px;
-	margin-top: 9px;
-	padding-top: 5px;
+	width: fit-content;
+	max-width: 100%;
+	margin-top: 4px;
+	padding-top: 0;
 	color: var(--buddy-soft-text);
 }
 
-.buddy-chat .buddy-assistant-card .buttons button {
+.buddy-chat .buddy-assistant-stack .buttons button {
 	min-width: 32px;
 	min-height: 32px;
 	border-radius: 10px;
 }
 
 .buddy-chat .buddy-user-bubble {
-	padding: 13px 18px;
-	border-radius: 22px 22px 7px 22px;
+	width: fit-content;
+	max-width: 86%;
+	padding: 10px 15px;
+	border-radius: 21px 21px 6px 21px;
 	background: #e3ede4;
 	color: #294b38;
+	overflow-wrap: anywhere;
 	animation: buddy-message-arrive 240ms ease-out;
+}
+
+.buddy-chat .buddy-user-bubble .markdown-prose > :last-child {
+	margin-bottom: 0;
+}
+
+.buddy-chat .buddy-assistant-stack .owui-run-footer {
+	justify-content: flex-start;
+	min-height: 32px;
+	margin: 0 0 2px;
+	padding: 2px 5px;
+	text-align: start;
+}
+
+.buddy-chat .buddy-follow-ups {
+	max-width: 94%;
+	margin: 8px 0 4px;
+}
+
+.buddy-chat .buddy-follow-up-group {
+	margin-top: 0;
+}
+
+.buddy-chat .buddy-follow-up-label {
+	margin-bottom: 6px;
+	color: var(--buddy-soft-text);
+}
+
+.buddy-chat .buddy-follow-up-options {
+	flex-direction: row;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-top: 0;
+}
+
+.buddy-chat .buddy-follow-up-option {
+	display: flex;
+	max-width: 100%;
+	overflow: visible;
+}
+
+.buddy-chat .buddy-follow-up-button {
+	width: auto;
+	min-height: 40px;
+	padding: 8px 12px;
+	border: 1px solid var(--buddy-edge);
+	border-radius: 15px;
+	color: var(--buddy-soft-text);
+	background: transparent;
+}
+
+.buddy-chat .buddy-follow-up-button:hover {
+	background: var(--buddy-panel);
+}
+
+.buddy-chat .buddy-follow-up-text {
+	display: block;
+	white-space: normal;
+	overflow-wrap: anywhere;
+	-webkit-line-clamp: unset;
+}
+
+.buddy-chat .buddy-follow-up-options hr {
+	display: none;
 }
 
 .dark .buddy-chat .buddy-user-bubble {
@@ -130,8 +223,12 @@
 .buddy-chat .buddy-composer-wrap > div,
 .buddy-chat .buddy-welcome-composer > div {
 	width: 100%;
-	max-width: 780px;
+	max-width: var(--buddy-conversation-width);
 	margin-inline: auto;
+}
+
+.buddy-chat .buddy-composer-content {
+	max-width: var(--buddy-conversation-width);
 }
 
 .buddy-chat .buddy-composer {
@@ -381,13 +478,26 @@
 
 @media (max-width: 640px) {
 	.buddy-chat .message-listitem {
-		padding-inline: 12px;
-		margin-bottom: 18px;
+		padding-inline: max(8px, var(--buddy-safe-left), var(--buddy-safe-right));
+		margin-bottom: 12px;
 	}
 
 	.buddy-chat .buddy-assistant-card {
-		padding: 16px 17px 9px;
-		border-radius: 23px;
+		max-width: 97%;
+		padding: 11px 13px;
+		border-radius: 20px 20px 20px 6px;
+	}
+
+	.buddy-chat .buddy-assistant-card:has(pre, table, iframe, textarea, .structured-output) {
+		width: 97%;
+	}
+
+	.buddy-chat .buddy-user-bubble {
+		max-width: 92%;
+	}
+
+	.buddy-chat .buddy-follow-ups {
+		max-width: 97%;
 	}
 
 	.buddy-chat .buddy-assistant-card .markdown-prose {

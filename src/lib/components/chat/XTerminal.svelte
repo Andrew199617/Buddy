@@ -116,7 +116,7 @@
 		term = new Terminal({
 			cursorBlink: !readOnly,
 			disableStdin: readOnly,
-			fontSize: 13,
+			fontSize: 15,
 			fontFamily:
 				"'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New', monospace",
 			theme: {

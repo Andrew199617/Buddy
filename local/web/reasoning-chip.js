@@ -94,7 +94,7 @@
 
 	const css = `
 .owui-rl-chip{display:inline-flex;align-items:center;gap:.3rem;flex-shrink:0;align-self:center;
- border-radius:.5rem;padding:.25rem .45rem;font-size:.8125rem;line-height:1.25rem;color:#4b5563;
+ border-radius:.5rem;padding:.25rem .45rem;font-size: calc(.8125rem + var(--buddy-font-size-offset, 2px));line-height:1.25rem;color:#4b5563;
  background:transparent;border:0;cursor:pointer;white-space:nowrap;transition:background-color .1s,color .1s}
 .owui-rl-chip:hover{background:rgba(249,250,251,.6);color:#374151}
 .owui-rl-chip svg{width:1rem;height:1rem}
@@ -107,14 +107,14 @@
 @media (max-width:640px){.owui-rl-chip .owui-rl-label{display:none}}
 .owui-rl-menu{position:fixed;z-index:9999;min-width:11rem;padding:.3rem;border-radius:.75rem;
  background:#fff;color:#111827;border:1px solid rgba(229,231,235,.8);
- box-shadow:0 10px 30px -10px rgba(0,0,0,.25);font-size:.8125rem}
+ box-shadow:0 10px 30px -10px rgba(0,0,0,.25);font-size: calc(.8125rem + var(--buddy-font-size-offset, 2px))}
 .dark .owui-rl-menu{background:#171717;color:#f3f4f6;border-color:rgba(64,64,64,.6)}
-.owui-rl-menu .owui-rl-title{padding:.3rem .55rem .35rem;font-size:.72rem;color:#6b7280}
+.owui-rl-menu .owui-rl-title{padding:.3rem .55rem .35rem;font-size: calc(.72rem + var(--buddy-font-size-offset, 2px));color:#6b7280}
 .owui-rl-menu button{display:flex;width:100%;align-items:center;justify-content:space-between;gap:.75rem;
  padding:.38rem .55rem;border:0;border-radius:.5rem;background:transparent;color:inherit;text-align:left;cursor:pointer}
 .owui-rl-menu button:hover,.owui-rl-menu button:focus-visible{background:rgba(243,244,246,1);outline:none}
 .dark .owui-rl-menu button:hover,.dark .owui-rl-menu button:focus-visible{background:rgba(38,38,38,1)}
-.owui-rl-menu .owui-rl-hint{color:#9ca3af;font-size:.72rem}
+.owui-rl-menu .owui-rl-hint{color:#9ca3af;font-size: calc(.72rem + var(--buddy-font-size-offset, 2px))}
 .owui-rl-menu .owui-rl-check{width:.9rem;color:#0284c7}
 .dark .owui-rl-menu .owui-rl-check{color:#7dd3fc}`;
 
