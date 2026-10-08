@@ -311,3 +311,13 @@ cypress/videos
 cypress/screenshots
 .vscode/settings.json
 .cptr
+
+# Buddy local installation, credentials, and research output
+/.python/
+/.uv-cache/
+/.uv-tools/
+/open-webui-data/
+/.webui_secret_key
+/slackdump/
+/slackdump-research/
+/local/tests/.qa/
