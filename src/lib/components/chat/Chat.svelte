@@ -4392,10 +4392,11 @@
 								id="messages-container"
 								bind:this={messagesContainerElement}
 								on:scroll={(e) => {
+									const scrollContainer = e.currentTarget;
 									autoScroll =
-										messagesContainerElement.scrollHeight - messagesContainerElement.scrollTop <=
-										messagesContainerElement.clientHeight + 5;
-									isNearTop = messagesContainerElement.scrollTop <= 100;
+										scrollContainer.scrollHeight - scrollContainer.scrollTop <=
+										scrollContainer.clientHeight + 5;
+									isNearTop = scrollContainer.scrollTop <= 100;
 								}}
 							>
 								<div class=" h-full w-full flex flex-col">

@@ -22,7 +22,6 @@
 	import ChatBubbleDottedChecked from '../icons/ChatBubbleDottedChecked.svelte';
 	import EllipsisHorizontal from '../icons/EllipsisHorizontal.svelte';
 	import ChatPlus from '../icons/ChatPlus.svelte';
-	import ChatCheck from '../icons/ChatCheck.svelte';
 	import Knobs from '../icons/Knobs.svelte';
 	import { isTemporaryChatId } from '$lib/utils/chatId';
 
@@ -48,6 +47,7 @@
 	let canUseControls = true;
 	let canDeleteChat = true;
 	let avatarStatus = '';
+	let saveTemporaryChatHandler: (() => void | Promise<void>) | null = null;
 
 	$: {
 		canToggleTemporaryChat = true;
@@ -58,6 +58,13 @@
 		}
 		canUseControls = $user?.role === 'admin' || ($user?.permissions?.chat?.controls ?? true);
 		canDeleteChat = $user?.role === 'admin' || ($user?.permissions?.chat?.delete ?? true);
+	}
+
+	$: {
+		saveTemporaryChatHandler = null;
+		if (!readOnly && canToggleTemporaryChat && chat?.id && $temporaryChatEnabled) {
+			saveTemporaryChatHandler = onSaveTempChat;
+		}
 	}
 
 	$: {
@@ -185,6 +192,7 @@
 				{shareEnabled}
 				{readOnly}
 				{scrollToTop}
+				{saveTemporaryChatHandler}
 				shareHandler={shareCurrentChat}
 				archiveChatHandler={archiveCurrentChat}
 				deleteChatHandler={deleteCurrentChat}
@@ -218,18 +226,6 @@
 							{:else}
 								<ChatBubbleDotted className="size-[18px]" strokeWidth="1.5" />
 							{/if}
-						</button>
-					</Tooltip>
-				{:else if $temporaryChatEnabled}
-					<Tooltip content={$i18n.t('Save Chat')}>
-						<button
-							type="button"
-							id="save-temporary-chat-button"
-							class="buddy-quiet-button no-drag"
-							on:click={onSaveTempChat}
-							aria-label={$i18n.t('Save Chat')}
-						>
-							<ChatCheck className="size-[18px]" strokeWidth="1.5" />
 						</button>
 					</Tooltip>
 				{/if}
@@ -379,10 +375,11 @@
 	.buddy-header-left,
 	.buddy-header-right {
 		position: absolute;
-		top: 23px;
+		top: 18px;
 		display: flex;
-		flex-direction: column;
-		align-items: flex-start;
+		flex-direction: row;
+		align-items: center;
+		gap: 4px;
 		pointer-events: auto;
 	}
 
@@ -391,14 +388,14 @@
 	}
 	.buddy-header-right {
 		right: 22px;
-		align-items: flex-end;
+		flex-direction: row-reverse;
 	}
 
 	.buddy-circle-button,
 	.buddy-quiet-button {
 		display: inline-flex;
-		width: 42px;
-		height: 42px;
+		width: 44px;
+		height: 44px;
 		flex: none;
 		align-items: center;
 		justify-content: center;
@@ -419,7 +416,8 @@
 		backdrop-filter: blur(12px);
 	}
 
-	.buddy-circle-button > svg {
+	.buddy-circle-button :global(svg),
+	.buddy-quiet-button :global(svg) {
 		width: 20px;
 		height: 20px;
 	}
@@ -457,13 +455,8 @@
 
 	.buddy-secondary-controls {
 		display: flex;
-		justify-content: flex-end;
-		min-height: 42px;
-		margin-top: 2px;
-	}
-
-	.buddy-header-right > .buddy-secondary-controls:first-child {
-		margin-top: 44px;
+		align-items: center;
+		gap: 4px;
 	}
 	.buddy-temporary-note {
 		position: absolute;
@@ -500,8 +493,8 @@
 
 	/* Keep the native menu target accessible when older local web scripts load. */
 	.buddy-chat-header :global(#chat-context-menu-button) {
-		width: 42px !important;
-		height: 42px !important;
+		width: 44px !important;
+		height: 44px !important;
 		border-radius: 50% !important;
 		border-color: rgb(39 99 75 / 12%);
 		background: rgb(255 255 255 / 36%);

@@ -36,6 +36,7 @@
 	import GarbageBin from '$lib/components/icons/GarbageBin.svelte';
 	import Messages from '$lib/components/chat/Messages.svelte';
 	import Download from '$lib/components/icons/Download.svelte';
+	import ChatCheck from '$lib/components/icons/ChatCheck.svelte';
 
 	const i18n = getContext('i18n');
 
@@ -53,8 +54,15 @@
 	export let chat;
 	export let onClose: Function = () => {};
 	export let scrollToTop: (() => void) | null = null;
+	export let saveTemporaryChatHandler: (() => void | Promise<void>) | null = null;
 
 	let showFullMessages = false;
+
+	async function saveTemporaryChat() {
+		if (saveTemporaryChatHandler) {
+			await saveTemporaryChatHandler();
+		}
+	}
 
 	const getChatAsText = async () => {
 		const history = chat.chat.history;
@@ -318,6 +326,19 @@
 				<div class="flex items-center">{$i18n.t('Settings')}</div>
 			</DropdownMenu.Item> -->
 			<!-- Settings commented out block above -->
+
+			{#if saveTemporaryChatHandler && !readOnly && $temporaryChatEnabled}
+				<button
+					type="button"
+					id="save-temporary-chat-button"
+					class="flex min-h-11 w-full items-center gap-2 rounded-xl px-2 text-[0.8125rem] hover:bg-gray-50/40 dark:hover:bg-gray-800/40"
+					on:click={saveTemporaryChat}
+				>
+					<ChatCheck className="size-3.5" strokeWidth="1.5" />
+					<div>{$i18n.t('Save Chat')}</div>
+				</button>
+				<hr class="border-gray-50/30 dark:border-gray-800/30 mx-1 my-0.5" />
+			{/if}
 
 			{#if scrollToTop}
 				<button
