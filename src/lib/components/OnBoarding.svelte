@@ -1,125 +1,61 @@
-<script>
+<script lang="ts">
 	import { getContext } from 'svelte';
-	const i18n = getContext('i18n');
+	import BuddyBrand from '$lib/components/common/BuddyBrand.svelte';
+	import { WEBUI_NAME } from '$lib/stores';
+	import { WEBUI_BASE_URL } from '$lib/constants';
+
+	const i18n: any = getContext('i18n');
 
 	export let show = true;
 	export let getStartedHandler = () => {};
-
-	let videoElement;
-	let playOnInteractionRegistered = false;
-
-	function playBackgroundVideo() {
-		if (!videoElement) {
-			return;
-		}
-
-		videoElement.play().catch(() => {
-			if (playOnInteractionRegistered) {
-				return;
-			}
-
-			playOnInteractionRegistered = true;
-
-			const playOnInteraction = () => {
-				videoElement.play().catch(() => {});
-				document.removeEventListener('click', playOnInteraction);
-				document.removeEventListener('touchstart', playOnInteraction);
-				playOnInteractionRegistered = false;
-			};
-
-			document.addEventListener('click', playOnInteraction);
-			document.addEventListener('touchstart', playOnInteraction);
-		});
-	}
-
-	$: if (show && videoElement) {
-		playBackgroundVideo();
-	}
 </script>
 
 {#if show}
-	<div class="relative h-screen max-h-[100dvh] w-full overflow-hidden text-white">
-		<div class="fixed top-6 left-6 z-50 sm:top-10 sm:left-10">
-			<!-- LICENSE covers this Open WebUI onboarding logo.
-			Do not alter, remove, obscure, or replace it except as LICENSE permits:
-			https://docs.openwebui.com/license. -->
-			<img
-				id="logo"
-				crossorigin="anonymous"
-				src="/static/favicon.png"
-				class="size-6 rounded-full"
-				alt="logo"
-			/>
-		</div>
+	<div class="buddy-welcome fixed inset-0 z-[100] min-h-screen w-full overflow-y-auto">
+		<div class="relative z-10 flex min-h-screen flex-col px-6 py-8 sm:px-12 sm:py-10 lg:px-20">
+			<header>
+				<BuddyBrand name={$WEBUI_NAME} className="text-2xl" markClass="size-10" />
+			</header>
 
-		<video
-			bind:this={videoElement}
-			class="absolute inset-0 h-full w-full object-cover"
-			src="/assets/welcome.mp4"
-			autoplay
-			muted
-			loop
-			playsinline
-			preload="auto"
-			poster="/assets/welcome.webp"
-			aria-hidden="true"
-		></video>
-
-		<div class="absolute inset-0 bg-linear-to-t from-black/80 via-black/20 to-transparent"></div>
-		<div class="absolute inset-0 bg-linear-to-r from-black/50 via-black/10 to-transparent"></div>
-
-		<div class="relative z-10 flex h-screen max-h-[100dvh] w-full">
-			<div class="flex w-full flex-col justify-end px-6 pb-8 sm:px-10 sm:pb-10 lg:px-16 lg:pb-14">
-				<div class="max-w-3xl">
-					<!-- LICENSE covers this Open WebUI welcome identifier.
-					Do not alter, remove, obscure, or replace it except as LICENSE permits:
-					https://docs.openwebui.com/license. -->
-					<div class="mb-4 text-[0.6875rem] font-medium tracking-[0.18em] uppercase opacity-35">
-						Open WebUI
-					</div>
-
-					<h1 class="m-0 max-w-3xl text-2xl leading-[1.15] font-light tracking-tight lg:text-4xl">
-						{$i18n.t('Welcome to your AI home.')}
+			<main class="flex flex-1 items-center gap-12 py-16">
+				<div class="max-w-2xl">
+					<p class="buddy-welcome-eyebrow mb-5 text-sm font-medium">
+						{$i18n.t('Your AI companion')}
+					</p>
+					<h1
+						class="m-0 text-4xl leading-[1.08] font-medium tracking-tight sm:text-6xl lg:text-7xl"
+					>
+						{$i18n.t('A little help. A lot of possibility.')}
 					</h1>
-
-					<p class="mt-6 max-w-xl text-sm leading-relaxed font-light text-white/60 lg:text-base">
+					<p class="mt-6 max-w-lg text-base leading-relaxed sm:text-lg">
 						{$i18n.t(
-							'Run AI on your own terms. Connect any model, extend with code, and protect what matters without compromise. Your models, your data, your machine, wherever you open it.'
+							'Meet Buddy, your AI companion for ideas, answers, and getting things done. Bring your favorite models and make yourself at home.'
 						)}
 					</p>
-
-					<div class="mt-8 flex flex-col items-start gap-6 sm:flex-row sm:items-center sm:gap-7">
-						<button
-							aria-label={$i18n.t('Get started')}
-							class="group relative z-20 inline-flex min-w-40 items-center justify-center gap-2 bg-white px-8 py-3 text-sm font-normal text-black transition hover:bg-white/90 focus:ring-2 focus:ring-white/50 focus:outline-hidden"
-							on:click={() => {
-								getStartedHandler();
-							}}
+					<button
+						class="buddy-primary-button mt-9 inline-flex items-center justify-center gap-3 rounded-full px-7 py-3.5 text-sm font-medium transition"
+						on:click={getStartedHandler}
+					>
+						{$i18n.t('Get started')}
+						<svg
+							class="size-4"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="1.8"
+							aria-hidden="true"
 						>
-							{$i18n.t('Get started')}
-							<svg
-								class="h-4 w-4 transition group-hover:translate-x-0.5"
-								fill="none"
-								viewBox="0 0 24 24"
-								stroke="currentColor"
-								stroke-width="1.5"
-								aria-hidden="true"
-							>
-								<path stroke-linecap="round" stroke-linejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" />
-							</svg>
-						</button>
-
-						<a
-							class="inline-flex items-center text-sm text-white/60 transition hover:text-white"
-							href="https://docs.openwebui.com/"
-							target="_blank"
-							rel="noopener noreferrer"
-						>
-							{$i18n.t('Read the docs')}
-						</a>
-					</div>
+							<path d="m14 7 5 5-5 5M5 12h14" stroke-linecap="round" stroke-linejoin="round" />
+						</svg>
+					</button>
 				</div>
-			</div>
+
+				<div class="buddy-welcome-art hidden flex-1 justify-center lg:flex" aria-hidden="true">
+					<img src="{WEBUI_BASE_URL}/static/buddy-mark.svg" class="w-full max-w-96" alt="" />
+				</div>
+			</main>
+
+			<footer class="text-sm opacity-70">{$i18n.t('Your ideas, with a Buddy.')}</footer>
 		</div>
 	</div>
 {/if}

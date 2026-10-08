@@ -168,8 +168,8 @@ async def get_headers_and_cookies(
                 # LICENSE covers this Open WebUI upstream metadata identifier.
                 # Do not alter, remove, obscure, or replace it except as LICENSE permits:
                 # https://docs.openwebui.com/license.
-                'HTTP-Referer': 'https://openwebui.com/',
-                'X-Title': 'Open WebUI',
+                'HTTP-Referer': 'https://github.com/Andrew199617/Buddy',
+                'X-Title': getattr(request.app.state, 'WEBUI_NAME', 'Buddy'),
             }
             if 'openrouter.ai' in url
             else {}
@@ -536,7 +536,7 @@ async def count_anthropic_tokens(request: Request, form_data: dict, user: UserMo
         raise
     except Exception:
         log.exception('Failed to count Anthropic tokens for model %s', requested_model)
-        raise HTTPException(status_code=502, detail=ERROR_MESSAGES.SERVER_CONNECTION_ERROR)
+        raise HTTPException(status_code=502, detail=ERROR_MESSAGES.SERVER_CONNECTION_ERROR.value)
     finally:
         await cleanup_response(response)
 
@@ -666,7 +666,7 @@ async def speech(request: Request, user=Depends(get_verified_user)):
             # https://docs.openwebui.com/license.
             raise HTTPException(
                 status_code=r.status if r else 500,
-                detail=detail if detail else 'Open WebUI: Server Connection Error',
+                detail=detail if detail else ERROR_MESSAGES.SERVER_CONNECTION_ERROR.value,
             )
 
     except ValueError:
@@ -929,7 +929,7 @@ async def get_models(request: Request, url_idx: int | None = None, user=Depends(
                 # LICENSE covers this Open WebUI error identifier.
                 # Do not alter, remove, obscure, or replace it except as LICENSE permits:
                 # https://docs.openwebui.com/license.
-                raise HTTPException(status_code=500, detail='Open WebUI: Server Connection Error')
+                raise HTTPException(status_code=500, detail=ERROR_MESSAGES.SERVER_CONNECTION_ERROR.value)
             except Exception as e:
                 log.exception(f'Unexpected error: {e}')
                 error_detail = f'Unexpected error: {str(e)}'
@@ -1118,7 +1118,7 @@ async def verify_connection(
             elif is_anthropic_url(url):
                 result = await get_anthropic_models(url, key)
                 if result is None:
-                    raise HTTPException(status_code=500, detail=ERROR_MESSAGES.SERVER_CONNECTION_ERROR)
+                    raise HTTPException(status_code=500, detail=ERROR_MESSAGES.SERVER_CONNECTION_ERROR.value)
                 if 'error' in result:
                     raise HTTPException(status_code=500, detail=result['error'])
                 return result
@@ -1145,10 +1145,10 @@ async def verify_connection(
         except aiohttp.ClientError as e:
             # ClientError covers all aiohttp requests issues
             log.exception(f'Client error: {str(e)}')
-            raise HTTPException(status_code=500, detail=ERROR_MESSAGES.SERVER_CONNECTION_ERROR)
+            raise HTTPException(status_code=500, detail=ERROR_MESSAGES.SERVER_CONNECTION_ERROR.value)
         except Exception as e:
             log.exception(f'Unexpected error: {e}')
-            raise HTTPException(status_code=500, detail=ERROR_MESSAGES.SERVER_CONNECTION_ERROR)
+            raise HTTPException(status_code=500, detail=ERROR_MESSAGES.SERVER_CONNECTION_ERROR.value)
 
 
 def get_azure_allowed_params(api_version: str) -> set[str]:
@@ -1747,7 +1747,7 @@ async def generate_chat_completion(
 
         raise HTTPException(
             status_code=r.status if r else 500,
-            detail=ERROR_MESSAGES.SERVER_CONNECTION_ERROR,
+            detail=ERROR_MESSAGES.SERVER_CONNECTION_ERROR.value,
         )
     finally:
         if not streaming:
@@ -1853,7 +1853,7 @@ async def embeddings(request: Request, form_data: dict, user):
         log.exception(e)
         raise HTTPException(
             status_code=r.status if r else 500,
-            detail=ERROR_MESSAGES.SERVER_CONNECTION_ERROR,
+            detail=ERROR_MESSAGES.SERVER_CONNECTION_ERROR.value,
         )
     finally:
         if not streaming:
@@ -1984,7 +1984,7 @@ async def responses(
         log.exception(e)
         raise HTTPException(
             status_code=r.status if r else 500,
-            detail=ERROR_MESSAGES.SERVER_CONNECTION_ERROR,
+            detail=ERROR_MESSAGES.SERVER_CONNECTION_ERROR.value,
         )
     finally:
         if not streaming:
@@ -2109,7 +2109,7 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
         # https://docs.openwebui.com/license.
         raise HTTPException(
             status_code=r.status if r else 500,
-            detail='Open WebUI: Server Connection Error',
+            detail=ERROR_MESSAGES.SERVER_CONNECTION_ERROR.value,
         )
     finally:
         if not streaming:

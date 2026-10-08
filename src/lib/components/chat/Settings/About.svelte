@@ -73,7 +73,7 @@
 								<span>{$i18n.t('Could not check for updates')}</span>
 							{:else}
 								<a
-									href="https://github.com/open-webui/open-webui/releases/tag/v{version.latest}"
+									href="https://github.com/Andrew199617/Buddy/releases/tag/v{version.latest}"
 									target="_blank"
 								>
 									{updateAvailable === null
@@ -117,37 +117,17 @@
 			</UserSettingSection>
 		{/if}
 
-		<UserSettingSection title={$i18n.t('settings.personal.about.sections.community.title')}>
+		<UserSettingSection title={$i18n.t('settings.personal.about.sections.credits.title')}>
 			{#if $config?.license_metadata}
 				<!-- LICENSE covers this Open WebUI license attribution.
 				Do not alter, remove, obscure, or replace it except as LICENSE permits:
 				https://docs.openwebui.com/license. -->
 				<div class="text-xs text-gray-600 dark:text-gray-400">
-					{#if !$WEBUI_NAME.includes('Open WebUI')}
-						<span>{$WEBUI_NAME}</span> -
-					{/if}
+					<span>{$WEBUI_NAME}</span> ·
 
 					<span class="capitalize">{$config?.license_metadata?.type}</span>
 					{$i18n.t('license purchased by')}
 					<span class="capitalize">{$config?.license_metadata?.organization_name}</span>
-				</div>
-			{:else}
-				<div class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-400 dark:text-gray-600">
-					<a
-						class="hover:text-gray-700 dark:hover:text-gray-400"
-						href="https://discord.gg/5rJgQTnV4s"
-						target="_blank">Discord</a
-					>
-					<a
-						class="hover:text-gray-700 dark:hover:text-gray-400"
-						href="https://twitter.com/OpenWebUI"
-						target="_blank">X</a
-					>
-					<a
-						class="hover:text-gray-700 dark:hover:text-gray-400"
-						href="https://github.com/open-webui/open-webui"
-						target="_blank">GitHub</a
-					>
 				</div>
 			{/if}
 
@@ -168,13 +148,6 @@
 				<a href="https://openwebui.com" target="_blank" class="underline">Open WebUI Inc.</a>
 				<a href="https://github.com/open-webui/open-webui/blob/main/LICENSE" target="_blank"
 					>{$i18n.t('All rights reserved.')}</a
-				>
-			</div>
-
-			<div class="text-xs text-gray-400 dark:text-gray-500">
-				{$i18n.t('Created by')}
-				<a class="text-gray-500 dark:text-gray-400" href="https://github.com/tjbck" target="_blank"
-					>Tim J. Baek</a
 				>
 			</div>
 		</UserSettingSection>

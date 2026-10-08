@@ -4,7 +4,19 @@
 // visual, textual, symbolic identifiers, metadata, and surrounding UI.
 // Do not alter, remove, obscure, or replace it except as LICENSE permits:
 // https://docs.openwebui.com/license.
-export const APP_NAME = 'Open WebUI';
+export const APP_NAME = 'Buddy';
+
+export function resolveAppName(name?: string | null): string {
+	const normalizedName = name
+		?.trim()
+		.replace(/\s*\(Open WebUI\)$/i, '')
+		.trim();
+	if (!normalizedName || /^(open[ -]?webui|webui)$/i.test(normalizedName)) {
+		return APP_NAME;
+	}
+
+	return normalizedName;
+}
 
 export const WEBUI_HOSTNAME = '';
 export const WEBUI_BASE_URL = '';
