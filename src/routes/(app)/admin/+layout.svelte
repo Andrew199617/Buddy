@@ -1,10 +1,10 @@
 <script lang="ts">
+	import SidebarToggleTooltip from '$lib/components/layout/SidebarToggleTooltip.svelte';
 	import { onMount, getContext } from 'svelte';
 	import { goto } from '$app/navigation';
 
 	import { WEBUI_NAME, config, mobile, showSettings, showSidebar, user } from '$lib/stores';
 	import { page } from '$app/stores';
-	import Tooltip from '$lib/components/common/Tooltip.svelte';
 
 	import Sidebar from '$lib/components/icons/Sidebar.svelte';
 
@@ -39,10 +39,7 @@
 		<nav class="pb-1 px-2.5 pt-2 backdrop-blur-xl drag-region select-none">
 			<div class=" flex items-center gap-0.5 md:gap-1">
 				<div class="{$showSidebar ? 'md:hidden' : ''} self-center flex flex-none items-center">
-					<Tooltip
-						content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
-						interactive={true}
-					>
+					<SidebarToggleTooltip interactive={true}>
 						<button
 							id="sidebar-toggle-button"
 							aria-expanded={$showSidebar}
@@ -58,7 +55,7 @@
 								<Sidebar className="size-4" />
 							</div>
 						</button>
-					</Tooltip>
+					</SidebarToggleTooltip>
 				</div>
 
 				<div class="flex w-full items-center">

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SidebarToggleTooltip from '$lib/components/layout/SidebarToggleTooltip.svelte';
 	import { onMount, getContext } from 'svelte';
 	import type { Writable } from 'svelte/store';
 	import type { i18n as i18nType } from 'i18next';
@@ -18,7 +19,6 @@
 	import { getPromptItems } from '$lib/apis/prompts';
 	import { getSkillItems } from '$lib/apis/skills';
 	import { getToolList } from '$lib/apis/tools';
-	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import Sidebar from '$lib/components/icons/Sidebar.svelte';
 	import SplitCreateButton from '$lib/components/common/SplitCreateButton.svelte';
 	import { formatNumber } from '$lib/utils';
@@ -119,10 +119,7 @@
 		<nav class="pb-1 px-2.5 pt-2 backdrop-blur-xl drag-region select-none">
 			<div class="flex items-center gap-0.5 md:gap-1">
 				<div class="{$showSidebar ? 'md:hidden' : ''} self-center flex flex-none items-center">
-					<Tooltip
-						content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
-						interactive={true}
-					>
+					<SidebarToggleTooltip interactive={true}>
 						<button
 							id="sidebar-toggle-button"
 							type="button"
@@ -138,7 +135,7 @@
 								<Sidebar className="size-4" />
 							</div>
 						</button>
-					</Tooltip>
+					</SidebarToggleTooltip>
 				</div>
 
 				<div class="flex w-full items-center">
