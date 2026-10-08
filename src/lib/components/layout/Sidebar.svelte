@@ -1599,7 +1599,10 @@
 		top: 0;
 		left: 0;
 		z-index: 40;
-		width: min(var(--sidebar-width), calc(100vw - 32px));
+		width: min(
+			calc(var(--sidebar-width) + var(--buddy-safe-left, 0px)),
+			calc(100vw - var(--buddy-safe-right, 0px) - 32px)
+		);
 		height: 100dvh;
 		overflow: hidden;
 		background: var(--buddy-panel, #fff);
@@ -1611,14 +1614,18 @@
 	.buddy-sidebar-content {
 		width: 100%;
 		height: 100%;
-		padding-bottom: env(safe-area-inset-bottom);
+		min-height: 0;
+		box-sizing: border-box;
+		padding-top: var(--buddy-safe-top, 0px);
+		padding-bottom: var(--buddy-safe-bottom, 0px);
+		padding-left: var(--buddy-safe-left, 0px);
 	}
 
 	.buddy-sidebar-resizer {
 		position: fixed;
 		top: 0;
 		bottom: 0;
-		left: calc(var(--sidebar-width) - 3px);
+		left: calc(var(--sidebar-width) + var(--buddy-safe-left, 0px) - 3px);
 		z-index: 41;
 		width: 6px;
 		cursor: col-resize;

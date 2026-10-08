@@ -4278,7 +4278,7 @@
 	data-buddy-state={embedded ? undefined : buddyState}
 >
 	{#if !loading}
-		<div in:fade={{ duration: 50 }} class="w-full h-full flex flex-col">
+		<div in:fade={{ duration: 50 }} class="buddy-chat-frame w-full h-full flex flex-col">
 			{#if backgroundImage}
 				<div
 					class="pointer-events-none absolute top-0 left-0 w-full h-full bg-cover bg-center bg-no-repeat"
@@ -4289,8 +4289,10 @@
 				></div>
 			{/if}
 
-			<div class="w-full h-full flex">
-				<div class="h-full flex relative max-w-full min-w-0 flex-1 flex-col">
+			<div class="buddy-chat-workspace w-full h-full flex">
+				<div
+					class="buddy-conversation-frame h-full flex relative max-w-full min-w-0 flex-1 flex-col"
+				>
 					<FilesOverlay show={dragged} />
 					{#if embedded}
 						<div

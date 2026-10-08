@@ -125,13 +125,16 @@
 		const updateKeyboardVisibility = () => {
 			const inputFocused = acceptsKeyboardInput(document.activeElement);
 			const visibleHeight = viewport?.height ?? window.innerHeight;
-			if (!inputFocused) {
+			if (!inputFocused && !keyboardOpen) {
 				fullViewportHeight = window.innerHeight;
 			}
 			const viewportReducedWithinWindow = window.innerHeight - visibleHeight > 140;
 			const keyboardLayout = primaryPointer.matches || viewportReducedWithinWindow;
 			const keyboardHeightDelta = fullViewportHeight - visibleHeight > 140;
-			keyboardOpen = touchCapable && inputFocused && keyboardLayout && keyboardHeightDelta;
+			// Safari can keep the keyboard viewport reduced after the editor loses focus.
+			const keyboardActive = inputFocused || keyboardOpen;
+			const keyboardViewportReduced = keyboardLayout && keyboardHeightDelta;
+			keyboardOpen = touchCapable && keyboardActive && keyboardViewportReduced;
 			viewportHeight = visibleHeight;
 			viewportTop = viewport?.offsetTop ?? 0;
 		};
@@ -253,15 +256,18 @@
 
 <style>
 	.buddy-dock {
+		--buddy-dock-max-width: calc(
+			100vw - var(--buddy-safe-left, 0px) - var(--buddy-safe-right, 0px) - 32px
+		);
 		position: fixed;
-		bottom: calc(16px + env(safe-area-inset-bottom));
-		left: 50%;
+		bottom: calc(16px + var(--buddy-safe-bottom, 0px));
+		left: calc(50% + (var(--buddy-safe-left, 0px) - var(--buddy-safe-right, 0px)) / 2);
 		z-index: 30;
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		gap: 6px;
-		width: min(420px, calc(100vw - 32px));
+		width: min(420px, var(--buddy-dock-max-width));
 		max-width: 480px;
 		box-sizing: border-box;
 		height: 64px;
@@ -282,7 +288,7 @@
 
 	.buddy-dock-compact {
 		width: auto;
-		max-width: calc(100vw - 32px);
+		max-width: var(--buddy-dock-max-width);
 		justify-content: center;
 		gap: 18px;
 	}

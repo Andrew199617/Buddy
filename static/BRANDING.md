@@ -41,6 +41,12 @@ History, settings and account controls remain in the overlay drawer. The dock
 makes room for the phone keyboard, and legacy runtime layout patches yield to
 these native Buddy components.
 
+Buddy stays at the top of a fixed app frame while conversation content scrolls
+independently. Browser safe-area insets protect the avatar, controls, drawer and
+dock around a notch, Dynamic Island, rounded edges and home indicator. Phones
+without those insets keep the compact spacing. Long drafts scroll inside the
+composer so the keyboard and top safe area still leave room for the transcript.
+
 This application is derived from Open WebUI. Its upstream copyright, license,
 and attribution remain in `LICENSE` and the About screen. Use and distribution
 of this fork remain subject to those terms, including the branding provisions.

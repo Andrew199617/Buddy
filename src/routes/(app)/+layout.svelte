@@ -457,8 +457,8 @@
 			class="buddy-shell text-gray-700 dark:text-gray-100"
 			class:buddy-keyboard-open={keyboardOpen}
 			style:--buddy-visible-height={viewportHeight ? `${viewportHeight}px` : undefined}
-			style:height={keyboardOpen && viewportHeight ? `${viewportHeight}px` : undefined}
-			style:top={keyboardOpen ? `${viewportTop}px` : undefined}
+			style:height={viewportHeight ? `${viewportHeight}px` : undefined}
+			style:top={`${viewportTop}px`}
 		>
 			{#if !['user', 'admin'].includes($user?.role)}
 				<AccountPending />
@@ -505,23 +505,28 @@
 		outline-offset: 2px;
 	}
 	.buddy-shell {
-		--buddy-dock-space: calc(88px + env(safe-area-inset-bottom));
+		--buddy-dock-space: calc(88px + var(--buddy-safe-bottom, 0px));
+		position: fixed;
+		top: 0;
+		left: 0;
+		right: 0;
 		display: flex;
 		flex-direction: column;
 		width: 100%;
 		height: 100dvh;
 		min-height: 0;
 		box-sizing: border-box;
+		padding-top: var(--buddy-safe-top, 0px);
+		padding-right: var(--buddy-safe-right, 0px);
 		padding-bottom: var(--buddy-dock-space);
+		padding-left: var(--buddy-safe-left, 0px);
 		overflow: hidden;
+		overflow: clip;
 		background: var(--buddy-stage, #faf8f5);
 	}
 
 	.buddy-shell.buddy-keyboard-open {
 		--buddy-dock-space: 0px;
-		position: fixed;
-		left: 0;
-		right: 0;
 	}
 
 	.buddy-page-content {
@@ -531,6 +536,7 @@
 		min-width: 0;
 		min-height: 0;
 		overflow: hidden;
+		overflow: clip;
 	}
 
 	.buddy-page-content > :global(*) {
@@ -542,7 +548,7 @@
 	}
 
 	.buddy-update-toast {
-		bottom: calc(100px + env(safe-area-inset-bottom));
+		bottom: calc(100px + env(safe-area-inset-bottom, 0px));
 	}
 	.loading {
 		display: inline-block;
