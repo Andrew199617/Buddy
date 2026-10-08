@@ -969,7 +969,7 @@
 							https://docs.openwebui.com/license. -->
 								<img
 									src="{WEBUI_BASE_URL}/static/favicon.png"
-									class="sidebar-new-chat-icon size-5 rounded-full group-hover:hidden"
+									class="sidebar-new-chat-icon size-7 group-hover:hidden"
 									alt=""
 								/>
 
@@ -1156,7 +1156,7 @@
 						<img
 							crossorigin="anonymous"
 							src="{WEBUI_BASE_URL}/static/favicon.png"
-							class="sidebar-new-chat-icon size-5 rounded-full"
+							class="sidebar-new-chat-icon size-7"
 							alt=""
 						/>
 					</a>
@@ -1167,7 +1167,7 @@
 					https://docs.openwebui.com/license. -->
 						<div
 							id="sidebar-webui-name"
-							class=" self-center font-normal text-gray-700 dark:text-gray-200"
+							class="buddy-wordmark self-center text-lg text-gray-800 dark:text-gray-100"
 						>
 							{$WEBUI_NAME}
 						</div>

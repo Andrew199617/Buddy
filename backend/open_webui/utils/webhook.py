@@ -60,24 +60,27 @@ async def post_webhook(name: str, url: str, message: str, event_data: dict, desc
                 facts.insert(0, {'name': 'event', 'value': event_data.get('event')})
             if description:
                 facts.insert(0, {'name': 'description', 'value': description})
+            activity_section = {
+                'activityTitle': message,
+                'activitySubtitle': f'{name} ({VERSION}) - {action}',
+                'text': description,
+                'facts': facts,
+                'markdown': True,
+            }
+            # LICENSE covers this Open WebUI webhook logo.
+            # Do not alter, remove, obscure, or replace it except as LICENSE permits:
+            # https://docs.openwebui.com/license.
+            # Teams requires a publicly accessible image URL; the local favicon
+            # path works in Buddy but cannot be resolved by external services.
+            if WEBUI_FAVICON_URL.startswith(('http://', 'https://')):
+                activity_section['activityImage'] = WEBUI_FAVICON_URL
+
             payload = {
                 '@type': 'MessageCard',
                 '@context': 'http://schema.org/extensions',
-                'themeColor': '0076D7',
+                'themeColor': '27634B',
                 'summary': message,
-                'sections': [
-                    {
-                        'activityTitle': message,
-                        'activitySubtitle': f'{name} ({VERSION}) - {action}',
-                        # LICENSE covers this Open WebUI webhook logo.
-                        # Do not alter, remove, obscure, or replace it except as LICENSE permits:
-                        # https://docs.openwebui.com/license.
-                        'activityImage': WEBUI_FAVICON_URL,
-                        'text': description,
-                        'facts': facts,
-                        'markdown': True,
-                    }
-                ],
+                'sections': [activity_section],
             }
         # Default Payload
         else:

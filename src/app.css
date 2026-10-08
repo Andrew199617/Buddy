@@ -15,6 +15,12 @@
 /* --app-text-scale is updated via the UI Scale slider (Interface.svelte) */
 :root {
 	--app-text-scale: 1;
+	--buddy-forest: #27634b;
+	--buddy-mint: #ddf3e4;
+	--buddy-ivory: #faf8f5;
+	--buddy-ink: #202321;
+	--buddy-accent: var(--buddy-forest);
+	--buddy-canvas: var(--buddy-ivory);
 }
 
 html {
@@ -758,13 +764,13 @@ html.high-contrast.dark .ProseMirror p.is-editor-empty:first-child::before {
 }
 
 body {
-	background: #fff;
-	color: #000;
+	background: var(--buddy-canvas);
+	color: var(--buddy-ink);
 }
 
 .dark body {
-	background: #171717;
-	color: #eee;
+	background: var(--buddy-canvas);
+	color: #f4f4f0;
 }
 
 /* Position the handle relative to each LI */
@@ -1012,4 +1018,152 @@ html.high-contrast:not(.dark) .shimmer {
 	background: none;
 	color: var(--color-gray-800);
 	-webkit-text-fill-color: var(--color-gray-800);
+}
+
+/* Buddy's brand surfaces stay separate from user content and syntax colors. */
+.buddy-wordmark {
+	font-weight: 650;
+	letter-spacing: -0.045em;
+	line-height: 1.2;
+}
+
+.buddy-brand {
+	color: var(--buddy-forest);
+}
+
+.dark .buddy-brand {
+	color: var(--buddy-mint);
+}
+
+.buddy-auth-background {
+	background: radial-gradient(ellipse at 15% 10%, #ddf3e480, transparent 55%), var(--buddy-canvas);
+}
+
+.dark .buddy-auth-background {
+	background: radial-gradient(ellipse at 15% 10%, #27634b40, transparent 55%), var(--buddy-canvas);
+}
+
+.buddy-auth-card {
+	padding: 2.5rem 2rem;
+	border: 1px solid #27634b18;
+	border-radius: 1.75rem;
+	background: #ffffffcc;
+	box-shadow: 0 12px 60px #20232108;
+}
+
+.dark .buddy-auth-card {
+	border-color: #ddf3e41a;
+	background: #282d29cc;
+}
+
+#auth-login-card button[type='submit'] {
+	background: var(--buddy-forest);
+	color: #fff;
+	border-radius: 999px;
+}
+
+#auth-login-card button[type='submit']:hover {
+	background: #1f513d;
+}
+
+.buddy-welcome {
+	color: var(--buddy-ink);
+	background: radial-gradient(ellipse at 90% 35%, #ddf3e4, transparent 55%), var(--buddy-canvas);
+}
+
+.buddy-welcome p {
+	color: #535d55;
+}
+
+.buddy-welcome .buddy-welcome-eyebrow {
+	color: var(--buddy-forest);
+}
+
+.buddy-primary-button {
+	color: #fff;
+	background: var(--buddy-forest);
+}
+
+.buddy-primary-button:hover {
+	background: #1f513d;
+}
+
+.buddy-primary-button:focus-visible {
+	outline: 3px solid var(--buddy-forest);
+	outline-offset: 4px;
+}
+
+.dark .buddy-welcome {
+	color: #f4f4f0;
+	background: radial-gradient(ellipse at 90% 35%, #27634b50, transparent 55%), var(--buddy-canvas);
+}
+
+.dark .buddy-welcome p {
+	color: #bdc9bf;
+}
+
+.dark .buddy-welcome .buddy-welcome-eyebrow {
+	color: var(--buddy-mint);
+}
+
+.dark .buddy-primary-button {
+	color: var(--buddy-ink);
+	background: var(--buddy-mint);
+}
+
+.dark .buddy-primary-button:hover {
+	background: #c5e9d0;
+}
+
+.dark .buddy-primary-button:focus-visible {
+	outline-color: var(--buddy-mint);
+}
+
+.buddy-welcome-art {
+	transform: rotate(-8deg);
+}
+
+#sidebar-webui-name {
+	color: var(--buddy-forest);
+}
+
+.dark #sidebar-webui-name {
+	color: var(--buddy-mint);
+}
+
+#sidebar-new-chat-button {
+	border-radius: 0.875rem;
+}
+
+@media (max-width: 480px) {
+	.buddy-auth-card {
+		padding: 2rem 1.25rem;
+	}
+}
+
+/* The shell and primary chat action share Buddy's warm, quiet palette. */
+#app-layout {
+	background-color: var(--buddy-canvas);
+}
+
+#send-message-button:not(:disabled) {
+	background-color: var(--buddy-forest);
+	color: #fff;
+}
+
+#send-message-button:not(:disabled):hover {
+	background-color: #1f513d;
+}
+
+.dark #send-message-button:not(:disabled) {
+	background-color: var(--buddy-mint);
+	color: var(--buddy-ink);
+}
+
+.dark #send-message-button:not(:disabled):hover {
+	background-color: #c5e9d0;
+}
+
+.dark {
+	--buddy-canvas: var(--color-gray-900);
 }

@@ -317,6 +317,7 @@ cypress/screenshots
 /.uv-cache/
 /.uv-tools/
 /open-webui-data/
+/buddy-data-8081/
 /.webui_secret_key
 /slackdump/
 /slackdump-research/
