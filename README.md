@@ -1,5 +1,9 @@
 # Open WebUI 👋
 
+> This repository is the Buddy fork. See [Buddy setup and customizations](BUDDY.md)
+> for the Windows launcher, mobile UI extensions, reasoning controls, usage
+> tracking, and research tools.
+
 ![GitHub stars](https://img.shields.io/github/stars/open-webui/open-webui?style=social)
 ![GitHub forks](https://img.shields.io/github/forks/open-webui/open-webui?style=social)
 ![GitHub watchers](https://img.shields.io/github/watchers/open-webui/open-webui?style=social)
