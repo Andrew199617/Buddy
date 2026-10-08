@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SidebarToggleTooltip from '$lib/components/layout/SidebarToggleTooltip.svelte';
 	import type { Writable } from 'svelte/store';
 	import type { i18n as I18n } from 'i18next';
 	import { onMount, getContext, tick } from 'svelte';
@@ -17,7 +18,6 @@
 	import CalendarEventModal from '$lib/components/calendar/CalendarEventModal.svelte';
 	import CreateCalendarModal from '$lib/components/calendar/CreateCalendarModal.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
-	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import SidebarIcon from '$lib/components/icons/Sidebar.svelte';
 	import Select from '$lib/components/common/Select.svelte';
 	import Check from '$lib/components/icons/Check.svelte';
@@ -232,10 +232,7 @@
 		<nav class="px-3 pt-2 pb-2 backdrop-blur-xl drag-region select-none shrink-0">
 			<div class="flex items-center gap-0.5 md:gap-1">
 				<div class="{$showSidebar ? 'md:hidden' : ''} flex flex-none items-center">
-					<Tooltip
-						content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
-						interactive={true}
-					>
+					<SidebarToggleTooltip interactive={true}>
 						<button
 							id="sidebar-toggle-button"
 							aria-expanded={$showSidebar}
@@ -249,7 +246,7 @@
 								<SidebarIcon className="size-4" />
 							</div>
 						</button>
-					</Tooltip>
+					</SidebarToggleTooltip>
 				</div>
 
 				<div class="flex w-full items-center">

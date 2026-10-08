@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SidebarToggleTooltip from '$lib/components/layout/SidebarToggleTooltip.svelte';
 	import { toast } from 'svelte-sonner';
 	import { v4 as uuidv4 } from 'uuid';
 	import Sortable from 'sortablejs';
@@ -1036,12 +1037,7 @@
 					</div>
 				</a>
 				{#if !$mobile}
-					<Tooltip
-						content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
-						placement="bottom"
-						touch={false}
-						tippyOptions={{ trigger: 'mouseenter' }}
-					>
+					<SidebarToggleTooltip placement="bottom">
 						<button
 							id="buddy-sidebar-close"
 							type="button"
@@ -1056,7 +1052,7 @@
 								<Sidebar className="size-6" />
 							</div>
 						</button>
-					</Tooltip>
+					</SidebarToggleTooltip>
 				{/if}
 
 				<div
@@ -1568,10 +1564,7 @@
 				</SidebarSection>
 			</div>
 
-			<div class="px-1 pt-1 pb-1.5 sticky bottom-0 z-10 -mt-2 sidebar">
-				<div
-					class=" sidebar-bg-gradient-to-t bg-linear-to-t from-gray-50 dark:from-gray-950 to-transparent from-50% pointer-events-none absolute inset-0 -z-10 -mt-6"
-				></div>
+			<div class="buddy-sidebar-footer px-1 pt-1 pb-1.5 sticky bottom-0 z-10 -mt-2 sidebar">
 				<div class="flex flex-col">
 					{#if $user !== undefined && $user !== null}
 						<UserMenu
@@ -1732,6 +1725,11 @@
 
 	.buddy-sidebar-link {
 		min-height: 36px;
+	}
+
+	.buddy-sidebar-footer {
+		flex-shrink: 0;
+		background: var(--buddy-panel, #fff);
 	}
 
 	.buddy-sidebar-account {

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SidebarToggleTooltip from '$lib/components/layout/SidebarToggleTooltip.svelte';
 	import { getContext } from 'svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
@@ -146,7 +147,7 @@
 	<div id="navbar-bg-gradient-to-b" class="buddy-header-fade" aria-hidden="true"></div>
 
 	<div class="buddy-header-left">
-		<Tooltip content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}>
+		<SidebarToggleTooltip>
 			<button
 				type="button"
 				id="sidebar-toggle-button"
@@ -166,7 +167,7 @@
 					<path d="M5 8H19M5 16H19" stroke-linecap="round" />
 				</svg>
 			</button>
-		</Tooltip>
+		</SidebarToggleTooltip>
 		<Tooltip content={$i18n.t('New Chat')}>
 			<button
 				type="button"

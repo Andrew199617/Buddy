@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SidebarToggleTooltip from '$lib/components/layout/SidebarToggleTooltip.svelte';
 	import { getContext, onDestroy, onMount, tick } from 'svelte';
 	import { v4 as uuidv4 } from 'uuid';
 	import fileSaver from 'file-saver';
@@ -1039,7 +1040,7 @@ ${content}
 				<div class=" w-full flex flex-col {loading ? 'opacity-20' : ''}">
 					<div class="shrink-0 w-full flex justify-between items-center px-3">
 						<div class="w-full min-w-0 flex items-center">
-							<Tooltip content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}>
+							<SidebarToggleTooltip>
 								<button
 									id="sidebar-toggle-button"
 									aria-expanded={$showSidebar}
@@ -1055,7 +1056,7 @@ ${content}
 										<Sidebar className="size-4" />
 									</div>
 								</button>
-							</Tooltip>
+							</SidebarToggleTooltip>
 
 							<input
 								class="w-full text-sm font-normal bg-transparent outline-hidden {$mobile

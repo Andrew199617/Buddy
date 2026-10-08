@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SidebarToggleTooltip from '$lib/components/layout/SidebarToggleTooltip.svelte';
 	import type { Writable } from 'svelte/store';
 	import type { i18n as I18n } from 'i18next';
 	import { marked } from 'marked';
@@ -415,10 +416,7 @@
 
 		<div class="flex items-center gap-0.5 md:gap-1 mb-1">
 			<div class="{$showSidebar ? 'md:hidden' : ''} flex flex-none items-center">
-				<Tooltip
-					content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
-					interactive={true}
-				>
+				<SidebarToggleTooltip interactive={true}>
 					<button
 						id="sidebar-toggle-button"
 						type="button"
@@ -434,7 +432,7 @@
 							<SidebarIcon className="size-4" />
 						</div>
 					</button>
-				</Tooltip>
+				</SidebarToggleTooltip>
 			</div>
 
 			<div class="flex w-full items-center">

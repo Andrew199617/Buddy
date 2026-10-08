@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SidebarToggleTooltip from '$lib/components/layout/SidebarToggleTooltip.svelte';
 	import { getContext, onMount, setContext } from 'svelte';
 	import { writable } from 'svelte/store';
 	import { goto } from '$app/navigation';
@@ -8,7 +9,6 @@
 	import type i18nType from '$lib/i18n';
 	import { formatNumber } from '$lib/utils';
 	import SidebarIcon from '$lib/components/icons/Sidebar.svelte';
-	import Tooltip from '$lib/components/common/Tooltip.svelte';
 
 	const i18n: typeof i18nType = getContext('i18n');
 
@@ -71,7 +71,7 @@
 		<div class="shrink-0 px-2.5 pt-2 pb-1">
 			<div class="flex items-center gap-0.5 md:gap-1">
 				<div class="{$showSidebar ? 'md:hidden' : ''} flex flex-none items-center">
-					<Tooltip content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}>
+					<SidebarToggleTooltip>
 						<button
 							id="sidebar-toggle-button"
 							aria-expanded={$showSidebar}
@@ -85,7 +85,7 @@
 						>
 							<SidebarIcon className="size-4" />
 						</button>
-					</Tooltip>
+					</SidebarToggleTooltip>
 				</div>
 
 				<div class="flex w-full min-w-0 items-center">
