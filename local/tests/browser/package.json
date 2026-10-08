@@ -1,0 +1,11 @@
+{
+  "name": "buddy-browser-regression-tests",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}
