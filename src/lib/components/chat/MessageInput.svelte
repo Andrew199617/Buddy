@@ -730,7 +730,7 @@
 			const wasCollapsed = !composerExpanded;
 			composerFocused = true;
 
-			if (embedded || !wasCollapsed || !event.isPrimary || event.button !== 0) {
+			if (embedded || !event.isPrimary || event.button !== 0) {
 				return;
 			}
 
@@ -748,6 +748,19 @@
 				'button, a, input, textarea, select, [role="button"], [role="menuitem"], [contenteditable="false"]'
 			);
 			if (control) {
+				const opensComposerMenu = control.matches(
+					'button[id^="model-selector-"][id$="-button"], #owui-reasoning-chip'
+				);
+				const editorFocused = document.activeElement?.closest('#chat-input');
+				const touchInteraction =
+					event.pointerType === 'touch' || window.matchMedia('(pointer: coarse)').matches;
+				if (opensComposerMenu && editorFocused && touchInteraction) {
+					// Keep the keyboard from moving this trigger before its click opens the menu.
+					event.preventDefault();
+				}
+				return;
+			}
+			if (!wasCollapsed) {
 				return;
 			}
 
