@@ -1006,7 +1006,7 @@
 			class="buddy-sidebar-content flex flex-col justify-between overflow-x-hidden scrollbar-hidden"
 		>
 			<div
-				class="sidebar px-1 pt-1.5 pb-1 flex justify-between space-x-1 text-gray-600 dark:text-gray-400 sticky top-0 z-10 -mb-2"
+				class="buddy-sidebar-header sidebar px-1 pt-1.5 pb-1 flex justify-between space-x-1 text-gray-600 dark:text-gray-400 sticky top-0 z-10 -mb-2"
 			>
 				<a
 					class="flex items-center rounded-xl size-8.5 h-full justify-center hover:bg-gray-100 dark:hover:bg-gray-900 transition no-drag-region"
@@ -1056,9 +1056,9 @@
 				{/if}
 
 				<div
-					class="{scrollTop > 0
-						? 'visible'
-						: 'invisible'} sidebar-bg-gradient-to-b bg-linear-to-b from-gray-50 dark:from-gray-950 to-transparent from-50% pointer-events-none absolute inset-0 -z-10 -mb-6"
+					class="buddy-sidebar-header-fade"
+					class:active={scrollTop > 0}
+					aria-hidden="true"
 				></div>
 			</div>
 
@@ -1671,6 +1671,27 @@
 		padding-right: 12px;
 	}
 
+	.buddy-sidebar-header {
+		flex-shrink: 0;
+		background: var(--buddy-panel, #fff);
+	}
+
+	.buddy-sidebar-header-fade {
+		position: absolute;
+		top: 100%;
+		right: 0;
+		left: 0;
+		height: 16px;
+		background: linear-gradient(to bottom, var(--buddy-panel, #fff), transparent);
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 160ms ease;
+	}
+
+	.buddy-sidebar-header-fade.active {
+		opacity: 1;
+	}
+
 	.buddy-sidebar-close {
 		display: inline-flex;
 		width: 44px;
@@ -1718,7 +1739,8 @@
 	}
 
 	@media (prefers-reduced-motion: reduce) {
-		.buddy-sidebar-close {
+		.buddy-sidebar-close,
+		.buddy-sidebar-header-fade {
 			transition: none;
 		}
 	}
