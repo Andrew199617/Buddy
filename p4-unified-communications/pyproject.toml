@@ -1,0 +1,19 @@
+[project]
+name = "p4-unified-communications"
+version = "0.1.0"
+description = "Provider-neutral read-only mail, calendar, and Microsoft Teams bridge"
+requires-python = ">=3.10"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["p4_comms"]
+
+[project.scripts]
+p4-comms = "p4_comms:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,44 @@
+{
+  "timeout_seconds": 45,
+  "timezone": "America/Los_Angeles",
+  "m365_account": "outlook",
+  "himalaya_config": "",
+  "calendula_config": "",
+  "executables": {
+    "himalaya": "",
+    "calendula": "",
+    "m365": ""
+  },
+  "accounts": [
+    {
+      "name": "outlook",
+      "provider": "outlook",
+      "email_account": "outlook",
+      "calendar_backend": "m365",
+      "calendar_account": "outlook",
+      "calendar_name": "",
+      "username": "",
+      "enabled": true
+    },
+    {
+      "name": "gmail",
+      "provider": "gmail",
+      "email_account": "gmail",
+      "calendar_backend": "calendula",
+      "calendar_account": "gmail",
+      "calendar_name": "",
+      "username": "",
+      "enabled": true
+    },
+    {
+      "name": "yahoo",
+      "provider": "yahoo",
+      "email_account": "yahoo",
+      "calendar_backend": "calendula",
+      "calendar_account": "yahoo",
+      "calendar_name": "",
+      "username": "",
+      "enabled": true
+    }
+  ]
+}
