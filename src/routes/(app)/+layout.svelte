@@ -2,7 +2,7 @@
 	import { toast } from 'svelte-sonner';
 	import { onMount, tick, getContext } from 'svelte';
 
-	import { goto } from '$app/navigation';
+	import { afterNavigate, goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { fade } from 'svelte/transition';
 
@@ -40,7 +40,9 @@
 		chats
 	} from '$lib/stores';
 
+	import '$lib/styles/buddy-redesign.css';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
+	import BuddyDock from '$lib/components/buddy/BuddyDock.svelte';
 	import SettingsModal from '$lib/components/chat/SettingsModal.svelte';
 	import ChangelogModal from '$lib/components/ChangelogModal.svelte';
 	import AccountPending from '$lib/components/layout/Overlay/AccountPending.svelte';
@@ -51,6 +53,17 @@
 	const i18n = getContext('i18n');
 
 	let loaded = false;
+	let keyboardOpen = false;
+	let viewportHeight: number | null = null;
+	let viewportTop = 0;
+
+	afterNavigate(() => {
+		showSidebar.set(false);
+	});
+
+	$: if ($showSearch || $showSettings) {
+		showSidebar.set(false);
+	}
 
 	let version;
 	let handledSettingsUrl = '';
@@ -426,7 +439,7 @@
 <ChangelogModal bind:show={$showChangelog} />
 
 {#if version && compareVersion(version.latest, version.current) && ($settings?.showUpdateToast ?? true)}
-	<div class=" absolute bottom-8 right-8 z-50" in:fade={{ duration: 100 }}>
+	<div class="buddy-update-toast absolute right-8 z-50" in:fade={{ duration: 100 }}>
 		<UpdateInfoToast
 			{version}
 			on:close={() => {
@@ -441,7 +454,11 @@
 	<div class="app relative">
 		<div
 			id="app-layout"
-			class=" text-gray-700 dark:text-gray-100 bg-white dark:bg-gray-900 h-screen max-h-[100dvh] overflow-auto flex flex-row justify-end"
+			class="buddy-shell text-gray-700 dark:text-gray-100"
+			class:buddy-keyboard-open={keyboardOpen}
+			style:--buddy-visible-height={viewportHeight ? `${viewportHeight}px` : undefined}
+			style:height={keyboardOpen && viewportHeight ? `${viewportHeight}px` : undefined}
+			style:top={keyboardOpen ? `${viewportTop}px` : undefined}
 		>
 			{#if !['user', 'admin'].includes($user?.role)}
 				<AccountPending />
@@ -449,24 +466,84 @@
 				<Sidebar />
 
 				{#if loaded}
-					<main id="main-content" class="contents">
+					<main
+						id="main-content"
+						class="buddy-page-content"
+						inert={$showSidebar}
+						aria-hidden={$showSidebar}
+					>
 						<slot />
 					</main>
 				{:else}
-					<div
-						class="w-full flex-1 h-full flex items-center justify-center {$showSidebar
-							? '  md:max-w-[calc(100%-var(--sidebar-width))]'
-							: ' '}"
-					>
+					<div class="w-full flex-1 min-h-0 flex items-center justify-center">
 						<Spinner className="size-5" />
 					</div>
 				{/if}
+
+				<BuddyDock bind:keyboardOpen bind:viewportHeight bind:viewportTop />
 			{/if}
 		</div>
 	</div>
 {/if}
 
 <style>
+	.buddy-shell :global(.buddy-feature-sidebar-trigger) {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		width: 44px;
+		min-width: 44px;
+		height: 44px;
+		min-height: 44px;
+		border-radius: 50%;
+		-webkit-app-region: no-drag;
+	}
+
+	.buddy-shell :global(.buddy-feature-sidebar-trigger:focus-visible) {
+		outline: 2px solid #76a98b;
+		outline-offset: 2px;
+	}
+	.buddy-shell {
+		--buddy-dock-space: calc(88px + env(safe-area-inset-bottom));
+		display: flex;
+		flex-direction: column;
+		width: 100%;
+		height: 100dvh;
+		min-height: 0;
+		box-sizing: border-box;
+		padding-bottom: var(--buddy-dock-space);
+		overflow: hidden;
+		background: var(--buddy-stage, #faf8f5);
+	}
+
+	.buddy-shell.buddy-keyboard-open {
+		--buddy-dock-space: 0px;
+		position: fixed;
+		left: 0;
+		right: 0;
+	}
+
+	.buddy-page-content {
+		display: flex;
+		flex: 1;
+		width: 100%;
+		min-width: 0;
+		min-height: 0;
+		overflow: hidden;
+	}
+
+	.buddy-page-content > :global(*) {
+		width: 100%;
+		max-width: 100% !important;
+		height: 100%;
+		max-height: 100%;
+		min-height: 0;
+	}
+
+	.buddy-update-toast {
+		bottom: calc(100px + env(safe-area-inset-bottom));
+	}
 	.loading {
 		display: inline-block;
 		clip-path: inset(0 1ch 0 0);

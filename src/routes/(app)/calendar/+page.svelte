@@ -1,4 +1,6 @@
 <script lang="ts">
+	import type { Writable } from 'svelte/store';
+	import type { i18n as I18n } from 'i18next';
 	import { onMount, getContext, tick } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import { goto } from '$app/navigation';
@@ -21,7 +23,7 @@
 	import Check from '$lib/components/icons/Check.svelte';
 	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
 
-	const i18n = getContext('i18n');
+	const i18n = getContext<Writable<I18n>>('i18n');
 
 	let loaded = false;
 	let calendars: CalendarModel[] = [];
@@ -233,24 +235,26 @@
 		<!-- Top Navbar — spans above sidebar and calendar -->
 		<nav class="px-3 pt-2 pb-2 backdrop-blur-xl drag-region select-none shrink-0">
 			<div class="flex items-center gap-0.5 md:gap-1">
-				{#if $mobile}
-					<div class="{$showSidebar ? 'md:hidden' : ''} flex flex-none items-center">
-						<Tooltip
-							content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
-							interactive={true}
+				<div class="{$showSidebar ? 'md:hidden' : ''} flex flex-none items-center">
+					<Tooltip
+						content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
+						interactive={true}
+					>
+						<button
+							id="sidebar-toggle-button"
+							aria-expanded={$showSidebar}
+							aria-controls="sidebar"
+							type="button"
+							aria-label={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
+							class="buddy-feature-sidebar-trigger cursor-pointer flex rounded-lg hover:bg-gray-100 dark:hover:bg-gray-850 transition"
+							on:click={() => showSidebar.set(!$showSidebar)}
 						>
-							<button
-								id="sidebar-toggle-button"
-								class="cursor-pointer flex rounded-lg hover:bg-gray-100 dark:hover:bg-gray-850 transition"
-								on:click={() => showSidebar.set(!$showSidebar)}
-							>
-								<div class="self-center p-1.5">
-									<SidebarIcon className="size-4" />
-								</div>
-							</button>
-						</Tooltip>
-					</div>
-				{/if}
+							<div class="self-center p-1.5">
+								<SidebarIcon className="size-4" />
+							</div>
+						</button>
+					</Tooltip>
+				</div>
 
 				<div class="flex w-full items-center">
 					<div class="flex items-center gap-0.5 py-1">

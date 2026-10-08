@@ -30,7 +30,7 @@ export function applyAppTheme(selectedTheme: string): void {
 		root.style.removeProperty('--color-gray-900');
 		root.style.removeProperty('--color-gray-950');
 		if (resolvedTheme === 'dark') {
-			themeColor = '#202321';
+			themeColor = '#111512';
 		}
 	}
 

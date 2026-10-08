@@ -159,7 +159,7 @@
 	);
 
 	export let history;
-	export let taskIds = null;
+	export let taskIds: string[] | null = null;
 	export let askUser: AskUserPrompt = {
 		show: false,
 		questions: [],
@@ -697,6 +697,59 @@
 
 	let loaded = false;
 	let recording = false;
+	let composerFocused = false;
+	let composerMenuOpen = false;
+	$: composerExpanded =
+		composerFocused ||
+		composerMenuOpen ||
+		Boolean(prompt.trim()) ||
+		files.length > 0 ||
+		generating ||
+		recording ||
+		atSelectedModel !== undefined;
+
+	function handleComposerFocusIn(event: FocusEvent): void {
+		const editorFocused = event.target instanceof HTMLElement && event.target.id === 'chat-input';
+		// Keep initial editor autofocus quiet, while restored control focus reveals the tools.
+		if (event.relatedTarget || !editorFocused) {
+			composerFocused = true;
+		}
+	}
+
+	function trackComposerInteraction(form: HTMLElement) {
+		function expandComposer(): void {
+			composerFocused = true;
+		}
+		function updateComposerMenus(): void {
+			composerMenuOpen = Boolean(
+				form.querySelector(
+					'.buddy-composer [aria-expanded="true"], .owui-context-rail [aria-expanded="true"]'
+				)
+			);
+		}
+		const menuObserver = new MutationObserver(updateComposerMenus);
+		menuObserver.observe(form, {
+			subtree: true,
+			attributes: true,
+			attributeFilter: ['aria-expanded']
+		});
+		form.addEventListener('pointerdown', expandComposer);
+		updateComposerMenus();
+		return {
+			destroy() {
+				form.removeEventListener('pointerdown', expandComposer);
+				menuObserver.disconnect();
+			}
+		};
+	}
+
+	function handleComposerFocusOut(event: FocusEvent): void {
+		const container = event.currentTarget as HTMLElement;
+		if (event.relatedTarget instanceof Node && container.contains(event.relatedTarget)) {
+			return;
+		}
+		composerFocused = false;
+	}
 
 	let isComposing = false;
 	// Safari has a bug where compositionend is not triggered correctly #16615
@@ -1758,6 +1811,9 @@
 						/>
 					</div>
 					<form
+						use:trackComposerInteraction
+						on:focusin={handleComposerFocusIn}
+						on:focusout={handleComposerFocusOut}
 						class="w-full flex flex-col gap-1.5 {recording ? 'hidden' : ''}"
 						on:submit|preventDefault={() => {
 							dispatch('submit', prompt);
@@ -1893,7 +1949,8 @@
 
 						<div
 							id="message-input-container"
-							class="flex-1 flex flex-col relative w-full shadow-lg rounded-3xl border {$temporaryChatEnabled
+							data-expanded={composerExpanded}
+							class="buddy-composer flex-1 flex flex-col relative w-full shadow-lg rounded-3xl border {$temporaryChatEnabled
 								? 'border-dashed border-gray-100 dark:border-gray-800 hover:border-gray-200 focus-within:border-gray-200 hover:dark:border-gray-700 focus-within:dark:border-gray-700'
 								: ' border-gray-100/30 dark:border-gray-850/30 hover:border-gray-200 focus-within:border-gray-100 hover:dark:border-gray-800 focus-within:dark:border-gray-800'} {($settings?.highContrastMode ??
 							false)
@@ -2023,7 +2080,7 @@
 								</div>
 							{/if}
 
-							<div class="px-2 relative">
+							<div class="buddy-composer-editor px-2 relative">
 								{#if prompt.split('\n').length > 2}
 									<button
 										type="button"
@@ -2076,7 +2133,7 @@
 															navigator.maxTouchPoints > 0 ||
 															navigator.msMaxTouchPoints > 0
 														)}
-													placeholder={placeholder ? placeholder : $i18n.t('Send a Message')}
+													placeholder={placeholder ? placeholder : $i18n.t('Message Buddy…')}
 													largeTextAsFile={($settings?.largeTextAsFile ?? false) && !shiftKey}
 													autocomplete={$config?.features?.enable_autocomplete_generation &&
 														($settings?.promptAutocomplete ?? false)}
@@ -2220,8 +2277,11 @@
 								</div>
 							</div>
 
-							<div class=" flex justify-between mt-0.5 mb-2 mx-0.5 max-w-full" dir="ltr">
-								<div class="ml-1 self-end flex items-center flex-1 min-w-0">
+							<div
+								class="buddy-composer-tools flex justify-between mt-0.5 mb-2 mx-0.5 max-w-full"
+								dir="ltr"
+							>
+								<div class="buddy-composer-left ml-1 self-end flex items-center flex-1 min-w-0">
 									<InputMenu
 										bind:files
 										selectedModels={selectedModelIds}
@@ -2294,11 +2354,13 @@
 
 									{#if showWebSearchButton || showImageGenerationButton || showCodeInterpreterButton || showToolsButton || showSkillsButton || (toggleFilters && toggleFilters.length > 0)}
 										<div
-											class="flex self-center w-[0.0625rem] h-4 mx-1 bg-gray-200/50 dark:bg-gray-800/50 shrink-0"
+											class="buddy-composer-divider flex self-center w-[0.0625rem] h-4 mx-1 bg-gray-200/50 dark:bg-gray-800/50 shrink-0"
 										/>
 									{/if}
 
-									<div class="flex flex-1 items-center min-w-0 overflow-x-auto scrollbar-none">
+									<div
+										class="buddy-composer-integrations flex flex-1 items-center min-w-0 overflow-x-auto scrollbar-none"
+									>
 										{#if showWebSearchButton || showImageGenerationButton || showCodeInterpreterButton || showToolsButton || showSkillsButton || (toggleFilters && toggleFilters.length > 0)}
 											<IntegrationsMenu
 												selectedModels={selectedModelIds}
@@ -2572,8 +2634,12 @@
 									</div>
 								</div>
 
-								<div class="self-end flex space-x-1 mr-1 min-w-0 gap-[0.03125rem]">
-									<div class="flex min-w-0 max-w-[10rem] items-center sm:max-w-[13rem]">
+								<div
+									class="buddy-composer-actions self-end flex space-x-1 mr-1 min-w-0 gap-[0.03125rem]"
+								>
+									<div
+										class="buddy-composer-model flex min-w-0 max-w-[10rem] items-center sm:max-w-[13rem]"
+									>
 										<ModelSelector
 											bind:this={modelSelector}
 											bind:selectedModels
@@ -2669,7 +2735,7 @@
 										{/if}
 
 										{#if !embedded && prompt === '' && files.length === 0 && ($_user?.role === 'admin' || ($_user?.permissions?.chat?.call ?? true))}
-											<div class=" flex items-center">
+											<div class="buddy-voice-mode flex items-center">
 												<!-- {$i18n.t('Call')} -->
 												<Tooltip content={$i18n.t('Voice mode')}>
 													<button

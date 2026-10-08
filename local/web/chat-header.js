@@ -91,6 +91,10 @@
  }
  function update() {
   pendingFrame = null;
+  if (document.querySelector('.buddy-chat, .buddy-shell')) {
+   watchHeader(null);
+   return;
+  }
   const header = document.querySelector('#chat-container nav.drag-region');
   if (!header) { watchHeader(null); return; }
   const titleWrap = header.querySelector('div.flex-1.overflow-hidden');

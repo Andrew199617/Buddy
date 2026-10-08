@@ -417,8 +417,9 @@ html.owui-usage-sheet-open, html.owui-usage-sheet-open body { overflow:hidden; }
   clearHoverTimers();
   restorePanelBackground(state);
   state.overlay.remove();
-  state.trigger?.setAttribute('aria-expanded', 'false');
+  // Restore focus before collapsing a disclosure that may hide its trigger.
   if (restoreFocus && state.trigger?.isConnected) state.trigger.focus({ preventScroll: true });
+  state.trigger?.setAttribute('aria-expanded', 'false');
  }
  function visibleBounds(trigger) {
   const viewport = window.visualViewport;

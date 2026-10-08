@@ -9,11 +9,11 @@
 	const touchScreen = window.matchMedia('(pointer: coarse)');
 	const viewport = window.visualViewport;
 	const css = `
-html.owui-mobile-ui {
+html.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) {
 	/* Use a readable phone baseline while retaining larger accessibility scales. */
 	font-size: calc(16px * max(1, var(--app-text-scale, 1)));
 }
-.owui-mobile-ui #sidebar[role="navigation"] {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar[role="navigation"] {
 	font-size: .9375rem;
 	line-height: 1.4;
 	top: var(--owui-chat-viewport-top, 0px);
@@ -21,93 +21,93 @@ html.owui-mobile-ui {
 	max-height: var(--owui-chat-viewport-height, 100dvh);
 	min-height: 0;
 }
-.owui-mobile-ui #sidebar > div {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar > div {
 	height: 100%;
 	max-height: 100%;
 	min-height: 0;
 }
-.owui-mobile-ui #sidebar-webui-name {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar-webui-name {
 	font-size: 1rem;
 	font-weight: 500;
 }
-.owui-mobile-ui #sidebar-chat-item {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar-chat-item {
 	display: flex;
 	align-items: center;
 	min-height: 44px;
 	padding-block: 10px;
 	font-size: .9375rem;
 }
-.owui-mobile-ui #sidebar-chat-item div[dir="auto"] {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar-chat-item div[dir="auto"] {
 	height: auto;
 	line-height: 1.4;
 }
-.owui-mobile-ui #sidebar-chat-item input {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar-chat-item input {
 	font-size: 1rem;
 }
-.owui-mobile-ui #sidebar-chat-item-menu button {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar-chat-item-menu button {
 	width: 40px;
 	height: 40px;
 	justify-content: center;
 }
-.owui-mobile-ui #sidebar .sidebar button,
-.owui-mobile-ui #sidebar .sidebar > a:first-child {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar .sidebar button,
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar .sidebar > a:first-child {
 	min-width: 44px;
 	min-height: 44px;
 }
-.owui-mobile-ui #sidebar .sidebar button svg,
-.owui-mobile-ui #sidebar-chat-item-menu button svg {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar .sidebar button svg,
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar-chat-item-menu button svg {
 	width: 20px;
 	height: 20px;
 }
-.owui-mobile-ui #sidebar [id^="sidebar-"][id$="-button"] {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar [id^="sidebar-"][id$="-button"] {
 	min-height: 44px;
 }
-.owui-mobile-ui #sidebar [id^="sidebar-"][id$="-button"] div {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar [id^="sidebar-"][id$="-button"] div {
 	font-size: .9375rem;
 }
-.owui-mobile-ui #sidebar [id^="sidebar-"][id$="-button"] svg {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar [id^="sidebar-"][id$="-button"] svg {
 	width: 20px;
 	height: 20px;
 }
-.owui-mobile-ui #sidebar .sidebar button [class*="text-[0.8125rem]"] {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar .sidebar button [class*="text-[0.8125rem]"] {
 	font-size: .9375rem;
 }
-.owui-mobile-ui #sidebar .sidebar button img {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #sidebar .sidebar button img {
 	width: 28px;
 	height: 28px;
 }
-.owui-mobile-ui #chat-container nav.drag-region button {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #chat-container nav.drag-region button {
 	min-width: 40px;
 	min-height: 44px;
 }
-.owui-mobile-ui #chat-container nav.drag-region button svg {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #chat-container nav.drag-region button svg {
 	width: 20px;
 	height: 20px;
 }
-.owui-mobile-ui #messages-container .markdown-prose {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #messages-container .markdown-prose {
 	font-size: 1rem !important;
 	line-height: 1.6;
 }
-.owui-mobile-ui #chat-input {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #chat-input {
 	line-height: 1.5;
 }
-.owui-mobile-ui #messages-container .buttons button {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #messages-container .buttons button {
 	min-width: 40px;
 	min-height: 40px;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
 }
-.owui-mobile-ui #messages-container .buttons button svg {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #messages-container .buttons button svg {
 	width: 20px;
 	height: 20px;
 }
-.owui-mobile-ui #input-menu-button,
-.owui-mobile-ui #integration-menu-button,
-.owui-mobile-ui #voice-input-button,
-.owui-mobile-ui #send-message-button,
-.owui-mobile-ui #chat-variables-button,
-.owui-mobile-ui #owui-reasoning-chip {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #input-menu-button,
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #integration-menu-button,
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #voice-input-button,
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #send-message-button,
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #chat-variables-button,
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #owui-reasoning-chip {
 	width: 40px;
 	height: 40px;
 	min-width: 40px;
@@ -116,42 +116,42 @@ html.owui-mobile-ui {
 	align-items: center;
 	justify-content: center;
 }
-.owui-mobile-ui #input-menu-button svg,
-.owui-mobile-ui #integration-menu-button svg,
-.owui-mobile-ui #voice-input-button svg,
-.owui-mobile-ui #chat-variables-button svg,
-.owui-mobile-ui #owui-reasoning-chip svg {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #input-menu-button svg,
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #integration-menu-button svg,
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #voice-input-button svg,
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #chat-variables-button svg,
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #owui-reasoning-chip svg {
 	width: 20px;
 	height: 20px;
 }
-.owui-mobile-ui #send-message-button svg {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #send-message-button svg {
 	width: 22px;
 	height: 22px;
 }
-.owui-mobile-ui #owui-reasoning-chip .owui-rl-label {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #owui-reasoning-chip .owui-rl-label {
 	display: none;
 }
-.owui-mobile-ui .owui-mobile-toolbar {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) .owui-mobile-toolbar {
 	flex-wrap: wrap;
 	align-items: center;
 	column-gap: 4px;
 	row-gap: 4px;
 }
-.owui-mobile-ui .owui-toolbar-leading {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) .owui-toolbar-leading {
 	flex: 0 0 auto;
 	min-width: var(--owui-toolbar-leading-width, 48px);
 	margin-inline-start: 0;
 }
-.owui-mobile-ui .owui-toolbar-trailing {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) .owui-toolbar-trailing {
 	flex-shrink: 0;
 	max-width: 100%;
 	margin-inline-start: auto;
 	margin-inline-end: 0;
 }
-.owui-mobile-ui .owui-toolbar-trailing > div:first-child {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) .owui-toolbar-trailing > div:first-child {
 	max-width: clamp(64px, calc(100vw - 280px), 160px);
 }
-.owui-mobile-ui .owui-composer-primary {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) .owui-composer-primary {
 	width: 40px;
 	height: 40px;
 	min-width: 40px;
@@ -159,18 +159,18 @@ html.owui-mobile-ui {
 	align-items: center;
 	justify-content: center;
 }
-.owui-mobile-ui .owui-composer-primary svg {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) .owui-composer-primary svg {
 	width: 22px;
 	height: 22px;
 }
-.owui-mobile-ui #message-input-container button[id^="model-selector-"] {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #message-input-container button[id^="model-selector-"] {
 	min-height: 40px;
 }
-.owui-mobile-ui #message-input-container button[id^="model-selector-"] > div {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #message-input-container button[id^="model-selector-"] > div {
 	font-size: .875rem;
 	padding-inline: 4px;
 }
-.owui-mobile-ui #message-input-container button[id^="model-selector-"] svg {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #message-input-container button[id^="model-selector-"] svg {
 	width: 14px;
 	height: 14px;
 }
@@ -319,10 +319,10 @@ html.owui-model-screen-open, html.owui-model-screen-open body {
 	max-height: var(--owui-picker-height) !important;
 }
 @media (max-width: 374px) {
-	.owui-mobile-ui #message-input-container > div:last-child {
+	.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #message-input-container > div:last-child {
 		margin-inline: 0;
 	}
-	.owui-mobile-ui #message-input-container button[id^="model-selector-"] {
+	.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)) #message-input-container button[id^="model-selector-"] {
 		max-width: 88px;
 	}
 }
@@ -568,8 +568,10 @@ html.owui-model-screen-open, html.owui-model-screen-open body {
 	function update() {
 		pendingFrame = null;
 		const mobile = (window.innerWidth < 768 || touchScreen.matches) && (!viewport || viewport.scale <= 1.05);
-		root.classList.toggle('owui-mobile-ui', mobile);
-		polishComposer();
+		const buddyLayout = document.querySelector('.buddy-chat, .buddy-shell');
+		// Keep the adaptive model picker, while Buddy controls its own shell and composer.
+		root.classList.toggle('owui-mobile-ui', mobile && !buddyLayout);
+		if (!buddyLayout) polishComposer();
 		const search = document.getElementById('model-search-input');
 		if (picker && (picker.search !== search || !picker.portal.isConnected)) {
 			const previousPicker = picker;
