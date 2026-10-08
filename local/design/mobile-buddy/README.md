@@ -49,3 +49,16 @@ Context previews were checked across 36 configurations: three designs at 320, 42
 
 Checks cover no horizontal overflow or control overlap, accessible trigger and dismiss targets, details fitting within the phone, dismissal and Escape focus restoration, usage availability, and design-control updates. These measurements describe the previews; the selected treatment still needs to be implemented and verified in the production application.
 Notification previews passed 108 layout states across the three designs, three notification kinds, light/dark themes, keyboard open/closed, and 320/428/736 px conversation widths. All dismiss targets measure 44 by 44 px. Details and dismiss actions work, both Composer card details triggers stay synchronized, and the host visibility control restores a dismissed notification. No horizontal overflow, header overlap, composer overlap, or runtime errors were observed.
+
+## Liquid Glass direction (planning)
+
+Apple's official Liquid Glass implementations are native SwiftUI and UIKit materials. Public web content can follow the visual principles with Safari-supported CSS backdrop filtering; no public Apple Liquid Glass renderer for arbitrary website/PWA content was found in the official documentation reviewed.
+
+The proposed Buddy direction is a readable, frosted surface for the notification capsule, composer, and bottom navigation, with subtle edge highlights and a restrained mint tint. Keep message content calm and opaque. Error/details surfaces should be more opaque so text remains readable. Preserve existing notch, keyboard, and home-indicator positioning. Provide a solid fallback and respect reduced motion. These are planning notes, with no live glass styling applied.
+
+Official references:
+
+- [Apple HIG: Materials](https://developer.apple.com/design/human-interface-guidelines/materials) recommends glass for floating controls/navigation, sparing use, and the regular material for legible content.
+- [Applying Liquid Glass to custom views](https://developer.apple.com/documentation/swiftui/applying-liquid-glass-to-custom-views) documents SwiftUI glass effects and containers.
+- [UIKit UIGlassEffect](https://developer.apple.com/documentation/uikit/uiglasseffect) documents the UIKit material.
+- [WebKit Safari 18: Backdrop Filter](https://webkit.org/blog/15443/news-from-wwdc24-webkit-in-safari-18-beta/#backdrop-filter) documents CSS blur/saturation and unprefixed support, with the prefixed property for older Safari.
