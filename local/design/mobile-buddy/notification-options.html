@@ -1,0 +1,826 @@
+<div
+	id="buddy-notification-options"
+	class="viz-carousel viz-dotted-background"
+	aria-label="Buddy notification designs"
+>
+	<section data-variant="Header ribbon" aria-label="Header ribbon notification">
+		<div class="bn-stage">
+			<div class="bn-phone" data-design="ribbon">
+				<div class="bn-status">
+					<span>9:41</span
+					><span class="bn-status-icons"
+						><i data-lucide="signal" aria-hidden="true"></i
+						><i data-lucide="wifi" aria-hidden="true"></i
+						><i data-lucide="battery-full" aria-hidden="true"></i
+					></span>
+				</div>
+				<div class="bn-app">
+					<header class="bn-header">
+						<div class="bn-header-left">
+							<button
+								type="button"
+								class="bn-icon bn-menu cursor-interaction"
+								aria-label="Open menu"
+							>
+								<i data-lucide="menu" aria-hidden="true"></i></button
+							><button type="button" class="bn-icon cursor-interaction" aria-label="New chat">
+								<i data-lucide="message-circle-plus" aria-hidden="true"></i>
+							</button>
+						</div>
+						<div class="bn-buddy">
+							<img data-buddy-avatar alt="Buddy" /><span class="bn-name">Buddy</span>
+						</div>
+						<div class="bn-header-right">
+							<button type="button" class="bn-icon cursor-interaction" aria-label="Temporary chat">
+								<i data-lucide="circle-dashed" aria-hidden="true"></i></button
+							><button type="button" class="bn-icon cursor-interaction" aria-label="Chat settings">
+								<i data-lucide="sliders-horizontal" aria-hidden="true"></i>
+							</button>
+						</div>
+					</header>
+					<main class="bn-conversation">
+						<div class="bn-user">Help me make room for a calmer weekend.</div>
+						<div class="bn-message">
+							<span class="bn-model">Buddy</span>
+							<p>Let’s start with a little breathing room.</p>
+							<p>
+								Pick one thing you’d love to do, one thing that needs doing, and leave the rest
+								open.
+							</p>
+						</div>
+						<div class="bn-followups">
+							<button type="button" class="cursor-interaction">Make a simple plan</button
+							><button type="button" class="cursor-interaction">A little inspiration</button>
+						</div>
+					</main>
+					<div class="bn-notification" aria-label="Header ribbon" role="status" aria-live="polite">
+						<img data-buddy-avatar alt="" />
+						<button
+							type="button"
+							class="bn-note-content cursor-interaction"
+							data-action="details"
+							aria-expanded="false"
+						>
+							<span class="bn-note-title">Note saved</span
+							><span class="bn-note-description">Weekend plans is safely in Notes.</span>
+						</button>
+						<button
+							type="button"
+							class="bn-dismiss cursor-interaction"
+							data-action="dismiss"
+							aria-label="Dismiss notification"
+						>
+							<i data-lucide="x" aria-hidden="true"></i>
+						</button>
+					</div>
+					<section class="bn-details" hidden aria-label="Notification details">
+						<div class="bn-details-heading">
+							<img data-buddy-avatar alt="" /><span class="bn-details-title">Weekend plans</span
+							><button
+								type="button"
+								class="bn-icon cursor-interaction"
+								data-action="close-details"
+								aria-label="Close details"
+							>
+								<i data-lucide="x" aria-hidden="true"></i>
+							</button>
+						</div>
+						<p class="bn-details-copy">
+							Saved in your personal Notes. Your conversation stays right here.
+						</p>
+						<button type="button" class="bn-action cursor-interaction" data-action="close-details">
+							Got it
+						</button>
+					</section>
+					<div class="bn-composer">
+						<button type="button" class="bn-icon cursor-interaction" aria-label="Add attachment">
+							<i data-lucide="plus" aria-hidden="true"></i></button
+						><span>Message Buddy…</span
+						><button type="button" class="bn-send cursor-interaction" aria-label="Send message">
+							<i data-lucide="arrow-up" aria-hidden="true"></i>
+						</button>
+					</div>
+					<nav class="bn-dock" aria-label="Buddy navigation">
+						<button type="button" class="bn-selected cursor-interaction" aria-label="Chat">
+							<i data-lucide="message-circle" aria-hidden="true"></i></button
+						><button type="button" class="cursor-interaction" aria-label="Notes">
+							<i data-lucide="notebook-pen" aria-hidden="true"></i></button
+						><button type="button" class="cursor-interaction" aria-label="Knowledge">
+							<i data-lucide="book-open" aria-hidden="true"></i></button
+						><button type="button" class="cursor-interaction" aria-label="Automations">
+							<i data-lucide="clock" aria-hidden="true"></i></button
+						><button type="button" class="cursor-interaction" aria-label="Workspace">
+							<i data-lucide="grid-2x2" aria-hidden="true"></i>
+						</button>
+					</nav>
+				</div>
+				<div class="bn-keyboard" hidden aria-label="Keyboard preview">
+					<div>q w e r t y u i o p</div>
+					<div>a s d f g h j k l</div>
+					<div>⇧ z x c v b n m ⌫</div>
+					<div class="bn-space"><span>123</span><span>space</span><span>return</span></div>
+				</div>
+				<div class="bn-home-indicator" aria-hidden="true"></div>
+			</div>
+		</div>
+	</section>
+	<section data-variant="Composer card" aria-label="Composer card notification" hidden>
+		<div class="bn-stage"></div>
+	</section>
+	<section data-variant="Quiet capsule" aria-label="Quiet capsule notification" hidden>
+		<div class="bn-stage"></div>
+	</section>
+</div>
+<style>
+	#buddy-notification-options .bn-stage {
+		min-height: 980px;
+		display: flex;
+		justify-content: center;
+		align-items: flex-start;
+		padding: 16px 6px 24px;
+	}
+	#buddy-notification-options .bn-phone {
+		--bn-canvas: light-dark(#faf8f5, #111512);
+		--bn-panel: light-dark(#ffffff, #222724);
+		--bn-ink: light-dark(#283d30, #e9f0e9);
+		--bn-soft: light-dark(#667368, #9daa9f);
+		--bn-edge: light-dark(rgba(39, 99, 75, 0.13), rgba(231, 245, 235, 0.12));
+		--bn-accent: light-dark(#397653, #bfe2c7);
+		--bn-accent-ink: light-dark(#ffffff, #254332);
+		--bn-mint: light-dark(#e3ede4, #2b3d31);
+		--bn-shadow: light-dark(rgba(31, 62, 45, 0.1), rgba(0, 0, 0, 0.3));
+		--bn-keyboard: light-dark(#d9dce0, #252a28);
+		--bn-safe-top: max(48px, env(safe-area-inset-top, 0px));
+		--bn-safe-bottom: max(34px, env(safe-area-inset-bottom, 0px));
+		--bn-keyboard-height: 320px;
+		position: relative;
+		width: min(100%, 428px);
+		aspect-ratio: 428/926;
+		min-height: 740px;
+		overflow: hidden;
+		border-radius: 36px;
+		border: 1px solid var(--bn-edge);
+		background: var(--bn-canvas);
+		color: var(--bn-ink);
+		box-shadow: 0 14px 48px var(--bn-shadow);
+		font:
+			18px/1.55 Inter,
+			-apple-system,
+			BlinkMacSystemFont,
+			'Segoe UI',
+			sans-serif;
+	}
+	#buddy-notification-options .bn-phone * {
+		box-sizing: border-box;
+	}
+	#buddy-notification-options .bn-phone [hidden] {
+		display: none !important;
+	}
+	#buddy-notification-options .bn-phone button {
+		font: inherit;
+		color: inherit;
+		border: 0;
+		padding: 0;
+		background: none;
+	}
+	#buddy-notification-options .bn-phone svg {
+		width: 20px;
+		height: 20px;
+		flex: none;
+	}
+	#buddy-notification-options .bn-status {
+		position: absolute;
+		top: 0;
+		left: 24px;
+		right: 24px;
+		height: 48px;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		font-size: 15px;
+		font-weight: 500;
+	}
+	#buddy-notification-options .bn-status-icons {
+		display: flex;
+		gap: 5px;
+	}
+	#buddy-notification-options .bn-status svg {
+		width: 16px;
+		height: 16px;
+	}
+	#buddy-notification-options .bn-app {
+		position: absolute;
+		top: var(--bn-safe-top);
+		bottom: 0;
+		left: 0;
+		right: 0;
+	}
+	#buddy-notification-options .bn-header {
+		position: absolute;
+		inset: 0 0 auto;
+		height: 110px;
+	}
+	#buddy-notification-options .bn-icon,
+	#buddy-notification-options .bn-dismiss {
+		width: 44px;
+		height: 44px;
+		display: flex;
+		flex: none;
+		align-items: center;
+		justify-content: center;
+		border-radius: 50%;
+		color: var(--bn-soft);
+	}
+	#buddy-notification-options .bn-phone .bn-menu {
+		position: absolute;
+		top: 18px;
+		left: 18px;
+		background: var(--bn-panel);
+		border: 1px solid var(--bn-edge);
+	}
+	#buddy-notification-options .bn-phone .bn-more {
+		position: absolute;
+		top: 18px;
+		right: 18px;
+		background: var(--bn-panel);
+		border: 1px solid var(--bn-edge);
+	}
+	#buddy-notification-options .bn-buddy {
+		position: absolute;
+		top: 10px;
+		left: 50%;
+		transform: translateX(-50%);
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 8px;
+	}
+	#buddy-notification-options .bn-buddy img {
+		width: 60px;
+		height: 60px;
+		border-radius: 50%;
+		box-shadow: 0 3px 14px var(--bn-shadow);
+	}
+	#buddy-notification-options .bn-name {
+		border: 1px solid var(--bn-edge);
+		border-radius: 20px;
+		background: var(--bn-panel);
+		padding: 1px 13px;
+		font-size: 14px;
+		font-weight: 500;
+	}
+	#buddy-notification-options .bn-conversation {
+		position: absolute;
+		top: 218px;
+		left: 20px;
+		right: 20px;
+		bottom: 210px;
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 18px;
+		overflow: hidden;
+	}
+	#buddy-notification-options [data-design='composer'] .bn-conversation {
+		top: 135px;
+	}
+	#buddy-notification-options .bn-user {
+		align-self: flex-end;
+		max-width: 85%;
+		padding: 11px 16px;
+		border-radius: 21px 21px 6px 21px;
+		background: var(--bn-mint);
+	}
+	#buddy-notification-options .bn-message {
+		max-width: 94%;
+		padding: 13px 16px;
+		border: 1px solid var(--bn-edge);
+		border-radius: 21px 21px 21px 6px;
+		background: var(--bn-panel);
+	}
+	#buddy-notification-options .bn-model {
+		font-size: 13px;
+		color: var(--bn-soft);
+	}
+	#buddy-notification-options .bn-message p {
+		margin: 8px 0 0;
+	}
+	#buddy-notification-options .bn-followups {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+	#buddy-notification-options .bn-phone .bn-followups button {
+		min-height: 44px;
+		padding: 8px 12px;
+		border: 1px solid var(--bn-edge);
+		border-radius: 14px;
+		font-size: 14px;
+		color: var(--bn-soft);
+	}
+	#buddy-notification-options .bn-notification {
+		position: absolute;
+		z-index: 3;
+		background: var(--bn-panel);
+		border: 1px solid var(--bn-edge);
+		box-shadow: 0 8px 26px var(--bn-shadow);
+	}
+	#buddy-notification-options [data-design='ribbon'] .bn-notification {
+		top: 120px;
+		left: 16px;
+		right: 16px;
+		min-height: 72px;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 8px 4px 8px 12px;
+		border-radius: 20px;
+	}
+	#buddy-notification-options .bn-notification img,
+	#buddy-notification-options .bn-details-heading img {
+		width: 32px;
+		height: 32px;
+		border-radius: 50%;
+		flex: none;
+	}
+	#buddy-notification-options .bn-phone .bn-note-content {
+		min-width: 0;
+		min-height: 44px;
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		justify-content: center;
+		text-align: left;
+		gap: 2px;
+	}
+	#buddy-notification-options .bn-note-title {
+		font-size: 16px;
+		font-weight: 500;
+	}
+	#buddy-notification-options .bn-note-description {
+		font-size: 14px;
+		color: var(--bn-soft);
+	}
+	#buddy-notification-options .bn-dismiss:hover {
+		background: var(--bn-mint);
+	}
+	#buddy-notification-options [data-design='composer'] .bn-notification {
+		bottom: 200px;
+		left: 20px;
+		right: 20px;
+		padding: 8px 8px 3px 12px;
+		border-radius: 24px;
+	}
+	#buddy-notification-options .bn-card-heading {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+	#buddy-notification-options .bn-phone .bn-card-detail {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		min-height: 44px;
+		width: 100%;
+		padding: 0 12px 0 40px;
+		color: var(--bn-accent);
+		font-size: 14px;
+	}
+	#buddy-notification-options [data-design='capsule'] .bn-notification {
+		top: 120px;
+		left: 50%;
+		transform: translateX(-50%);
+		display: flex;
+		align-items: center;
+		max-width: calc(100% - 40px);
+		padding: 4px 2px 4px 13px;
+		border-radius: 30px;
+	}
+	#buddy-notification-options .bn-phone[data-design='capsule'] .bn-note-content {
+		flex-direction: row;
+		align-items: center;
+		gap: 8px;
+		white-space: nowrap;
+	}
+	#buddy-notification-options [data-design='capsule'] .bn-note-title {
+		white-space: normal;
+		overflow-wrap: anywhere;
+	}
+	#buddy-notification-options [data-design='capsule'] .bn-note-content svg {
+		width: 16px;
+		height: 16px;
+		color: var(--bn-accent);
+	}
+	#buddy-notification-options .bn-details {
+		position: absolute;
+		z-index: 4;
+		left: 16px;
+		right: 16px;
+		bottom: 200px;
+		max-height: calc(100% - 230px);
+		overflow: auto;
+		padding: 12px 16px 16px;
+		border: 1px solid var(--bn-edge);
+		border-radius: 24px;
+		background: var(--bn-panel);
+		box-shadow: 0 10px 32px var(--bn-shadow);
+	}
+	#buddy-notification-options .bn-details-heading {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+	}
+	#buddy-notification-options .bn-details-title {
+		flex: 1;
+		min-width: 0;
+		font-size: 16px;
+		font-weight: 500;
+	}
+	#buddy-notification-options .bn-details-copy {
+		margin: 8px 0 14px;
+		font-size: 15px;
+		color: var(--bn-soft);
+	}
+	#buddy-notification-options .bn-phone .bn-action {
+		min-height: 44px;
+		width: 100%;
+		border-radius: 16px;
+		padding: 10px;
+		background: var(--bn-mint);
+		color: var(--bn-ink);
+	}
+	#buddy-notification-options .bn-composer {
+		position: absolute;
+		bottom: calc(90px + var(--bn-safe-bottom));
+		left: 16px;
+		right: 16px;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		height: 60px;
+		padding: 6px;
+		border: 1px solid var(--bn-edge);
+		border-radius: 30px;
+		background: var(--bn-panel);
+		color: var(--bn-soft);
+	}
+	#buddy-notification-options .bn-composer span {
+		flex: 1;
+		min-width: 0;
+		font-size: 18px;
+	}
+	#buddy-notification-options .bn-phone .bn-send {
+		width: 44px;
+		height: 44px;
+		display: flex;
+		flex: none;
+		align-items: center;
+		justify-content: center;
+		border-radius: 50%;
+		background: var(--bn-accent);
+		color: var(--bn-accent-ink);
+	}
+	#buddy-notification-options .bn-dock {
+		position: absolute;
+		bottom: calc(14px + var(--bn-safe-bottom));
+		left: 16px;
+		right: 16px;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		height: 64px;
+		padding: 8px 10px;
+		border: 1px solid var(--bn-edge);
+		border-radius: 40px;
+		background: var(--bn-panel);
+		box-shadow: 0 6px 22px var(--bn-shadow);
+	}
+	#buddy-notification-options .bn-phone .bn-dock button {
+		width: 44px;
+		height: 44px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		border-radius: 50%;
+		color: var(--bn-soft);
+	}
+	#buddy-notification-options .bn-phone .bn-dock .bn-selected {
+		background: var(--bn-mint);
+		color: var(--bn-ink);
+	}
+	#buddy-notification-options .bn-home-indicator {
+		position: absolute;
+		left: 50%;
+		bottom: 9px;
+		transform: translateX(-50%);
+		width: 124px;
+		height: 5px;
+		border-radius: 5px;
+		background: var(--bn-ink);
+		opacity: 0.7;
+	}
+	#buddy-notification-options .bn-keyboard {
+		position: absolute;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		height: var(--bn-keyboard-height);
+		padding: 23px 12px 34px;
+		background: var(--bn-keyboard);
+		color: var(--bn-ink);
+		font-size: 18px;
+	}
+	#buddy-notification-options .bn-keyboard > div {
+		display: flex;
+		justify-content: center;
+		word-spacing: 14px;
+		min-height: 52px;
+		padding: 10px 0;
+	}
+	#buddy-notification-options .bn-keyboard .bn-space {
+		justify-content: space-between;
+		gap: 12px;
+		word-spacing: normal;
+		font-size: 14px;
+	}
+	#buddy-notification-options .bn-space span {
+		background: var(--bn-panel);
+		padding: 9px 14px;
+		border-radius: 8px;
+	}
+	#buddy-notification-options .bn-space span:nth-child(2) {
+		flex: 1;
+		text-align: center;
+	}
+	#buddy-notification-options [data-keyboard='true'] .bn-app {
+		bottom: var(--bn-keyboard-height);
+	}
+	#buddy-notification-options [data-keyboard='true'] .bn-dock {
+		display: none;
+	}
+	#buddy-notification-options [data-keyboard='true'] .bn-composer {
+		bottom: 12px;
+	}
+	#buddy-notification-options [data-keyboard='true'] .bn-details,
+	#buddy-notification-options [data-keyboard='true'][data-design='composer'] .bn-notification {
+		bottom: 88px;
+	}
+	#buddy-notification-options [data-keyboard='true'] .bn-conversation {
+		bottom: 88px;
+	}
+	@media (max-width: 480px) {
+		#buddy-notification-options .bn-stage {
+			min-height: 800px;
+		}
+		#buddy-notification-options .bn-phone {
+			--bn-keyboard-height: 260px;
+		}
+		#buddy-notification-options .bn-keyboard {
+			font-size: 16px;
+		}
+		#buddy-notification-options .bn-keyboard > div {
+			word-spacing: 8px;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		#buddy-notification-options * {
+			transition: none;
+			animation: none;
+		}
+	}
+
+	#buddy-notification-options .bn-header-left,
+	#buddy-notification-options .bn-header-right {
+		position: absolute;
+		top: 18px;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+	#buddy-notification-options .bn-header-left {
+		left: 18px;
+	}
+	#buddy-notification-options .bn-header-right {
+		right: 18px;
+	}
+	#buddy-notification-options .bn-phone .bn-menu {
+		position: static;
+	}
+	@media (max-width: 480px) {
+		#buddy-notification-options .bn-header-left {
+			left: 8px;
+			gap: 0;
+		}
+		#buddy-notification-options .bn-header-right {
+			right: 8px;
+			gap: 0;
+		}
+	}
+</style>
+<script>
+	(() => {
+		const root = document.getElementById('buddy-notification-options');
+		const shared = { keyboard: false, kind: 'Note saved' };
+		const variants = [];
+		const avatarSource =
+			'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIiBmaWxsPSJub25lIiBhcmlhLWhpZGRlbj0idHJ1ZSI+CgkJPGNpcmNsZSBjeD0iNTAiIGN5PSI1MCIgcj0iNDciIGZpbGw9IiNFREY1RUIiIC8+CgkJPGNpcmNsZSBjeD0iNTAiIGN5PSI1MCIgcj0iNDUuNSIgc3Ryb2tlPSIjMjc2MzRCIiBzdHJva2Utb3BhY2l0eT0iMC4xIiAvPgoJCTxjaXJjbGUgY3g9IjMzIiBjeT0iMzAiIHI9IjE5IiBmaWxsPSJ3aGl0ZSIgZmlsbC1vcGFjaXR5PSIwLjQ1IiAvPgoJCTxlbGxpcHNlIGN4PSI1MCIgY3k9IjgzIiByeD0iMjIiIHJ5PSIzLjUiIGZpbGw9IiMyNzYzNEIiIGZpbGwtb3BhY2l0eT0iMC4wOSIgLz4KCQk8ZyBjbGFzcz0iYnVkZHktYm9keSI+CgkJCTxnIGNsYXNzPSJidWRkeS1zcHJvdXQiPgoJCQkJPHBhdGggZD0iTTUwIDMyQzQ5IDI0IDQyIDIxIDM4IDIyQzM4IDI5IDQ0IDMzIDUwIDMyWiIgZmlsbD0iIzI3NjM0QiIgLz4KCQkJCTxwYXRoIGQ9Ik01MCAzMUM1MCAyMyA1NyAxOCA2NCAyMEM2MyAyOSA1NyAzMyA1MCAzMVoiIGZpbGw9IiM2NzlDNzUiIC8+CgkJCQk8cGF0aCBkPSJNNTAgMzRWMjciIHN0cm9rZT0iIzI3NjM0QiIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIC8+CgkJCTwvZz4KCQkJPGVsbGlwc2UgY3g9IjIyIiBjeT0iNTEiIHJ4PSI1IiByeT0iOSIgZmlsbD0iI0E5RDlCOCIgLz4KCQkJPGVsbGlwc2UgY3g9Ijc4IiBjeT0iNTEiIHJ4PSI1IiByeT0iOSIgZmlsbD0iI0E5RDlCOCIgLz4KCQkJPHBhdGgKCQkJCWQ9Ik0yMiA0N0MyMiAzNSAzMSAyOSA1MCAyOUM2OSAyOSA3OCAzNSA3OCA0N1Y1N0M3OCA2OCA3MCA3NSA1NiA3Nkw0NCA3NkwzMiA4M1Y3M0MyNSA3MCAyMiA2NSAyMiA1N1Y0N1oiCgkJCQlmaWxsPSIjRERGM0U0IgoJCQkJc3Ryb2tlPSIjMjc2MzRCIgoJCQkJc3Ryb2tlLXdpZHRoPSIyLjMiCgkJCQlzdHJva2UtbGluZWpvaW49InJvdW5kIgoJCQkvPgoJCQk8cGF0aAoJCQkJZD0iTTMwIDQwQzM0IDM1IDQwIDM0IDQ2IDM0IgoJCQkJc3Ryb2tlPSJ3aGl0ZSIKCQkJCXN0cm9rZS1vcGFjaXR5PSIwLjgiCgkJCQlzdHJva2Utd2lkdGg9IjMiCgkJCQlzdHJva2UtbGluZWNhcD0icm91bmQiCgkJCS8+CgkJCTxlbGxpcHNlIGN4PSIzMiIgY3k9IjU4IiByeD0iNSIgcnk9IjMiIGZpbGw9IiNFODk1NzgiIGZpbGwtb3BhY2l0eT0iMC40NSIgLz4KCQkJPGVsbGlwc2UgY3g9IjY4IiBjeT0iNTgiIHJ4PSI1IiByeT0iMyIgZmlsbD0iI0U4OTU3OCIgZmlsbC1vcGFjaXR5PSIwLjQ1IiAvPgoJCQk8ZyBjbGFzcz0iYnVkZHktZ2F6ZSI+CgkJCQk8ZyBjbGFzcz0iYnVkZHktZXllcyI+CgkJCQkJPGVsbGlwc2UgY3g9IjM4IiBjeT0iNTAiIHJ4PSIzIiByeT0iMy43IiBmaWxsPSIjMjQ0QjM4IiAvPgoJCQkJCTxlbGxpcHNlIGN4PSI2MiIgY3k9IjUwIiByeD0iMyIgcnk9IjMuNyIgZmlsbD0iIzI0NEIzOCIgLz4KCQkJCQk8Y2lyY2xlIGN4PSIzOSIgY3k9IjQ4LjgiIHI9IjAuODUiIGZpbGw9IndoaXRlIiAvPgoJCQkJCTxjaXJjbGUgY3g9IjYzIiBjeT0iNDguOCIgcj0iMC44NSIgZmlsbD0id2hpdGUiIC8+CgkJCQk8L2c+CgkJCTwvZz4KCQkJPGcgY2xhc3M9ImJ1ZGR5LXNtaWxlIj4KCQkJCTxwYXRoCgkJCQkJZD0iTTQ0IDYwQzQ3IDY0IDUzIDY0IDU2IDYwIgoJCQkJCXN0cm9rZT0iIzI3NjM0QiIKCQkJCQlzdHJva2Utd2lkdGg9IjIuNCIKCQkJCQlzdHJva2UtbGluZWNhcD0icm91bmQiCgkJCQkvPgoJCQkJPGVsbGlwc2UgY2xhc3M9ImJ1ZGR5LXNwZWFraW5nLW1vdXRoIiBjeD0iNTAiIGN5PSI2MiIgcng9IjQuMyIgcnk9IjIuOCIgZmlsbD0iIzI3NjM0QiIgLz4KCQkJPC9nPgoJCTwvZz4KCQk8Y2lyY2xlCgkJCWNsYXNzPSJidWRkeS10aGlua2luZy1vcmJpdCIKCQkJY3g9IjUwIgoJCQljeT0iNTAiCgkJCXI9IjQ1LjUiCgkJCXN0cm9rZT0iIzY3OUM3NSIKCQkJc3Ryb2tlLXdpZHRoPSIxLjciCgkJCXN0cm9rZS1saW5lY2FwPSJyb3VuZCIKCQkJc3Ryb2tlLWRhc2hhcnJheT0iMyAxMiAzIDI2OCIKCQkvPgoJCTxnIGNsYXNzPSJidWRkeS1zcGFya2xlIiBzdHJva2U9IiM2NzlDNzUiIHN0cm9rZS13aWR0aD0iMS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiPgoJCQk8cGF0aCBkPSJNNzkgMjVWMzFNNzYgMjhIODIiIC8+CgkJPC9nPgoJPHN0eWxlPi5idWRkeS1zcGVha2luZy1tb3V0aCwuYnVkZHktdGhpbmtpbmctb3JiaXR7b3BhY2l0eTowfS5idWRkeS1zcGFya2xle29wYWNpdHk6LjU1fTwvc3R5bGU+PC9zdmc+';
+		const firstPhone = root.querySelector('.bn-phone');
+		const composerPhone = firstPhone.cloneNode(true);
+		composerPhone.dataset.design = 'composer';
+		root.querySelector('[data-variant="Composer card"] .bn-stage').appendChild(composerPhone);
+		const composerNotification = composerPhone.querySelector('.bn-notification');
+		composerNotification.setAttribute('aria-label', 'Composer card');
+		const cardHeading = document.createElement('div');
+		cardHeading.className = 'bn-card-heading';
+		while (composerNotification.firstChild)
+			cardHeading.appendChild(composerNotification.firstChild);
+		composerNotification.appendChild(cardHeading);
+		const detailButton = document.createElement('button');
+		detailButton.type = 'button';
+		detailButton.className = 'bn-card-detail cursor-interaction';
+		detailButton.dataset.action = 'details';
+		detailButton.textContent = 'View details';
+		const detailIcon = document.createElement('i');
+		detailIcon.dataset.lucide = 'arrow-up-right';
+		detailIcon.setAttribute('aria-hidden', 'true');
+		detailButton.appendChild(detailIcon);
+		composerNotification.appendChild(detailButton);
+		const capsulePhone = firstPhone.cloneNode(true);
+		capsulePhone.dataset.design = 'capsule';
+		root.querySelector('[data-variant="Quiet capsule"] .bn-stage').appendChild(capsulePhone);
+		const capsuleNotification = capsulePhone.querySelector('.bn-notification');
+		capsuleNotification.setAttribute('aria-label', 'Quiet capsule');
+		capsuleNotification.querySelector('img').remove();
+		capsuleNotification.querySelector('.bn-note-description').remove();
+		const capsuleButton = capsuleNotification.querySelector('.bn-note-content');
+		const checkIcon = document.createElement('i');
+		checkIcon.dataset.lucide = 'circle-check';
+		checkIcon.setAttribute('aria-hidden', 'true');
+		const capsuleStatus = document.createElement('span');
+		capsuleStatus.className = 'bn-status-symbol';
+		capsuleStatus.appendChild(checkIcon);
+		capsuleButton.prepend(capsuleStatus);
+		const expandIcon = document.createElement('i');
+		expandIcon.dataset.lucide = 'chevron-down';
+		expandIcon.setAttribute('aria-hidden', 'true');
+		capsuleButton.appendChild(expandIcon);
+		for (const image of root.querySelectorAll('[data-buddy-avatar]')) image.src = avatarSource;
+		function contentForKind() {
+			if (shared.kind === 'Connection interrupted')
+				return {
+					title: 'Connection interrupted',
+					description: 'Your draft is safe. Reconnecting…',
+					detail: 'Your draft stays here while Buddy reconnects. You can keep writing.',
+					heading: 'Connection interrupted'
+				};
+			if (shared.kind === 'Buddy is working')
+				return {
+					title: 'Buddy is working',
+					description: 'Putting the last details together…',
+					detail: 'Buddy is finishing your request. Your conversation stays right here.',
+					heading: 'Working on it'
+				};
+			return {
+				title: 'Note saved',
+				description: 'Weekend plans is safely in Notes.',
+				detail: 'Saved in your personal Notes. Your conversation stays right here.',
+				heading: 'Weekend plans'
+			};
+		}
+		function saveState() {
+			if (window.openai?.setWidgetState) {
+				window.openai
+					.setWidgetState({
+						modelContent: {
+							preview: 'Buddy notifications',
+							keyboard: shared.keyboard,
+							notification: shared.kind
+						},
+						privateContent: {
+							variants: variants.map((variant) => ({
+								name: variant.name,
+								visible: variant.visible,
+								details: variant.details
+							}))
+						}
+					})
+					.catch(() => {});
+			}
+		}
+		function render() {
+			const content = contentForKind();
+			const statusIcon = document.createElement('i');
+			let iconName = 'circle-check';
+			if (shared.kind === 'Connection interrupted') iconName = 'circle-alert';
+			if (shared.kind === 'Buddy is working') iconName = 'loader-circle';
+			statusIcon.dataset.lucide = iconName;
+			statusIcon.setAttribute('aria-hidden', 'true');
+			capsuleStatus.replaceChildren(statusIcon);
+			for (const variant of variants) {
+				variant.phone.dataset.keyboard = String(shared.keyboard);
+				variant.phone.querySelector('.bn-keyboard').hidden = !shared.keyboard;
+				variant.notification.hidden = !variant.visible;
+				variant.detailPanel.hidden = !variant.details || !variant.visible;
+				variant.phone.querySelector('.bn-note-title').textContent = content.title;
+				const description = variant.phone.querySelector('.bn-note-description');
+				if (description) description.textContent = content.description;
+				variant.phone.querySelector('.bn-details-title').textContent = content.heading;
+				variant.phone.querySelector('.bn-details-copy').textContent = content.detail;
+				for (const trigger of variant.phone.querySelectorAll('[data-action="details"]')) {
+					trigger.setAttribute('aria-expanded', String(variant.details));
+					trigger.setAttribute('aria-controls', variant.detailPanel.id);
+				}
+			}
+			globalThis.lucide?.createIcons({ attrs: { width: 16, height: 16 } });
+		}
+		for (const section of root.querySelectorAll(':scope > section[data-variant]')) {
+			const phone = section.querySelector('.bn-phone');
+			const variant = {
+				name: section.dataset.variant,
+				phone,
+				notification: phone.querySelector('.bn-notification'),
+				detailPanel: phone.querySelector('.bn-details'),
+				visible: true,
+				details: false
+			};
+			variant.detailPanel.id = 'bn-details-' + phone.dataset.design;
+			phone.setAttribute('aria-label', variant.name + ' notification preview');
+			variants.push(variant);
+			function handleNotificationClick(event) {
+				const button = event.target.closest('button[data-action]');
+				if (!button || !phone.contains(button)) return;
+				if (button.dataset.action === 'dismiss') {
+					variant.visible = false;
+					variant.details = false;
+				}
+				if (button.dataset.action === 'details') variant.details = !variant.details;
+				if (button.dataset.action === 'close-details') variant.details = false;
+				render();
+				if (button.dataset.action === 'close-details')
+					phone.querySelector('[data-action="details"]').focus({ preventScroll: true });
+				if (button.dataset.action === 'dismiss')
+					phone.querySelector('.bn-composer button').focus({ preventScroll: true });
+				saveState();
+			}
+			phone.addEventListener('click', handleNotificationClick);
+			if (globalThis.Tweak) {
+				const notificationTweak = new Tweak({
+					container: variant.phone,
+					onChange: handleDesignChange
+				});
+				notificationTweak.addToggle(variant, 'visible', {
+					label: 'Show notification'
+				});
+			}
+		}
+		function handleDesignChange() {
+			render();
+			saveState();
+		}
+		function applySavedState(saved) {
+			if (!saved || typeof saved !== 'object') return;
+			if (typeof saved.modelContent?.keyboard === 'boolean')
+				shared.keyboard = saved.modelContent.keyboard;
+			const kind = saved.modelContent?.notification;
+			if (['Note saved', 'Connection interrupted', 'Buddy is working'].includes(kind))
+				shared.kind = kind;
+			const storedVariants = saved.privateContent?.variants;
+			if (!Array.isArray(storedVariants)) return;
+			for (const stored of storedVariants) {
+				const variant = variants.find((item) => item.name === stored.name);
+				if (!variant) continue;
+				if (typeof stored.visible === 'boolean') variant.visible = stored.visible;
+				if (typeof stored.details === 'boolean') variant.details = stored.details;
+			}
+		}
+		applySavedState(window.openai?.widgetState);
+		render();
+		function handleGlobalsChange(event) {
+			applySavedState(event.detail?.globals?.widgetState);
+			render();
+		}
+		window.addEventListener('openai:set_globals', handleGlobalsChange);
+		if (globalThis.Tweak) {
+			const scenarioTweak = new Tweak({
+				container: root,
+				onChange: handleDesignChange
+			});
+			scenarioTweak.addToggle(shared, 'keyboard', { label: 'Keyboard open' });
+			scenarioTweak.addSelect(shared, 'kind', {
+				label: 'Notification',
+				options: ['Note saved', 'Connection interrupted', 'Buddy is working']
+			});
+		}
+		function setPreviewState(next) {
+			if (typeof next.keyboard === 'boolean') shared.keyboard = next.keyboard;
+			if (next.kind) shared.kind = next.kind;
+			for (const variant of variants) {
+				variant.visible = true;
+				variant.details = false;
+			}
+			render();
+		}
+		root.previewState = { set: setPreviewState };
+	})();
+</script>
