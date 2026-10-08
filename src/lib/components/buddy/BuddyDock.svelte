@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { getContext, onMount } from 'svelte';
 	import { page } from '$app/stores';
-	import { config, showSidebar, user, type SessionUser } from '$lib/stores';
+	import { config, mobile, showSidebar, user, type SessionUser } from '$lib/stores';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import ChatIcon from '$lib/components/icons/ChatBubbleOval.svelte';
 	import KnowledgeIcon from '$lib/components/icons/BookOpen.svelte';
@@ -88,7 +88,9 @@
 	}
 
 	function handleNavigation() {
-		showSidebar.set(false);
+		if ($mobile) {
+			showSidebar.set(false);
+		}
 	}
 
 	function acceptsKeyboardInput(element: Element | null) {
@@ -178,7 +180,7 @@
 	class:buddy-dock-compact={compactDock}
 	aria-label={$i18n.t('Main navigation')}
 	aria-hidden={keyboardOpen}
-	inert={keyboardOpen || $showSidebar}
+	inert={keyboardOpen || ($mobile && $showSidebar)}
 >
 	<Tooltip content={$i18n.t('Chat')} touch={false}>
 		<a
@@ -257,11 +259,19 @@
 <style>
 	.buddy-dock {
 		--buddy-dock-max-width: calc(
-			100vw - var(--buddy-safe-left, 0px) - var(--buddy-safe-right, 0px) - 32px
+			100vw - var(--buddy-content-inset, 0px) - var(--buddy-safe-left, 0px) -
+				var(--buddy-safe-right, 0px) - 32px
 		);
 		position: fixed;
 		bottom: calc(16px + var(--buddy-safe-bottom, 0px));
-		left: calc(50% + (var(--buddy-safe-left, 0px) - var(--buddy-safe-right, 0px)) / 2);
+		left: calc(
+			50% +
+				(
+					var(--buddy-content-inset, 0px) + var(--buddy-safe-left, 0px) -
+						var(--buddy-safe-right, 0px)
+				) /
+				2
+		);
 		z-index: 30;
 		display: flex;
 		align-items: center;

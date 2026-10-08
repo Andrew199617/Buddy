@@ -580,6 +580,7 @@
 		}
 		if (
 			e.key === 'Escape' &&
+			$mobile &&
 			$showSidebar &&
 			!e.defaultPrevented &&
 			!document.querySelector('.modal, [role="menu"]')
@@ -603,6 +604,12 @@
 
 	const closeSidebar = () => {
 		showSidebar.set(false);
+	};
+
+	const closeMobileSidebar = () => {
+		if ($mobile) {
+			showSidebar.set(false);
+		}
 	};
 
 	const drawerFocus = (node: HTMLElement, open: boolean) => {
@@ -717,8 +724,34 @@
 			document.documentElement.style.setProperty('--sidebar-width', `${width}px`);
 		});
 
-		// History is an on-demand drawer, including on the first desktop visit.
-		showSidebar.set(false);
+		// Desktop history stays open until toggled; mobile always starts with a drawer closed.
+		let desktopSidebarOpen = false;
+		try {
+			desktopSidebarOpen = localStorage.getItem('buddySidebarOpen') === 'true';
+		} catch {}
+
+		let previousMobile = $mobile;
+		showSidebar.set($mobile ? false : desktopSidebarOpen);
+
+		const persistDesktopSidebar = (open: boolean) => {
+			if ($mobile) {
+				return;
+			}
+			desktopSidebarOpen = open;
+			try {
+				localStorage.setItem('buddySidebarOpen', String(open));
+			} catch {}
+		};
+		const unsubscribeSidebar = showSidebar.subscribe(persistDesktopSidebar);
+
+		const updateSidebarForViewport = (isMobile: boolean) => {
+			if (isMobile === previousMobile) {
+				return;
+			}
+			previousMobile = isMobile;
+			showSidebar.set(isMobile ? false : desktopSidebarOpen);
+		};
+		const unsubscribeMobile = mobile.subscribe(updateSidebarForViewport);
 
 		window.addEventListener('keydown', onKeyDown);
 		window.addEventListener('keyup', onKeyUp);
@@ -763,6 +796,8 @@
 
 		return () => {
 			unsubscribeWidth();
+			unsubscribeSidebar();
+			unsubscribeMobile();
 
 			window.removeEventListener('keydown', onKeyDown);
 			window.removeEventListener('keyup', onKeyUp);
@@ -836,7 +871,7 @@
 	const newChatHandler = async () => {
 		selectedChatId = null;
 		selectedFolder.set(null);
-		closeSidebar();
+		closeMobileSidebar();
 
 		if ($user?.role !== 'admin' && $user?.permissions?.chat?.temporary_enforced) {
 			await temporaryChatEnabled.set(true);
@@ -849,7 +884,7 @@
 		selectedChatId = null;
 		chatId.set('');
 
-		closeSidebar();
+		closeMobileSidebar();
 
 		await tick();
 	};
@@ -917,7 +952,7 @@
 
 <MobileSwipePanel
 	open={$showSidebar}
-	enabled={true}
+	enabled={$mobile}
 	width={$sidebarWidth}
 	onOpenChange={(open) => showSidebar.set(open)}
 	let:visible
@@ -925,7 +960,7 @@
 	let:panelStyle
 	let:backdropStyle
 >
-	{#if visible}
+	{#if $mobile && visible}
 		<button
 			type="button"
 			class="buddy-sidebar-backdrop"
@@ -938,7 +973,7 @@
 		></button>
 	{/if}
 
-	<SearchModal bind:show={$showSearch} onClose={closeSidebar} />
+	<SearchModal bind:show={$showSearch} onClose={closeMobileSidebar} />
 
 	<button
 		id="sidebar-new-chat-button"
@@ -956,7 +991,7 @@
 
 	<div
 		bind:this={navElement}
-		use:drawerFocus={$showSidebar}
+		use:drawerFocus={$mobile && $showSidebar}
 		id="sidebar"
 		role="navigation"
 		aria-label={$i18n.t('Chat history')}
@@ -1609,6 +1644,20 @@
 		box-shadow: 12px 0 50px rgb(16 32 25 / 12%);
 		will-change: transform;
 		touch-action: pan-y;
+	}
+
+	@media (min-width: 768px) {
+		.buddy-sidebar-drawer {
+			border-right: 1px solid var(--buddy-edge, rgb(39 99 75 / 10%));
+			box-shadow: none;
+			will-change: auto;
+		}
+
+		.buddy-sidebar-drawer[data-state='false'] {
+			visibility: hidden;
+			transform: translateX(-100%);
+			pointer-events: none;
+		}
 	}
 
 	.buddy-sidebar-content {

@@ -2,7 +2,6 @@
 	import { onMount } from 'svelte';
 
 	import dayjs from '$lib/dayjs';
-	import { showSidebar } from '$lib/stores';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 
@@ -33,11 +32,7 @@
 	});
 </script>
 
-<div
-	class="flex flex-col w-full h-screen max-h-[100dvh] transition-width duration-200 ease-in-out {$showSidebar
-		? 'md:max-w-[calc(100%-var(--sidebar-width))]'
-		: ''} max-w-full"
->
+<div class="flex flex-col w-full h-screen max-h-[100dvh] max-w-full">
 	<div class="flex-1 max-h-full overflow-y-auto">
 		{#if loaded}
 			<div class="pb-1 px-2.5 pt-2">

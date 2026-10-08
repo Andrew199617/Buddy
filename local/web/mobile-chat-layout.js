@@ -60,7 +60,7 @@ html.owui-mobile-chat:not(:has(.buddy-chat, .buddy-shell)), html.owui-mobile-cha
 }
 .owui-mobile-chat:not(:has(.buddy-chat, .buddy-shell)) #chat-input {
 	/* Prevent iOS focus zoom from pushing the conversation off-screen. */
-	font-size: max(1rem, 16px) !important;
+	font-size: calc(max(1rem, 16px) + var(--buddy-font-size-offset, 2px)) !important;
 }
 /* Keep full response details tappable without spending two lines on their summary. */
 .owui-chat-compact:not(:has(.buddy-chat, .buddy-shell)) .owui-run-footer {

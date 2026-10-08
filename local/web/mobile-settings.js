@@ -18,7 +18,7 @@
  min-height:0 !important; margin:0 !important; border:0 !important; border-radius:0 !important;
  box-shadow:none !important; transform:none !important; display:flex !important; flex-direction:column !important;
  background:var(--owui-settings-bg) !important; color:var(--owui-settings-text); overflow:hidden !important;
- padding-top:env(safe-area-inset-top,0px); font-size:1rem;
+ padding-top:env(safe-area-inset-top,0px); font-size: calc(1rem + var(--buddy-font-size-offset, 2px));
 }
 .dark .owui-mobile-settings .owui-settings-panel {
  --owui-settings-bg:#171717; --owui-settings-card:#262626; --owui-settings-line:rgba(255,255,255,.08);
@@ -28,7 +28,7 @@
  display:flex; flex-shrink:0; align-items:center; gap:12px; padding:12px 16px 14px;
  min-height:76px; background:var(--owui-settings-bg); z-index:1;
 }
-.owui-settings-heading { flex:1; min-width:0; margin:0; font-size:1.875rem; line-height:1.2; font-weight:650; letter-spacing:-.025em; overflow-wrap:anywhere; }
+.owui-settings-heading { flex:1; min-width:0; margin:0; font-size: calc(1.875rem + var(--buddy-font-size-offset, 2px)); line-height:1.2; font-weight:650; letter-spacing:-.025em; overflow-wrap:anywhere; }
 .owui-settings-heading:focus { outline:none; }
 .owui-settings-header .owui-settings-close, .owui-settings-back {
  display:inline-flex !important; align-items:center; justify-content:center; flex-shrink:0;
@@ -41,7 +41,7 @@
 .owui-settings-back svg { width:24px; height:24px; }
 .owui-settings-panel[data-settings-view="home"] .owui-settings-back { display:none !important; }
 .owui-settings-panel[data-settings-view="detail"] .owui-settings-header { min-height:68px; padding-block:10px; gap:10px; border-bottom:1px solid var(--owui-settings-line); }
-.owui-settings-panel[data-settings-view="detail"] .owui-settings-heading { font-size:1.1875rem; font-weight:600; letter-spacing:0; }
+.owui-settings-panel[data-settings-view="detail"] .owui-settings-heading { font-size: calc(1.1875rem + var(--buddy-font-size-offset, 2px)); font-weight:600; letter-spacing:0; }
 .owui-settings-panel[data-settings-view="detail"] .owui-settings-back { background:transparent; }
 .owui-settings-panel[data-settings-view="detail"] #settings-tabs-container { display:none !important; }
 .owui-settings-panel[data-settings-view="home"] .owui-settings-content { display:none !important; }
@@ -55,20 +55,20 @@
  color:var(--owui-settings-muted);
 }
 .owui-settings-search svg { width:20px !important; height:20px !important; }
-.owui-settings-search input { min-width:0; height:100%; font-size:max(16px,1rem) !important; color:var(--owui-settings-text) !important; }
+.owui-settings-search input { min-width:0; height:100%; font-size: calc(max(16px,1rem) + var(--buddy-font-size-offset, 2px)) !important; color:var(--owui-settings-text) !important; }
 .owui-mobile-settings #settings-tabs-container > .tabs {
  display:flex !important; flex-direction:column !important; max-height:none !important; min-height:0;
  overflow-x:hidden !important; overflow-y:auto !important; overscroll-behavior:contain;
  padding:0 0 8px !important; gap:0 !important; scrollbar-width:thin;
 }
-.owui-settings-group { display:block !important; margin:18px 12px 8px !important; padding:0 !important; font-size:.8125rem !important; font-weight:500; line-height:1.4; color:var(--owui-settings-muted) !important; }
+.owui-settings-group { display:block !important; margin:18px 12px 8px !important; padding:0 !important; font-size: calc(.8125rem + var(--buddy-font-size-offset, 2px)) !important; font-weight:500; line-height:1.4; color:var(--owui-settings-muted) !important; }
 .owui-settings-scope { display:none !important; }
 .owui-mobile-settings #settings-tabs-container .owui-settings-category-row {
  position:relative; display:flex !important; align-items:center !important; flex-shrink:0; gap:12px !important;
  width:100% !important; min-height:56px !important; height:auto !important; margin:0 !important;
  padding:14px !important; border:0 !important; border-radius:0 !important;
  background:var(--owui-settings-card) !important; color:var(--owui-settings-text) !important;
- font-size:1rem !important; font-weight:400 !important; line-height:1.45 !important; text-align:left;
+ font-size: calc(1rem + var(--buddy-font-size-offset, 2px)) !important; font-weight:400 !important; line-height:1.45 !important; text-align:left;
  white-space:normal !important; cursor:pointer; touch-action:manipulation;
 }
 .owui-settings-category-row > svg:not(.owui-settings-chevron) { width:22px !important; height:22px !important; flex-shrink:0; }
@@ -82,18 +82,18 @@
 .owui-mobile-settings .owui-settings-content { flex:1 1 0%; min-height:0 !important; min-width:0; padding:16px 16px max(12px,env(safe-area-inset-bottom,0px)) !important; }
 .owui-settings-content .owui-settings-category { min-height:0; }
 .owui-settings-redundant-heading, .owui-settings-heading-wrapper { display:none !important; }
-.owui-settings-content .text-xs { font-size:.9375rem !important; line-height:1.5 !important; }
-.owui-settings-content .text-sm { font-size:1rem !important; line-height:1.5 !important; }
-.owui-settings-content [class*="text-[0.6875rem]"], .owui-settings-content [class*="text-[0.625rem]"] { font-size:.8125rem !important; line-height:1.5 !important; color:var(--owui-settings-muted); }
+.owui-settings-content .text-xs { font-size: calc(.9375rem + var(--buddy-font-size-offset, 2px)) !important; line-height:1.5 !important; }
+.owui-settings-content .text-sm { font-size: calc(1rem + var(--buddy-font-size-offset, 2px)) !important; line-height:1.5 !important; }
+.owui-settings-content [class*="text-[0.6875rem]"], .owui-settings-content [class*="text-[0.625rem]"] { font-size: calc(.8125rem + var(--buddy-font-size-offset, 2px)) !important; line-height:1.5 !important; color:var(--owui-settings-muted); }
 .owui-settings-content section { margin-top:16px !important; padding:16px; background:var(--owui-settings-card); border-radius:18px; }
 .owui-settings-content section:first-of-type { margin-top:0 !important; }
-.owui-settings-content section > h3 { margin-bottom:14px !important; font-size:.875rem !important; font-weight:600; color:var(--owui-settings-text); }
+.owui-settings-content section > h3 { margin-bottom:14px !important; font-size: calc(.875rem + var(--buddy-font-size-offset, 2px)) !important; font-weight:600; color:var(--owui-settings-text); }
 .owui-settings-content input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]), .owui-settings-content select {
- min-height:44px !important; font-size:max(16px,1rem) !important; max-width:100%;
+ min-height:44px !important; font-size: calc(max(16px,1rem) + var(--buddy-font-size-offset, 2px)) !important; max-width:100%;
 }
-.owui-settings-content textarea { font-size:max(16px,1rem) !important; min-height:96px; }
+.owui-settings-content textarea { font-size: calc(max(16px,1rem) + var(--buddy-font-size-offset, 2px)) !important; min-height:96px; }
 .owui-settings-content button:not([role="switch"]):not([role="checkbox"]) { min-height:40px; }
-.owui-settings-content .shrink-0.justify-end > button { min-height:44px; padding-inline:20px; font-size:1rem; border-radius:22px; }
+.owui-settings-content .shrink-0.justify-end > button { min-height:44px; padding-inline:20px; font-size: calc(1rem + var(--buddy-font-size-offset, 2px)); border-radius:22px; }
 .owui-settings-content .overflow-y-auto { overscroll-behavior:contain; scrollbar-width:thin; }
 @media (max-width:359px) {
  .owui-settings-content section .flex.items-center.justify-between:has(select) { flex-direction:column; align-items:stretch !important; gap:8px !important; }

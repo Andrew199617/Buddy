@@ -717,9 +717,84 @@
 	}
 
 	function trackComposerInteraction(form: HTMLElement) {
-		function expandComposer(): void {
-			composerFocused = true;
+		let firstTapPointerId: number | null = null;
+		let firstTapEditor: HTMLElement | null = null;
+
+		function cancelComposerPointer(): void {
+			firstTapPointerId = null;
+			firstTapEditor = null;
 		}
+
+		function handleComposerPointerDown(event: PointerEvent): void {
+			cancelComposerPointer();
+			const wasCollapsed = !composerExpanded;
+			composerFocused = true;
+
+			if (embedded || !wasCollapsed || !event.isPrimary || event.button !== 0) {
+				return;
+			}
+
+			const target = event.target;
+			if (!(target instanceof Element)) {
+				return;
+			}
+
+			const composer = target.closest('.buddy-composer');
+			if (!composer || !form.contains(composer)) {
+				return;
+			}
+
+			const control = target.closest(
+				'button, a, input, textarea, select, [role="button"], [role="menuitem"], [contenteditable="false"]'
+			);
+			if (control) {
+				return;
+			}
+
+			const editor = composer.querySelector<HTMLElement>('#chat-input[contenteditable="true"]');
+			if (!editor) {
+				return;
+			}
+
+			firstTapPointerId = event.pointerId;
+			firstTapEditor = editor;
+			// Expansion moves the editor before native pointer hit-testing finishes.
+			// Keep focus in this trusted gesture and prevent padding from blurring it.
+			event.preventDefault();
+			focus({ preventScroll: true });
+		}
+
+		function handleComposerPointerUp(event: PointerEvent): void {
+			if (event.pointerId !== firstTapPointerId) {
+				return;
+			}
+
+			const editor = firstTapEditor;
+			if (editor?.isConnected && editor.getAttribute('contenteditable') === 'true') {
+				// iOS needs keyboard focus during the tap, without tick or deferred work.
+				editor.focus({ preventScroll: true });
+			}
+		}
+
+		function handleComposerClick(event: MouseEvent): void {
+			if (!firstTapEditor || event.detail === 0) {
+				return;
+			}
+			if (event instanceof PointerEvent && event.pointerId !== firstTapPointerId) {
+				return;
+			}
+
+			const editor = firstTapEditor;
+			cancelComposerPointer();
+			// Touch browsers can retarget click to a control moved under the finger.
+			// Consume only the first editor gesture before that control handles click.
+			event.preventDefault();
+			event.stopPropagation();
+			if (editor.isConnected && editor.getAttribute('contenteditable') === 'true') {
+				editor.focus({ preventScroll: true });
+			}
+		}
+
 		function updateComposerMenus(): void {
 			composerMenuOpen = Boolean(
 				form.querySelector(
@@ -733,11 +808,18 @@
 			attributes: true,
 			attributeFilter: ['aria-expanded']
 		});
-		form.addEventListener('pointerdown', expandComposer);
+		form.addEventListener('pointerdown', handleComposerPointerDown);
+		form.addEventListener('pointerup', handleComposerPointerUp);
+		form.addEventListener('pointercancel', cancelComposerPointer);
+		form.addEventListener('click', handleComposerClick, true);
 		updateComposerMenus();
 		return {
 			destroy() {
-				form.removeEventListener('pointerdown', expandComposer);
+				form.removeEventListener('pointerdown', handleComposerPointerDown);
+				form.removeEventListener('pointerup', handleComposerPointerUp);
+				form.removeEventListener('pointercancel', cancelComposerPointer);
+				form.removeEventListener('click', handleComposerClick, true);
+				cancelComposerPointer();
 				menuObserver.disconnect();
 			}
 		};
@@ -1724,7 +1806,7 @@
 	<div class="w-full">
 		<div class=" mx-auto inset-x-0 bg-transparent flex justify-center">
 			<div
-				class="flex flex-col px-3 {($settings?.widescreenMode ?? null)
+				class="buddy-composer-content flex flex-col px-3 {($settings?.widescreenMode ?? null)
 					? 'max-w-full'
 					: 'max-w-[58rem]'} w-full"
 			>
@@ -1762,7 +1844,7 @@
 
 		<div class="bg-transparent">
 			<div
-				class="{($settings?.widescreenMode ?? null)
+				class="buddy-composer-content {($settings?.widescreenMode ?? null)
 					? 'max-w-full'
 					: 'max-w-[58rem]'} px-2 mx-auto inset-x-0"
 			>

@@ -21,7 +21,6 @@
 		models,
 		tags as allTags,
 		settings,
-		showSidebar,
 		WEBUI_NAME,
 		banners,
 		user,
@@ -4280,12 +4279,7 @@
 />
 
 <div
-	class="{embedded
-		? 'h-full'
-		: 'h-screen max-h-[100dvh]'} transition-width duration-200 ease-in-out {$showSidebar &&
-	!embedded
-		? '  md:max-w-[calc(100%-var(--sidebar-width))]'
-		: ' '} w-full max-w-full min-w-0 flex flex-col"
+	class="{embedded ? 'h-full' : 'h-screen max-h-[100dvh]'} w-full max-w-full min-w-0 flex flex-col"
 	id={chatContainerId}
 	class:buddy-chat={!embedded}
 	data-buddy-state={embedded ? undefined : buddyState}
