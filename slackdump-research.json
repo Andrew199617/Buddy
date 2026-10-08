@@ -1,0 +1,11 @@
+[
+  {
+    "id": "slackdump_research",
+    "name": "Slackdump Research",
+    "content": "import os\nfrom pathlib import Path\n\n_data_dir = os.environ.get(\"DATA_DIR\")\nif _data_dir:\n    _root = Path(_data_dir).resolve().parent\nelse:\n    _root = Path.cwd().resolve()\n_impl = _root / \"slackdump-research.py\"\nexec(compile(_impl.read_text(encoding=\"utf-8\"), str(_impl), \"exec\"), globals())\n",
+    "meta": {
+      "description": "Search and inspect Slack history with the local Slackdump executable. Slack access is read-only; results are stored locally."
+    },
+    "access_grants": []
+  }
+]
