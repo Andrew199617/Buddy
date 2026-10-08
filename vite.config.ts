@@ -2,10 +2,11 @@ import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
 import { viteStaticCopy } from 'vite-plugin-static-copy';
+import { createStartupChunks, separateSharedKeyboardHelper } from './local/startup-chunks.mjs';
 
 const backendTarget = process.env.WEBUI_BACKEND_URL || 'http://localhost:8080';
 
-export default defineConfig({
+export default defineConfig(({ isSsrBuild }) => ({
 	resolve: {
 		conditions: ['onnxruntime-web-use-extern-wasm']
 	},
@@ -26,7 +27,13 @@ export default defineConfig({
 		APP_BUILD_HASH: JSON.stringify(process.env.APP_BUILD_HASH || 'dev-build')
 	},
 	build: {
-		sourcemap: true
+		sourcemap: true,
+		rollupOptions: {
+			output: {
+				manualChunks: isSsrBuild ? separateSharedKeyboardHelper : createStartupChunks(),
+				onlyExplicitManualChunks: true
+			}
+		}
 	},
 	server: {
 		proxy: {
@@ -62,4 +69,4 @@ export default defineConfig({
 	esbuild: {
 		pure: process.env.ENV === 'dev' ? [] : ['console.log', 'console.debug', 'console.error']
 	}
-});
+}));

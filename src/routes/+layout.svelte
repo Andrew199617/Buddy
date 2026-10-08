@@ -1237,9 +1237,37 @@
 			}
 		});
 
+		performance.mark('buddy:bootstrap');
+		const updateStartupStatus = (message) => {
+			const status = document.getElementById('buddy-loading-status');
+			if (status) {
+				status.textContent = message;
+			}
+		};
+		updateStartupStatus('Checking your session…');
+
+		const sessionToken = localStorage.token ?? '';
+		const loadSession = async () => {
+			if (!sessionToken) {
+				return null;
+			}
+			try {
+				const session = await getSessionUser(sessionToken);
+				performance.mark('buddy:session-ready');
+				return session;
+			} catch (error) {
+				toast.error(String(error));
+				return null;
+			}
+		};
+		// Authentication and config can use the same token concurrently.
+		// No account data is cached between users.
+		const sessionUserPromise = loadSession();
+
 		let backendConfig = null;
 		try {
-			backendConfig = await getBackendConfig();
+			backendConfig = await getBackendConfig(sessionToken);
+			performance.mark('buddy:config-ready');
 			console.log('Backend config:', backendConfig);
 		} catch (error) {
 			if (error?.authRedirect) {
@@ -1249,11 +1277,17 @@
 				return;
 			}
 			console.error('Error loading backend config:', error);
+			if (sessionToken) {
+				// An expired token must still allow the public sign-in screen.
+				backendConfig = await getBackendConfig().catch(() => null);
+			}
 		}
+		updateStartupStatus('Getting your chat ready…');
 		// Initialize i18n even if we didn't get a backend config,
 		// so `/error` can show something that's not `undefined`.
 
 		await initI18n(localStorage?.locale, backendConfig?.i18n ?? {});
+		performance.mark('buddy:locale-ready');
 		if (!localStorage.locale) {
 			const languages = await getLanguages();
 			const browserLanguages = navigator.languages
@@ -1278,20 +1312,10 @@
 			if ($config) {
 				await setupSocket($config.features?.enable_websocket ?? true);
 
-				if (localStorage.token) {
-					// Get Session User Info
-					const sessionUser = await getSessionUser(localStorage.token).catch((error) => {
-						toast.error(`${error}`);
-						return null;
-					});
-
+				if (sessionToken) {
+					const sessionUser = await sessionUserPromise;
 					if (sessionUser) {
 						await user.set(sessionUser);
-						try {
-							await config.set(await getBackendConfig());
-						} catch (error) {
-							console.error('Error refreshing backend config:', error);
-						}
 
 						// Keep user timezone in sync on every app load/refresh
 						const timezone = getUserTimezone();
@@ -1319,6 +1343,7 @@
 			await goto(`/error`);
 		}
 
+		performance.mark('buddy:app-shell-ready');
 		const connectionResult = await completeOAuthConnectRedirect();
 		if (connectionResult === 'error') {
 			toast.error($i18n.t('The connection could not be completed. You can try again.'));

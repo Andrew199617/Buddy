@@ -6,19 +6,20 @@ import { writable } from 'svelte/store';
 import type { I18nOverrides } from '$lib/utils/translationDictionary';
 
 import { assembleSettingsTranslations } from './settings-translations';
+import { loadDateLocale } from '$lib/dayjs';
 
 let overrides: I18nOverrides = {};
 
 export const loadBundledResource = async (language: string): Promise<Record<string, string>> =>
 	(await import(`./locales/${language}/translation.json`)).default;
 
-const loadResource = async (language: string) =>
-	assembleSettingsTranslations(
-		await loadBundledResource(language),
-		await loadBundledResource('en-US'),
-		overrides[language],
-		overrides['en-US']
-	);
+const loadResource = async (language: string) => {
+	const [bundled, english] = await Promise.all([
+		loadBundledResource(language),
+		loadBundledResource('en-US')
+	]);
+	return assembleSettingsTranslations(bundled, english, overrides[language], overrides['en-US']);
+};
 
 export const updateI18n = async (value: I18nOverrides = {}) => {
 	overrides = value;
@@ -100,6 +101,10 @@ export const initI18n = (defaultLocale?: string, value: I18nOverrides = {}) => {
 			interpolation: {
 				escapeValue: false // not needed for svelte as it escapes by default
 			}
+		})
+		.then(async (result) => {
+			await loadDateLocale(i18next.resolvedLanguage ?? defaultLocale ?? 'en');
+			return result;
 		});
 };
 
@@ -110,9 +115,11 @@ export const getLanguages = async () => {
 	const languages = (await import(`./locales/languages.json`)).default;
 	return languages;
 };
-export const changeLanguage = (lang: string) => {
+export const changeLanguage = async (lang: string) => {
 	document.documentElement.setAttribute('lang', lang);
-	return i18next.changeLanguage(lang);
+	const [, result] = await Promise.all([loadDateLocale(lang), i18next.changeLanguage(lang)]);
+	i18n.set(i18next);
+	return result;
 };
 
 export default i18n;

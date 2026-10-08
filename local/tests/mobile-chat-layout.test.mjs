@@ -19,32 +19,47 @@ function eventTarget() {
 				callbacks.filter((registered) => registered !== callback)
 			);
 		},
+		listenerCount(name) {
+			return (listeners.get(name) || []).length;
+		},
 		emit(name) {
 			for (const callback of listeners.get(name) || []) callback();
 		}
 	};
 }
 
-function createPage({ width = 390, touch = true, readyState = 'complete' } = {}) {
+function createPage({
+	width = 390,
+	touch = true,
+	readyState = 'complete',
+	buddyLayout = false,
+	chatPresent = true
+} = {}) {
 	const properties = new Map();
 	const classes = new Set();
+	const measurements = { viewportReads: 0, rootWrites: 0 };
 	const root = {
 		style: {
 			setProperty(name, value) {
+				measurements.rootWrites++;
 				properties.set(name, value);
 			},
 			removeProperty(name) {
+				measurements.rootWrites++;
 				properties.delete(name);
 			}
 		},
 		classList: {
 			add(...names) {
+				measurements.rootWrites++;
 				for (const name of names) classes.add(name);
 			},
 			remove(...names) {
+				measurements.rootWrites++;
 				for (const name of names) classes.delete(name);
 			},
 			toggle(name, enabled) {
+				measurements.rootWrites++;
 				if (enabled) classes.add(name);
 				else classes.delete(name);
 			}
@@ -74,8 +89,8 @@ function createPage({ width = 390, touch = true, readyState = 'complete' } = {})
 		body: {},
 		head: { appendChild: (style) => styles.push(style) },
 		createElement: () => ({}),
-		chat,
-		buddyLayout: null,
+		chat: chatPresent ? chat : null,
+		buddyLayout: buddyLayout ? {} : null,
 		querySelector() {
 			return this.buddyLayout;
 		},
@@ -85,15 +100,19 @@ function createPage({ width = 390, touch = true, readyState = 'complete' } = {})
 	});
 	const viewport = Object.assign(eventTarget(), { height: 844, offsetTop: 0, scale: 1 });
 	const frames = [];
-	const window = Object.assign(eventTarget(), {
-		innerWidth: width,
+	const window = {
+		...eventTarget(),
+		get innerWidth() {
+			measurements.viewportReads++;
+			return width;
+		},
 		visualViewport: viewport,
 		matchMedia: () => ({ matches: touch }),
 		requestAnimationFrame(callback) {
 			frames.push(callback);
 			return frames.length;
 		}
-	});
+	};
 	let onMutation;
 	class MutationObserver {
 		constructor(callback) {
@@ -105,6 +124,7 @@ function createPage({ width = 390, touch = true, readyState = 'complete' } = {})
 	vm.runInContext(script, context);
 	return {
 		window,
+		measurements,
 		document,
 		viewport,
 		messages,
@@ -305,4 +325,79 @@ test('Buddy mounting releases legacy viewport styles and returning restores lega
 	assert.ok(page.classes.has('owui-chat-compact'));
 	assert.equal(page.properties.get('--owui-chat-viewport-height'), '420px');
 	assert.equal(page.properties.get('--owui-chat-viewport-top'), '160px');
+});
+
+test('Buddy startup and repeated mutations never read the viewport or rewrite legacy root styles', () => {
+	const page = createPage({ buddyLayout: true });
+	assert.deepEqual(page.measurements, { viewportReads: 0, rootWrites: 0 });
+	for (let update = 0; update < 10; update++) {
+		page.mutate();
+		page.document.emit('focusin');
+		page.viewport.emit('resize');
+		page.flush();
+	}
+	assert.deepEqual(page.measurements, { viewportReads: 0, rootWrites: 0 });
+	assert.equal(page.messages.listenerCount('scroll'), 0);
+});
+
+test('an absent chat leaves viewport and root styles untouched until legacy chat returns', () => {
+	const page = createPage({ chatPresent: false });
+	for (let update = 0; update < 10; update++) {
+		page.mutate();
+		page.flush();
+	}
+	assert.deepEqual(page.measurements, { viewportReads: 0, rootWrites: 0 });
+	page.document.chat = { querySelector: () => page.messages };
+	page.mutate();
+	page.flush();
+	assert.ok(page.classes.has('owui-mobile-chat'));
+	assert.equal(page.messages.listenerCount('scroll'), 1);
+});
+
+test('legacy to Buddy performs one cleanup and restores keyboard behavior after returning', () => {
+	const page = createPage();
+	const writesBeforeBuddy = page.measurements.rootWrites;
+	const readsBeforeBuddy = page.measurements.viewportReads;
+	assert.equal(page.messages.listenerCount('scroll'), 1);
+	page.document.buddyLayout = {};
+	page.mutate();
+	page.flush();
+	assert.equal(page.measurements.rootWrites - writesBeforeBuddy, 5);
+	assert.equal(page.measurements.viewportReads, readsBeforeBuddy);
+	assert.equal(page.messages.listenerCount('scroll'), 0);
+	const writesAfterCleanup = page.measurements.rootWrites;
+	for (let update = 0; update < 10; update++) {
+		page.mutate();
+		page.document.emit('focusin');
+		page.flush();
+	}
+	assert.equal(page.measurements.rootWrites, writesAfterCleanup);
+	assert.equal(page.measurements.viewportReads, readsBeforeBuddy);
+
+	page.document.buddyLayout = null;
+	page.viewport.height = 420;
+	page.viewport.offsetTop = 160;
+	page.mutate();
+	page.flush();
+	assert.equal(page.messages.listenerCount('scroll'), 1);
+	assert.ok(page.classes.has('owui-chat-compact'));
+	assert.equal(page.properties.get('--owui-chat-viewport-height'), '420px');
+	assert.equal(page.properties.get('--owui-chat-viewport-top'), '160px');
+});
+
+test('pinch zoom performs one cleanup and normal scale reactivates legacy tracking', () => {
+	const page = createPage();
+	page.viewport.scale = 2;
+	page.viewport.emit('resize');
+	page.flush();
+	const writesAfterCleanup = page.measurements.rootWrites;
+	page.mutate();
+	page.flush();
+	assert.equal(page.measurements.rootWrites, writesAfterCleanup);
+	assert.equal(page.messages.listenerCount('scroll'), 0);
+	page.viewport.scale = 1;
+	page.viewport.emit('resize');
+	page.flush();
+	assert.ok(page.classes.has('owui-mobile-chat'));
+	assert.equal(page.messages.listenerCount('scroll'), 1);
 });

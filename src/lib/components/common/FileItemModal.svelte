@@ -10,7 +10,7 @@
 	import { getKnowledgeById } from '$lib/apis/knowledge';
 	import { getFileById, getFileContentById } from '$lib/apis/files';
 
-	import CodeBlock from '$lib/components/chat/Messages/CodeBlock.svelte';
+	import CodeBlock from '$lib/components/chat/Messages/LazyCodeBlock.svelte';
 	import Markdown from '$lib/components/chat/Messages/Markdown.svelte';
 
 	const i18n: any = getContext('i18n');

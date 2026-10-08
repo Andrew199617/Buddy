@@ -1466,15 +1466,19 @@ export const getUsage = async (token: string = '') => {
 	return res;
 };
 
-export const getBackendConfig = async () => {
+export const getBackendConfig = async (token = '') => {
 	let error = null;
+	const headers: Record<string, string> = {
+		'Content-Type': 'application/json'
+	};
+	if (token) {
+		headers.Authorization = 'Bearer ' + token;
+	}
 
 	const res = await fetch(`${WEBUI_BASE_URL}/api/config`, {
 		method: 'GET',
 		credentials: 'include',
-		headers: {
-			'Content-Type': 'application/json'
-		}
+		headers: headers
 	})
 		.then(async (res) => {
 			if (!res.ok) throw await res.json();

@@ -295,6 +295,7 @@
  function update() {
   pendingFrame = null;
   const nav = document.getElementById('settings-tabs-container');
+  if (!nav && !current) return;
   const phone = window.innerWidth < 768;
   if (current && (!phone || nav !== current.nav || !current.modal.isConnected)) {
    disposeState(current);

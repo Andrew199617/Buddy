@@ -4,6 +4,10 @@
 
 <script lang="ts">
 	import { onMount, tick, getContext } from 'svelte';
+	import type { Writable } from 'svelte/store';
+	import type { i18n as I18n } from 'i18next';
+	import { createLazyComponent } from '$lib/utils/lazy-component';
+	import LazyFeatureStatus from '$lib/components/common/LazyFeatureStatus.svelte';
 	import {
 		config,
 		terminalServers,
@@ -18,17 +22,37 @@
 	} from '$lib/stores';
 
 	import Controls from './Controls/Controls.svelte';
-	import CallOverlay from './MessageInput/CallOverlay.svelte';
 	import Drawer from '../common/Drawer.svelte';
 	import ResizableSidePanel from '../common/ResizableSidePanel.svelte';
-	import Artifacts from './Artifacts.svelte';
-	import Embeds from './ChatControls/Embeds.svelte';
-	import FileNav from './FileNav.svelte';
-	import PyodideFileNav from './PyodideFileNav.svelte';
-	import Overview from './Overview.svelte';
 	import { isSavedChatId } from '$lib/utils/chatId';
 
-	const i18n = getContext('i18n');
+	const i18n: Writable<I18n> = getContext('i18n');
+
+	function importCallOverlay() {
+		return import('./MessageInput/CallOverlay.svelte');
+	}
+	function importArtifacts() {
+		return import('./Artifacts.svelte');
+	}
+	function importEmbeds() {
+		return import('./ChatControls/Embeds.svelte');
+	}
+	function importFileNav() {
+		return import('./FileNav.svelte');
+	}
+	function importPyodideFileNav() {
+		return import('./PyodideFileNav.svelte');
+	}
+	function importOverview() {
+		return import('./Overview.svelte');
+	}
+
+	const callOverlayFeature = createLazyComponent(importCallOverlay);
+	const artifactsFeature = createLazyComponent(importArtifacts);
+	const embedsFeature = createLazyComponent(importEmbeds);
+	const fileNavFeature = createLazyComponent(importFileNav);
+	const pyodideFileNavFeature = createLazyComponent(importPyodideFileNav);
+	const overviewFeature = createLazyComponent(importOverview);
 
 	export let history;
 	export let models = [];
@@ -190,6 +214,27 @@
 
 	// Helper: is a "special" full-screen panel active?
 	$: specialPanel = $showCallOverlay || $showArtifacts || $showEmbeds;
+
+	// Import only the feature that the currently visible panel needs.
+	$: if ($showControls) {
+		if ($showCallOverlay) {
+			void callOverlayFeature.load();
+		} else if ($showEmbeds) {
+			void embedsFeature.load();
+		} else if ($showArtifacts) {
+			void artifactsFeature.load();
+		} else if (activeTab === 'overview') {
+			void overviewFeature.load();
+		} else if (activeTab === 'files' && terminalFilesAvailable && $selectedTerminalId) {
+			void fileNavFeature.load();
+		} else if (activeTab === 'files' && codeInterpreterEnabled) {
+			void pyodideFileNavFeature.load();
+		}
+	}
+
+	function closeFeaturePanel() {
+		showControls.set(false);
+	}
 </script>
 
 {#if !largeScreen}
@@ -204,20 +249,48 @@
 					<div
 						class="h-full max-h-[100dvh] bg-white text-gray-700 dark:bg-black dark:text-gray-300 flex justify-center"
 					>
-						<CallOverlay
-							bind:files
-							{submitPrompt}
-							{stopResponse}
-							{modelId}
-							{chatId}
-							{eventTarget}
-							on:close={() => showControls.set(false)}
-						/>
+						{#if $callOverlayFeature.component}
+							<svelte:component
+								this={$callOverlayFeature.component}
+								bind:files
+								{submitPrompt}
+								{stopResponse}
+								{modelId}
+								{chatId}
+								{eventTarget}
+								on:close={() => showControls.set(false)}
+							/>
+						{:else}
+							<LazyFeatureStatus
+								feature={$i18n.t('Call')}
+								error={$callOverlayFeature.error}
+								onRetry={callOverlayFeature.load}
+								onClose={closeFeaturePanel}
+							/>
+						{/if}
 					</div>
 				{:else if $showEmbeds}
-					<Embeds />
+					{#if $embedsFeature.component}
+						<svelte:component this={$embedsFeature.component} />
+					{:else}
+						<LazyFeatureStatus
+							feature={$i18n.t('Web')}
+							error={$embedsFeature.error}
+							onRetry={embedsFeature.load}
+							onClose={closeFeaturePanel}
+						/>
+					{/if}
 				{:else if $showArtifacts}
-					<Artifacts {history} />
+					{#if $artifactsFeature.component}
+						<svelte:component this={$artifactsFeature.component} {history} />
+					{:else}
+						<LazyFeatureStatus
+							feature={$i18n.t('Artifacts')}
+							error={$artifactsFeature.error}
+							onRetry={artifactsFeature.load}
+							onClose={closeFeaturePanel}
+						/>
+					{/if}
 				{:else}
 					<!-- Controls + Files tabs -->
 					<div class="flex flex-col h-full min-h-0">
@@ -284,18 +357,46 @@
 									: ''}"
 						>
 							{#if activeTab === 'overview'}
-								<Overview
-									{history}
-									{chatUser}
-									onNodeClick={(e) => {
-										const node = e.node;
-										showMessage(node.data.message, true);
-									}}
-								/>
+								{#if $overviewFeature.component}
+									<svelte:component
+										this={$overviewFeature.component}
+										{history}
+										{chatUser}
+										onNodeClick={(e) => {
+											const node = e.node;
+											showMessage(node.data.message, true);
+										}}
+									/>
+								{:else}
+									<LazyFeatureStatus
+										feature={$i18n.t('Overview')}
+										error={$overviewFeature.error}
+										onRetry={overviewFeature.load}
+										onClose={closeFeaturePanel}
+									/>
+								{/if}
 							{:else if activeTab === 'files' && terminalFilesAvailable && $selectedTerminalId}
-								<FileNav {chatId} />
+								{#if $fileNavFeature.component}
+									<svelte:component this={$fileNavFeature.component} {chatId} />
+								{:else}
+									<LazyFeatureStatus
+										feature={$i18n.t('Files')}
+										error={$fileNavFeature.error}
+										onRetry={fileNavFeature.load}
+										onClose={closeFeaturePanel}
+									/>
+								{/if}
 							{:else if activeTab === 'files' && codeInterpreterEnabled}
-								<PyodideFileNav />
+								{#if $pyodideFileNavFeature.component}
+									<svelte:component this={$pyodideFileNavFeature.component} />
+								{:else}
+									<LazyFeatureStatus
+										feature={$i18n.t('Files')}
+										error={$pyodideFileNavFeature.error}
+										onRetry={pyodideFileNavFeature.load}
+										onClose={closeFeaturePanel}
+									/>
+								{/if}
 							{:else}
 								<Controls embed={true} {models} bind:chatFiles bind:params />
 							{/if}
@@ -327,20 +428,48 @@
 			>
 				{#if $showCallOverlay}
 					<div class="w-full h-full flex justify-center">
-						<CallOverlay
-							bind:files
-							{submitPrompt}
-							{stopResponse}
-							{modelId}
-							{chatId}
-							{eventTarget}
-							on:close={() => showControls.set(false)}
-						/>
+						{#if $callOverlayFeature.component}
+							<svelte:component
+								this={$callOverlayFeature.component}
+								bind:files
+								{submitPrompt}
+								{stopResponse}
+								{modelId}
+								{chatId}
+								{eventTarget}
+								on:close={() => showControls.set(false)}
+							/>
+						{:else}
+							<LazyFeatureStatus
+								feature={$i18n.t('Call')}
+								error={$callOverlayFeature.error}
+								onRetry={callOverlayFeature.load}
+								onClose={closeFeaturePanel}
+							/>
+						{/if}
 					</div>
 				{:else if $showEmbeds}
-					<Embeds overlay={dragged} />
+					{#if $embedsFeature.component}
+						<svelte:component this={$embedsFeature.component} overlay={dragged} />
+					{:else}
+						<LazyFeatureStatus
+							feature={$i18n.t('Web')}
+							error={$embedsFeature.error}
+							onRetry={embedsFeature.load}
+							onClose={closeFeaturePanel}
+						/>
+					{/if}
 				{:else if $showArtifacts}
-					<Artifacts {history} overlay={dragged} />
+					{#if $artifactsFeature.component}
+						<svelte:component this={$artifactsFeature.component} {history} overlay={dragged} />
+					{:else}
+						<LazyFeatureStatus
+							feature={$i18n.t('Artifacts')}
+							error={$artifactsFeature.error}
+							onRetry={artifactsFeature.load}
+							onClose={closeFeaturePanel}
+						/>
+					{/if}
 				{:else}
 					<!-- Controls + Files tabs -->
 					<div class="flex flex-col h-full min-h-0">
@@ -407,23 +536,51 @@
 									: ''}"
 						>
 							{#if activeTab === 'overview'}
-								<Overview
-									{history}
-									{chatUser}
-									onNodeClick={(e) => {
-										const node = e.node;
-										if (node?.data?.message?.favorite) {
-											history.messages[node.data.message.id].favorite = true;
-										} else {
-											history.messages[node.data.message.id].favorite = null;
-										}
-										showMessage(node.data.message, true);
-									}}
-								/>
+								{#if $overviewFeature.component}
+									<svelte:component
+										this={$overviewFeature.component}
+										{history}
+										{chatUser}
+										onNodeClick={(e) => {
+											const node = e.node;
+											if (node?.data?.message?.favorite) {
+												history.messages[node.data.message.id].favorite = true;
+											} else {
+												history.messages[node.data.message.id].favorite = null;
+											}
+											showMessage(node.data.message, true);
+										}}
+									/>
+								{:else}
+									<LazyFeatureStatus
+										feature={$i18n.t('Overview')}
+										error={$overviewFeature.error}
+										onRetry={overviewFeature.load}
+										onClose={closeFeaturePanel}
+									/>
+								{/if}
 							{:else if activeTab === 'files' && terminalFilesAvailable && $selectedTerminalId}
-								<FileNav overlay={dragged} {chatId} />
+								{#if $fileNavFeature.component}
+									<svelte:component this={$fileNavFeature.component} overlay={dragged} {chatId} />
+								{:else}
+									<LazyFeatureStatus
+										feature={$i18n.t('Files')}
+										error={$fileNavFeature.error}
+										onRetry={fileNavFeature.load}
+										onClose={closeFeaturePanel}
+									/>
+								{/if}
 							{:else if activeTab === 'files' && codeInterpreterEnabled}
-								<PyodideFileNav overlay={dragged} />
+								{#if $pyodideFileNavFeature.component}
+									<svelte:component this={$pyodideFileNavFeature.component} overlay={dragged} />
+								{:else}
+									<LazyFeatureStatus
+										feature={$i18n.t('Files')}
+										error={$pyodideFileNavFeature.error}
+										onRetry={pyodideFileNavFeature.load}
+										onClose={closeFeaturePanel}
+									/>
+								{/if}
 							{:else}
 								<Controls embed={true} {models} bind:chatFiles bind:params />
 							{/if}

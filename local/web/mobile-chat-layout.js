@@ -90,6 +90,7 @@ html.owui-mobile-chat:not(:has(.buddy-chat, .buddy-shell)), html.owui-mobile-cha
 }`;
 
 	let pendingFrame = null;
+	let layoutActive = false;
 	let messagesElement = null;
 	let messagesHeight = 0;
 	let messagesScrollHeight = 0;
@@ -148,6 +149,8 @@ html.owui-mobile-chat:not(:has(.buddy-chat, .buddy-shell)), html.owui-mobile-cha
 	}
 
 	function clearLayout() {
+		if (!layoutActive) return;
+		layoutActive = false;
 		watchMessages(null);
 		root.classList.remove('owui-mobile-chat', 'owui-chat-compact');
 		root.style.removeProperty('--owui-chat-viewport-height');
@@ -158,15 +161,23 @@ html.owui-mobile-chat:not(:has(.buddy-chat, .buddy-shell)), html.owui-mobile-cha
 
 	function updateLayout() {
 		pendingFrame = null;
-		const chat = document.getElementById('chat-container');
-		const mobile = window.innerWidth < 768 || touchScreen.matches;
-		const buddyLayout = document.querySelector('.buddy-chat, .buddy-shell');
 		// Buddy's native shell owns keyboard sizing, composer clearance, and scrolling.
-		if (buddyLayout || !chat || !mobile || viewport.scale > 1.05 || viewport.height <= 0) {
+		if (document.querySelector('.buddy-chat, .buddy-shell')) {
+			clearLayout();
+			return;
+		}
+		const chat = document.getElementById('chat-container');
+		if (!chat) {
+			clearLayout();
+			return;
+		}
+		const mobile = window.innerWidth < 768 || touchScreen.matches;
+		if (!mobile || viewport.scale > 1.05 || viewport.height <= 0) {
 			clearLayout();
 			return;
 		}
 
+		layoutActive = true;
 		const messages = chat.querySelector('#messages-container');
 		watchMessages(messages);
 

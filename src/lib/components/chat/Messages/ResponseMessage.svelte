@@ -65,7 +65,14 @@
 	import RegenerateMenu from './ResponseMessage/RegenerateMenu.svelte';
 	import StatusHistory from './ResponseMessage/StatusHistory.svelte';
 	import FullHeightIframe from '$lib/components/common/FullHeightIframe.svelte';
-	import OutputEditView from './OutputEditView.svelte';
+	import { createLazyComponent } from '$lib/utils/lazy-component';
+	import LazyFeatureStatus from '$lib/components/common/LazyFeatureStatus.svelte';
+
+	const importOutputEditor = () => import('./OutputEditView.svelte');
+	const outputEditorFeature = createLazyComponent(importOutputEditor);
+	$: if (edit && editedOutput) {
+		void outputEditorFeature.load();
+	}
 	import { getOutputText, replaceOutputMessageText, type OutputItem } from './structuredOutput';
 
 	interface MessageType {
@@ -750,12 +757,22 @@
 							>
 								{#if editedOutput}
 									<!-- Structured output editor (visual + JSON toggle) -->
-									<OutputEditView
-										output={editedOutput}
-										onChange={(updated) => {
-											editedOutput = updated;
-										}}
-									/>
+									{#if $outputEditorFeature.component}
+										<svelte:component
+											this={$outputEditorFeature.component}
+											output={editedOutput}
+											onChange={(updated) => {
+												editedOutput = updated;
+											}}
+										/>
+									{:else}
+										<LazyFeatureStatus
+											feature="Message editor"
+											compact={true}
+											error={$outputEditorFeature.error}
+											onRetry={outputEditorFeature.load}
+										/>
+									{/if}
 								{:else}
 									<!-- Legacy textarea for messages without output -->
 									<textarea

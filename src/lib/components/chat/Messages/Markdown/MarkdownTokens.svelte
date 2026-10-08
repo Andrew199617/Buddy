@@ -14,7 +14,7 @@
 	import { settings } from '$lib/stores';
 	import { toast } from 'svelte-sonner';
 
-	import CodeBlock from '$lib/components/chat/Messages/CodeBlock.svelte';
+	import CodeBlock from '$lib/components/chat/Messages/LazyCodeBlock.svelte';
 	import MarkdownInlineTokens from '$lib/components/chat/Messages/Markdown/MarkdownInlineTokens.svelte';
 	import KatexRenderer from './KatexRenderer.svelte';
 	import AlertRenderer, { alertComponent } from './AlertRenderer.svelte';

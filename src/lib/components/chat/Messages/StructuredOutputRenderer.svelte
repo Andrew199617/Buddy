@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Collapsible from '$lib/components/common/Collapsible.svelte';
 	import ToolCallDisplay from '$lib/components/common/ToolCallDisplay.svelte';
-	import TerminalOutputFile from './TerminalOutputFile.svelte';
+	import TerminalOutputFile from './LazyTerminalOutputFile.svelte';
 	import { resolveChatMessageToolCall } from '$lib/apis/chats';
 	import { settings } from '$lib/stores';
 	import { toast } from 'svelte-sonner';
