@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
 	import { onMount, tick, getContext } from 'svelte';
+	import type { Writable } from 'svelte/store';
+	import type { i18n as I18n } from 'i18next';
 
 	import { afterNavigate, goto } from '$app/navigation';
 	import { page } from '$app/stores';
@@ -18,6 +20,7 @@
 
 	import {
 		config,
+		type SettingsModalRequest,
 		user,
 		settings,
 		models,
@@ -43,14 +46,41 @@
 	import '$lib/styles/buddy-redesign.css';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import BuddyDock from '$lib/components/buddy/BuddyDock.svelte';
-	import SettingsModal from '$lib/components/chat/SettingsModal.svelte';
+	import BuddyAvatar from '$lib/components/buddy/BuddyAvatar.svelte';
+	import Modal from '$lib/components/common/Modal.svelte';
+	import LazyFeatureStatus from '$lib/components/common/LazyFeatureStatus.svelte';
+	import { createLazyComponent } from '$lib/utils/lazy-component';
 	import ChangelogModal from '$lib/components/ChangelogModal.svelte';
 	import AccountPending from '$lib/components/layout/Overlay/AccountPending.svelte';
 	import UpdateInfoToast from '$lib/components/layout/UpdateInfoToast.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import { loadKeybindings, matchKeybinding, Shortcut } from '$lib/shortcuts';
 
-	const i18n = getContext('i18n');
+	const i18n: Writable<I18n> = getContext('i18n');
+
+	function importSettingsModal() {
+		return import('$lib/components/chat/SettingsModal.svelte');
+	}
+	const settingsFeature = createLazyComponent(importSettingsModal);
+	let settingsPlaceholderOpen = false;
+	let previousSettingsRequest: boolean | string | SettingsModalRequest | undefined;
+
+	function closeSettingsPlaceholder() {
+		settingsPlaceholderOpen = false;
+		showSettings.set(false);
+	}
+
+	// Preserve the original tab/state request until the real modal receives it.
+	$: if ($showSettings !== previousSettingsRequest) {
+		previousSettingsRequest = $showSettings;
+		settingsPlaceholderOpen = Boolean($showSettings);
+		if ($showSettings && !$settingsFeature.component) {
+			void settingsFeature.load();
+		}
+	}
+	$: if (!settingsPlaceholderOpen && $showSettings && !$settingsFeature.component) {
+		showSettings.set(false);
+	}
 
 	let loaded = false;
 	let keyboardOpen = false;
@@ -412,6 +442,7 @@
 		await tick();
 
 		loaded = true;
+		performance.mark('buddy:chat-ready');
 	});
 
 	// `$page.url` must be referenced here: `$:` only tracks variables used in
@@ -435,7 +466,22 @@
 	};
 </script>
 
-<SettingsModal bind:show={$showSettings} />
+{#if $settingsFeature.component}
+	<svelte:component this={$settingsFeature.component} bind:show={$showSettings} />
+{:else if $showSettings}
+	<Modal
+		bind:show={settingsPlaceholderOpen}
+		size="sm"
+		className="bg-white dark:bg-gray-900 rounded-4xl"
+	>
+		<LazyFeatureStatus
+			feature={$i18n.t('Settings')}
+			error={$settingsFeature.error}
+			onRetry={settingsFeature.load}
+			onClose={closeSettingsPlaceholder}
+		/>
+	</Modal>
+{/if}
 <ChangelogModal bind:show={$showChangelog} />
 
 {#if version && compareVersion(version.latest, version.current) && ($settings?.showUpdateToast ?? true)}
@@ -475,8 +521,18 @@
 						<slot />
 					</main>
 				{:else}
-					<div class="w-full flex-1 min-h-0 flex items-center justify-center">
+					<div class="buddy-startup-avatar" aria-hidden="true">
+						<BuddyAvatar state="thinking" decorative={true} />
+						<span>Buddy</span>
+					</div>
+					<div
+						class="w-full flex-1 min-h-0 flex flex-col gap-3 items-center justify-center"
+						aria-busy="true"
+					>
 						<Spinner className="size-5" />
+						<p class="text-sm text-gray-500" role="status">
+							{$i18n.t('Getting your chat ready…')}
+						</p>
 					</div>
 				{/if}
 
@@ -487,6 +543,21 @@
 {/if}
 
 <style>
+	.buddy-startup-avatar {
+		position: absolute;
+		top: calc(var(--buddy-safe-top, 0px) + 10px);
+		left: 50%;
+		transform: translateX(-50%);
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 8px;
+	}
+	.buddy-startup-avatar span {
+		font-size: 12px;
+		font-weight: 600;
+		color: var(--buddy-text, #273c2f);
+	}
 	.buddy-shell :global(.buddy-feature-sidebar-trigger) {
 		display: flex;
 		align-items: center;

@@ -67,6 +67,14 @@ The installer updates the Functions in `local/functions/` in your local
 database. Re-run it after changing those files. See [local customization
 details](local/README.md) for the individual features and update instructions.
 
+## Redesign startup performance
+
+The redesign on port 8082 runs an optimized production frontend against the
+existing Buddy backend on 8081. Use `local/serve-frontend.mjs` after building;
+Vite dev is intended for editing and loads substantially more browser modules.
+See [the measured startup report](local/STARTUP-PERFORMANCE.md) for timings,
+comparison controls, deferred features, and the exact launch command.
+
 ## Install Buddy on iPhone
 
 For the current Buddy redesign, open `http://100.122.80.32:8082/` in Safari on

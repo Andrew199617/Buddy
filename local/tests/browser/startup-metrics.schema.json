@@ -1,0 +1,436 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://buddy.example.invalid/qa/startup-metrics.schema.json",
+	"title": "Buddy isolated-browser startup benchmark",
+	"type": "object",
+	"required": [
+		"schemaVersion",
+		"label",
+		"revision",
+		"targetUrl",
+		"createdAt",
+		"browserVersion",
+		"nodeVersion",
+		"authentication",
+		"routeInterception",
+		"serviceWorkers",
+		"percentileMethod",
+		"profiles",
+		"runs",
+		"summary"
+	],
+	"properties": {
+		"schemaVersion": {
+			"const": 1
+		},
+		"label": {
+			"type": "string"
+		},
+		"revision": {
+			"type": "string"
+		},
+		"targetUrl": {
+			"type": "string",
+			"format": "uri",
+			"description": "Origin and pathname only; queries, credentials, headers and response bodies are excluded."
+		},
+		"createdAt": {
+			"type": "string",
+			"format": "date-time"
+		},
+		"browserVersion": {
+			"type": "string"
+		},
+		"nodeVersion": {
+			"type": "string"
+		},
+		"authentication": {
+			"const": "private-short-lived-token"
+		},
+		"routeInterception": {
+			"const": false
+		},
+		"serviceWorkers": {
+			"const": "blocked"
+		},
+		"percentileMethod": {
+			"type": "string"
+		},
+		"profiles": {
+			"type": "object",
+			"additionalProperties": {
+				"$ref": "#/$defs/profile"
+			}
+		},
+		"runs": {
+			"type": "array",
+			"items": {
+				"$ref": "#/$defs/run"
+			}
+		},
+		"summary": {
+			"type": "object",
+			"additionalProperties": {
+				"$ref": "#/$defs/group"
+			}
+		},
+		"diagnostic": {
+			"type": "boolean",
+			"description": "CPU sampling diagnostics are excluded from primary median/p90 comparisons."
+		}
+	},
+	"$defs": {
+		"profile": {
+			"type": "object",
+			"required": [
+				"viewport",
+				"isMobile",
+				"hasTouch",
+				"deviceScaleFactor",
+				"cpuSlowdown",
+				"network"
+			],
+			"properties": {
+				"viewport": {
+					"type": "object",
+					"required": ["width", "height"],
+					"properties": {
+						"width": {
+							"type": "integer"
+						},
+						"height": {
+							"type": "integer"
+						}
+					}
+				},
+				"isMobile": {
+					"type": "boolean"
+				},
+				"hasTouch": {
+					"type": "boolean"
+				},
+				"deviceScaleFactor": {
+					"type": "number"
+				},
+				"cpuSlowdown": {
+					"type": "number"
+				},
+				"network": {
+					"type": "object",
+					"required": ["latencyMs", "downloadMbps", "uploadMbps"],
+					"properties": {
+						"latencyMs": {
+							"type": "number"
+						},
+						"downloadMbps": {
+							"type": "number"
+						},
+						"uploadMbps": {
+							"type": "number"
+						}
+					}
+				}
+			}
+		},
+		"milestones": {
+			"type": "object",
+			"description": "Milliseconds from navigation time origin. Model readiness is native selected aria-label, including its deliberately hidden composer row. First draft verification occurs after two animation frames following a trusted, unsent input event.",
+			"properties": {
+				"navigationStartMs": {
+					"const": 0
+				},
+				"domContentLoadedMs": {
+					"type": "number"
+				},
+				"loadEventMs": {
+					"type": "number"
+				},
+				"splashRemovedMs": {
+					"type": "number"
+				},
+				"composerEditableMs": {
+					"type": "number"
+				},
+				"selectedModelReadyMs": {
+					"type": "number"
+				},
+				"allReadyMs": {
+					"type": "number"
+				},
+				"firstTrustedInputMs": {
+					"type": "number"
+				},
+				"firstDraftVerifiedMs": {
+					"type": "number"
+				}
+			}
+		},
+		"resource": {
+			"type": "object",
+			"required": [
+				"id",
+				"url",
+				"method",
+				"type",
+				"initiatorType",
+				"status",
+				"mimeType",
+				"fromDiskCache",
+				"fromMemoryCache",
+				"fromServiceWorker",
+				"encodedBytes",
+				"decodedBytes",
+				"startMs",
+				"responseMs",
+				"endMs",
+				"durationMs"
+			],
+			"properties": {
+				"id": {
+					"type": "string"
+				},
+				"url": {
+					"type": "string",
+					"description": "Origin + pathname only; no query or fragment."
+				},
+				"method": {
+					"type": "string"
+				},
+				"type": {
+					"type": "string"
+				},
+				"initiatorType": {
+					"type": "string"
+				},
+				"status": {
+					"type": ["number", "null"]
+				},
+				"wireStatus": {
+					"type": "number",
+					"description": "Underlying response status, including conditional 304s masked by browser cache reuse."
+				},
+				"mimeType": {
+					"type": ["string", "null"]
+				},
+				"protocol": {
+					"type": "string"
+				},
+				"compression": {
+					"enum": ["gzip", "br", "deflate", null]
+				},
+				"cachePolicy": {
+					"type": "object",
+					"properties": {
+						"immutable": {
+							"type": "boolean"
+						},
+						"noStore": {
+							"type": "boolean"
+						},
+						"noCache": {
+							"type": "boolean"
+						},
+						"maxAgeSeconds": {
+							"type": ["number", "null"]
+						}
+					}
+				},
+				"fromDiskCache": {
+					"type": "boolean"
+				},
+				"fromMemoryCache": {
+					"type": "boolean"
+				},
+				"fromServiceWorker": {
+					"type": "boolean"
+				},
+				"encodedBytes": {
+					"type": "number"
+				},
+				"decodedBytes": {
+					"type": "number"
+				},
+				"startMs": {
+					"type": ["number", "null"]
+				},
+				"responseMs": {
+					"type": ["number", "null"]
+				},
+				"endMs": {
+					"type": ["number", "null"]
+				},
+				"durationMs": {
+					"type": ["number", "null"]
+				},
+				"responseTiming": {
+					"type": ["object", "null"],
+					"description": "CDP DNS/connect/send/header timing values relative to request start, all milliseconds; -1 denotes unavailable."
+				},
+				"failed": {
+					"type": "boolean"
+				},
+				"failureType": {
+					"type": "string"
+				}
+			}
+		},
+		"run": {
+			"type": "object",
+			"required": [
+				"pairIndex",
+				"cache",
+				"profile",
+				"targetUrl",
+				"status",
+				"startedAt",
+				"wallDurationMs",
+				"probe",
+				"resources",
+				"pageErrors",
+				"failurePhase",
+				"summary"
+			],
+			"properties": {
+				"pairIndex": {
+					"type": "integer"
+				},
+				"cache": {
+					"enum": ["cold", "warm"],
+					"description": "Cold uses a new private browser context plus HTTP-cache flush. Warm uses a new page in the same context with HTTP cache retained; it is a fresh navigation rather than back/forward cache or a reload."
+				},
+				"profile": {
+					"enum": ["desktop", "mobile"]
+				},
+				"targetUrl": {
+					"type": "string"
+				},
+				"status": {
+					"enum": ["passed", "failed"]
+				},
+				"startedAt": {
+					"type": "string",
+					"format": "date-time"
+				},
+				"wallDurationMs": {
+					"type": "number"
+				},
+				"failurePhase": {
+					"type": ["string", "null"]
+				},
+				"pageErrors": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"name": {
+								"type": "string"
+							}
+						}
+					}
+				},
+				"probe": {
+					"type": ["object", "null"],
+					"properties": {
+						"milestones": {
+							"$ref": "#/$defs/milestones"
+						},
+						"longTasks": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": ["startMs", "durationMs"],
+								"properties": {
+									"startMs": {
+										"type": "number"
+									},
+									"durationMs": {
+										"type": "number"
+									}
+								}
+							}
+						},
+						"paints": {
+							"type": "object"
+						},
+						"layoutShifts": {
+							"type": "array"
+						},
+						"inputEvents": {
+							"type": "array"
+						},
+						"splashSeen": {
+							"type": "boolean"
+						},
+						"observerError": {
+							"type": "boolean"
+						},
+						"navigationTiming": {
+							"type": ["object", "null"]
+						}
+					}
+				},
+				"browserMetrics": {
+					"type": "object",
+					"description": "Raw CDP metrics: duration values are seconds, heap values are bytes, all other retained metrics are counts."
+				},
+				"resources": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/resource"
+					}
+				},
+				"summary": {
+					"type": "object",
+					"description": "Aggregates requests initiated by verified draft readiness, using their captured complete transfer sizes. Network capture continues 1500ms after readiness so late response completion is visible; unique scripts are network resources, not modules hidden inside bundles."
+				},
+				"cpuProfile": {
+					"type": "object",
+					"description": "Optional CDP sampled call frames with sanitized URLs, sampled until verified draft readiness. Native start/end times and sample deltas are microseconds."
+				}
+			}
+		},
+		"group": {
+			"type": "object",
+			"required": [
+				"sampleCount",
+				"passedCount",
+				"metrics",
+				"medianTransferBytes",
+				"medianScriptCount",
+				"medianLongTaskBlockingMs"
+			],
+			"properties": {
+				"sampleCount": {
+					"type": "integer"
+				},
+				"passedCount": {
+					"type": "integer"
+				},
+				"metrics": {
+					"type": "object",
+					"additionalProperties": {
+						"type": "object",
+						"required": ["medianMs", "p90Ms"],
+						"properties": {
+							"medianMs": {
+								"type": ["number", "null"]
+							},
+							"p90Ms": {
+								"type": ["number", "null"]
+							}
+						}
+					}
+				},
+				"medianTransferBytes": {
+					"type": ["number", "null"]
+				},
+				"medianScriptCount": {
+					"type": ["number", "null"]
+				},
+				"medianLongTaskBlockingMs": {
+					"type": ["number", "null"]
+				}
+			}
+		}
+	}
+}

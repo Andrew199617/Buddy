@@ -24,7 +24,7 @@ import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { marked } from 'marked';
 import markedExtension from '$lib/utils/marked/extension';
 import markedKatexExtension from '$lib/utils/marked/katex-extension';
-import hljs from 'highlight.js';
+import { loadSyntaxHighlighter } from '$lib/utils/lazy-highlighting';
 import { decode } from 'html-entities';
 
 //////////////////////////
@@ -525,6 +525,7 @@ export const copyToClipboard = async (text, html = null, formatted = false) => {
 	if (formatted) {
 		let styledHtml = '';
 		if (!html) {
+			const hljs = await loadSyntaxHighlighter();
 			const options = {
 				throwOnError: false,
 				highlight: function (code, lang) {
