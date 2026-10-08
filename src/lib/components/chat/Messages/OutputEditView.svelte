@@ -39,7 +39,7 @@
 					json(),
 					editorTheme.of(isDark ? oneDark : []),
 					EditorView.theme({
-						'&': { fontSize: 'calc(13px + var(--buddy-font-size-offset, 2px))' },
+						'&': { fontSize: 'calc(13px + var(--buddy-font-size-offset, 0px))' },
 						'.cm-content': { fontFamily: 'ui-monospace, monospace' },
 						'.cm-scroller': { maxHeight: '320px', overflow: 'auto' },
 						'&.cm-focused': { outline: 'none' }

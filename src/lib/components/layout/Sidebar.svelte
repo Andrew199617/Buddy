@@ -888,8 +888,6 @@
 
 		await tick();
 	};
-
-	const isWindows = /Windows/i.test(navigator.userAgent);
 </script>
 
 <ChannelModal
@@ -954,6 +952,7 @@
 	open={$showSidebar}
 	enabled={$mobile}
 	width={$sidebarWidth}
+	panelElement={navElement}
 	onOpenChange={(open) => showSidebar.set(open)}
 	let:visible
 	let:progress
@@ -1039,19 +1038,21 @@
 				<Tooltip
 					content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
 					placement="bottom"
+					touch={false}
+					tippyOptions={{ trigger: 'mouseenter' }}
 				>
 					<button
 						id="buddy-sidebar-close"
-						class="flex size-11 justify-center items-center rounded-lg hover:bg-gray-100 dark:hover:bg-gray-900 transition {isWindows
-							? 'cursor-pointer'
-							: 'cursor-[w-resize]'}"
+						type="button"
+						class="buddy-sidebar-close"
+						aria-expanded={$showSidebar}
 						on:click={() => {
 							showSidebar.set(!$showSidebar);
 						}}
 						aria-label={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
 					>
 						<div class=" self-center">
-							<Sidebar className="size-4" />
+							<Sidebar className="size-6" />
 						</div>
 					</button>
 				</Tooltip>
@@ -1077,7 +1078,7 @@
 					<div class="px-1 flex justify-center text-gray-700 dark:text-gray-300">
 						<a
 							id="sidebar-new-chat-link"
-							class="group grow flex items-center space-x-2 rounded-xl px-2 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-900 transition outline-none"
+							class="group grow buddy-sidebar-link flex items-center gap-3 rounded-xl px-2 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-900 transition outline-none"
 							href="/"
 							draggable="false"
 							on:click={newChatHandler}
@@ -1088,7 +1089,9 @@
 							</div>
 
 							<div class="flex flex-1 self-center translate-y-[0.5px]">
-								<div class=" self-center text-[0.8125rem] leading-5">{$i18n.t('New Chat')}</div>
+								<div class="buddy-sidebar-label self-center text-[0.8125rem] leading-5">
+									{$i18n.t('New Chat')}
+								</div>
 							</div>
 
 							<HotkeyHint name="newChat" className=" hover-reveal " />
@@ -1098,7 +1101,7 @@
 					<div class="px-1 flex justify-center text-gray-700 dark:text-gray-300">
 						<button
 							id="sidebar-search-button"
-							class="group grow flex items-center space-x-2 rounded-xl px-2 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-900 transition outline-none"
+							class="group grow buddy-sidebar-link flex items-center gap-3 rounded-xl px-2 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-900 transition outline-none"
 							on:click={() => {
 								showSearch.set(true);
 							}}
@@ -1110,7 +1113,9 @@
 							</div>
 
 							<div class="flex flex-1 self-center translate-y-[0.5px]">
-								<div class=" self-center text-[0.8125rem] leading-5">{$i18n.t('Search')}</div>
+								<div class="buddy-sidebar-label self-center text-[0.8125rem] leading-5">
+									{$i18n.t('Search')}
+								</div>
 							</div>
 							<HotkeyHint name="search" className=" hover-reveal " />
 						</button>
@@ -1126,7 +1131,7 @@
 								>
 									<a
 										id="sidebar-{itemId}-button"
-										class="grow flex items-center space-x-2 rounded-xl px-2 py-1.5 transition {itemId ===
+										class="grow buddy-sidebar-link flex items-center gap-3 rounded-xl px-2 py-1.5 transition {itemId ===
 										activeMenuItemId
 											? ($settings?.highContrastMode ?? false)
 												? 'bg-black/[0.035] dark:bg-white/[0.06]'
@@ -1152,7 +1157,7 @@
 										</div>
 
 										<div class="flex self-center translate-y-[0.5px]">
-											<div class=" self-center text-[0.8125rem] leading-5">
+											<div class="buddy-sidebar-label self-center text-[0.8125rem] leading-5">
 												{$i18n.t(meta.label)}
 											</div>
 										</div>
@@ -1478,7 +1483,7 @@
 								{#each $chats as chat, idx (`chat-${chat?.id ?? idx}`)}
 									{#if idx === 0 || (idx > 0 && chat.time_range !== $chats[idx - 1].time_range)}
 										<div
-											class="w-full pl-2.5 text-xs text-gray-500 dark:text-gray-500 font-normal {idx ===
+											class="buddy-sidebar-heading w-full pl-2.5 text-xs text-gray-500 dark:text-gray-500 font-normal {idx ===
 											0
 												? ''
 												: 'pt-4'} pb-1"
@@ -1574,7 +1579,7 @@
 						>
 							<button
 								type="button"
-								class=" flex items-center rounded-xl py-1.5 px-1.5 w-full hover:bg-gray-100 dark:hover:bg-gray-900 transition"
+								class="buddy-sidebar-account flex items-center rounded-xl py-1.5 px-2 w-full hover:bg-gray-100 dark:hover:bg-gray-900 transition"
 								aria-label={$i18n.t('User menu')}
 							>
 								<div class=" self-center mr-3 relative flex-shrink-0">
@@ -1667,7 +1672,104 @@
 		box-sizing: border-box;
 		padding-top: var(--buddy-safe-top, 0px);
 		padding-bottom: var(--buddy-safe-bottom, 0px);
-		padding-left: var(--buddy-safe-left, 0px);
+		padding-left: calc(var(--buddy-safe-left, 0px) + 12px);
+		padding-right: 12px;
+	}
+
+	.buddy-sidebar-close {
+		display: inline-flex;
+		width: 44px;
+		height: 44px;
+		flex: none;
+		align-items: center;
+		justify-content: center;
+		border: 1px solid rgb(39 99 75 / 12%);
+		border-radius: 50%;
+		background: rgb(255 255 255 / 66%);
+		box-shadow: 0 3px 10px rgb(31 62 45 / 4%);
+		color: #53635a;
+		backdrop-filter: blur(12px);
+		cursor: pointer;
+		transition:
+			background 160ms ease,
+			color 160ms ease,
+			transform 160ms ease;
+		-webkit-app-region: no-drag;
+	}
+
+	.buddy-sidebar-close :global(svg) {
+		width: 24px;
+		height: 24px;
+	}
+
+	.buddy-sidebar-close:hover {
+		background: rgb(221 243 228 / 70%);
+		color: #27634b;
+	}
+
+	.buddy-sidebar-close:active {
+		transform: scale(0.95);
+	}
+
+	:global(.dark) .buddy-sidebar-close {
+		border-color: rgb(221 243 228 / 12%);
+		background: rgb(55 63 57 / 58%);
+		color: #b6c7bb;
+	}
+
+	:global(.dark) .buddy-sidebar-close:hover {
+		background: rgb(103 156 117 / 20%);
+		color: #ddf3e4;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.buddy-sidebar-close {
+			transition: none;
+		}
+	}
+
+	.buddy-sidebar-link {
+		min-height: 36px;
+	}
+
+	.buddy-sidebar-account {
+		min-height: 44px;
+	}
+
+	@media (max-width: 767px) {
+		.buddy-sidebar-drawer {
+			width: min(78vw, 360px, calc(100vw - var(--buddy-safe-right, 0px) - 56px));
+			font-size: 0.9375rem;
+		}
+
+		.buddy-sidebar-content {
+			padding-left: calc(var(--buddy-safe-left, 0px) + 20px);
+			padding-right: 20px;
+		}
+
+		.buddy-sidebar-link {
+			min-height: 44px;
+		}
+
+		.buddy-sidebar-label {
+			font-size: 0.9375rem;
+			line-height: 1.4;
+		}
+
+		.buddy-sidebar-heading,
+		.buddy-sidebar-content :global(button[aria-controls$='-content']) {
+			font-size: 0.875rem;
+			line-height: 1.4;
+		}
+
+		.buddy-sidebar-content :global(#sidebar-chat-item [dir='auto']) {
+			height: auto;
+			line-height: 1.4;
+		}
+
+		.buddy-sidebar-content :global(#sidebar-chat-item) {
+			min-height: 44px;
+		}
 	}
 
 	.buddy-sidebar-resizer {

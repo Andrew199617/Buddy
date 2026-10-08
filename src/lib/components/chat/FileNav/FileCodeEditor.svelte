@@ -114,7 +114,7 @@
 			editorTheme.of(isDark ? oneDark : []),
 			editorLanguage.of([]),
 			EditorView.theme({
-				'&': { fontSize: 'calc(0.75rem + var(--buddy-font-size-offset, 2px))', height: '100%' },
+				'&': { fontSize: 'calc(0.75rem + var(--buddy-font-size-offset, 0px))', height: '100%' },
 				'.cm-content': {
 					padding: '0.5rem 0',
 					fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace'
