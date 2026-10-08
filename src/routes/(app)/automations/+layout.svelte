@@ -74,23 +74,23 @@
 	<div class="flex h-full min-h-0 flex-col">
 		<div class="shrink-0 px-2.5 pt-2 pb-1">
 			<div class="flex items-center gap-0.5 md:gap-1">
-				{#if $mobile}
-					<div class="{$showSidebar ? 'md:hidden' : ''} flex flex-none items-center">
-						<Tooltip content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}>
-							<button
-								id="sidebar-toggle-button"
-								class="flex size-7 items-center justify-center text-gray-400 transition"
-								aria-label={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
-								on:click={() => {
-									showSidebar.set(!$showSidebar);
-								}}
-								type="button"
-							>
-								<SidebarIcon className="size-4" />
-							</button>
-						</Tooltip>
-					</div>
-				{/if}
+				<div class="{$showSidebar ? 'md:hidden' : ''} flex flex-none items-center">
+					<Tooltip content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}>
+						<button
+							id="sidebar-toggle-button"
+							aria-expanded={$showSidebar}
+							aria-controls="sidebar"
+							class="buddy-feature-sidebar-trigger flex size-7 items-center justify-center text-gray-400 transition"
+							aria-label={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
+							on:click={() => {
+								showSidebar.set(!$showSidebar);
+							}}
+							type="button"
+						>
+							<SidebarIcon className="size-4" />
+						</button>
+					</Tooltip>
+				</div>
 
 				<div class="flex w-full min-w-0 items-center">
 					<div class="flex min-w-0 flex-1 items-center gap-1 py-1">

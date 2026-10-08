@@ -42,27 +42,28 @@
 	>
 		<nav class="pb-1 px-2.5 pt-2 backdrop-blur-xl drag-region select-none">
 			<div class=" flex items-center gap-0.5 md:gap-1">
-				{#if $mobile}
-					<div class="{$showSidebar ? 'md:hidden' : ''} self-center flex flex-none items-center">
-						<Tooltip
-							content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
-							interactive={true}
+				<div class="{$showSidebar ? 'md:hidden' : ''} self-center flex flex-none items-center">
+					<Tooltip
+						content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
+						interactive={true}
+					>
+						<button
+							id="sidebar-toggle-button"
+							aria-expanded={$showSidebar}
+							aria-controls="sidebar"
+							type="button"
+							class="buddy-feature-sidebar-trigger cursor-pointer flex rounded-lg hover:bg-gray-100 dark:hover:bg-gray-850 transition cursor-"
+							aria-label={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
+							on:click={() => {
+								showSidebar.set(!$showSidebar);
+							}}
 						>
-							<button
-								id="sidebar-toggle-button"
-								class=" cursor-pointer flex rounded-lg hover:bg-gray-100 dark:hover:bg-gray-850 transition cursor-"
-								aria-label={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
-								on:click={() => {
-									showSidebar.set(!$showSidebar);
-								}}
-							>
-								<div class=" self-center p-1.5">
-									<Sidebar className="size-4" />
-								</div>
-							</button>
-						</Tooltip>
-					</div>
-				{/if}
+							<div class=" self-center p-1.5">
+								<Sidebar className="size-4" />
+							</div>
+						</button>
+					</Tooltip>
+				</div>
 
 				<div class="flex w-full items-center">
 					<div

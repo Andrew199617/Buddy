@@ -1039,25 +1039,23 @@ ${content}
 				<div class=" w-full flex flex-col {loading ? 'opacity-20' : ''}">
 					<div class="shrink-0 w-full flex justify-between items-center px-3">
 						<div class="w-full min-w-0 flex items-center">
-							{#if $mobile}
-								<Tooltip
-									content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
+							<Tooltip content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}>
+								<button
+									id="sidebar-toggle-button"
+									aria-expanded={$showSidebar}
+									aria-controls="sidebar"
+									class="buddy-feature-sidebar-trigger cursor-pointer flex rounded-lg hover:bg-gray-100 dark:hover:bg-gray-850 transition cursor-"
+									aria-label={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
+									type="button"
+									on:click={() => {
+										showSidebar.set(!$showSidebar);
+									}}
 								>
-									<button
-										id="sidebar-toggle-button"
-										class=" cursor-pointer flex rounded-lg hover:bg-gray-100 dark:hover:bg-gray-850 transition cursor-"
-										aria-label={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
-										type="button"
-										on:click={() => {
-											showSidebar.set(!$showSidebar);
-										}}
-									>
-										<div class=" self-center p-1.5">
-											<Sidebar className="size-4" />
-										</div>
-									</button>
-								</Tooltip>
-							{/if}
+									<div class=" self-center p-1.5">
+										<Sidebar className="size-4" />
+									</div>
+								</button>
+							</Tooltip>
 
 							<input
 								class="w-full text-sm font-normal bg-transparent outline-hidden {$mobile

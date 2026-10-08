@@ -668,7 +668,7 @@
 
 {#key message.id}
 	<div
-		class=" flex w-full message-{message.id}"
+		class="assistant-message flex w-full message-{message.id}"
 		id="message-{message.id}"
 		dir={$settings.chatDirection}
 		style="scroll-margin-top: 3rem;"
@@ -680,7 +680,7 @@
 			/>
 		</div>
 
-		<div class="flex-auto w-0 pl-1 relative">
+		<div class="buddy-assistant-card flex-auto w-0 pl-1 relative">
 			{#if !compactPreview}
 				<Name>
 					<Tooltip content={localizedModelName} placement="top-start">

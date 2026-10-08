@@ -112,6 +112,7 @@
 	import MessageInput from '$lib/components/chat/MessageInput.svelte';
 	import Messages from '$lib/components/chat/Messages.svelte';
 	import Navbar from '$lib/components/chat/Navbar.svelte';
+	import { getBuddyActivity } from '$lib/components/buddy/chatActivity';
 	import ChatControls from './ChatControls.svelte';
 	import EventConfirmDialog from '../common/ConfirmDialog.svelte';
 	import DeleteConfirmDialog from '../common/ConfirmDialog.svelte';
@@ -417,7 +418,8 @@
 		currentId: null
 	};
 
-	let taskIds = null;
+	let taskIds: string[] | null = null;
+	$: buddyState = getBuddyActivity(history, generating, taskIds);
 
 	// Chat Input
 	let prompt = '';
@@ -3764,7 +3766,7 @@
 					return null;
 				});
 			} else {
-				for (const taskId of taskIds) {
+				for (const taskId of taskIds ?? []) {
 					const res = await stopTask(localStorage.token, taskId).catch((error) => {
 						toast.error(`${error}`);
 						return null;
@@ -4272,6 +4274,8 @@
 		? '  md:max-w-[calc(100%-var(--sidebar-width))]'
 		: ' '} w-full max-w-full min-w-0 flex flex-col"
 	id={chatContainerId}
+	class:buddy-chat={!embedded}
+	data-buddy-state={embedded ? undefined : buddyState}
 >
 	{#if !loading}
 		<div in:fade={{ duration: 50 }} class="w-full h-full flex flex-col">
@@ -4318,6 +4322,7 @@
 					{:else}
 						<Navbar
 							bind:this={navbarElement}
+							{buddyState}
 							{readOnly}
 							chat={{
 								id: $chatId,
@@ -4379,7 +4384,7 @@
 						/>
 					{/if}
 					<div id="chat-pane" class="flex flex-col flex-auto z-10 w-full @container overflow-auto">
-						{#if ($settings?.landingPageMode === 'chat' && !$selectedFolder) || createMessagesList(history, history.currentId).length > 0}
+						{#if createMessagesList(history, history.currentId).length > 0}
 							<div
 								class=" pb-2.5 flex flex-col justify-between w-full flex-auto overflow-auto h-0 max-w-full z-10 scrollbar-hidden"
 								id="messages-container"
@@ -4405,7 +4410,7 @@
 										}}
 										bind:selectedModels
 										{atSelectedModel}
-										className={embedded ? 'h-full flex pt-4' : 'h-full flex pt-18'}
+										className={embedded ? 'h-full flex pt-4' : 'buddy-messages h-full flex pt-3'}
 										{sendMessage}
 										{showMessage}
 										{submitMessage}
@@ -4417,7 +4422,7 @@
 										{onToolCallResolved}
 										allowDelete={!(generating || taskIds?.length)}
 										forkHandler={handleForkChat}
-										topPadding={!embedded}
+										topPadding={false}
 										bottomPadding={files.length > 0}
 										{onSelect}
 										{onInsertToNote}
@@ -4434,7 +4439,7 @@
 							{:else}
 								<div
 									id={embedded ? messageInputDropzoneId : undefined}
-									class=" pb-2 {dragged ? 'z-0' : 'z-10'}"
+									class="buddy-composer-wrap pb-2 {dragged ? 'z-0' : 'z-10'}"
 								>
 									<MessageInput
 										bind:this={messageInput}
@@ -4588,7 +4593,7 @@
 								</div>
 							</div>
 						{:else}
-							<div class="flex items-center h-full">
+							<div class="buddy-empty-pane flex items-center h-full min-h-0">
 								<Placeholder
 									bind:selectedModelIdx
 									{history}
