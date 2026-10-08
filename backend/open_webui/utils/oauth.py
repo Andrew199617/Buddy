@@ -3,10 +3,12 @@ import base64
 import fnmatch
 import hashlib
 import logging
+import os
 import re
 import sys
 import urllib
 import uuid
+import zlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from functools import partialmethod
@@ -498,6 +500,139 @@ async def get_discovery_urls(server_url) -> list[str]:
     return metadata.get_discovery_urls(server_url)
 
 
+MCP_OAUTH_CLIENT_SNAPSHOT_KEY = '_mcp_oauth_client_info'
+MCP_OAUTH_STATE_TTL_SECONDS = 3600
+MCP_OAUTH_SNAPSHOT_MAX_BYTES = 16384
+
+
+def normalize_mcp_oauth_url(value: str) -> tuple[str, str, str]:
+    """Normalize an HTTP app URL without accepting credentials or redirect parameters."""
+    try:
+        if not value or any(character.isspace() for character in value) or '\\' in value:
+            raise ValueError('Invalid app URL')
+        parsed = urllib.parse.urlsplit(value)
+        if parsed.scheme not in ('http', 'https') or not parsed.hostname:
+            raise ValueError('An HTTP or HTTPS app URL is required')
+        has_credentials = parsed.username is not None or parsed.password is not None
+        if has_credentials or parsed.query or parsed.fragment:
+            raise ValueError('App URLs cannot contain credentials, a query, or a fragment')
+        port = parsed.port
+        if port is not None and not 1 <= port <= 65535:
+            raise ValueError('Invalid app port')
+        hostname = parsed.hostname.lower().rstrip('.')
+        host = f'[{hostname}]' if ':' in hostname else hostname
+        default_port = 80 if parsed.scheme == 'http' else 443
+        authority = host
+        if port is not None and port != default_port:
+            authority = f'{host}:{port}'
+        origin = f'{parsed.scheme}://{authority}'
+        base_url = f'{origin}{parsed.path}'.rstrip('/')
+        return base_url, origin, hostname
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=400, detail='Invalid OAuth callback app URL') from error
+
+
+async def resolve_mcp_oauth_base_url(request) -> str:
+    """Use the browser-facing request URL only for explicitly trusted app hosts/origins.
+
+    Proxies must preserve Host and configure trusted proxy handling in the server.
+    Origin, Referer, query parameters, and forwarded headers are never interpreted here.
+    """
+    base_url, origin, hostname = normalize_mcp_oauth_url(str(request.base_url))
+    allowed_hosts = {'localhost', '127.0.0.1', '::1'}
+    configured_url = await Config.get('webui.url')
+    if configured_url:
+        _configured_base, _configured_origin, configured_host = normalize_mcp_oauth_url(str(configured_url))
+        allowed_hosts.add(configured_host)
+    for allowed_host in os.getenv('MCP_OAUTH_ALLOWED_REDIRECT_HOSTS', '').split(','):
+        allowed_host = allowed_host.strip().lower().strip('[]').rstrip('.')
+        if allowed_host:
+            allowed_hosts.add(allowed_host)
+
+    allowed_origins = set()
+    for allowed_origin in os.getenv('MCP_OAUTH_ALLOWED_REDIRECT_ORIGINS', '').split(','):
+        if not allowed_origin.strip():
+            continue
+        configured_base, configured_origin, _configured_host = normalize_mcp_oauth_url(allowed_origin.strip())
+        if configured_base != configured_origin:
+            raise HTTPException(status_code=400, detail='OAuth redirect origins cannot contain a path')
+        allowed_origins.add(configured_origin)
+
+    if hostname not in allowed_hosts and origin not in allowed_origins:
+        raise HTTPException(status_code=400, detail='OAuth callback app host is not trusted')
+    return base_url
+
+
+async def get_mcp_oauth_callback_uri(request, client_id: str) -> str:
+    base_url = await resolve_mcp_oauth_base_url(request)
+    return f'{base_url}/oauth/clients/{client_id}/callback'
+
+
+def select_mcp_oauth_redirect_uri(client_info: OAuthClientInformationFull, redirect_uri: str):
+    registered_uris = {str(uri) for uri in client_info.redirect_uris or []}
+    if redirect_uri not in registered_uris:
+        raise HTTPException(status_code=400, detail='OAuth server did not register the requested callback URI')
+    return OAuthClientInformationFull.model_validate({
+        **client_info.model_dump(mode='json'),
+        'redirect_uris': [redirect_uri],
+    })
+
+
+def oauth_redirect_client_name(client_id: str, redirect_uri: str) -> str:
+    digest = hashlib.sha256(redirect_uri.encode()).hexdigest()[:24]
+    return f'{client_id}__redirect_{digest}'
+
+
+def oauth_client_state_key(client_id: str, state: str) -> str:
+    return f'_mcp_oauth_state_{client_id}_{state}'
+
+
+def encode_oauth_client_state_snapshot(snapshot: dict) -> str:
+    """Compress before encrypting so multiple pending flows fit the signed session cookie."""
+    payload = JSONCodec.dumps(snapshot).encode()
+    if len(payload) > MCP_OAUTH_SNAPSHOT_MAX_BYTES:
+        raise ValueError('OAuth client state snapshot is too large')
+    compressed = zlib.compress(payload)
+    return 'z1:' + FERNET.encrypt(compressed).decode()
+
+
+def decode_oauth_client_state_snapshot(snapshot: str) -> dict:
+    """Read compressed snapshots, while retaining existing pending flows and token metadata."""
+    if not snapshot.startswith('z1:'):
+        return decrypt_data(snapshot)
+    compressed = FERNET.decrypt(snapshot[3:].encode())
+    decoder = zlib.decompressobj()
+    payload = decoder.decompress(compressed, MCP_OAUTH_SNAPSHOT_MAX_BYTES + 1)
+    if len(payload) > MCP_OAUTH_SNAPSHOT_MAX_BYTES or not decoder.eof or decoder.unused_data:
+        raise ValueError('Invalid or oversized OAuth client state snapshot')
+    decoded = JSONCodec.loads(payload)
+    if not isinstance(decoded, dict):
+        raise ValueError('OAuth client state snapshot must be an object')
+    return decoded
+
+
+def oauth_client_state_snapshot(client_info: OAuthClientInformationFull) -> str:
+    """Keep only client credentials and endpoint settings needed for callback/refresh."""
+    snapshot = client_info.model_dump(
+        mode='json',
+        exclude_none=True,
+        include={
+            'client_id', 'client_secret', 'redirect_uris', 'issuer', 'scope', 'resource',
+            'oauth_resource_parameter', 'token_endpoint_auth_method',
+        },
+    )
+    if client_info.server_metadata is not None:
+        snapshot['server_metadata'] = client_info.server_metadata.model_dump(
+            mode='json',
+            exclude_none=True,
+            include={
+                'issuer', 'authorization_endpoint', 'token_endpoint',
+                'token_endpoint_auth_methods_supported', 'code_challenge_methods_supported',
+            },
+        )
+    return encode_oauth_client_state_snapshot(snapshot)
+
+
 # TODO: Some OAuth providers require Initial Access Tokens (IATs) for dynamic client registration.
 # This is not currently supported.
 async def get_oauth_client_info_with_dynamic_client_registration(
@@ -511,8 +646,7 @@ async def get_oauth_client_info_with_dynamic_client_registration(
         oauth_server_metadata = None
         oauth_server_metadata_url = None
 
-        webui_url = await Config.get('webui.url')
-        redirect_base_url = (str(webui_url or request.base_url)).rstrip('/')
+        redirect_base_url = await resolve_mcp_oauth_base_url(request)
 
         oauth_client_metadata = OAuthClientMetadata(
             # LICENSE covers this Open WebUI OAuth client identifier.
@@ -661,8 +795,7 @@ async def get_oauth_client_info_with_static_credentials(
         oauth_server_metadata = None
         oauth_server_metadata_url = None
 
-        webui_url = await Config.get('webui.url')
-        redirect_base_url = (str(webui_url or request.base_url)).rstrip('/')
+        redirect_base_url = await resolve_mcp_oauth_base_url(request)
         redirect_uri = f'{redirect_base_url}/oauth/clients/{client_id}/callback'
 
         # Discover server metadata (authorization endpoint, token endpoint, scopes, etc.)
@@ -831,8 +964,17 @@ class OAuthClientManager:
         self.oauth = OAuth()
         self.app = app
         self.clients = {}
+        self.redirect_clients = {}
+        self.redirect_client_locks = {}
 
     def add_client(self, client_id, oauth_client_info: OAuthClientInformationFull):
+        self.clients[client_id] = {
+            'client': self._create_client(client_id, oauth_client_info),
+            'client_info': oauth_client_info,
+        }
+        return self.clients[client_id]
+
+    def _create_client(self, client_id, oauth_client_info: OAuthClientInformationFull):
         kwargs = {
             'name': client_id,
             'client_id': oauth_client_info.client_id,
@@ -876,11 +1018,8 @@ class OAuthClientManager:
         ):
             del kwargs['code_challenge_method']
 
-        self.clients[client_id] = {
-            'client': self.oauth.register(**kwargs),
-            'client_info': oauth_client_info,
-        }
-        return self.clients[client_id]
+        # A fresh registry prevents a cached Authlib client from retaining replaced credentials.
+        return OAuth().register(**kwargs)
 
     async def ensure_client_from_config(self, client_id):
         """
@@ -940,6 +1079,11 @@ class OAuthClientManager:
             del self.clients[client_id]
             log.info('Removed OAuth client %s', client_id)
 
+        for cache_key in list(self.redirect_clients):
+            if cache_key[0] == client_id:
+                self.redirect_clients.pop(cache_key, None)
+                self.redirect_client_locks.pop(cache_key, None)
+
         if hasattr(self.oauth, '_clients'):
             if client_id in self.oauth._clients:
                 self.oauth._clients.pop(client_id, None)
@@ -949,6 +1093,83 @@ class OAuthClientManager:
                 self.oauth._registry.pop(client_id, None)
 
         return True
+
+    async def _register_redirect_client(self, request, client_id: str, client_info: OAuthClientInformationFull):
+        server_type, separator, server_id = client_id.partition(':')
+        if not separator:
+            raise HTTPException(status_code=404, detail='OAuth tool connection was not found')
+        connections = await Config.get('tool_server.connections', []) or []
+        connection = None
+        for candidate in connections:
+            candidate_id = (candidate.get('info') or {}).get('id')
+            if candidate.get('type', 'openapi') == server_type and candidate_id == server_id:
+                connection = candidate
+                break
+        if connection is None or not connection.get('url'):
+            raise HTTPException(status_code=404, detail='OAuth tool connection was not found')
+
+        info = connection.get('info') or {}
+        config = connection.get('config') or {}
+        oauth_scope = info.get('oauth_scope') or config.get('oauth_scope')
+        if connection.get('auth_type') == 'oauth_2.1_static':
+            registered_info = await get_oauth_client_info_with_static_credentials(
+                request,
+                client_id,
+                connection['url'],
+                oauth_client_id=client_info.client_id,
+                oauth_client_secret=client_info.client_secret,
+                oauth_scope=oauth_scope,
+            )
+        else:
+            registered_info = await get_oauth_client_info_with_dynamic_client_registration(
+                request,
+                client_id,
+                connection['url'],
+                config.get('oauth_server_key'),
+                oauth_scope=oauth_scope,
+            )
+        options = apply_connection_oauth_options(connection, registered_info.model_dump(mode='json'))
+        return OAuthClientInformationFull.model_validate(options)
+
+    async def get_authorization_client(self, request, client_id: str):
+        """Select a registration for this exact browser callback without replacing the base client."""
+        redirect_uri = await get_mcp_oauth_callback_uri(request, client_id)
+        client_info = await self.get_client_info(client_id)
+        if client_info is None:
+            raise HTTPException(status_code=404)
+        cache_key = (client_id, redirect_uri)
+        lock = self.redirect_client_locks.setdefault(cache_key, asyncio.Lock())
+        async with lock:
+            cached = self.redirect_clients.get(cache_key)
+            if cached and await self._preflight_authorization_url(cached['client'], cached['client_info']):
+                return cached['client'], cached['client_info'], redirect_uri
+
+            registered_uris = {str(uri) for uri in client_info.redirect_uris or []}
+            registration_needed = cached is not None or redirect_uri not in registered_uris
+            if registration_needed:
+                selected_info = await self._register_redirect_client(request, client_id, client_info)
+            else:
+                selected_info = client_info
+            selected_info = select_mcp_oauth_redirect_uri(selected_info, redirect_uri)
+
+            client_name = oauth_redirect_client_name(client_id, redirect_uri)
+            client = self._create_client(client_name, selected_info)
+            if not await self._preflight_authorization_url(client, selected_info):
+                if registration_needed:
+                    raise HTTPException(
+                        status_code=400,
+                        detail='OAuth client registration was rejected for this callback URI',
+                    )
+                selected_info = await self._register_redirect_client(request, client_id, client_info)
+                selected_info = select_mcp_oauth_redirect_uri(selected_info, redirect_uri)
+                client = self._create_client(client_name, selected_info)
+                if not await self._preflight_authorization_url(client, selected_info):
+                    raise HTTPException(
+                        status_code=400,
+                        detail='OAuth client registration was rejected for this callback URI',
+                    )
+            self.redirect_clients[cache_key] = {'client': client, 'client_info': selected_info}
+            return client, selected_info, redirect_uri
 
     async def _preflight_authorization_url(self, client, client_info: OAuthClientInformationFull) -> bool:
         # TODO: Replace this logic with a more robust OAuth client registration validation
@@ -1125,19 +1346,30 @@ class OAuthClientManager:
             return None
 
         try:
-            client = await self.get_client(client_id)
-            if not client:
+            snapshot = token_data.get(MCP_OAUTH_CLIENT_SNAPSHOT_KEY)
+            if snapshot:
+                client_info = OAuthClientInformationFull.model_validate(decode_oauth_client_state_snapshot(snapshot))
+                redirect_uri = str(client_info.redirect_uris[0])
+                client_name = oauth_redirect_client_name(client_id, redirect_uri)
+                client = self._create_client(client_name, client_info)
+            else:
+                client = await self.get_client(client_id)
+                client_info = await self.get_client_info(client_id)
+            if not client or client_info is None:
                 log.error(f'No OAuth client found for provider {client_id}')
                 return None
 
             token_endpoint = None
-            async with aiohttp.ClientSession(trust_env=True) as session_http:
-                async with session_http.get(await self.get_server_metadata_url(client_id)) as r:
-                    if r.status == 200:
-                        openid_data = await r.json()
-                        token_endpoint = openid_data.get('token_endpoint')
-                    else:
-                        log.error(f'Failed to fetch OpenID configuration for client_id {client_id}')
+            if client_info.server_metadata is not None:
+                token_endpoint = str(client_info.server_metadata.token_endpoint)
+            if not token_endpoint:
+                async with aiohttp.ClientSession(trust_env=True) as session_http:
+                    async with session_http.get(client_info.issuer) as r:
+                        if r.status == 200:
+                            openid_data = await r.json()
+                            token_endpoint = openid_data.get('token_endpoint')
+                        else:
+                            log.error(f'Failed to fetch OpenID configuration for client_id {client_id}')
             if not token_endpoint:
                 log.error(f'No token endpoint found for client_id {client_id}')
                 return None
@@ -1148,7 +1380,6 @@ class OAuthClientManager:
                 'refresh_token': token_data['refresh_token'],
                 'client_id': client.client_id,
             }
-            client_info = await self.get_client_info(client_id)
             if should_send_oauth_resource(client_info):
                 refresh_data['resource'] = client_info.resource
 
@@ -1179,6 +1410,8 @@ class OAuthClientManager:
                             new_token_data['refresh_token'] = token_data['refresh_token']
 
                         _normalize_token_expiry(new_token_data)
+                        if snapshot:
+                            new_token_data[MCP_OAUTH_CLIENT_SNAPSHOT_KEY] = snapshot
 
                         log.debug('Token refresh successful for client_id %s', client_id)
                         return new_token_data
@@ -1191,19 +1424,60 @@ class OAuthClientManager:
             log.error(f'Exception during token refresh for client_id {client_id}: {e}')
             return None
 
-    async def handle_authorize(self, request, client_id: str, user_id: str) -> RedirectResponse:
-        client = await self.get_client(client_id)
-        if client is None:
-            raise HTTPException(404)
-        client_info = await self.get_client_info(client_id)
-        if client_info is None:
-            # get_client registers client_info too
-            client_info = await self.get_client_info(client_id)
-        if client_info is None:
-            raise HTTPException(404)
+    async def _prune_state_pointers(self, request, client_id: str):
+        prefix = oauth_client_state_key(client_id, '')
+        now = datetime.now().timestamp()
+        for pointer_key, pointer in list(request.session.items()):
+            if not pointer_key.startswith(prefix):
+                continue
+            state = pointer_key[len(prefix):]
+            framework = self.oauth.framework_integration_cls(pointer['client_name'])
+            state_data = await framework.get_state_data(request.session, state)
+            if pointer.get('expires_at', 0) <= now or not state_data:
+                await framework.clear_state_data(request.session, state)
+                request.session.pop(pointer_key, None)
 
-        redirect_uri = client_info.redirect_uris[0] if client_info.redirect_uris else None
-        redirect_uri_str = str(redirect_uri) if redirect_uri else None
+    async def _cancel_pending_states(
+        self,
+        request,
+        client_id: str,
+        client_name: str,
+        redirect_uri: str,
+        user_id: str,
+    ) -> int:
+        framework = self.oauth.framework_integration_cls(client_name)
+        state_prefix = f'_state_{client_name}_'
+        variant_prefix = f'_state_{client_id}__redirect_'
+        cancelled = 0
+        for session_key in list(request.session):
+            if not session_key.startswith(state_prefix):
+                continue
+            # The legacy namespace is a prefix of the per-origin namespaces.
+            if client_name == client_id and session_key.startswith(variant_prefix):
+                continue
+            state = session_key[len(state_prefix):]
+            state_data = await framework.get_state_data(request.session, state)
+            if not state_data:
+                continue
+            if state_data.get('user_id') != user_id or state_data.get('redirect_uri') != redirect_uri:
+                continue
+            await framework.clear_state_data(request.session, state)
+            pointer_key = oauth_client_state_key(client_id, state)
+            pointer = request.session.get(pointer_key)
+            if pointer and pointer.get('client_name') == client_name:
+                request.session.pop(pointer_key, None)
+            cancelled += 1
+        return cancelled
+
+    async def cancel_authorization(self, request, client_id: str, user_id: str) -> int:
+        redirect_uri = await get_mcp_oauth_callback_uri(request, client_id)
+        client_name = oauth_redirect_client_name(client_id, redirect_uri)
+        cancelled = await self._cancel_pending_states(request, client_id, client_name, redirect_uri, user_id)
+        cancelled += await self._cancel_pending_states(request, client_id, client_id, redirect_uri, user_id)
+        return cancelled
+
+    async def handle_authorize(self, request, client_id: str, user_id: str) -> RedirectResponse:
+        client, client_info, redirect_uri_str = await self.get_authorization_client(request, client_id)
         # Pass explicit scope/resource parameters for providers that require them.
         kwargs = build_oauth_request_params(client_info)
         try:
@@ -1213,8 +1487,29 @@ class OAuthClientManager:
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail='OAuth authorization state was not generated',
                 )
-            auth_data['user_id'] = user_id
-            await client.save_authorize_data(request, redirect_uri=redirect_uri_str, **auth_data)
+            saved_state = {
+                'user_id': user_id,
+                'return_url': await resolve_mcp_oauth_base_url(request),
+                MCP_OAUTH_CLIENT_SNAPSHOT_KEY: oauth_client_state_snapshot(client_info),
+            }
+            if auth_data.get('code_verifier'):
+                saved_state['code_verifier'] = auth_data['code_verifier']
+            if auth_data.get('nonce'):
+                saved_state['nonce'] = auth_data['nonce']
+            # Authlib only needs redirect_uri, PKCE, and optional OIDC nonce during exchange.
+            # The provider authorization URL is used by this response, not stored in the cookie.
+            await client.save_authorize_data(
+                request,
+                redirect_uri=redirect_uri_str,
+                state=auth_data['state'],
+                **saved_state,
+            )
+            await self._prune_state_pointers(request, client_id)
+            pointer_key = oauth_client_state_key(client_id, auth_data['state'])
+            request.session[pointer_key] = {
+                'client_name': oauth_redirect_client_name(client_id, redirect_uri_str),
+                'expires_at': int(datetime.now().timestamp()) + MCP_OAUTH_STATE_TTL_SECONDS,
+            }
             return RedirectResponse(auth_data['url'], status_code=302)
         except RuntimeError as e:
             # authlib raises RuntimeError('Missing "authorize_url" value') when the
@@ -1239,15 +1534,49 @@ class OAuthClientManager:
         error_message = None
         state = request.query_params.get('state')
         user_id = None
+        return_url = await resolve_mcp_oauth_base_url(request)
+        expected_redirect_uri = f'{return_url}/oauth/clients/{client_id}/callback'
+        pointer_key = oauth_client_state_key(client_id, state) if state else None
+        state_framework = client.framework
+        consume_state = False
         try:
             client_info = await self.get_client_info(client_id)
-            state_data = await client.framework.get_state_data(request.session, state) if state else None
+            pointer = request.session.get(pointer_key) if pointer_key else None
+            if pointer:
+                expected_name = oauth_redirect_client_name(client_id, expected_redirect_uri)
+                if pointer.get('client_name') != expected_name:
+                    raise HTTPException(status_code=400, detail='OAuth callback state does not match the app origin')
+                state_framework = self.oauth.framework_integration_cls(expected_name)
+                consume_state = True
+                if pointer.get('expires_at', 0) <= datetime.now().timestamp():
+                    raise HTTPException(status_code=400, detail='OAuth callback state is invalid or expired')
+            state_data = await state_framework.get_state_data(request.session, state) if state else None
             user_id = state_data.get('user_id') if state_data else None
             if not user_id:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail='OAuth callback state is invalid or expired',
                 )
+
+            if state_data.get('redirect_uri') != expected_redirect_uri:
+                raise HTTPException(status_code=400, detail='OAuth callback URI does not match authorization state')
+            consume_state = True
+            saved_return_url = state_data.get('return_url', return_url)
+            if saved_return_url != return_url:
+                raise HTTPException(status_code=400, detail='OAuth callback app does not match authorization state')
+            snapshot = state_data.get(MCP_OAUTH_CLIENT_SNAPSHOT_KEY)
+            if pointer:
+                if not snapshot:
+                    raise HTTPException(status_code=400, detail='OAuth client authorization state is incomplete')
+                client_info = OAuthClientInformationFull.model_validate(decode_oauth_client_state_snapshot(snapshot))
+                registered_uris = {str(uri) for uri in client_info.redirect_uris or []}
+                if expected_redirect_uri not in registered_uris:
+                    raise HTTPException(
+                        status_code=400,
+                        detail='OAuth client callback registration does not match state',
+                    )
+                client = self._create_client(pointer['client_name'], client_info)
+            return_url = saved_return_url
 
             if not await get_verified_user_by_id(user_id):
                 raise HTTPException(
@@ -1282,6 +1611,9 @@ class OAuthClientManager:
             if token:
                 try:
                     _normalize_token_expiry(token)
+                    if snapshot:
+                        # OAuthSessions encrypts this token metadata at rest.
+                        token[MCP_OAUTH_CLIENT_SNAPSHOT_KEY] = snapshot
 
                     # Clean up any existing sessions for this user/client_id first
                     sessions = await OAuthSessions.get_sessions_by_user_id(user_id)
@@ -1312,11 +1644,12 @@ class OAuthClientManager:
                 exc_info=True,
             )
         finally:
-            if state and client is not None:
-                await client.framework.clear_state_data(request.session, state)
+            if consume_state and state:
+                await state_framework.clear_state_data(request.session, state)
+            if consume_state and pointer_key:
+                request.session.pop(pointer_key, None)
 
-        webui_url = await Config.get('webui.url')
-        redirect_url = (str(webui_url or request.base_url)).rstrip('/')
+        redirect_url = return_url
 
         if error_message:
             log.debug(error_message)

@@ -101,6 +101,7 @@
 
 		initiateOAuthRedirect({
 			id: `server:mcp:${id}`,
+			name: name,
 			serverId: id,
 			authType: 'mcp'
 		});

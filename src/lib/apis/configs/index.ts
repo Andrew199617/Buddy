@@ -1,3 +1,5 @@
+import { goto } from '$app/navigation';
+import { showOAuthConnect } from '$lib/stores/oauth-connect';
 import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
 import type { Banner } from '$lib/types';
 
@@ -565,16 +567,248 @@ export const getOAuthClientAuthorizationUrl = (clientId: string, type: null | st
 	return `${WEBUI_BASE_URL}/oauth/clients/${oauthClientId}/authorize`;
 };
 
+export type OAuthConnectSession = {
+	toolId: string;
+	toolName: string;
+	authorizePath: string;
+	returnPath: string;
+	started: boolean;
+	createdAt: number;
+};
+
+const OAUTH_CONNECT_SESSION_KEY = 'buddyOAuthConnectSession';
+const OAUTH_CANCELLATION_KEY = 'buddyOAuthCancellation';
+const OAUTH_CONNECT_MAX_AGE = 30 * 60 * 1000;
+
+function safeOAuthReturnPath(path: unknown): string {
+	if (typeof path !== 'string') {
+		return '/';
+	}
+
+	try {
+		const url = new URL(path, window.location.origin);
+		if (url.origin !== window.location.origin || url.pathname.startsWith('/auth/connect')) {
+			return '/';
+		}
+		return `${url.pathname}${url.search}${url.hash}`;
+	} catch {
+		return '/';
+	}
+}
+
+function safeOAuthAuthorizePath(path: unknown): string | null {
+	if (typeof path !== 'string') {
+		return null;
+	}
+
+	try {
+		const url = new URL(path, window.location.origin);
+		if (
+			url.origin !== window.location.origin ||
+			!url.pathname.startsWith('/oauth/clients/') ||
+			!url.pathname.endsWith('/authorize') ||
+			url.search ||
+			url.hash
+		) {
+			return null;
+		}
+		return url.pathname;
+	} catch {
+		return null;
+	}
+}
+
+function recentOAuthSession(createdAt: unknown): boolean {
+	if (typeof createdAt !== 'number' || !Number.isFinite(createdAt)) {
+		return false;
+	}
+	const age = Date.now() - createdAt;
+	return age >= 0 && age < OAUTH_CONNECT_MAX_AGE;
+}
+
+export function getOAuthConnectSession(): OAuthConnectSession | null {
+	try {
+		const stored = sessionStorage.getItem(OAUTH_CONNECT_SESSION_KEY);
+		if (!stored) {
+			return null;
+		}
+		const session = JSON.parse(stored);
+		const authorizePath = safeOAuthAuthorizePath(session.authorizePath);
+		if (
+			!session.toolId ||
+			typeof session.toolId !== 'string' ||
+			!authorizePath ||
+			!recentOAuthSession(session.createdAt)
+		) {
+			sessionStorage.removeItem(OAUTH_CONNECT_SESSION_KEY);
+			return null;
+		}
+
+		let toolName = 'your tool';
+		if (typeof session.toolName === 'string' && session.toolName.trim()) {
+			toolName = session.toolName;
+		}
+		return {
+			toolId: session.toolId,
+			toolName: toolName,
+			authorizePath: authorizePath,
+			returnPath: safeOAuthReturnPath(session.returnPath),
+			started: session.started === true,
+			createdAt: session.createdAt
+		};
+	} catch {
+		sessionStorage.removeItem(OAUTH_CONNECT_SESSION_KEY);
+		return null;
+	}
+}
+
+export function restoreOAuthConnectOverlay(): void {
+	const session = getOAuthConnectSession();
+	const isLegacyGate = window.location.pathname === '/auth/connect';
+	showOAuthConnect.set(Boolean(session) && !isLegacyGate);
+}
+
+function currentOAuthReturnPath(): string {
+	return `${window.location.pathname}${window.location.search}${window.location.hash}`;
+}
+
+function markOAuthCancelled(toolId: string) {
+	const cancellation = { toolId: toolId, createdAt: Date.now() };
+	sessionStorage.setItem(OAUTH_CANCELLATION_KEY, JSON.stringify(cancellation));
+}
+
+// Suppress one automatic defaults check after Exit, then permit an explicit retry.
+export function consumeOAuthCancellation(): string | null {
+	const stored = sessionStorage.getItem(OAUTH_CANCELLATION_KEY);
+	if (!stored) {
+		return null;
+	}
+	sessionStorage.removeItem(OAUTH_CANCELLATION_KEY);
+	try {
+		const cancellation = JSON.parse(stored);
+		if (typeof cancellation.toolId === 'string' && recentOAuthSession(cancellation.createdAt)) {
+			return cancellation.toolId;
+		}
+	} catch {
+		return null;
+	}
+	return null;
+}
+
 export const initiateOAuthRedirect = (tool: {
 	id: string;
+	name?: string;
 	serverId: string;
 	authType?: string | null;
 }) => {
-	sessionStorage.setItem('pendingOAuthToolId', tool.id);
-	sessionStorage.setItem('oauthRedirectInProgressToolId', tool.id);
-	const authUrl = getOAuthClientAuthorizationUrl(tool.serverId, tool.authType ?? 'mcp');
-	window.open(authUrl, '_self', 'noopener');
+	const authorizePath = safeOAuthAuthorizePath(
+		getOAuthClientAuthorizationUrl(tool.serverId, tool.authType ?? 'mcp')
+	);
+	if (!authorizePath) {
+		throw new Error('The connection sign-in address is invalid.');
+	}
+
+	const returnPath = safeOAuthReturnPath(
+		`${window.location.pathname}${window.location.search}${window.location.hash}`
+	);
+	const session: OAuthConnectSession = {
+		toolId: tool.id,
+		toolName: tool.name || 'your tool',
+		authorizePath: authorizePath,
+		returnPath: returnPath,
+		started: false,
+		createdAt: Date.now()
+	};
+	sessionStorage.setItem(OAUTH_CONNECT_SESSION_KEY, JSON.stringify(session));
+	sessionStorage.removeItem(OAUTH_CANCELLATION_KEY);
+	showOAuthConnect.set(true);
 };
+
+export function continueOAuthConnect(): boolean {
+	const session = getOAuthConnectSession();
+	if (!session) {
+		return false;
+	}
+
+	session.started = true;
+	session.createdAt = Date.now();
+	sessionStorage.setItem(OAUTH_CONNECT_SESSION_KEY, JSON.stringify(session));
+	sessionStorage.setItem('pendingOAuthToolId', session.toolId);
+	sessionStorage.setItem('oauthRedirectInProgressToolId', session.toolId);
+	// Keep this synchronous: Continue supplies a fresh user gesture on iOS.
+	window.open(session.authorizePath, '_self', 'noopener');
+	return true;
+}
+
+async function cancelStartedOAuthConnect(session: OAuthConnectSession): Promise<void> {
+	if (!session.started) {
+		return;
+	}
+
+	const token = localStorage.token;
+	if (!token) {
+		return;
+	}
+
+	const cancelPath = `${session.authorizePath.slice(0, -'/authorize'.length)}/cancel`;
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), 1500);
+	try {
+		await fetch(cancelPath, {
+			method: 'POST',
+			headers: { Authorization: `Bearer ${token}` },
+			signal: controller.signal
+		});
+	} catch {
+		// A canceled or unavailable request must not prevent returning to the chat.
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
+export async function cancelOAuthConnect(): Promise<void> {
+	const session = getOAuthConnectSession();
+	sessionStorage.removeItem(OAUTH_CONNECT_SESSION_KEY);
+	sessionStorage.removeItem('pendingOAuthToolId');
+	sessionStorage.removeItem('oauthRedirectInProgressToolId');
+	if (session) {
+		markOAuthCancelled(session.toolId);
+		const stayOnCurrentPage = currentOAuthReturnPath() === session.returnPath;
+		showOAuthConnect.set(false);
+		await cancelStartedOAuthConnect(session);
+		if (!stayOnCurrentPage) {
+			await goto(session.returnPath, { replaceState: true });
+		}
+		return;
+	}
+
+	showOAuthConnect.set(false);
+	if (window.location.pathname === '/auth/connect') {
+		await goto('/', { replaceState: true });
+	}
+}
+
+export async function completeOAuthConnectRedirect(): Promise<'success' | 'error' | null> {
+	const session = getOAuthConnectSession();
+	if (!session?.started || window.location.pathname !== '/') {
+		return null;
+	}
+
+	const failed = new URLSearchParams(window.location.search).has('error');
+	showOAuthConnect.set(false);
+	sessionStorage.removeItem(OAUTH_CONNECT_SESSION_KEY);
+	if (failed) {
+		sessionStorage.removeItem('pendingOAuthToolId');
+		sessionStorage.removeItem('oauthRedirectInProgressToolId');
+		markOAuthCancelled(session.toolId);
+	}
+
+	await goto(session.returnPath, { replaceState: true });
+	if (failed) {
+		return 'error';
+	}
+	return 'success';
+}
 
 export const getCodeExecutionConfig = async (token: string) => {
 	let error = null;

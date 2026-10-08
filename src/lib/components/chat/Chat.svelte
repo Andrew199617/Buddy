@@ -105,7 +105,7 @@
 	import { uploadFile } from '$lib/apis/files';
 	import { createOpenAITextStream } from '$lib/apis/streaming';
 	import { getFunctions } from '$lib/apis/functions';
-	import { initiateOAuthRedirect } from '$lib/apis/configs';
+	import { consumeOAuthCancellation, initiateOAuthRedirect } from '$lib/apis/configs';
 	import { updateFolderById } from '$lib/apis/folders';
 
 	import Banner from '../common/Banner.svelte';
@@ -755,6 +755,19 @@
 		});
 	};
 
+	const restoreOAuthToolSelection = () => {
+		const pendingToolId = sessionStorage.getItem('pendingOAuthToolId');
+		if (!pendingToolId) {
+			return;
+		}
+
+		sessionStorage.removeItem('pendingOAuthToolId');
+		sessionStorage.removeItem('oauthRedirectInProgressToolId');
+		if (!selectedToolIds.includes(pendingToolId)) {
+			selectedToolIds = [...selectedToolIds, pendingToolId];
+		}
+	};
+
 	const restoreChatInput = async (storageChatInput: string | null) => {
 		if (!storageChatInput || $temporaryChatEnabled) {
 			return false;
@@ -866,6 +879,7 @@
 			if (!(await restoreChatInput(storageChatInput))) {
 				await setDefaults();
 			}
+			restoreOAuthToolSelection();
 
 			messageInput?.focus({ preventScroll: true });
 		} else if (!embedded) {
@@ -951,6 +965,9 @@
 	};
 
 	const continueOAuthRedirect = async () => {
+		if (consumeOAuthCancellation()) {
+			return;
+		}
 		if (pendingOAuthTools.length === 0) {
 			sessionStorage.removeItem('oauthRedirectInProgressToolId');
 			return;
@@ -1612,7 +1629,8 @@
 				await tick();
 			}
 
-			if (storageChatInput) {
+			// Linked chats hydrate their draft in navigateHandler after the chat loads.
+			if (storageChatInput && !chatIdProp) {
 				prompt = '';
 				messageInput?.setText('');
 
@@ -2197,14 +2215,8 @@
 				.filter((id) => id && ($tools ?? []).find((t) => t.id === id));
 		}
 
-		// Restore tool selection after OAuth redirect
-		const pendingToolId = sessionStorage.getItem('pendingOAuthToolId');
-		if (pendingToolId) {
-			sessionStorage.removeItem('pendingOAuthToolId');
-			if (!selectedToolIds.includes(pendingToolId)) {
-				selectedToolIds = [...selectedToolIds, pendingToolId];
-			}
-		}
+		// Restore tool selection after OAuth redirect.
+		restoreOAuthToolSelection();
 
 		if ($page.url.searchParams.get('call') === 'true') {
 			openCallOverlay();
@@ -4070,6 +4082,7 @@
 	const oauthRedirectHandler = async (
 		tool: {
 			id: string;
+			name?: string;
 			serverId: string;
 			authType?: string | null;
 		},
@@ -4077,8 +4090,8 @@
 	) => {
 		await tick();
 		saveSessionSelectedModels();
-		await saveDraft(draft, null, false);
-		initiateOAuthRedirect(tool);
+		await saveDraft(draft, getDraftChatId(), false);
+		await initiateOAuthRedirect(tool);
 	};
 
 	const clearDraft = async (chatId: string | null = null) => {

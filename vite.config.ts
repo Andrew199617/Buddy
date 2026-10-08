@@ -32,7 +32,8 @@ export default defineConfig({
 		proxy: {
 			'/api': {
 				target: backendTarget,
-				changeOrigin: true,
+				// OAuth callbacks must retain the browser's host and port.
+				changeOrigin: false,
 				ws: true
 			},
 			'/ollama': {
@@ -45,7 +46,8 @@ export default defineConfig({
 			},
 			'/oauth': {
 				target: backendTarget,
-				changeOrigin: true
+				// OAuth callbacks must retain the browser's host and port.
+				changeOrigin: false
 			},
 			'/ws': {
 				target: backendTarget,
