@@ -241,7 +241,8 @@
 		if (!button && triggerEl.matches('button')) {
 			button = triggerEl;
 		}
-		if (!button?.matches('#input-menu-button, #integration-menu-button')) return null;
+		if (!button?.matches('#input-menu-button, #integration-menu-button, #available-tools-button'))
+			return null;
 		if (!button.closest('.buddy-chat .buddy-composer')) return null;
 		return button;
 	}
