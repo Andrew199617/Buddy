@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { mobile, showSidebar, user } from '$lib/stores';
+	import { mobile, showSidebar, user, type SessionUser } from '$lib/stores';
 	import { page } from '$app/stores';
 	import {
 		mobileNotifications,
@@ -14,21 +14,31 @@
 	let availableHeight = 500;
 	let frame: number | undefined;
 	let resizeObserver: ResizeObserver;
+	let mutationObserver: MutationObserver;
 	let header: Element | null = null;
 	let composer: Element | null = null;
 	let mounted = false;
+	let trackingGeometry = false;
 	let previousUserId: string | undefined;
+	let hasObservedUser = false;
 
 	$: urgent = $mobileNotifications.find((item) => getMobileNotificationPriority(item) === 'urgent');
 	$: highLevel = $mobileNotifications.find(
 		(item) => getMobileNotificationPriority(item) === 'high-level'
 	);
 	$: showHighLevel = Boolean(highLevel && (!urgent || availableHeight >= 240));
-	$: if (mounted && $page.url.pathname) scheduleGeometry();
-	$: if (mounted && (urgent || highLevel)) scheduleGeometry();
-	$: if (previousUserId !== $user?.id) {
-		if (previousUserId) clearMobileNotifications();
-		previousUserId = $user?.id;
+	$: if (mounted) {
+		setGeometryTracking($mobile && (!$showSidebar || !$user) && Boolean(urgent || highLevel));
+	}
+	$: if (mounted && trackingGeometry && $page.url.pathname) scheduleGeometry();
+	$: if (mounted && trackingGeometry && (urgent || highLevel)) scheduleGeometry();
+
+	function handleUserChange(currentUser: SessionUser | undefined) {
+		const nextUserId = currentUser?.id;
+		const userChanged = hasObservedUser && previousUserId !== nextUserId;
+		previousUserId = nextUserId;
+		hasObservedUser = true;
+		if (userChanged) clearMobileNotifications();
 	}
 
 	function updateGeometry() {
@@ -54,32 +64,46 @@
 	}
 
 	function scheduleGeometry() {
-		if (!mounted || frame !== undefined) return;
+		if (!mounted || !trackingGeometry || frame !== undefined) return;
 		frame = requestAnimationFrame(updateGeometry);
 	}
 
-	onMount(() => {
-		mounted = true;
-		resizeObserver = new ResizeObserver(scheduleGeometry);
-		const observer = new MutationObserver(scheduleGeometry);
-		observer.observe(document.body, { childList: true, subtree: true });
-		window.addEventListener('resize', scheduleGeometry);
-		window.visualViewport?.addEventListener('resize', scheduleGeometry);
-		window.visualViewport?.addEventListener('scroll', scheduleGeometry);
-		updateGeometry();
-		return () => {
-			mounted = false;
-			if (frame !== undefined) cancelAnimationFrame(frame);
+	function setGeometryTracking(enabled: boolean) {
+		if (enabled === trackingGeometry) return;
+		trackingGeometry = enabled;
+		if (!enabled) {
+			mutationObserver.disconnect();
 			resizeObserver.disconnect();
-			observer.disconnect();
+			header = null;
+			composer = null;
+			if (frame !== undefined) cancelAnimationFrame(frame);
+			frame = undefined;
 			window.removeEventListener('resize', scheduleGeometry);
 			window.visualViewport?.removeEventListener('resize', scheduleGeometry);
 			window.visualViewport?.removeEventListener('scroll', scheduleGeometry);
+			return;
+		}
+		mutationObserver.observe(document.body, { childList: true, subtree: true });
+		window.addEventListener('resize', scheduleGeometry);
+		window.visualViewport?.addEventListener('resize', scheduleGeometry);
+		window.visualViewport?.addEventListener('scroll', scheduleGeometry);
+		scheduleGeometry();
+	}
+
+	onMount(() => {
+		resizeObserver = new ResizeObserver(scheduleGeometry);
+		mutationObserver = new MutationObserver(scheduleGeometry);
+		const unsubscribeUser = user.subscribe(handleUserChange);
+		mounted = true;
+		return () => {
+			setGeometryTracking(false);
+			unsubscribeUser();
+			mounted = false;
 		};
 	});
 </script>
 
-{#if $mobile && !$showSidebar}
+{#if $mobile && (!$showSidebar || !$user)}
 	{#if showHighLevel && highLevel}
 		<div
 			class="buddy-notification-host high-level-host"

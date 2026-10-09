@@ -169,7 +169,9 @@
 			}
 
 			disconnectWarningShown = true;
-			toast.warning($i18n.t('Connection lost. Reconnecting...'));
+			toast.warning($i18n.t('Connection lost. Reconnecting...'), {
+				id: 'buddy-connection-warning'
+			});
 		}, resumeDelay + DISCONNECT_TOAST_DELAY_MS);
 	};
 
@@ -194,8 +196,9 @@
 		_socket.on('connect', async () => {
 			console.log('connected', _socket.id);
 
-			// Cancel any pending disconnect toast if we reconnected quickly
+			// Clear both a pending timer and any warning already shown.
 			clearDisconnectToastTimer();
+			toast.dismiss('buddy-connection-warning');
 
 			if (hasConnectedOnce) {
 				socketConnected.set(true);
