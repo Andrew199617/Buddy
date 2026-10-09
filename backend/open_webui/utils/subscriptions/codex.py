@@ -546,6 +546,7 @@ class CodexProvider:
             },
         }
         if account.get('type') == 'apiKey':
+            status['api_billing'] = True
             status['message'] = (
                 'Codex is signed in with an API key, which bills API usage instead of a ChatGPT plan. '
                 'Sign out and sign in with ChatGPT.'
@@ -637,6 +638,27 @@ class CodexProvider:
             return f'{CHAT_INSTRUCTIONS}\n\n{system}'.strip()
         return system or None
 
+    async def _thread_config(self, server: CodexAppServer, turn: TurnRequest) -> dict | None:
+        """Per-thread config overrides that keep chat and read threads in bounds.
+
+        The read-only sandbox blocks writes but not reads anywhere on disk, and
+        MCP servers from the user's Codex config (such as a JavaScript REPL) run
+        outside it. Chat threads therefore get no command, file, or MCP tools;
+        read threads keep read-only commands but get no MCP servers.
+        """
+        if turn.access == ACCESS_FULL:
+            return None
+
+        effective = await server.request('config/read', {'includeLayers': False, 'cwd': turn.cwd})
+        server_names = ((effective.get('config') or {}).get('mcp_servers') or {}).keys()
+        config = {'mcp_servers': {name: {'enabled': False} for name in server_names}}
+        if turn.access == ACCESS_CHAT:
+            # Dotted keys leave the app-server's other feature switches alone.
+            config['features.shell_tool'] = False
+            config['features.unified_exec'] = False
+            config['features.view_image'] = False
+        return config
+
     async def _start_thread(self, server: CodexAppServer, turn: TurnRequest) -> str:
         sandbox = 'read-only'
         if turn.access == ACCESS_FULL:
@@ -649,6 +671,9 @@ class CodexProvider:
             'approvalPolicy': 'never',
             'developerInstructions': self._developer_instructions(turn),
         }
+        config = await self._thread_config(server, turn)
+        if config:
+            params['config'] = config
         result = await server.request('thread/start', params)
         thread_id = result['thread']['id']
         if turn.conversation.history:

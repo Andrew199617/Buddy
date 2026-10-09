@@ -27,6 +27,17 @@
 	const inputClass =
 		'w-full rounded-xl bg-gray-50 px-3 py-2 text-sm outline-hidden dark:bg-gray-850 placeholder:text-gray-300 dark:placeholder:text-gray-700';
 
+	const getReadDescription = (providerId: string) => {
+		if (providerId === 'codex') {
+			return $i18n.t(
+				"Can run read-only commands. Codex's read-only sandbox does not limit reads to the working folder, so it can read any file your account can. No edits."
+			);
+		}
+		return $i18n.t(
+			'Can read and search files in the working folder and the web. No edits or commands.'
+		);
+	};
+
 	$: accessOptions = [
 		{
 			value: 'chat',
@@ -36,9 +47,7 @@
 		{
 			value: 'read',
 			label: $i18n.t('Read files'),
-			description: $i18n.t(
-				'Can read and search files in the working folder and the web. No edits or commands.'
-			)
+			description: getReadDescription(provider.id)
 		},
 		{
 			value: 'full',

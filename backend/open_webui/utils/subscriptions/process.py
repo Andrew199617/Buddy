@@ -10,6 +10,7 @@ import codecs
 import collections
 import logging
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -20,6 +21,10 @@ if sys.platform == 'win32':
     _CREATION_FLAGS = subprocess.CREATE_NO_WINDOW
 else:
     _CREATION_FLAGS = 0
+
+# On POSIX each CLI leads its own process group, so stopping a reply also stops
+# the commands it started (taskkill /T does this on Windows).
+_NEW_PROCESS_GROUP = sys.platform != 'win32'
 
 # A CLI started from inside another Claude Code session inherits variables that
 # make it behave as a nested session. API keys and gateway URLs would switch it
@@ -75,6 +80,7 @@ class ChildProcess:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             creationflags=_CREATION_FLAGS,
+            start_new_session=_NEW_PROCESS_GROUP,
         )
         program = os.path.basename(args[0])
         self._stdout_reader = threading.Thread(target=self._read_stdout, name=f'{program}-stdout', daemon=True)
@@ -210,7 +216,7 @@ class ChildProcess:
                     timeout=10,
                 )
             else:
-                self.process.kill()
+                os.killpg(self.process.pid, signal.SIGKILL)
         except (OSError, subprocess.SubprocessError) as error:
             log.debug('Could not stop process %s: %s', self.process.pid, error)
             try:

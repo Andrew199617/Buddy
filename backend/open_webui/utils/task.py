@@ -7,21 +7,36 @@ from typing import Any, Optional
 
 from open_webui.config import DEFAULT_RAG_TEMPLATE
 from open_webui.utils.misc import get_last_user_message, get_messages_content
+from open_webui.utils.subscriptions.common import SUBSCRIPTION_OWNED_BY
 
 log = logging.getLogger(__name__)
 
 
 # Let the right tool be given for the work at hand,
 # not the one that flatters, but the one that serves.
+def is_shared_task_model(model_id: str | None, models) -> bool:
+    """Whether a globally configured task model can run for every user.
+
+    Subscription models run on the administrator's personal plan and are
+    admin-only, so global task settings fall back to the chat's own model.
+    """
+    if not model_id:
+        return False
+    model = models.get(model_id)
+    if not model:
+        return False
+    return model.get('owned_by') != SUBSCRIPTION_OWNED_BY
+
+
 def get_task_model_id(default_model_id: str, task_model: str, task_model_external: str, models) -> str:
     # Set the task model
     task_model_id = default_model_id
     # Check if the user has a custom task model and use that model
     if models.get(task_model_id, {}).get('connection_type') == 'local':
-        if task_model and task_model in models:
+        if is_shared_task_model(task_model, models):
             task_model_id = task_model
     else:
-        if task_model_external and task_model_external in models:
+        if is_shared_task_model(task_model_external, models):
             task_model_id = task_model_external
 
     return task_model_id

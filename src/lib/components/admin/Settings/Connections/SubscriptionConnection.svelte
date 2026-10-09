@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getContext } from 'svelte';
+	import { getContext, onDestroy } from 'svelte';
 	import { toast } from 'svelte-sonner';
 
 	import {
@@ -38,6 +38,9 @@
 	let showLoginModal = false;
 	let showSettingsModal = false;
 	let busy = false;
+	let checkTimer: ReturnType<typeof setTimeout> | null = null;
+
+	const CHECK_AGAIN_MS = 3000;
 
 	$: providerStatus = provider.status ?? {};
 	$: accessLabel = getAccessLabel(provider.settings.access);
@@ -61,6 +64,9 @@
 	};
 
 	const getStatusText = (status: SubscriptionProvider['status']) => {
+		if (status.checking) {
+			return $i18n.t('Checking {{cli}}…', { cli: cliName });
+		}
 		if (!status.installed) {
 			return $i18n.t('{{cli}} not found', { cli: cliName });
 		}
@@ -91,6 +97,31 @@
 			})
 		});
 	};
+
+	// The first check starts the CLI and can take a while; ask until it answers.
+	const scheduleCheck = () => {
+		if (checkTimer) {
+			return;
+		}
+		checkTimer = setTimeout(async () => {
+			checkTimer = null;
+			try {
+				await refresh(false);
+			} catch (error) {
+				toast.error(`${error}`);
+			}
+		}, CHECK_AGAIN_MS);
+	};
+
+	$: if (providerStatus.checking) {
+		scheduleCheck();
+	}
+
+	onDestroy(() => {
+		if (checkTimer) {
+			clearTimeout(checkTimer);
+		}
+	});
 
 	const refresh = async (fresh = true) => {
 		provider = await getSubscription(localStorage.token, provider.id, fresh);

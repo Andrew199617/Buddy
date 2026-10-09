@@ -158,18 +158,27 @@ Set it up under **Admin Settings → Connections → Subscriptions**:
 3. The plan's models appear in the model picker, tagged **Claude plan** or
    **ChatGPT plan**. ChatGPT shows how much of its usage limit you have used.
 
+If you run Buddy with more than one worker (`UVICORN_WORKERS`), sign in from a
+terminal instead (`claude auth login` or `codex login`); the CLIs keep the
+sign-in on disk, so every worker sees it. Accounts that bill the API (an
+Anthropic Console login or a Codex API key) are flagged and their models are
+hidden, so a plan-tagged model never bills the API.
+
 The gear button sets what the models may do:
 
-| Setting     | Claude Code                                        | Codex                                   |
-| ----------- | -------------------------------------------------- | --------------------------------------- |
-| Chat only   | No tools; Buddy's chat instructions                | Read-only sandbox in an empty folder    |
-| Read files  | Read, search, and web tools                        | Read-only sandbox in the working folder |
-| Full access | All tools, including the terminal, without prompts | No sandbox, no approval prompts         |
+| Setting     | Claude Code                                        | Codex                              |
+| ----------- | -------------------------------------------------- | ---------------------------------- |
+| Chat only   | No tools; Buddy's chat instructions                | No command, file, or MCP tools     |
+| Read files  | Read, search, and web tools in the working folder  | Read-only commands; no MCP servers |
+| Full access | All tools, including the terminal, without prompts | No sandbox, no approval prompts    |
 
-**Read files** is safe to point at a repository you do not trust: Claude Code
-ignores the folder's settings, hooks, MCP servers, and skills there, and Buddy
-turns off Codex hooks. Both can still read the folder's instruction files
-(`CLAUDE.md`, `AGENTS.md`), which can steer the model.
+In **Read files**, Claude Code's file tools stay inside the working folder,
+and it ignores the folder's settings, hooks, MCP servers, and skills. Codex's
+read-only sandbox blocks writes but cannot limit reads to one folder (custom
+read rules need Codex's elevated Windows sandbox), so a Codex model can read
+any file your account can. Buddy turns off Codex hooks and MCP servers outside
+Full access. Instruction files in the folder (`CLAUDE.md`, `AGENTS.md`) can
+still steer the model.
 
 **Full access** lets the model edit files and run terminal commands on this
 computer as you, in the working folder you choose (Buddy's

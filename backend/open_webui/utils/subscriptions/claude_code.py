@@ -29,7 +29,6 @@ from open_webui.utils.subscriptions.conversation import (
     ChatTurn,
     SessionStore,
     conversation_key,
-    transcript_prompt,
 )
 from open_webui.utils.subscriptions.events import (
     ReasoningDelta,
@@ -56,6 +55,7 @@ NOT_INSTALLED_MESSAGE = (
 NOT_SIGNED_IN_MESSAGE = 'Claude is not signed in. Sign in under Admin Settings → Connections → Subscriptions.'
 EFFORT_LEVELS = ('low', 'medium', 'high', 'xhigh', 'max')
 READ_ONLY_TOOLS = 'Read,Grep,Glob,WebSearch,WebFetch'
+TRANSCRIPT_INTRO = 'Here is our conversation so far. Continue it by replying to my latest message.'
 LOGIN_URL = re.compile(r'https://\S+/oauth/authorize\?\S+')
 FALLBACK_MODELS = [
     ProviderModel(key='opus', value='opus', name='Claude Opus'),
@@ -130,18 +130,45 @@ def _image_block(url: str) -> dict | None:
     }
 
 
-def user_message(text: str, images: list[str]) -> dict:
-    content = [{'type': 'text', 'text': text}]
-    for url in images:
+def _text_block(text: str) -> dict:
+    return {'type': 'text', 'text': text}
+
+
+def _image_blocks(urls: list[str]) -> list[dict]:
+    blocks = []
+    for url in urls:
         block = _image_block(url)
         if block:
-            content.append(block)
+            blocks.append(block)
+    return blocks
+
+
+def _stream_user_message(content: list[dict]) -> dict:
     return {
         'type': 'user',
         'message': {'role': 'user', 'content': content},
         'parent_tool_use_id': None,
         'session_id': '',
     }
+
+
+def user_message(text: str, images: list[str]) -> dict:
+    return _stream_user_message([_text_block(text), *_image_blocks(images)])
+
+
+def transcript_message(history: list[ChatTurn], prompt: ChatTurn) -> dict:
+    """First message of a fresh session: the chat so far, its images, and the new prompt."""
+    if not history:
+        return user_message(prompt.text, prompt.images)
+
+    content = [_text_block(f'{TRANSCRIPT_INTRO}\n\n<conversation>')]
+    for turn in history:
+        content.append(_text_block(f'<{turn.role}>\n{turn.text.strip()}'))
+        content.extend(_image_blocks(turn.images))
+        content.append(_text_block(f'</{turn.role}>'))
+    content.append(_text_block(f'</conversation>\n\nMy latest message:\n{prompt.text}'))
+    content.extend(_image_blocks(prompt.images))
+    return _stream_user_message(content)
 
 
 def _shorten(text, limit: int = 160) -> str:
@@ -438,6 +465,7 @@ class ClaudeCodeProvider:
             'usage': self.usage_summary(),
         }
         if status['signed_in'] and ('console' in auth_method.lower() or 'api' in auth_method.lower()):
+            status['api_billing'] = True
             status['message'] = (
                 'Claude Code is signed in with an Anthropic Console account, which bills API usage '
                 'instead of a Claude plan. Sign out and sign in with your Claude account.'
@@ -658,7 +686,7 @@ class ClaudeCodeProvider:
         cli: str,
         turn: TurnRequest,
         resume_id: str | None,
-        prompt_text: str,
+        message: dict,
         instructions_path: str,
         attempt: 'ClaudeAttempt',
     ):
@@ -666,7 +694,7 @@ class ClaudeCodeProvider:
         parser = attempt.parser
         process = ChildProcess(self._turn_args(cli, turn, resume_id, instructions_path), turn.cwd, subscription_env())
         try:
-            await process.write(json.dumps(user_message(prompt_text, turn.conversation.prompt.images)) + '\n')
+            await process.write(json.dumps(message) + '\n')
             while not parser.finished:
                 line = await process.read_line()
                 if line is None:
@@ -698,8 +726,8 @@ class ClaudeCodeProvider:
         attempt = ClaudeAttempt()
         try:
             if resume_id:
-                prompt_text = conversation.prompt.text
-                async for event in self._run_attempt(cli, turn, resume_id, prompt_text, instructions_path, attempt):
+                message = user_message(conversation.prompt.text, conversation.prompt.images)
+                async for event in self._run_attempt(cli, turn, resume_id, message, instructions_path, attempt):
                     yield event
                 if attempt.session_missing():
                     log.info('Claude session %s no longer exists; starting from the chat text', resume_id)
@@ -707,8 +735,8 @@ class ClaudeCodeProvider:
                     attempt = ClaudeAttempt()
 
             if not resume_id:
-                prompt_text = transcript_prompt(conversation.history, conversation.prompt.text)
-                async for event in self._run_attempt(cli, turn, None, prompt_text, instructions_path, attempt):
+                message = transcript_message(conversation.history, conversation.prompt)
+                async for event in self._run_attempt(cli, turn, None, message, instructions_path, attempt):
                     yield event
 
             failure = attempt.failure()

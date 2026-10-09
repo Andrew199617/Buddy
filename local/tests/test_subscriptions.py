@@ -28,7 +28,6 @@ from open_webui.utils.subscriptions.conversation import (  # noqa: E402
     SessionStore,
     conversation_key,
     parse_messages,
-    transcript_prompt,
 )
 from open_webui.utils.subscriptions.events import (  # noqa: E402
     ReasoningDelta,
@@ -58,7 +57,6 @@ class ConversationTests(unittest.TestCase):
                 {'role': 'system', 'content': 'Be brief.'},
                 {'role': 'user', 'content': 'Hello'},
                 {'role': 'assistant', 'content': '<details type="reasoning">thinking</details>Hi there'},
-                {'role': 'tool', 'content': 'ignored'},
                 {
                     'role': 'user',
                     'content': [
@@ -96,13 +94,28 @@ class ConversationTests(unittest.TestCase):
         self.assertNotEqual(conversation_key(first), conversation_key(edited))
         self.assertNotEqual(conversation_key(first), conversation_key(first, system='Be brief.'))
 
-    def test_transcript_prompt_includes_earlier_turns(self):
-        history = [ChatTurn('user', 'My name is Ada'), ChatTurn('assistant', 'Nice to meet you, Ada.')]
-        prompt = transcript_prompt(history, 'What is my name?')
-        self.assertIn('<user>\nMy name is Ada\n</user>', prompt)
-        self.assertIn('<assistant>\nNice to meet you, Ada.\n</assistant>', prompt)
-        self.assertTrue(prompt.endswith('What is my name?'))
-        self.assertEqual(transcript_prompt([], 'Hi'), 'Hi')
+    def test_key_changes_when_an_image_is_replaced(self):
+        original = [ChatTurn('user', 'What is this?', [PNG_DATA_URL])]
+        replaced = [ChatTurn('user', 'What is this?', ['data:image/png;base64,R0lGODlh'])]
+        self.assertNotEqual(conversation_key(original), conversation_key(replaced))
+
+    def test_tool_calls_and_results_become_turns(self):
+        conversation = parse_messages(
+            [
+                {'role': 'user', 'content': 'Weather in Paris?'},
+                {
+                    'role': 'assistant',
+                    'content': '',
+                    'tool_calls': [
+                        {'id': 'call-1', 'function': {'name': 'get_weather', 'arguments': '{"city": "Paris"}'}}
+                    ],
+                },
+                {'role': 'tool', 'tool_call_id': 'call-1', 'content': 'Sunny, 21 C'},
+            ]
+        )
+        self.assertEqual(conversation.history[1].text, '[Called tool get_weather with {"city": "Paris"}]')
+        self.assertEqual(conversation.prompt.role, 'user')
+        self.assertEqual(conversation.prompt.text, '[Result from tool get_weather]\nSunny, 21 C')
 
     def test_session_store_persists_and_drops_oldest(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -251,6 +264,20 @@ class ClaudeStreamTests(unittest.TestCase):
         resume_args = provider._turn_args('claude', resume_turn, 'session-1', 'instructions.md')
         resume_index = resume_args.index('--resume')
         self.assertEqual(resume_args[resume_index + 1 : resume_index + 3], ['session-1', '--fork-session'])
+
+    def test_rebuilt_session_resends_earlier_images(self):
+        history = [ChatTurn('user', 'Remember this chart', [PNG_DATA_URL]), ChatTurn('assistant', 'Got it.')]
+        message = claude_code.transcript_message(history, ChatTurn('user', 'What did the chart show?'))
+        content = message['message']['content']
+        texts = [block['text'] for block in content if block['type'] == 'text']
+        images = [block for block in content if block['type'] == 'image']
+        self.assertIn('<user>\nRemember this chart', texts)
+        self.assertEqual(len(images), 1)
+        self.assertIn('My latest message:\nWhat did the chart show?', texts[-1])
+        # The image sits inside the turn it was attached to.
+        self.assertEqual(content[content.index(images[0]) + 1], {'type': 'text', 'text': '</user>'})
+        first_turn_only = claude_code.transcript_message([], ChatTurn('user', 'Hi'))
+        self.assertEqual(first_turn_only['message']['content'], [{'type': 'text', 'text': 'Hi'}])
 
     def test_user_message_embeds_images(self):
         message = claude_code.user_message('Look', [PNG_DATA_URL, 'https://example.invalid/a.png', 'blob:x'])
@@ -430,6 +457,30 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(items[1], {'type': 'message', 'role': 'assistant', 'content': assistant_content})
         inputs = codex.user_input(ChatTurn('user', 'See', [PNG_DATA_URL]))
         self.assertEqual(inputs[1], {'type': 'image', 'url': PNG_DATA_URL})
+
+    def test_thread_config_limits_chat_and_read_threads(self):
+        class FakeServer:
+            async def request(self, method, params=None, timeout=None):
+                self.method = method
+                return {'config': {'mcp_servers': {'node_repl': {'command': 'node'}}}}
+
+        provider = codex.CodexProvider(Path('.'))
+        conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
+
+        def thread_config(access):
+            turn = TurnRequest('gpt-x', conversation, ProviderSettings(access=access), '.')
+            return asyncio.run(provider._thread_config(FakeServer(), turn))
+
+        chat_config = thread_config('chat')
+        self.assertEqual(chat_config['mcp_servers'], {'node_repl': {'enabled': False}})
+        self.assertFalse(chat_config['features.shell_tool'])
+        self.assertFalse(chat_config['features.unified_exec'])
+
+        read_config = thread_config('read')
+        self.assertEqual(read_config, {'mcp_servers': {'node_repl': {'enabled': False}}})
+
+        self.assertIsNone(thread_config('full'))
+        self.assertIn('hooks', codex.DISABLED_FEATURES)
 
     def test_summarize_rate_limits(self):
         summary = codex.summarize_rate_limits(

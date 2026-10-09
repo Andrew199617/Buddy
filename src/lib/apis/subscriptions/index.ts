@@ -17,8 +17,11 @@ export type SubscriptionUsageWindow = {
 };
 
 export type SubscriptionStatus = {
+	// True while Buddy is still waiting for the CLI to answer the first check.
+	checking?: boolean;
 	installed?: boolean;
 	signed_in?: boolean;
+	api_billing?: boolean;
 	cli_path?: string;
 	version?: string;
 	message?: string;

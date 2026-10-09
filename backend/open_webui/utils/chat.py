@@ -38,7 +38,7 @@ from open_webui.utils.response import (
     convert_response_ollama_to_openai,
     convert_streaming_response_ollama_to_openai,
 )
-from open_webui.utils.subscriptions.service import OWNED_BY as SUBSCRIPTION_OWNED_BY
+from open_webui.utils.subscriptions.common import SUBSCRIPTION_OWNED_BY
 from open_webui.utils.subscriptions.service import generate_subscription_chat_completion
 from starlette.responses import JSONResponse, Response, StreamingResponse
 

@@ -95,12 +95,16 @@
 		}
 	};
 
-	const close = async () => {
+	// Runs however the dialog closes: the X button, Escape, or the backdrop.
+	const cancelPendingLogin = () => {
 		stopPolling();
 		if (login.state === 'waiting') {
-			await cancelSubscriptionLogin(localStorage.token, provider.id).catch(() => {});
+			cancelSubscriptionLogin(localStorage.token, provider.id).catch(() => {});
 		}
 		login = { state: 'idle' };
+	};
+
+	const close = () => {
 		show = false;
 	};
 
@@ -111,10 +115,10 @@
 	};
 
 	$: if (!show) {
-		stopPolling();
+		cancelPendingLogin();
 	}
 
-	onDestroy(stopPolling);
+	onDestroy(cancelPendingLogin);
 </script>
 
 <Modal size="sm" bind:show>

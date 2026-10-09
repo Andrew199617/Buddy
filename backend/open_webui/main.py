@@ -271,7 +271,7 @@ from open_webui.utils.oauth import (
 from open_webui.utils.plugin import install_tool_and_function_dependencies
 from open_webui.utils.redis import get_redis_client
 from open_webui.utils.session_pool import cleanup_response, get_client_timeout, get_session, stream_wrapper
-from open_webui.utils.subscriptions.service import OWNED_BY as SUBSCRIPTION_OWNED_BY
+from open_webui.utils.subscriptions.common import SUBSCRIPTION_OWNED_BY
 from open_webui.utils.tool_approval import (
     ResolveToolCallForm,
     build_tool_approval_resume_payload,

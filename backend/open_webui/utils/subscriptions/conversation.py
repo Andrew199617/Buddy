@@ -65,13 +65,25 @@ def content_images(content) -> list[str]:
     return images
 
 
+def _tool_calls_text(tool_calls) -> str:
+    """Describe the Buddy tool calls an assistant message made."""
+    lines = []
+    for call in tool_calls or []:
+        function = call.get('function') or {}
+        arguments = function.get('arguments') or '{}'
+        lines.append(f'[Called tool {function.get("name")} with {arguments}]')
+    return '\n'.join(lines)
+
+
 def parse_messages(messages: list[dict]) -> Conversation:
     """Split chat messages into instructions, earlier turns, and the new prompt.
 
-    Tool messages are left out: these models run their own tools.
+    The CLIs only take user and assistant turns, so Buddy tool calls become
+    part of the assistant's text and tool results become user turns.
     """
     system_parts = []
     turns = []
+    tool_names = {}
     for message in messages or []:
         role = message.get('role')
         content = message.get('content')
@@ -80,13 +92,22 @@ def parse_messages(messages: list[dict]) -> Conversation:
             if text:
                 system_parts.append(text)
             continue
-        if role not in ('user', 'assistant'):
-            continue
 
         text = content_text(content)
-        if role == 'assistant':
-            text = DETAILS_BLOCK.sub('', text).strip()
         images = content_images(content)
+        if role == 'assistant':
+            for call in message.get('tool_calls') or []:
+                tool_names[call.get('id')] = (call.get('function') or {}).get('name')
+            text = DETAILS_BLOCK.sub('', text).strip()
+            calls_text = _tool_calls_text(message.get('tool_calls'))
+            text = '\n\n'.join(part for part in (text, calls_text) if part)
+        elif role == 'tool':
+            tool_name = message.get('name') or tool_names.get(message.get('tool_call_id')) or 'tool'
+            text = f'[Result from tool {tool_name}]\n{text}'
+            role = 'user'
+        elif role != 'user':
+            continue
+
         if not text.strip() and not images:
             continue
         turns.append(ChatTurn(role=role, text=text, images=images))
@@ -109,35 +130,18 @@ def _normalized_text(text: str) -> str:
     return ' '.join(DETAILS_BLOCK.sub('', text or '').split())
 
 
+def _image_fingerprint(url: str) -> str:
+    return hashlib.sha256(url.encode('utf-8')).hexdigest()[:16]
+
+
 def conversation_key(turns: list[ChatTurn], system: str = '') -> str:
     """Fingerprint a conversation state; equal chats give equal keys."""
     state = [_normalized_text(system)]
     for turn in turns:
-        state.append([turn.role, _normalized_text(turn.text), len(turn.images)])
+        images = [_image_fingerprint(url) for url in turn.images]
+        state.append([turn.role, _normalized_text(turn.text), images])
     encoded = json.dumps(state, ensure_ascii=False).encode('utf-8')
     return hashlib.sha256(encoded).hexdigest()
-
-
-def transcript_prompt(history: list[ChatTurn], prompt_text: str) -> str:
-    """Write earlier turns into the first message of a fresh CLI session."""
-    if not history:
-        return prompt_text
-
-    lines = [
-        'Here is our conversation so far. Continue it by replying to my latest message.',
-        '',
-        '<conversation>',
-    ]
-    for turn in history:
-        text = turn.text.strip()
-        if turn.images:
-            text = f'{text}\n[{len(turn.images)} image(s) were attached here]'.strip()
-        lines.append(f'<{turn.role}>\n{text}\n</{turn.role}>')
-    lines.append('</conversation>')
-    lines.append('')
-    lines.append('My latest message:')
-    lines.append(prompt_text)
-    return '\n'.join(lines)
 
 
 class SessionStore:

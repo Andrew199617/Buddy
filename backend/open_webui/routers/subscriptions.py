@@ -18,6 +18,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
+from open_webui.env import UVICORN_WORKERS
 from open_webui.utils.auth import get_admin_user
 from open_webui.utils.subscriptions import service
 from open_webui.utils.subscriptions.events import SubscriptionError
@@ -77,6 +78,18 @@ async def update_subscription_config(
 async def start_subscription_login(provider_id: str, form_data: LoginForm, user=Depends(get_admin_user)):
     provider = service.get_provider(provider_id)
     settings = await service.get_settings(provider_id)
+    if UVICORN_WORKERS > 1:
+        # The sign-in process lives in one worker, but the follow-up requests
+        # (progress, pasted code, cancel) can reach another. The CLIs keep the
+        # credentials on disk, so signing in from a terminal works for all workers.
+        command = 'claude auth login' if provider_id == 'claude' else 'codex login'
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f'Buddy is running {UVICORN_WORKERS} workers, so sign in from a terminal on this computer '
+                f'with "{command}", then refresh this page.'
+            ),
+        )
     try:
         return await provider.start_login(settings, form_data.method)
     except (SubscriptionError, OSError) as error:

@@ -5,6 +5,10 @@ from dataclasses import dataclass, field
 
 from open_webui.utils.subscriptions.conversation import Conversation
 
+# ``owned_by`` of subscription models. They run on the administrator's personal
+# plan, so only administrators may use them.
+SUBSCRIPTION_OWNED_BY = 'subscription'
+
 ACCESS_CHAT = 'chat'
 ACCESS_READ = 'read'
 ACCESS_FULL = 'full'
