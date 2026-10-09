@@ -36,7 +36,9 @@ $env:PIP_CACHE_DIR = Join-Path $PSScriptRoot '.uv-cache\pip'
 # Parallel instances should pass independent data directories. CacheDir can
 # point to existing model assets without sharing SQLite databases or static files.
 $env:DATA_DIR = $DataDir
-$env:DATABASE_URL = 'sqlite:///' + ($DataDir.Replace('\', '/') + '/webui.db')
+if (-not $env:DATABASE_URL) {
+    $env:DATABASE_URL = 'sqlite:///' + ($DataDir.Replace('\', '/') + '/webui.db')
+}
 $env:STATIC_DIR = Join-Path $env:DATA_DIR 'static'
 $env:FRONTEND_BUILD_DIR = $frontendPath
 $env:WEBUI_NAME = 'Buddy'
