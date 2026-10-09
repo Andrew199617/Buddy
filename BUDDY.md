@@ -67,6 +67,21 @@ The installer updates the Functions in `local/functions/` in your local
 database. Re-run it after changing those files. See [local customization
 details](local/README.md) for the individual features and update instructions.
 
+## Companion execution host
+
+The browser and phone interface can select projects on a separately paired
+execution host. Open **Companion** in the sidebar. The initial host listens on
+`127.0.0.1:8083`, alongside Andrew's Buddy frontend on port 8082 and backend on
+8081; the host URL and port remain configurable. No directory is approved by
+default, and Buddy
+chat folders do not grant filesystem access.
+
+See [the companion guide](companion/README.md) for startup, one-time pairing,
+directory grants, optional command sessions, remote-host architecture, and
+security limitations. Run its isolated temporary-directory tests with
+`npm run test:companion`. Model-provider login remains independent of host
+pairing.
+
 ## Redesign startup performance
 
 The redesign on port 8082 runs an optimized production frontend against the
@@ -180,11 +195,15 @@ any file your account can. Buddy turns off Codex hooks and MCP servers outside
 Full access. Instruction files in the folder (`CLAUDE.md`, `AGENTS.md`) can
 still steer the model.
 
-**Full access** lets the model edit files and run terminal commands on this
-computer as you, in the working folder you choose (Buddy's
+**Full access** lets the model edit files and run terminal commands on Buddy's
+backend computer under its account, in the working folder you choose (Buddy's
 `open-webui-data/subscriptions/workspace` by default). Anyone who can sign in
 to Buddy as an administrator can then do the same. Status lines show each
 command while it runs, and the reasoning block keeps a log of them.
+
+This provider workspace is separate from companion directory grants. Selecting
+a companion project does not reroute subscription CLIs to that host or grant
+access to its files. Companion pairing never forwards Buddy or provider tokens.
 
 Notes:
 

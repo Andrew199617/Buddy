@@ -1168,6 +1168,18 @@
 							{/if}
 						{/each}
 					</div>
+					<div class="px-1 flex justify-center text-gray-700 dark:text-gray-300">
+						<a
+							id="sidebar-companion-button"
+							class="grow buddy-sidebar-link flex items-center gap-3 rounded-xl px-2 py-1.5 transition hover:bg-gray-100 dark:hover:bg-gray-900"
+							href="/companion"
+							on:click={itemClickHandler}
+							aria-current={$page.url.pathname === '/companion' ? 'page' : undefined}
+						>
+							<CodeIcon className="size-4 shrink-0" strokeWidth="1.5" />
+							<span class="buddy-sidebar-label text-[0.8125rem] leading-5">{$i18n.t('Companion')}</span>
+						</a>
+					</div>
 				</div>
 
 				{#if $visiblePinnedModels.length > 0}
