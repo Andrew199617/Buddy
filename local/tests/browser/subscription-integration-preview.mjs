@@ -11,6 +11,11 @@ import {
 const buildDirectory = process.env.BUDDY_UI_TEST_BUILD || resolve(workspace, 'build');
 const outputDirectory = resolve(workspace, 'local/tests/.qa/subscription-integration');
 const companionExpected = process.env.BUDDY_SUBSCRIPTION_TEST_COMPANION === '1';
+const selectedCases = new Set(
+	(process.argv.find((argument) => argument.startsWith('--only='))?.slice(7) || '')
+		.split(',')
+		.filter(Boolean)
+);
 const stores = resolveProductionExports(
 	readProductionSourceMaps(buildDirectory),
 	'/stores/index.ts',
@@ -83,12 +88,15 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	};
 
 	function describeClaude() {
-		const provider = providerFixture('claude', signedIn);
+		const provider = providerFixture('claude', signedIn || mode === 'api-billing');
 		if (mode.startsWith('checking-') && !checkingResolved) {
 			provider.status = { checking: true };
 		}
 		if (mode === 'api-billing') {
 			provider.status.api_billing = true;
+			provider.status.account = { email: 'fixture@example.invalid', auth_method: 'apiKey' };
+			provider.status.usage = null;
+			provider.models = [];
 			provider.status.message =
 				'Synthetic API billing account; sign in with a Claude plan instead.';
 		}
@@ -289,6 +297,13 @@ async function dismiss(page, method) {
 
 const results = [];
 async function runCase(browser, profile, name, mode, callback, role = 'admin') {
+	if (
+		selectedCases.size &&
+		!selectedCases.has(name) &&
+		!selectedCases.has(profile.name + '-' + name)
+	) {
+		return;
+	}
 	const fixtures = createFixtures(mode, role);
 	let session;
 	let result = { name: profile.name + '-' + name, passed: false, companionExpected };
@@ -322,6 +337,7 @@ async function runCase(browser, profile, name, mode, callback, role = 'admin') {
 		result.externalRequests = fixtures.externalRequests;
 		results.push(result);
 		if (session) await session.context.close();
+		console.log(JSON.stringify({ case: result.name, passed: result.passed }));
 	}
 }
 
@@ -535,7 +551,7 @@ async function pendingCheckUnmountCase(browser, profile) {
 }
 
 async function apiBillingCase(browser, profile) {
-	await runCase(browser, profile, 'api-billing', 'api-billing', async ({ page }) => {
+	await runCase(browser, profile, 'api-billing', 'api-billing', async ({ page }, fixtures) => {
 		await setSettings(page, 'admin:connections');
 		const card = providerCard(page, 'Claude');
 		await card
@@ -544,14 +560,17 @@ async function apiBillingCase(browser, profile) {
 			})
 			.waitFor();
 		assert.equal(
-			await card.getByRole('button', { name: 'Sign in', exact: true }).isVisible(),
+			await card.getByRole('button', { name: 'Sign out', exact: true }).isVisible(),
 			true
 		);
 		assert.equal(
-			await card.getByRole('button', { name: 'Sign out', exact: true }).count(),
+			await card.getByRole('button', { name: 'Sign in', exact: true }).count(),
 			0,
-			'API billing is not shown as a signed-in subscription'
+			'Signed-in CLI credentials retain Sign out while API billing is disclosed'
 		);
+		assert.doesNotMatch(await card.innerText(), /Plus|% used|Synthetic ChatGPT plan/);
+		assert.equal(await card.locator('[style*="width:"]').count(), 0);
+		assert.equal(fixtures.count('POST'), 0, 'Showing an API-billing warning starts no login');
 	});
 }
 
@@ -570,7 +589,9 @@ async function usageNavigationCase(browser, profile) {
 		);
 		assert.doesNotMatch(await unknown.innerText(), /0% used/);
 		await card.getByText('0% used', { exact: true }).waitFor();
-		await card.getByText('90% used', { exact: true }).waitFor();
+		const busyWindow = card.getByText('Busy limit', { exact: true }).locator('xpath=../..');
+		await busyWindow.getByText(/^90% used\s*\u00b7\s*resets /).waitFor();
+		assert.equal(await busyWindow.locator('[style*="width: 90%"]').count(), 1);
 		await page.screenshot({
 			path: resolve(outputDirectory, profile.name + '-subscription-usage.png')
 		});
@@ -633,7 +654,9 @@ async function permissionCase(browser, profile) {
 		'non-admin',
 		'normal',
 		async ({ page }, fixtures) => {
-			await page.goto(origin + '/?settings=admin%3Aconnections', { waitUntil: 'domcontentloaded' });
+			await page.goto(origin + '/c/buddy-design-chat?settings=admin%3Aconnections', {
+				waitUntil: 'domcontentloaded'
+			});
 			await page.locator('#chat-input').waitFor();
 			await page.waitForTimeout(500);
 			assert.equal(
@@ -648,6 +671,15 @@ async function permissionCase(browser, profile) {
 				0
 			);
 			await setSettings(page, false);
+			await page.locator('#chat-input').click();
+			await waitUntil(
+				() =>
+					page
+						.locator('#message-input-container')
+						.getAttribute('data-expanded')
+						.then((value) => value === 'true'),
+				'Normal composer interaction reveals the model picker'
+			);
 			await page.locator('#model-selector-model-button').click();
 			await page.locator('#model-search-input').waitFor();
 			assert.equal(
@@ -691,6 +723,7 @@ try {
 	writeFileSync(resolve(outputDirectory, 'results.json'), JSON.stringify(results, null, 2));
 }
 const failures = results.filter((result) => !result.passed);
+assert.ok(results.length > 0, 'The selected case filter must run at least one scenario');
 console.log(
 	JSON.stringify(
 		{ passed: results.length - failures.length, failed: failures.length, results },
