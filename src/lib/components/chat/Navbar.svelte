@@ -169,9 +169,13 @@
 				{#if $mobile && infoNotificationCount > 0}
 					<span class="buddy-notification-dot" aria-hidden="true"></span>
 					<span id="buddy-sidebar-notification-status" class="sr-only">
-						{$i18n.t('{{count}} notifications need your attention', {
-							count: infoNotificationCount
-						})}
+						{#if infoNotificationCount === 1}
+							{$i18n.t('A notification needs your attention')}
+						{:else}
+							{$i18n.t('{{count}} notifications need your attention', {
+								count: infoNotificationCount
+							})}
+						{/if}
 					</span>
 				{/if}
 				<svg

@@ -2,22 +2,80 @@ import { get } from 'svelte/store';
 import type { ComponentType } from 'svelte';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { originalToast } = vi.hoisted(() => {
-	const createToast = vi.fn(() => 'desktop-notification');
-	const originalToast = Object.assign(createToast, {
-		success: vi.fn(() => 'desktop-success'),
-		info: vi.fn(() => 'desktop-info'),
-		warning: vi.fn(() => 'desktop-warning'),
-		error: vi.fn(() => 'desktop-error'),
-		message: vi.fn(() => 'desktop-message'),
-		custom: vi.fn(() => 'desktop-custom'),
-		loading: vi.fn(() => 'desktop-loading'),
-		promise: vi.fn(() => 'desktop-promise'),
-		dismiss: vi.fn((id?: string | number) => id)
-	});
-	return { originalToast: originalToast };
-});
+const { originalToast, statefulOriginal } = vi.hoisted(() => {
+	const statefulOriginal = {
+		enabled: false,
+		notifications: new Map<string | number, Record<string, any>>(),
+		nextId: 0
+	};
 
+	function createOriginalNotification(
+		message: unknown,
+		data: Record<string, any> | undefined,
+		type: string,
+		fallbackId: string
+	): string | number {
+		if (!statefulOriginal.enabled) {
+			return data?.id ?? fallbackId;
+		}
+		const id = data?.id ?? statefulOriginal.nextId++;
+		const existing = statefulOriginal.notifications.get(id);
+		statefulOriginal.notifications.set(id, {
+			...existing,
+			...data,
+			id: id,
+			title: message,
+			type: type
+		});
+		return id;
+	}
+
+	function markOriginalDismissed(id?: string | number): string | number | undefined {
+		if (statefulOriginal.enabled) {
+			for (const [displayId, notification] of statefulOriginal.notifications) {
+				if (id === undefined || displayId === id) {
+					statefulOriginal.notifications.set(displayId, { ...notification, dismiss: true });
+				}
+			}
+		}
+		return id;
+	}
+
+	const createToast = vi.fn((message: unknown, data?: Record<string, any>) =>
+		createOriginalNotification(message, data, data?.type ?? 'default', 'desktop-notification')
+	);
+	const originalToast = Object.assign(createToast, {
+		success: vi.fn((message: unknown, data?: Record<string, any>) =>
+			createOriginalNotification(message, data, 'success', 'desktop-success')
+		),
+		info: vi.fn((message: unknown, data?: Record<string, any>) =>
+			createOriginalNotification(message, data, 'info', 'desktop-info')
+		),
+		warning: vi.fn((message: unknown, data?: Record<string, any>) =>
+			createOriginalNotification(message, data, 'warning', 'desktop-warning')
+		),
+		error: vi.fn((message: unknown, data?: Record<string, any>) =>
+			createOriginalNotification(message, data, 'error', 'desktop-error')
+		),
+		message: vi.fn((message: unknown, data?: Record<string, any>) =>
+			createOriginalNotification(message, data, 'default', 'desktop-message')
+		),
+		custom: vi.fn((component: unknown, data?: Record<string, any>) =>
+			createOriginalNotification(
+				undefined,
+				{ ...data, component: component },
+				'default',
+				'desktop-custom'
+			)
+		),
+		loading: vi.fn((message: unknown, data?: Record<string, any>) =>
+			createOriginalNotification(message, data, 'loading', 'desktop-loading')
+		),
+		promise: vi.fn(() => 'desktop-promise'),
+		dismiss: vi.fn(markOriginalDismissed)
+	});
+	return { originalToast: originalToast, statefulOriginal: statefulOriginal };
+});
 vi.mock('svelte-sonner-original', () => ({
 	toast: originalToast,
 	Icon: {},
@@ -54,6 +112,10 @@ function resizeToDesktop(): void {
 
 beforeEach(() => {
 	mobileNotifications.set([]);
+	toast.dismiss();
+	statefulOriginal.enabled = false;
+	statefulOriginal.notifications.clear();
+	statefulOriginal.nextId = 0;
 	vi.clearAllMocks();
 	viewportQuery.matches = true;
 	vi.stubGlobal('window', {
@@ -169,7 +231,7 @@ describe('mobile notification routing', () => {
 		expect(get(mobileNotifications)).toEqual([]);
 		expect(firstDismiss).toHaveBeenCalledTimes(1);
 		expect(secondDismiss).toHaveBeenCalledTimes(1);
-		expect(originalToast.dismiss).toHaveBeenCalledWith(undefined);
+		expect(originalToast.dismiss).toHaveBeenCalledWith();
 	});
 });
 
@@ -250,6 +312,77 @@ describe('mobile notification promises', () => {
 });
 
 describe('desktop compatibility', () => {
+	it('preserves a native desktop operation through rapid mobile and desktop ID updates', () => {
+		statefulOriginal.enabled = true;
+		viewportQuery.matches = false;
+		const logicalId = toast.loading('Starting on desktop');
+		viewportQuery.matches = true;
+		const onDismiss = vi.fn();
+		const onAutoClose = vi.fn();
+		expect(
+			toast.loading('Continuing on mobile', {
+				id: logicalId,
+				onDismiss: onDismiss,
+				onAutoClose: onAutoClose
+			})
+		).toBe(logicalId);
+		expect(statefulOriginal.notifications.get(logicalId)?.dismiss).toBe(true);
+		resizeToDesktop();
+
+		const displayId = originalToast.mock.calls[0][1]?.id;
+		expect(displayId).not.toBe(logicalId);
+		expect(statefulOriginal.notifications.get(displayId)?.dismiss).not.toBe(true);
+		expect(toast.success('Completed', { id: logicalId, duration: 3000 })).toBe(logicalId);
+		const notification = statefulOriginal.notifications.get(displayId);
+		expect(notification).toMatchObject({ title: 'Completed', type: 'success', duration: 3000 });
+		expect(notification?.dismiss).not.toBe(true);
+
+		expect(toast.dismiss(logicalId)).toBe(logicalId);
+		expect(originalToast.dismiss).toHaveBeenLastCalledWith(displayId);
+		notification?.onDismiss(notification);
+		notification?.onDismiss(notification);
+		notification?.onAutoClose(notification);
+		expect(onDismiss).toHaveBeenCalledTimes(1);
+		expect(onDismiss).toHaveBeenCalledWith(expect.objectContaining({ id: logicalId }));
+		expect(onAutoClose).not.toHaveBeenCalled();
+	});
+
+	it('ignores retired display cleanup while preserving the replacement mapping and callbacks', () => {
+		statefulOriginal.enabled = true;
+		const onDismiss = vi.fn();
+		const onAutoClose = vi.fn();
+		const logicalId = toast.loading('First mobile notice', {
+			onDismiss: onDismiss,
+			onAutoClose: onAutoClose
+		});
+		resizeToDesktop();
+		const firstDisplayId = originalToast.mock.calls[0][1]?.id;
+		const firstDisplay = statefulOriginal.notifications.get(firstDisplayId);
+
+		viewportQuery.matches = true;
+		toast.loading('Updated on mobile', { id: logicalId });
+		resizeToDesktop();
+		const secondDisplayId = originalToast.mock.calls[1][1]?.id;
+		expect(secondDisplayId).not.toBe(firstDisplayId);
+		firstDisplay?.onDismiss(firstDisplay);
+		firstDisplay?.onAutoClose(firstDisplay);
+		expect(onDismiss).not.toHaveBeenCalled();
+		expect(onAutoClose).not.toHaveBeenCalled();
+
+		expect(toast.success('Latest completion', { id: logicalId })).toBe(logicalId);
+		expect(originalToast.success).toHaveBeenLastCalledWith(
+			'Latest completion',
+			expect.objectContaining({ id: secondDisplayId })
+		);
+		const secondDisplay = statefulOriginal.notifications.get(secondDisplayId);
+		secondDisplay?.onAutoClose(secondDisplay);
+		secondDisplay?.onAutoClose(secondDisplay);
+		secondDisplay?.onDismiss(secondDisplay);
+		expect(onAutoClose).toHaveBeenCalledTimes(1);
+		expect(onAutoClose).toHaveBeenCalledWith(expect.objectContaining({ id: logicalId }));
+		expect(onDismiss).not.toHaveBeenCalled();
+	});
+
 	it('keeps a pending promise alive when its loading notice moves to desktop', async () => {
 		let resolveOperation: (value: string) => void = () => {};
 		const operation = new Promise<string>((resolve) => {
@@ -261,14 +394,18 @@ describe('desktop compatibility', () => {
 
 		expect(originalToast).toHaveBeenCalledWith(
 			'Saving',
-			expect.objectContaining({ id: id, type: 'loading', promise: factory })
+			expect.objectContaining({
+				id: expect.stringMatching(/^buddy-desktop-/),
+				type: 'loading',
+				promise: factory
+			})
 		);
 		expect(factory).toHaveBeenCalledTimes(1);
 		resolveOperation('Done');
 		await vi.waitFor(() => {
 			expect(originalToast.success).toHaveBeenCalledWith(
 				'Saved',
-				expect.objectContaining({ id: id })
+				expect.objectContaining({ id: originalToast.mock.calls[0][1]?.id })
 			);
 		});
 		expect(get(mobileNotifications)).toEqual([]);
@@ -279,7 +416,7 @@ describe('desktop compatibility', () => {
 		viewportQuery.matches = false;
 		const options = { id: 'existing', duration: 9000 };
 		const factory = vi.fn(() => Promise.resolve('Done'));
-		expect(toast.success('Saved', options)).toBe('desktop-success');
+		expect(toast.success('Saved', options)).toBe('existing');
 		expect(toast.promise(factory, { loading: 'Working' })).toBe('desktop-promise');
 		expect(originalToast.success).toHaveBeenCalledWith('Saved', options);
 		expect(originalToast.promise).toHaveBeenCalledWith(factory, { loading: 'Working' });
@@ -303,12 +440,17 @@ describe('desktop compatibility', () => {
 		expect(onDismiss).not.toHaveBeenCalled();
 		expect(originalToast).toHaveBeenCalledWith(
 			'A response is ready',
-			expect.objectContaining({ id: 'quiet', type: 'info', action: action, onDismiss: onDismiss })
+			expect.objectContaining({
+				id: expect.stringMatching(/^buddy-desktop-/),
+				type: 'info',
+				action: action,
+				onDismiss: expect.any(Function)
+			})
 		);
 		expect(originalToast.custom).toHaveBeenCalledWith(
 			CustomNotification,
 			expect.objectContaining({
-				id: 'custom',
+				id: expect.stringMatching(/^buddy-desktop-/),
 				componentProps: { title: 'Weekend plans' },
 				duration: 15000
 			})

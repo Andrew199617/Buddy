@@ -9,6 +9,7 @@ import {
 	mobileNotifications,
 	removeMobileNotification,
 	type MobileNotificationId,
+	type MobileNotificationInput,
 	type MobileNotificationPriority
 } from './mobile';
 
@@ -28,6 +29,104 @@ type ToastPromiseOptions<T> = MobileToastOptions & {
 	finally?: () => void | Promise<void>;
 };
 
+type DesktopMigration = {
+	displayId: MobileNotificationId;
+	notification: MobileNotificationInput;
+	retired: boolean;
+	closed: boolean;
+};
+
+const desktopMigrations = new Map<MobileNotificationId, DesktopMigration>();
+let desktopDisplayCounter = 0;
+
+function completeDesktopMigration(
+	logicalId: MobileNotificationId,
+	migration: DesktopMigration,
+	reason: 'dismiss' | 'auto',
+	notification: ToastT
+): void {
+	if (migration.retired || migration.closed) {
+		return;
+	}
+	migration.closed = true;
+	if (desktopMigrations.get(logicalId) === migration) {
+		desktopMigrations.delete(logicalId);
+	}
+	const logicalNotification = { ...notification, id: logicalId };
+	if (reason === 'auto') {
+		migration.notification.onAutoClose?.(logicalNotification);
+	} else {
+		migration.notification.onDismiss?.(logicalNotification);
+	}
+}
+
+function mappedDesktopOptions<T extends ComponentType>(
+	data: MobileToastOptions<T>,
+	logicalId: MobileNotificationId,
+	migration: DesktopMigration
+): MobileToastOptions<T> {
+	migration.notification = { ...migration.notification, ...data, id: logicalId };
+	function onMappedDismiss(notification: ToastT): void {
+		completeDesktopMigration(logicalId, migration, 'dismiss', notification);
+	}
+	function onMappedAutoClose(notification: ToastT): void {
+		completeDesktopMigration(logicalId, migration, 'auto', notification);
+	}
+	return {
+		...data,
+		id: migration.displayId,
+		onDismiss: onMappedDismiss,
+		onAutoClose: onMappedAutoClose
+	};
+}
+
+function desktopToastOptions<T extends ComponentType>(
+	data?: MobileToastOptions<T>
+): MobileToastOptions<T> | undefined {
+	if (data?.id === undefined) {
+		return data;
+	}
+	const migration = desktopMigrations.get(data.id);
+	if (!migration) {
+		return data;
+	}
+	return mappedDesktopOptions(data, data.id, migration);
+}
+
+function logicalToastId(
+	displayId: MobileNotificationId | undefined,
+	data?: { id?: MobileNotificationId }
+): MobileNotificationId | undefined {
+	if (data?.id !== undefined && data.id !== '') {
+		return data.id;
+	}
+	return displayId;
+}
+
+function retireDesktopMigration(
+	logicalId: MobileNotificationId,
+	migration: DesktopMigration
+): void {
+	migration.retired = true;
+	if (desktopMigrations.get(logicalId) === migration) {
+		desktopMigrations.delete(logicalId);
+	}
+	originalToast.dismiss(migration.displayId);
+}
+
+function mobileToastOptions(data?: MobileToastOptions): MobileToastOptions | undefined {
+	if (data?.id === undefined) {
+		return data;
+	}
+	const migration = desktopMigrations.get(data.id);
+	if (!migration) {
+		originalToast.dismiss(data.id);
+		return data;
+	}
+	const options = { ...migration.notification, ...data, id: data.id };
+	retireDesktopMigration(data.id, migration);
+	return options;
+}
 let viewportQuery: MediaQueryList | undefined;
 
 function handleViewportChange(event: MediaQueryListEvent): void {
@@ -57,11 +156,9 @@ function createMobileToast(
 	data?: MobileToastOptions,
 	operation?: ToastPromise<unknown>
 ): MobileNotificationId {
-	if (data?.id !== undefined) {
-		originalToast.dismiss(data.id);
-	}
+	const options = mobileToastOptions(data);
 	return createMobileNotification({
-		...data,
+		...options,
 		title: message,
 		type: type,
 		promise: operation
@@ -70,49 +167,56 @@ function createMobileToast(
 
 function createToast(message: ToastMessage, data?: MobileToastOptions): MobileNotificationId {
 	if (!isMobileViewport()) {
-		return originalToast(message, data);
+		const displayId = originalToast(message, desktopToastOptions(data));
+		return logicalToastId(displayId, data) as MobileNotificationId;
 	}
 	return createMobileToast(message, 'default', data);
 }
 
 function successToast(message: ToastMessage, data?: MobileToastOptions): MobileNotificationId {
 	if (!isMobileViewport()) {
-		return originalToast.success(message, data);
+		const displayId = originalToast.success(message, desktopToastOptions(data));
+		return logicalToastId(displayId, data) as MobileNotificationId;
 	}
 	return createMobileToast(message, 'success', data);
 }
 
 function infoToast(message: ToastMessage, data?: MobileToastOptions): MobileNotificationId {
 	if (!isMobileViewport()) {
-		return originalToast.info(message, data);
+		const displayId = originalToast.info(message, desktopToastOptions(data));
+		return logicalToastId(displayId, data) as MobileNotificationId;
 	}
 	return createMobileToast(message, 'info', data);
 }
 
 function warningToast(message: ToastMessage, data?: MobileToastOptions): MobileNotificationId {
 	if (!isMobileViewport()) {
-		return originalToast.warning(message, data);
+		const displayId = originalToast.warning(message, desktopToastOptions(data));
+		return logicalToastId(displayId, data) as MobileNotificationId;
 	}
 	return createMobileToast(message, 'warning', data);
 }
 
 function errorToast(message: ToastMessage, data?: MobileToastOptions): MobileNotificationId {
 	if (!isMobileViewport()) {
-		return originalToast.error(message, data);
+		const displayId = originalToast.error(message, desktopToastOptions(data));
+		return logicalToastId(displayId, data) as MobileNotificationId;
 	}
 	return createMobileToast(message, 'error', data);
 }
 
 function messageToast(message: ToastMessage, data?: MobileToastOptions): MobileNotificationId {
 	if (!isMobileViewport()) {
-		return originalToast.message(message, data);
+		const displayId = originalToast.message(message, desktopToastOptions(data));
+		return logicalToastId(displayId, data) as MobileNotificationId;
 	}
 	return createMobileToast(message, 'default', data);
 }
 
 function loadingToast(message: ToastMessage, data?: MobileToastOptions): MobileNotificationId {
 	if (!isMobileViewport()) {
-		return originalToast.loading(message, data);
+		const displayId = originalToast.loading(message, desktopToastOptions(data));
+		return logicalToastId(displayId, data) as MobileNotificationId;
 	}
 	return createMobileToast(message, 'loading', data);
 }
@@ -122,13 +226,12 @@ function customToast<T extends ComponentType = ComponentType>(
 	data?: MobileToastOptions<T>
 ): MobileNotificationId {
 	if (!isMobileViewport()) {
-		return originalToast.custom(component, data);
+		const displayId = originalToast.custom(component, desktopToastOptions(data));
+		return logicalToastId(displayId, data) as MobileNotificationId;
 	}
-	if (data?.id !== undefined) {
-		originalToast.dismiss(data.id);
-	}
+	const options = mobileToastOptions(data);
 	return createMobileNotification({
-		...data,
+		...options,
 		component: component,
 		type: 'default'
 	});
@@ -137,8 +240,15 @@ function customToast<T extends ComponentType = ComponentType>(
 function dismissToast(id?: MobileNotificationId): MobileNotificationId | undefined {
 	if (id === undefined) {
 		clearMobileNotifications();
-	} else {
-		removeMobileNotification(id, 'dismiss');
+		desktopMigrations.clear();
+		return originalToast.dismiss();
+	}
+	removeMobileNotification(id, 'dismiss');
+	const migration = desktopMigrations.get(id);
+	if (migration) {
+		desktopMigrations.delete(id);
+		originalToast.dismiss(migration.displayId);
+		return id;
 	}
 	return originalToast.dismiss(id);
 }
@@ -165,7 +275,12 @@ function promiseToast<T>(
 	data?: ToastPromiseOptions<T>
 ): MobileNotificationId | undefined {
 	if (!isMobileViewport()) {
-		return originalToast.promise(promise, data);
+		if (!data) {
+			return originalToast.promise(promise, data);
+		}
+		const desktopOptions = { ...data, ...desktopToastOptions(data) };
+		const displayId = originalToast.promise(promise, desktopOptions);
+		return logicalToastId(displayId, data);
 	}
 	if (!data) {
 		return;
@@ -244,10 +359,22 @@ export function flushMobileNotificationsToDesktop(): void {
 			updated,
 			...options
 		} = notification;
+		const previousMigration = desktopMigrations.get(notification.id);
+		if (previousMigration) {
+			retireDesktopMigration(notification.id, previousMigration);
+		}
+		const migration: DesktopMigration = {
+			displayId: `buddy-desktop-${desktopDisplayCounter++}`,
+			notification: options,
+			retired: false,
+			closed: false
+		};
+		desktopMigrations.set(notification.id, migration);
+		const desktopOptions = mappedDesktopOptions(options, notification.id, migration);
 		if (notification.component) {
-			originalToast.custom(notification.component, options);
+			originalToast.custom(notification.component, desktopOptions);
 		} else {
-			originalToast(notification.title ?? '', options);
+			originalToast(notification.title ?? '', desktopOptions);
 		}
 	}
 }

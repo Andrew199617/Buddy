@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
 	import BuddyAvatar from './BuddyAvatar.svelte';
+	import BuddyNotificationCard from './BuddyNotificationCard.svelte';
+	import { showSidebar } from '$lib/stores';
 	import {
 		mobileNotifications,
 		getMobileNotificationPriority,
@@ -10,6 +12,9 @@
 
 	const i18n: any = getContext('i18n');
 
+	$: urgentNotification = $mobileNotifications.find(
+		(notification) => getMobileNotificationPriority(notification) === 'urgent'
+	);
 	$: infoNotifications = $mobileNotifications.filter(
 		(notification) => getMobileNotificationPriority(notification) === 'info'
 	);
@@ -31,6 +36,17 @@
 	}
 </script>
 
+{#if $showSidebar && urgentNotification}
+	<div
+		class="buddy-sidebar-urgent-notification"
+		role="region"
+		aria-label={$i18n.t('Urgent notification')}
+	>
+		{#key urgentNotification.revision}
+			<BuddyNotificationCard notification={urgentNotification} urgent={true} />
+		{/key}
+	</div>
+{/if}
 {#if infoNotifications.length > 0}
 	<section class="buddy-notification-inbox" aria-labelledby="buddy-notification-heading">
 		<h2 id="buddy-notification-heading">{$i18n.t('Notifications')}</h2>
@@ -122,6 +138,15 @@
 {/if}
 
 <style>
+	.buddy-sidebar-urgent-notification {
+		position: sticky;
+		top: 0;
+		z-index: 2;
+		flex: none;
+		max-height: min(40dvh, 18rem);
+		margin-bottom: 8px;
+		background: var(--buddy-panel, #fff);
+	}
 	.buddy-notification-inbox {
 		flex: none;
 		padding: 4px 0 12px;
