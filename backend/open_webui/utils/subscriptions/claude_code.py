@@ -619,7 +619,14 @@ class ClaudeCodeProvider:
             args.extend(['--setting-sources', ''])
             args.extend(['--tools', ''])
         elif turn.access == ACCESS_READ:
+            # The working folder may be someone else's repository. Its
+            # .claude/settings.json hooks and .mcp.json servers would run as
+            # this user, so read mode loads no settings files, MCP servers, or
+            # skills, and --restricted keeps file tools inside the folder.
             args.extend(['--append-system-prompt-file', instructions_path])
+            args.append('--restricted')
+            args.extend(['--strict-mcp-config', '--disable-slash-commands'])
+            args.extend(['--setting-sources', ''])
             args.extend(['--tools', READ_ONLY_TOOLS])
             args.extend(['--allowedTools', 'WebSearch,WebFetch'])
         else:

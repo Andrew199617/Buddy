@@ -166,6 +166,11 @@ The gear button sets what the models may do:
 | Read files  | Read, search, and web tools                        | Read-only sandbox in the working folder |
 | Full access | All tools, including the terminal, without prompts | No sandbox, no approval prompts         |
 
+**Read files** is safe to point at a repository you do not trust: Claude Code
+ignores the folder's settings, hooks, MCP servers, and skills there, and Buddy
+turns off Codex hooks. Both can still read the folder's instruction files
+(`CLAUDE.md`, `AGENTS.md`), which can steer the model.
+
 **Full access** lets the model edit files and run terminal commands on this
 computer as you, in the working folder you choose (Buddy's
 `open-webui-data/subscriptions/workspace` by default). Anyone who can sign in

@@ -234,6 +234,10 @@ class ClaudeStreamTests(unittest.TestCase):
             read_args = turn_args('read')
             self.assertEqual(read_args[read_args.index('--tools') + 1], claude_code.READ_ONLY_TOOLS)
             self.assertIn('--append-system-prompt-file', read_args)
+            # A repository's hooks, MCP servers, and skills must not load in read mode.
+            self.assertIn('--restricted', read_args)
+            self.assertIn('--strict-mcp-config', read_args)
+            self.assertEqual(read_args[read_args.index('--setting-sources') + 1], '')
 
             full_args = turn_args('full', effort='max')
             self.assertIn('--dangerously-skip-permissions', full_args)
