@@ -254,9 +254,49 @@
 		return Boolean(document.activeElement?.closest('#chat-input'));
 	}
 
+	function mobileComposerActionIsEditing(): boolean {
+		if (mobileComposerActionInputFocused()) return true;
+		const activeElement = document.activeElement;
+		if (
+			activeElement?.matches('input, textarea, [contenteditable="true"]') &&
+			contentEl?.contains(activeElement)
+		) {
+			return true;
+		}
+		const viewport = window.visualViewport;
+		// The keyboard can remain visible while Safari moves focus away from the editor.
+		return Boolean(viewport && window.innerHeight - viewport.height > 140);
+	}
+
 	function preserveMobileActionMenuFocus(event: PointerEvent): void {
 		if (!event.isPrimary || event.button !== 0 || !mobileComposerActionInputFocused()) return;
 		event.preventDefault();
+	}
+
+	function mobileComposerMenuViewport(button: HTMLElement) {
+		const viewport = visualViewportRect();
+		const shell = button.closest('.buddy-shell');
+		if (!shell) return viewport;
+		const shellRect = shell.getBoundingClientRect();
+		if (shellRect.width === 0 || shellRect.height === 0) return viewport;
+		// Anchor and shell rectangles share client coordinates even when iOS pans the page.
+		return {
+			left: shellRect.left,
+			top: shellRect.top,
+			width: Math.min(viewport.width, shellRect.width),
+			height: Math.min(viewport.height, shellRect.height)
+		};
+	}
+
+	function mobileMenuFixedOrigin(): DOMRect {
+		const probe = document.createElement('div');
+		probe.setAttribute('aria-hidden', 'true');
+		probe.style.cssText =
+			'position: fixed; top: 0; left: 0; width: 0; height: 0; visibility: hidden; pointer-events: none;';
+		document.body.appendChild(probe);
+		const origin = probe.getBoundingClientRect();
+		probe.remove();
+		return origin;
 	}
 
 	function positionMobileComposerActionMenu(): boolean {
@@ -265,12 +305,9 @@
 		const anchor = button.getBoundingClientRect();
 		// A closing composer can hide its tools before the outgoing menu is removed.
 		if (!button.isConnected || anchor.width === 0 || anchor.height === 0) return true;
-		const viewport = visualViewportRect();
-		const availableHeight = getMobileComposerMenuMaxHeight(
-			anchor,
-			viewport,
-			mobileComposerActionInputFocused()
-		);
+		const viewport = mobileComposerMenuViewport(button);
+		const editing = mobileComposerActionIsEditing();
+		const availableHeight = getMobileComposerMenuMaxHeight(anchor, viewport, editing);
 		resolvedMaxHeight = `min(${maxHeight}, ${availableHeight}px)`;
 		contentEl.style.position = 'fixed';
 		contentEl.style.zIndex = '9999';
@@ -280,9 +317,10 @@
 		if (align === 'end') {
 			menuAlign = 'end';
 		}
-		const position = getMobileComposerMenuPosition(anchor, viewport, menuSize, menuAlign);
-		contentEl.style.top = `${position.top}px`;
-		contentEl.style.left = `${position.left}px`;
+		const position = getMobileComposerMenuPosition(anchor, viewport, menuSize, menuAlign, editing);
+		const fixedOrigin = mobileMenuFixedOrigin();
+		contentEl.style.top = `${position.top - fixedOrigin.top}px`;
+		contentEl.style.left = `${position.left - fixedOrigin.left}px`;
 		contentEl.style.bottom = 'auto';
 		contentEl.style.right = 'auto';
 		return true;

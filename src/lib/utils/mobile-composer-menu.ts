@@ -9,6 +9,7 @@ export type MenuAnchor = {
 	left: number;
 	right: number;
 	top: number;
+	height: number;
 };
 
 export type MenuSize = {
@@ -26,17 +27,17 @@ export function getMobileComposerMenuMaxHeight(
 	focused: boolean
 ): number {
 	const visibleHeight = Math.max(0, viewport.height - viewportGutter * 2);
+	if (focused) {
+		const focusedHeight = viewport.height * 0.6;
+		return Math.min(visibleHeight, focusedHeight);
+	}
+
 	const spaceAboveAnchor = Math.max(0, anchor.top - viewport.top - anchorGap - viewportGutter);
 	let availableHeight = Math.min(spaceAboveAnchor, visibleHeight);
 
-	// Tight viewports use the visible area so the menu still has room to scroll.
+	// Tight idle viewports use the visible area so the menu still has room to scroll.
 	if (availableHeight < minimumUsefulHeight) {
 		availableHeight = visibleHeight;
-	}
-
-	if (focused) {
-		const compactHeight = Math.min(240, Math.max(96, viewport.height / 2));
-		availableHeight = Math.min(availableHeight, compactHeight);
 	}
 
 	return availableHeight;
@@ -46,9 +47,15 @@ export function getMobileComposerMenuPosition(
 	anchor: MenuAnchor,
 	viewport: MenuViewport,
 	size: MenuSize,
-	align: 'start' | 'end'
+	align: 'start' | 'end',
+	focused = false
 ): { top: number; left: number } {
-	const preferredTop = anchor.top - size.height - anchorGap;
+	let preferredTop = anchor.top - size.height - anchorGap;
+	if (focused) {
+		const anchorCenter = anchor.top + anchor.height / 2;
+		preferredTop = anchorCenter - size.height / 2;
+	}
+
 	let preferredLeft = anchor.left;
 	if (align === 'end') {
 		preferredLeft = anchor.right - size.width;
