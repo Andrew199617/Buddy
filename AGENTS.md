@@ -1,3 +1,8 @@
+# Product design context
+
+We are designing the Buddy website and the mobile version of the app in this repository.
+Keep the desktop and mobile experiences coherent, and treat touch input, safe areas, and on-screen keyboard behavior as part of the mobile design.
+
 # Code readability
 
 - Prefer straightforward code that can be read once over compact code that saves lines.
