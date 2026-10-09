@@ -1,5 +1,6 @@
-import { get, readonly, writable } from 'svelte/store';
+import { derived, get, readonly, writable } from 'svelte/store';
 import { getChatList, getPinnedChatList } from '$lib/apis/chats';
+import { getUnreadChatIds } from './chatUnread';
 
 type ChatListItem = {
 	id: string;
@@ -8,9 +9,62 @@ type ChatListItem = {
 
 const chatsStore = writable<ChatListItem[] | null>(null);
 const pinnedChatsStore = writable<ChatListItem[]>([]);
+const unreadChatsStore = writable<ChatListItem[]>([]);
 
 export const chats = readonly(chatsStore);
 export const pinnedChats = readonly(pinnedChatsStore);
+export const unreadChatIds = derived(unreadChatsStore, getUnreadChatIds);
+export const hasUnreadChats = derived(unreadChatIds, (ids) => ids.length > 0);
+
+let unreadRequestGeneration = 0;
+let unreadMutationVersion = 0;
+let allReadMutationVersion = 0;
+type UnreadStateChange = {
+	lastReadAt?: number;
+	readVersion?: number;
+	active?: boolean;
+	activeVersion?: number;
+};
+const unreadStateChanges = new Map<string, UnreadStateChange>();
+
+export const refreshUnreadChats = async (token: string = ''): Promise<boolean> => {
+	const generation = ++unreadRequestGeneration;
+	const mutationVersion = unreadMutationVersion;
+
+	try {
+		// All lightweight metadata includes old pages, pinned chats and folder chats.
+		// Shared chats owned by others are already treated as read by the folder API.
+		const nextChats = (await getChatList(token, null, true, true)) as ChatListItem[];
+		if (generation !== unreadRequestGeneration) {
+			return false;
+		}
+
+		unreadChatsStore.set(
+			nextChats.map((chat) => {
+				const change = unreadStateChanges.get(chat.id);
+				let nextChat = chat;
+				if (allReadMutationVersion > mutationVersion) {
+					nextChat = { ...nextChat, last_read_at: chat.updated_at };
+				}
+				if (
+					(change?.readVersion ?? 0) > mutationVersion &&
+					(change?.readVersion ?? 0) > allReadMutationVersion
+				) {
+					nextChat = { ...nextChat, last_read_at: change?.lastReadAt };
+				}
+				if ((change?.activeVersion ?? 0) > mutationVersion) {
+					nextChat = { ...nextChat, active: change?.active };
+				}
+				return nextChat;
+			})
+		);
+		unreadStateChanges.clear();
+		return true;
+	} catch {
+		// A failed aggregate refresh must not erase known unread state or stop the sidebar.
+		return false;
+	}
+};
 
 let currentPage = 1;
 let paginationReady = false;
@@ -40,7 +94,8 @@ export const refreshChatList = async (
 		getChatList(token, 1) as Promise<ChatListItem[]>,
 		options.refreshPinned && !options.clearPinned
 			? (getPinnedChatList(token) as Promise<ChatListItem[]>)
-			: Promise.resolve(undefined as ChatListItem[] | undefined)
+			: Promise.resolve(undefined as ChatListItem[] | undefined),
+		refreshUnreadChats(token)
 	]);
 
 	if (generation !== requestGeneration) {
@@ -128,7 +183,15 @@ export const setChatActive = (chatId: string, active: boolean): boolean => {
 
 	chatsStore.update((items) => (items ? items.map(updateChat) : items));
 	pinnedChatsStore.update((items) => items.map(updateChat));
-	return found;
+	const foundInChatList = found;
+	unreadMutationVersion += 1;
+	unreadStateChanges.set(chatId, {
+		...unreadStateChanges.get(chatId),
+		active,
+		activeVersion: unreadMutationVersion
+	});
+	unreadChatsStore.update((items) => items.map(updateChat));
+	return foundInChatList;
 };
 
 export const setChatReadAt = (chatId: string, lastReadAt: number): boolean => {
@@ -143,7 +206,15 @@ export const setChatReadAt = (chatId: string, lastReadAt: number): boolean => {
 
 	chatsStore.update((items) => (items ? items.map(updateChat) : items));
 	pinnedChatsStore.update((items) => items.map(updateChat));
-	return found;
+	const foundInChatList = found;
+	unreadMutationVersion += 1;
+	unreadStateChanges.set(chatId, {
+		...unreadStateChanges.get(chatId),
+		lastReadAt,
+		readVersion: unreadMutationVersion
+	});
+	unreadChatsStore.update((items) => items.map(updateChat));
+	return foundInChatList;
 };
 
 export const setAllChatsRead = () => {
@@ -151,6 +222,9 @@ export const setAllChatsRead = () => {
 
 	chatsStore.update((items) => (items ? items.map(updateChat) : items));
 	pinnedChatsStore.update((items) => items.map(updateChat));
+	unreadMutationVersion += 1;
+	allReadMutationVersion = unreadMutationVersion;
+	unreadChatsStore.update((items) => items.map(updateChat));
 };
 
 export const resetChatListState = () => {
@@ -161,4 +235,9 @@ export const resetChatListState = () => {
 	loadingNextPage = false;
 	chatsStore.set(null);
 	pinnedChatsStore.set([]);
+	unreadRequestGeneration += 1;
+	unreadMutationVersion = 0;
+	allReadMutationVersion = 0;
+	unreadStateChanges.clear();
+	unreadChatsStore.set([]);
 };

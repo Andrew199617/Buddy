@@ -8,6 +8,7 @@
 	import { getLogoutRedirectUrl, getSessionUser, userSignOut } from '$lib/apis/auths';
 
 	import { showSettings, mobile, showSidebar, user, config, settings } from '$lib/stores';
+	import { buddyDockState, getNavigationFallbacks } from '$lib/components/buddy/navigation';
 
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 
@@ -55,6 +56,13 @@
 	const DEFAULT_PINNED_ITEMS = ['notes', 'workspace'];
 
 	$: pinnedItems = $settings?.pinnedMenuItems ?? DEFAULT_PINNED_ITEMS;
+	$: navigationFallbacks = getNavigationFallbacks(
+		$user,
+		$config?.features,
+		$buddyDockState,
+		$mobile,
+		$showSidebar
+	);
 
 	const isPinned = (id: string) => {
 		return pinnedItems.includes(id);
@@ -238,7 +246,7 @@
 				<hr class="border-gray-50/30 dark:border-gray-800/30 my-0.5 mx-1 p-0" />
 			{/if}
 
-			{#if $user?.role === 'admin' || $user?.permissions?.workspace?.models || $user?.permissions?.workspace?.knowledge || $user?.permissions?.workspace?.prompts || $user?.permissions?.workspace?.tools || $user?.permissions?.workspace?.skills}
+			{#if navigationFallbacks.workspace}
 				<div
 					class="user-menu-row flex items-center w-full rounded-xl hover:bg-gray-50/60 dark:hover:bg-gray-800/60 transition-colors"
 				>
@@ -284,7 +292,7 @@
 				</div>
 			{/if}
 
-			{#if ($config?.features?.enable_notes ?? false) && ($user?.role === 'admin' || ($user?.permissions?.features?.notes ?? true))}
+			{#if navigationFallbacks.notes}
 				<div
 					class="user-menu-row flex items-center w-full rounded-xl hover:bg-gray-50/60 dark:hover:bg-gray-800/60 transition-colors"
 				>
@@ -376,7 +384,7 @@
 				</div>
 			{/if}
 
-			{#if $config?.features?.enable_automations && ($user?.role === 'admin' || $user?.permissions?.features?.automations)}
+			{#if navigationFallbacks.automations}
 				<div
 					class="user-menu-row flex items-center w-full rounded-xl hover:bg-gray-50/60 dark:hover:bg-gray-800/60 transition-colors"
 				>

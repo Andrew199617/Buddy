@@ -1,5 +1,6 @@
 <script lang="ts">
 	import SidebarToggleTooltip from '$lib/components/layout/SidebarToggleTooltip.svelte';
+	import SidebarControlIcon from '$lib/components/layout/SidebarControlIcon.svelte';
 	import { getContext } from 'svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
@@ -27,6 +28,7 @@
 	import ChatPlus from '../icons/ChatPlus.svelte';
 	import Knobs from '../icons/Knobs.svelte';
 	import { isTemporaryChatId } from '$lib/utils/chatId';
+	import { hasUnreadChats } from '$lib/stores/chatList';
 
 	const i18n: any = getContext('i18n');
 
@@ -47,6 +49,17 @@
 	$: infoNotificationCount = $mobileNotifications.filter(
 		(notification) => getMobileNotificationPriority(notification) === 'info'
 	).length;
+	let sidebarDescription: string | undefined;
+	$: {
+		const descriptions: string[] = [];
+		if ($hasUnreadChats) {
+			descriptions.push('buddy-sidebar-unread-status');
+		}
+		if ($mobile && infoNotificationCount > 0) {
+			descriptions.push('buddy-sidebar-notification-status');
+		}
+		sidebarDescription = descriptions.length > 0 ? descriptions.join(' ') : undefined;
+	}
 
 	let closedBannerIds: string[] = [];
 	let showShareChatModal = false;
@@ -153,42 +166,43 @@
 	<div id="navbar-bg-gradient-to-b" class="buddy-header-fade" aria-hidden="true"></div>
 
 	<div class="buddy-header-left">
-		<SidebarToggleTooltip>
-			<button
-				type="button"
-				id="sidebar-toggle-button"
-				aria-controls="sidebar"
-				class="buddy-circle-button no-drag"
-				on:click={toggleSidebar}
-				aria-expanded={$showSidebar}
-				aria-label={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
-				aria-describedby={$mobile && infoNotificationCount > 0
-					? 'buddy-sidebar-notification-status'
-					: undefined}
-			>
-				{#if $mobile && infoNotificationCount > 0}
-					<span class="buddy-notification-dot" aria-hidden="true"></span>
-					<span id="buddy-sidebar-notification-status" class="sr-only">
-						{#if infoNotificationCount === 1}
-							{$i18n.t('A notification needs your attention')}
-						{:else}
-							{$i18n.t('{{count}} notifications need your attention', {
-								count: infoNotificationCount
-							})}
-						{/if}
-					</span>
-				{/if}
-				<svg
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="1.6"
-					aria-hidden="true"
+		{#if !$showSidebar}
+			<SidebarToggleTooltip>
+				<button
+					type="button"
+					id="sidebar-toggle-button"
+					aria-controls="sidebar"
+					class="buddy-circle-button no-drag"
+					on:click={toggleSidebar}
+					aria-expanded={$showSidebar}
+					aria-label={$i18n.t('Open Sidebar')}
+					aria-describedby={sidebarDescription}
 				>
-					<path d="M5 8H19M5 16H19" stroke-linecap="round" />
-				</svg>
-			</button>
-		</SidebarToggleTooltip>
+					{#if $hasUnreadChats || ($mobile && infoNotificationCount > 0)}
+						<span class="buddy-notification-dot" data-unread={$hasUnreadChats} aria-hidden="true"
+						></span>
+					{/if}
+					{#if $hasUnreadChats}
+						<span id="buddy-sidebar-unread-status" class="sr-only">
+							{$i18n.t('Unread')}
+							{$i18n.t('Chats')}
+						</span>
+					{/if}
+					{#if $mobile && infoNotificationCount > 0}
+						<span id="buddy-sidebar-notification-status" class="sr-only">
+							{#if infoNotificationCount === 1}
+								{$i18n.t('A notification needs your attention')}
+							{:else}
+								{$i18n.t('{{count}} notifications need your attention', {
+									count: infoNotificationCount
+								})}
+							{/if}
+						</span>
+					{/if}
+					<SidebarControlIcon />
+				</button>
+			</SidebarToggleTooltip>
+		{/if}
 		<Tooltip content={$i18n.t('New Chat')}>
 			<button
 				type="button"
