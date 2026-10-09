@@ -95,6 +95,7 @@
 	import CheckIcon from '../icons/Check.svelte';
 	import MoreHorizontalIcon from './Sidebar/icons/MoreHorizontal.svelte';
 	import MobileSwipePanel from '../common/MobileSwipePanel.svelte';
+	import BuddyNotificationInbox from '$lib/components/buddy/BuddyNotificationInbox.svelte';
 
 	const BREAKPOINT = 768;
 	const DEFAULT_PINNED_ITEMS = ['notes', 'workspace'];
@@ -1072,6 +1073,9 @@
 					}
 				}}
 			>
+				{#if $mobile}
+					<BuddyNotificationInbox />
+				{/if}
 				<div class="pb-1">
 					<div class="px-1 flex justify-center text-gray-700 dark:text-gray-300">
 						<a

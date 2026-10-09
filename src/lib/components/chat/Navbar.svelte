@@ -8,6 +8,7 @@
 		banners,
 		chatId,
 		config,
+		mobile,
 		settings,
 		showControls,
 		showSidebar,
@@ -15,6 +16,7 @@
 		user
 	} from '$lib/stores';
 	import BuddyAvatar from '$lib/components/buddy/BuddyAvatar.svelte';
+	import { mobileNotifications, getMobileNotificationPriority } from '$lib/notifications/mobile';
 	import ShareChatModal from '../chat/ShareChatModal.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
 	import Menu from '$lib/components/layout/Navbar/Menu.svelte';
@@ -41,6 +43,10 @@
 	export let archiveChatHandler: (id: string) => void;
 	export let deleteChatHandler: (id: string) => void;
 	export let moveChatHandler: (id: string, folderId: string) => void;
+
+	$: infoNotificationCount = $mobileNotifications.filter(
+		(notification) => getMobileNotificationPriority(notification) === 'info'
+	).length;
 
 	let closedBannerIds: string[] = [];
 	let showShareChatModal = false;
@@ -156,7 +162,18 @@
 				on:click={toggleSidebar}
 				aria-expanded={$showSidebar}
 				aria-label={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
+				aria-describedby={$mobile && infoNotificationCount > 0
+					? 'buddy-sidebar-notification-status'
+					: undefined}
 			>
+				{#if $mobile && infoNotificationCount > 0}
+					<span class="buddy-notification-dot" aria-hidden="true"></span>
+					<span id="buddy-sidebar-notification-status" class="sr-only">
+						{$i18n.t('{{count}} notifications need your attention', {
+							count: infoNotificationCount
+						})}
+					</span>
+				{/if}
 				<svg
 					viewBox="0 0 24 24"
 					fill="none"
@@ -411,12 +428,24 @@
 	}
 
 	.buddy-circle-button {
+		position: relative;
 		border: 1px solid rgb(39 99 75 / 12%);
 		background: rgb(255 255 255 / 66%);
 		box-shadow: 0 3px 10px rgb(31 62 45 / 4%);
 		backdrop-filter: blur(12px);
 	}
 
+	.buddy-notification-dot {
+		position: absolute;
+		top: 1px;
+		right: 1px;
+		width: 10px;
+		height: 10px;
+		border: 2px solid var(--buddy-stage, #faf8f5);
+		border-radius: 50%;
+		background: #3b82f6;
+		box-shadow: 0 0 0 1px rgb(59 130 246 / 14%);
+	}
 	.buddy-circle-button :global(svg),
 	.buddy-quiet-button :global(svg) {
 		width: 20px;
