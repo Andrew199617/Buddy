@@ -81,7 +81,7 @@
 	import VoiceRecording from './MessageInput/VoiceRecording.svelte';
 	import ModelSelector from './ModelSelector.svelte';
 
-	import ToolServersModal from './ToolServersModal.svelte';
+	import ToolServersMenu from './ToolServersMenu.svelte';
 	import SkillsModal from './SkillsModal.svelte';
 
 	import RichTextInput from '../common/RichTextInput.svelte';
@@ -1785,7 +1785,6 @@
 	});
 </script>
 
-<ToolServersModal bind:show={showTools} {selectedToolIds} />
 <SkillsModal bind:show={showSkills} {selectedSkillIds} />
 
 <InputVariablesModal
@@ -2267,6 +2266,12 @@
 													}}
 													on:keydown={async (e) => {
 														e = e.detail.event;
+														if (e.key === 'Escape' && $mobile && showTools) {
+															e.preventDefault();
+															e.stopPropagation();
+															showTools = false;
+															return;
+														}
 
 														const isCtrlPressed = e.ctrlKey || e.metaKey; // metaKey is for Cmd key on Mac
 														const suggestionsContainerElement =
@@ -2528,28 +2533,33 @@
 
 										<div class="ml-1 flex gap-1.5 shrink-0">
 											{#if (selectedToolIds ?? []).length > 0}
-												<Tooltip
-													content={$i18n.t('{{COUNT}} Available Tools', {
-														COUNT: (selectedToolIds ?? []).length
-													})}
-												>
-													<button
-														class="translate-y-[0.5px] px-1 flex gap-1 items-center text-gray-600 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-200 rounded-lg self-center transition"
-														aria-label={$i18n.t('Available Tools')}
-														on:pointerdown={preserveComposerDialogFocus}
-														aria-haspopup="dialog"
-														type="button"
-														on:click={() => {
-															showTools = !showTools;
-														}}
+												<ToolServersMenu bind:show={showTools} {selectedToolIds}>
+													<Tooltip
+														content={$i18n.t('{{COUNT}} Available Tools', {
+															COUNT: (selectedToolIds ?? []).length
+														})}
 													>
-														<Wrench className="size-4" strokeWidth="1.75" />
+														<button
+															id="available-tools-button"
+															class="translate-y-[0.5px] px-1 flex gap-1 items-center text-gray-600 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-200 rounded-lg self-center transition"
+															aria-label={$i18n.t('Available Tools')}
+															on:pointerdown={preserveComposerDialogFocus}
+															aria-haspopup={$mobile ? 'menu' : 'dialog'}
+															type="button"
+															on:click={() => {
+																if (!$mobile) {
+																	showTools = !showTools;
+																}
+															}}
+														>
+															<Wrench className="size-4" strokeWidth="1.75" />
 
-														<span class="text-sm">
-															{(selectedToolIds ?? []).length}
-														</span>
-													</button>
-												</Tooltip>
+															<span class="text-sm">
+																{(selectedToolIds ?? []).length}
+															</span>
+														</button>
+													</Tooltip>
+												</ToolServersMenu>
 											{/if}
 
 											{#if (selectedSkillIds ?? []).length > 0}
