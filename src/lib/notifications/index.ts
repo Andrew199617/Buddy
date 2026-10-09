@@ -54,7 +54,8 @@ function isMobileViewport(): boolean {
 function createMobileToast(
 	message: ToastMessage,
 	type: ToastT['type'],
-	data?: MobileToastOptions
+	data?: MobileToastOptions,
+	operation?: ToastPromise<unknown>
 ): MobileNotificationId {
 	if (data?.id !== undefined) {
 		originalToast.dismiss(data.id);
@@ -62,7 +63,8 @@ function createMobileToast(
 	return createMobileNotification({
 		...data,
 		title: message,
-		type: type
+		type: type,
+		promise: operation
 	});
 }
 
@@ -172,7 +174,7 @@ function promiseToast<T>(
 	const { loading, success, error, finally: onFinally, ...toastOptions } = data;
 	let id = toastOptions.id;
 	if (loading !== undefined) {
-		id = loadingToast(loading, toastOptions);
+		id = createMobileToast(loading, 'loading', toastOptions, promise);
 	}
 	const loadingId = id;
 	let shouldDismissLoading = loading !== undefined;

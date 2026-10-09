@@ -98,6 +98,39 @@
 	}
 
 	let version;
+	let mobileUpdateVersion: string | undefined;
+
+	function dismissVersionNotice() {
+		localStorage.setItem('dismissedUpdateToast', Date.now().toString());
+		version = null;
+	}
+
+	function openBuddyReleases() {
+		window.open('https://github.com/Andrew199617/Buddy/releases', '_blank', 'noopener,noreferrer');
+	}
+
+	$: if (
+		loaded &&
+		$mobile &&
+		version &&
+		compareVersion(version.latest, version.current) &&
+		($settings?.showUpdateToast ?? true) &&
+		mobileUpdateVersion !== version.latest
+	) {
+		mobileUpdateVersion = version.latest;
+		toast.info(
+			$i18n.t('A new version (v{{LATEST_VERSION}}) is now available.', {
+				LATEST_VERSION: version.latest
+			}),
+			{
+				id: 'buddy-version-update',
+				mobilePriority: 'info',
+				description: $i18n.t('Update for the latest features and improvements.'),
+				action: { label: $i18n.t('Update'), onClick: openBuddyReleases },
+				onDismiss: dismissVersionNotice
+			}
+		);
+	}
 	let handledSettingsUrl = '';
 
 	const clearChatInputStorage = () => {
@@ -486,7 +519,7 @@
 {/if}
 <ChangelogModal bind:show={$showChangelog} />
 
-{#if version && compareVersion(version.latest, version.current) && ($settings?.showUpdateToast ?? true)}
+{#if !$mobile && !mobileUpdateVersion && version && compareVersion(version.latest, version.current) && ($settings?.showUpdateToast ?? true)}
 	<div class="buddy-update-toast absolute right-8 z-50" in:fade={{ duration: 100 }}>
 		<UpdateInfoToast
 			{version}
