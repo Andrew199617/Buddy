@@ -38,6 +38,8 @@ from open_webui.utils.response import (
     convert_response_ollama_to_openai,
     convert_streaming_response_ollama_to_openai,
 )
+from open_webui.utils.subscriptions.service import OWNED_BY as SUBSCRIPTION_OWNED_BY
+from open_webui.utils.subscriptions.service import generate_subscription_chat_completion
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
@@ -280,6 +282,8 @@ async def generate_chat_completion(
         if model.get('pipe'):
             # Below does not require bypass_filter because this is the only route the uses this function and it is already bypassing the filter
             return await generate_function_chat_completion(request, form_data, user=user, models=models)
+        if model.get('owned_by') == SUBSCRIPTION_OWNED_BY:
+            return await generate_subscription_chat_completion(request, form_data, user=user, models=models)
         if model.get('owned_by') == 'ollama':
             # Using /ollama/api/chat endpoint
             form_data = convert_payload_openai_to_ollama(form_data)

@@ -173,6 +173,7 @@ from open_webui.routers import (
     retrieval,
     scim,
     skills,
+    subscriptions,
     tasks,
     terminals,
     tools,
@@ -270,6 +271,7 @@ from open_webui.utils.oauth import (
 from open_webui.utils.plugin import install_tool_and_function_dependencies
 from open_webui.utils.redis import get_redis_client
 from open_webui.utils.session_pool import cleanup_response, get_client_timeout, get_session, stream_wrapper
+from open_webui.utils.subscriptions.service import OWNED_BY as SUBSCRIPTION_OWNED_BY
 from open_webui.utils.tool_approval import (
     ResolveToolCallForm,
     build_tool_approval_resume_payload,
@@ -865,6 +867,7 @@ if ENABLE_ADMIN_ANALYTICS:
     app.include_router(analytics.router, prefix='/api/v1/analytics', tags=['analytics'])
 app.include_router(utils.router, prefix='/api/v1/utils', tags=['utils'])
 app.include_router(terminals.router, prefix='/api/v1/terminals', tags=['terminals'])
+app.include_router(subscriptions.router, prefix='/api/v1/subscriptions', tags=['subscriptions'])
 app.include_router(automations.router, prefix='/api/v1/automations', tags=['automations'])
 app.include_router(calendar.router, prefix='/api/v1/calendars', tags=['calendars'])
 
@@ -1237,6 +1240,16 @@ async def chat_completion(
         ):
             tool_servers = None
 
+        function_calling = (
+            form_data.get('params', {}).get('function_calling')
+            or model_info_params.get('function_calling')
+            or 'native'
+        )
+        if model.get('owned_by') == SUBSCRIPTION_OWNED_BY:
+            # Claude Code and Codex run their own tools and cannot receive
+            # Buddy's tool definitions, so files and tools use prompt injection.
+            function_calling = 'legacy'
+
         automation_id = form_data.pop('automation_id', None)
         tool_approval_mode = (
             'full'
@@ -1273,11 +1286,7 @@ async def chat_completion(
                 'stream_delta_chunk_size': stream_delta_chunk_size,
                 'reasoning_tags': reasoning_tags,
                 'compact_token_threshold': compact_token_threshold,
-                'function_calling': (
-                    form_data.get('params', {}).get('function_calling')
-                    or model_info_params.get('function_calling')
-                    or 'native'
-                ),
+                'function_calling': function_calling,
                 'tool_approval_mode': tool_approval_mode,
             },
         }

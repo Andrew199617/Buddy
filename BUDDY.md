@@ -128,6 +128,65 @@ and saved tokens stay intact; Buddy registers a separate dynamic client when a
 new callback address is needed. For static OAuth credentials, the provider must
 also allow that exact callback URI.
 
+## Claude and ChatGPT subscriptions
+
+Buddy can chat with Claude and OpenAI models on your Claude Pro/Max and ChatGPT
+Plus/Pro plans. Usage counts against the plan's limits instead of API billing.
+Buddy runs the official command-line apps on this computer: Claude Code
+(`claude -p`) and Codex (`codex app-server`). Each app signs in with its own
+flow and keeps its own credentials. Buddy does not read or store your
+password or tokens.
+
+Anthropic's help center says `claude -p` and the Claude Agent SDK draw from
+your plan's limits. OpenAI documents Codex sign-in with ChatGPT for scripted
+use. Buddy does not copy the apps' tokens into its own API calls, which the
+plans do not allow. Keep this for your own use: only administrators can choose
+these models, and sharing a personal plan with other people breaks its terms.
+
+Set it up under **Admin Settings → Connections → Subscriptions**:
+
+1. Install the app if it is missing. The Claude desktop app already includes
+   Claude Code, which Buddy finds automatically. Install Codex with
+   `npm install -g @openai/codex`.
+2. Turn on **Claude** or **ChatGPT** and choose **Sign in**.
+   - Claude: open the sign-in page, approve, then paste the code it shows.
+     This works from a phone.
+   - ChatGPT: **Sign in on this computer** returns to the computer running
+     Buddy. **Use a device code** works from any device after you allow device
+     code sign-in in ChatGPT's security settings. If Codex is already signed in
+     on this computer, Buddy uses that sign-in.
+3. The plan's models appear in the model picker, tagged **Claude plan** or
+   **ChatGPT plan**. ChatGPT shows how much of its usage limit you have used.
+
+The gear button sets what the models may do:
+
+| Setting     | Claude Code                                        | Codex                                   |
+| ----------- | -------------------------------------------------- | --------------------------------------- |
+| Chat only   | No tools; Buddy's chat instructions                | Read-only sandbox in an empty folder    |
+| Read files  | Read, search, and web tools                        | Read-only sandbox in the working folder |
+| Full access | All tools, including the terminal, without prompts | No sandbox, no approval prompts         |
+
+**Full access** lets the model edit files and run terminal commands on this
+computer as you, in the working folder you choose (Buddy's
+`open-webui-data/subscriptions/workspace` by default). Anyone who can sign in
+to Buddy as an administrator can then do the same. Status lines show each
+command while it runs, and the reasoning block keeps a log of them.
+
+Notes:
+
+- Title, tag, and follow-up generation run as short, tool-free turns at the
+  lowest reasoning level. To keep them off your plan, set a **Task Model**
+  in Admin Settings → Interface.
+- A chat keeps one CLI session while you continue it, so the provider's prompt
+  cache applies. Editing or regenerating an earlier message starts a fresh
+  session that is given the chat so far.
+- The thinking chip sets the reasoning effort. Off uses the lowest level.
+- Codex threads use your Codex `AGENTS.md`. Buddy disables Codex's desktop
+  plugins (computer use, browser, apps) for its threads.
+- These models cannot receive Buddy's native tool definitions, so Buddy uses
+  prompt-based (legacy) function calling for them. Attached files, knowledge,
+  web search, and research tools still reach the model as context.
+
 ## Research tools
 
 Import each tool's JSON bundle through **Workspace → Tools → Import JSON**.
