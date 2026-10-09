@@ -692,6 +692,12 @@
 	let suggestions = null;
 	$: atSelectedModelName = resolveLocalizedModelName(atSelectedModel, $i18n.language);
 
+	function preserveComposerDialogFocus(event: PointerEvent): void {
+		if (!$mobile || !event.isPrimary || event.button !== 0) return;
+		if (!document.activeElement?.closest('#chat-input')) return;
+		event.preventDefault();
+	}
+
 	let showTools = false;
 	let showSkills = false;
 
@@ -2530,6 +2536,8 @@
 													<button
 														class="translate-y-[0.5px] px-1 flex gap-1 items-center text-gray-600 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-200 rounded-lg self-center transition"
 														aria-label={$i18n.t('Available Tools')}
+														on:pointerdown={preserveComposerDialogFocus}
+														aria-haspopup="dialog"
 														type="button"
 														on:click={() => {
 															showTools = !showTools;
@@ -2553,6 +2561,8 @@
 													<button
 														class="translate-y-[0.5px] px-1 flex gap-1 items-center text-gray-600 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-200 rounded-lg self-center transition"
 														aria-label={$i18n.t('Available Skills')}
+														on:pointerdown={preserveComposerDialogFocus}
+														aria-haspopup="dialog"
 														type="button"
 														on:click={() => {
 															showSkills = !showSkills;
