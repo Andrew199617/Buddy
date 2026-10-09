@@ -66,6 +66,19 @@
 		onChange(open);
 	};
 
+	function handleHeaderClick(event: MouseEvent): void {
+		event.stopPropagation();
+		toggleOpen();
+	}
+
+	function handleHeaderKeydown(event: KeyboardEvent): void {
+		if (grow || event.target !== event.currentTarget) return;
+		if (event.key !== 'Enter' && event.key !== ' ') return;
+		event.preventDefault();
+		event.stopPropagation();
+		toggleOpen();
+	}
+
 	const collapsibleId = uuidv4();
 </script>
 
@@ -136,12 +149,15 @@
 	{:else}
 		<!-- svelte-ignore a11y-no-static-element-interactions -->
 		<!-- svelte-ignore a11y-click-events-have-key-events -->
+		<!-- svelte-ignore a11y-no-noninteractive-tabindex (Only non-growing headers receive button semantics and a tab stop.) -->
 		<div
 			class="{buttonClassName} cursor-pointer"
-			on:click={(e) => {
-				e.stopPropagation();
-				toggleOpen();
-			}}
+			role={grow ? undefined : 'button'}
+			tabindex={grow || disabled ? undefined : 0}
+			aria-expanded={grow ? undefined : open}
+			aria-disabled={grow ? undefined : disabled}
+			on:click={handleHeaderClick}
+			on:keydown={handleHeaderKeydown}
 		>
 			<div>
 				<div class="flex items-start justify-between">

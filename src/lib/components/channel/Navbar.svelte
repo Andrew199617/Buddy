@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SidebarToggleTooltip from '$lib/components/layout/SidebarToggleTooltip.svelte';
 	import { getContext } from 'svelte';
 	import { toast } from 'svelte-sonner';
 
@@ -60,30 +61,29 @@
 
 	<div class=" flex max-w-full w-full mx-auto px-1 pt-0.5 bg-transparent">
 		<div class="flex items-center w-full max-w-full">
-			{#if $mobile}
-				<div
-					class="{$showSidebar
-						? 'md:hidden'
-						: ''} mr-1.5 mt-0.5 self-start flex flex-none items-center text-gray-600 dark:text-gray-400"
-				>
-					<Tooltip
-						content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
-						interactive={true}
+			<div
+				class="{$showSidebar
+					? 'md:hidden'
+					: ''} mr-1.5 mt-0.5 self-start flex flex-none items-center text-gray-600 dark:text-gray-400"
+			>
+				<SidebarToggleTooltip interactive={true}>
+					<button
+						id="sidebar-toggle-button"
+						type="button"
+						aria-expanded={$showSidebar}
+						aria-controls="sidebar"
+						aria-label={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
+						class="buddy-feature-sidebar-trigger cursor-pointer flex rounded-lg hover:bg-gray-100 dark:hover:bg-gray-850 transition cursor-"
+						on:click={() => {
+							showSidebar.set(!$showSidebar);
+						}}
 					>
-						<button
-							id="sidebar-toggle-button"
-							class=" cursor-pointer flex rounded-lg hover:bg-gray-100 dark:hover:bg-gray-850 transition cursor-"
-							on:click={() => {
-								showSidebar.set(!$showSidebar);
-							}}
-						>
-							<div class=" self-center p-1.5">
-								<Sidebar className="size-4" />
-							</div>
-						</button>
-					</Tooltip>
-				</div>
-			{/if}
+						<div class=" self-center p-1.5">
+							<Sidebar className="size-4" />
+						</div>
+					</button>
+				</SidebarToggleTooltip>
+			</div>
 
 			<div
 				class="flex-1 overflow-hidden max-w-full py-0.5 flex items-center

@@ -5,13 +5,13 @@
  window.__owuiChatActionsMenu = true;
 
  const css = `
-#chat-context-menu-button {
+html:not(:has(.buddy-chat, .buddy-shell)) #chat-context-menu-button {
  width:32px !important; height:32px !important; flex-shrink:0; border-radius:10px !important;
  border:1px solid #e5e7eb; background:#f8fafc; color:#64748b;
 }
-#chat-context-menu-button:hover, #chat-context-menu-button:focus-visible { background:#eef2f6; color:#111827; }
-#chat-context-menu-button svg { width:20px !important; height:20px !important; }
-#chat-context-menu-button:focus-visible { outline:2px solid #0284c7; outline-offset:3px; }
+html:not(:has(.buddy-chat, .buddy-shell)) #chat-context-menu-button:hover, html:not(:has(.buddy-chat, .buddy-shell)) #chat-context-menu-button:focus-visible { background:#eef2f6; color:#111827; }
+html:not(:has(.buddy-chat, .buddy-shell)) #chat-context-menu-button svg { width:20px !important; height:20px !important; }
+html:not(:has(.buddy-chat, .buddy-shell)) #chat-context-menu-button:focus-visible { outline:2px solid #0284c7; outline-offset:3px; }
 .owui-chat-menu-portal {
  position:fixed !important; left:var(--owui-chat-menu-left) !important; top:var(--owui-chat-menu-top) !important;
  right:auto !important; bottom:auto !important; width:var(--owui-chat-menu-width) !important;
@@ -25,12 +25,12 @@
  box-shadow:0 16px 48px rgba(15,23,42,.14),0 3px 12px rgba(15,23,42,.08) !important;
 }
 .owui-chat-actions-heading { padding:10px 12px 12px; margin:0 0 6px; border-bottom:1px solid #e5e7eb; }
-.owui-chat-actions-heading h2 { margin:0; font-size:1rem; line-height:1.5; font-weight:600; letter-spacing:-.01em; }
-.owui-chat-actions-heading p { margin:3px 0 0; font-size:.8125rem; line-height:1.5; color:#64748b; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.owui-chat-actions-heading h2 { margin:0; font-size: calc(1rem + var(--buddy-font-size-offset, 0px)); line-height:1.5; font-weight:600; letter-spacing:-.01em; }
+.owui-chat-actions-heading p { margin:3px 0 0; font-size: calc(.8125rem + var(--buddy-font-size-offset, 0px)); line-height:1.5; color:#64748b; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .owui-chat-actions-panel .owui-chat-action {
  display:flex !important; align-items:center !important; gap:12px !important; width:100% !important;
  min-height:38px !important; height:auto !important; padding:9px 12px !important; border-radius:12px !important;
- font-size:.9375rem !important; font-weight:400; line-height:1.35 !important; text-align:start; color:inherit;
+ font-size: calc(.9375rem + var(--buddy-font-size-offset, 0px)) !important; font-weight:400; line-height:1.35 !important; text-align:start; color:inherit;
  white-space:normal; transition:background-color .12s;
 }
 .owui-chat-actions-panel .owui-chat-action:hover { background:#f1f5f9 !important; }
@@ -44,15 +44,15 @@
 .owui-chat-actions-panel .owui-chat-delete:hover, .owui-chat-actions-panel .owui-chat-delete:focus-visible { background:#fef2f2 !important; }
 .owui-chat-actions-panel > hr { margin:7px 12px !important; border-color:#e5e7eb !important; }
 .owui-chat-actions-panel .owui-chat-tags { max-height:150px !important; padding:7px 12px 5px !important; }
-.owui-chat-actions-panel .owui-chat-tags input { font-size:1rem !important; min-width:0; }
+.owui-chat-actions-panel .owui-chat-tags input { font-size: calc(1rem + var(--buddy-font-size-offset, 0px)) !important; min-width:0; }
 .owui-chat-submenu-portal {
  position:fixed !important; left:var(--owui-chat-menu-left) !important; top:var(--owui-chat-menu-top) !important;
  right:auto !important; bottom:auto !important; padding:0 !important; width:var(--owui-chat-menu-width) !important;
  max-height:var(--owui-chat-menu-height) !important; overflow-y:auto !important; overscroll-behavior:contain;
  border-radius:20px; z-index:10001 !important;
 }
-.dark #chat-context-menu-button { background:#242424; border-color:#383838; color:#d1d5db; }
-.dark #chat-context-menu-button:hover, .dark #chat-context-menu-button:focus-visible { background:#303030; color:#fff; }
+html.dark:not(:has(.buddy-chat, .buddy-shell)) #chat-context-menu-button { background:#242424; border-color:#383838; color:#d1d5db; }
+html.dark:not(:has(.buddy-chat, .buddy-shell)) #chat-context-menu-button:hover, html.dark:not(:has(.buddy-chat, .buddy-shell)) #chat-context-menu-button:focus-visible { background:#303030; color:#fff; }
 .dark .owui-chat-actions-panel { background:#242424 !important; color:#f3f4f6 !important; border-color:#3b3b3b !important; box-shadow:0 18px 54px rgba(0,0,0,.38) !important; }
 .dark .owui-chat-actions-heading, .dark .owui-chat-actions-panel > hr { border-color:#3b3b3b !important; }
 .dark .owui-chat-actions-heading p, .dark .owui-chat-actions-panel .owui-chat-action > svg, .dark .owui-chat-actions-panel .owui-chat-action > div > svg { color:#a3a3a3; }
@@ -61,8 +61,8 @@
 .dark .owui-chat-actions-panel .owui-chat-delete { color:#f87171 !important; }
 .dark .owui-chat-actions-panel .owui-chat-delete:hover, .dark .owui-chat-actions-panel .owui-chat-delete:focus-visible { background:#3d2828 !important; }
 @media (max-width:767px), (pointer:coarse) {
- #chat-context-menu-button { width:40px !important; height:40px !important; border-radius:12px !important; }
- .owui-chat-actions-panel .owui-chat-action { min-height:46px !important; padding:12px !important; font-size:1rem !important; }
+ html:not(:has(.buddy-chat, .buddy-shell)) #chat-context-menu-button { width:40px !important; height:40px !important; border-radius:12px !important; }
+ .owui-chat-actions-panel .owui-chat-action { min-height:46px !important; padding:12px !important; font-size: calc(1rem + var(--buddy-font-size-offset, 0px)) !important; }
  .owui-chat-actions-panel .owui-chat-action > svg, .owui-chat-actions-panel .owui-chat-action > div > svg { width:20px !important; height:20px !important; }
  .owui-chat-actions-panel .owui-chat-tags button { min-height:36px; }
 }
@@ -73,7 +73,17 @@
  let pendingOwner = null;
  let pendingSubmenu = null;
  let scheduledFrame = null;
+ let styleElement = null;
 
+ function hasBuddyLayout() {
+  return Boolean(document.querySelector('.buddy-chat, .buddy-shell'));
+ }
+ function clearLegacyMenus() {
+  for (const state of menus.values()) state.resizeObserver.disconnect();
+  menus.clear();
+  pendingOwner = null;
+  pendingSubmenu = null;
+ }
  function isTouchLayout() {
   return window.innerWidth < 768 || window.matchMedia('(pointer:coarse)').matches;
  }
@@ -94,7 +104,7 @@
   return title?.textContent?.trim() || 'Current conversation';
  }
  function captureOwner(event) {
-  if (!(event.target instanceof Element)) return;
+  if (hasBuddyLayout() || !(event.target instanceof Element)) return;
   if (event.type === 'keydown' && !['Enter', ' '].includes(event.key)) return;
   const headerTrigger = event.target.closest('#chat-context-menu-button');
   const sidebarTrigger = event.target.closest('#sidebar-chat-item-menu')?.querySelector('button');
@@ -104,7 +114,7 @@
   scheduleUpdate();
  }
  function captureSubmenu(event) {
-  if (!(event.target instanceof Element)) return;
+  if (hasBuddyLayout() || !(event.target instanceof Element)) return;
   if (event.type === 'keydown' && !['Enter', ' ', 'ArrowRight'].includes(event.key)) return;
   const button = event.target.closest('.owui-chat-submenu-trigger');
   if (!button) return;
@@ -226,6 +236,13 @@
  }
  function update() {
   scheduledFrame = null;
+  const buddyLayout = hasBuddyLayout();
+  if (styleElement) styleElement.disabled = buddyLayout;
+  if (buddyLayout) {
+   // Native Buddy menus retain their own positioning, appearance, and keyboard behavior.
+   clearLegacyMenus();
+   return;
+  }
   for (const [portal, state] of menus) {
    if (!portal.isConnected) {
     state.resizeObserver.disconnect();
@@ -268,7 +285,7 @@
   if (scheduledFrame === null) scheduledFrame = requestAnimationFrame(update);
  }
  function navigateMenu(event) {
-  if (!(event.target instanceof Element)) return;
+  if (hasBuddyLayout() || !(event.target instanceof Element)) return;
   const portal = event.target.closest('.owui-chat-submenu-portal, .owui-chat-menu-portal');
   if (!portal) return;
   const state = menus.get(portal);
@@ -291,10 +308,11 @@
   actions[next].scrollIntoView({ block:'nearest', inline:'nearest' });
  }
  function start() {
-  const style = document.createElement('style');
-  style.id = 'owui-chat-actions-style';
-  style.textContent = css;
-  document.head.appendChild(style);
+  styleElement = document.createElement('style');
+  styleElement.id = 'owui-chat-actions-style';
+  styleElement.textContent = css;
+  styleElement.disabled = hasBuddyLayout();
+  document.head.appendChild(styleElement);
   document.addEventListener('click', captureOwner, true);
   document.addEventListener('keydown', captureOwner, true);
   document.addEventListener('click', captureSubmenu, true);

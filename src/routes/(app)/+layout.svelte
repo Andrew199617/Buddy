@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
 	import { onMount, tick, getContext } from 'svelte';
+	import type { Writable } from 'svelte/store';
+	import type { i18n as I18n } from 'i18next';
 
-	import { goto } from '$app/navigation';
+	import { afterNavigate, goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { fade } from 'svelte/transition';
 
@@ -18,6 +20,7 @@
 
 	import {
 		config,
+		type SettingsModalRequest,
 		user,
 		settings,
 		models,
@@ -40,19 +43,94 @@
 		chats
 	} from '$lib/stores';
 
+	import '$lib/styles/buddy-redesign.css';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
-	import SettingsModal from '$lib/components/chat/SettingsModal.svelte';
+	import BuddyDock from '$lib/components/buddy/BuddyDock.svelte';
+	import BuddyAvatar from '$lib/components/buddy/BuddyAvatar.svelte';
+	import Modal from '$lib/components/common/Modal.svelte';
+	import LazyFeatureStatus from '$lib/components/common/LazyFeatureStatus.svelte';
+	import { createLazyComponent } from '$lib/utils/lazy-component';
 	import ChangelogModal from '$lib/components/ChangelogModal.svelte';
 	import AccountPending from '$lib/components/layout/Overlay/AccountPending.svelte';
 	import UpdateInfoToast from '$lib/components/layout/UpdateInfoToast.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import { loadKeybindings, matchKeybinding, Shortcut } from '$lib/shortcuts';
 
-	const i18n = getContext('i18n');
+	const i18n: Writable<I18n> = getContext('i18n');
+
+	function importSettingsModal() {
+		return import('$lib/components/chat/SettingsModal.svelte');
+	}
+	const settingsFeature = createLazyComponent(importSettingsModal);
+	let settingsPlaceholderOpen = false;
+	let previousSettingsRequest: boolean | string | SettingsModalRequest | undefined;
+
+	function closeSettingsPlaceholder() {
+		settingsPlaceholderOpen = false;
+		showSettings.set(false);
+	}
+
+	// Preserve the original tab/state request until the real modal receives it.
+	$: if ($showSettings !== previousSettingsRequest) {
+		previousSettingsRequest = $showSettings;
+		settingsPlaceholderOpen = Boolean($showSettings);
+		if ($showSettings && !$settingsFeature.component) {
+			void settingsFeature.load();
+		}
+	}
+	$: if (!settingsPlaceholderOpen && $showSettings && !$settingsFeature.component) {
+		showSettings.set(false);
+	}
 
 	let loaded = false;
+	let keyboardOpen = false;
+	let viewportHeight: number | null = null;
+	let viewportTop = 0;
+
+	afterNavigate(() => {
+		if ($mobile) {
+			showSidebar.set(false);
+		}
+	});
+
+	$: if ($mobile && ($showSearch || $showSettings)) {
+		showSidebar.set(false);
+	}
 
 	let version;
+	let mobileUpdateVersion: string | undefined;
+
+	function dismissVersionNotice() {
+		localStorage.setItem('dismissedUpdateToast', Date.now().toString());
+		version = null;
+	}
+
+	function openBuddyReleases() {
+		window.open('https://github.com/Andrew199617/Buddy/releases', '_blank', 'noopener,noreferrer');
+	}
+
+	$: if (
+		loaded &&
+		$mobile &&
+		version &&
+		compareVersion(version.latest, version.current) &&
+		($settings?.showUpdateToast ?? true) &&
+		mobileUpdateVersion !== version.latest
+	) {
+		mobileUpdateVersion = version.latest;
+		toast.info(
+			$i18n.t('A new version (v{{LATEST_VERSION}}) is now available.', {
+				LATEST_VERSION: version.latest
+			}),
+			{
+				id: 'buddy-version-update',
+				mobilePriority: 'info',
+				description: $i18n.t('Update for the latest features and improvements.'),
+				action: { label: $i18n.t('Update'), onClick: openBuddyReleases },
+				onDismiss: dismissVersionNotice
+			}
+		);
+	}
 	let handledSettingsUrl = '';
 
 	const clearChatInputStorage = () => {
@@ -399,6 +477,7 @@
 		await tick();
 
 		loaded = true;
+		performance.mark('buddy:chat-ready');
 	});
 
 	// `$page.url` must be referenced here: `$:` only tracks variables used in
@@ -422,11 +501,26 @@
 	};
 </script>
 
-<SettingsModal bind:show={$showSettings} />
+{#if $settingsFeature.component}
+	<svelte:component this={$settingsFeature.component} bind:show={$showSettings} />
+{:else if $showSettings}
+	<Modal
+		bind:show={settingsPlaceholderOpen}
+		size="sm"
+		className="bg-white dark:bg-gray-900 rounded-4xl"
+	>
+		<LazyFeatureStatus
+			feature={$i18n.t('Settings')}
+			error={$settingsFeature.error}
+			onRetry={settingsFeature.load}
+			onClose={closeSettingsPlaceholder}
+		/>
+	</Modal>
+{/if}
 <ChangelogModal bind:show={$showChangelog} />
 
-{#if version && compareVersion(version.latest, version.current) && ($settings?.showUpdateToast ?? true)}
-	<div class=" absolute bottom-8 right-8 z-50" in:fade={{ duration: 100 }}>
+{#if !$mobile && !mobileUpdateVersion && version && compareVersion(version.latest, version.current) && ($settings?.showUpdateToast ?? true)}
+	<div class="buddy-update-toast absolute right-8 z-50" in:fade={{ duration: 100 }}>
 		<UpdateInfoToast
 			{version}
 			on:close={() => {
@@ -440,7 +534,13 @@
 {#if $user}
 	<div class="app relative">
 		<div
-			class=" text-gray-700 dark:text-gray-100 bg-white dark:bg-gray-900 h-screen max-h-[100dvh] overflow-auto flex flex-row justify-end"
+			id="app-layout"
+			class="buddy-shell text-gray-700 dark:text-gray-100"
+			class:buddy-keyboard-open={keyboardOpen}
+			class:buddy-sidebar-open={!$mobile && $showSidebar}
+			style:--buddy-visible-height={viewportHeight ? `${viewportHeight}px` : undefined}
+			style:height={viewportHeight ? `${viewportHeight}px` : undefined}
+			style:top={`${viewportTop}px`}
 		>
 			{#if !['user', 'admin'].includes($user?.role)}
 				<AccountPending />
@@ -448,24 +548,123 @@
 				<Sidebar />
 
 				{#if loaded}
-					<main id="main-content" class="contents">
+					<main
+						id="main-content"
+						class="buddy-page-content"
+						inert={$mobile && $showSidebar}
+						aria-hidden={$mobile && $showSidebar}
+					>
 						<slot />
 					</main>
 				{:else}
+					<div class="buddy-startup-avatar" aria-hidden="true">
+						<BuddyAvatar state="thinking" decorative={true} />
+						<span>Buddy</span>
+					</div>
 					<div
-						class="w-full flex-1 h-full flex items-center justify-center {$showSidebar
-							? '  md:max-w-[calc(100%-var(--sidebar-width))]'
-							: ' '}"
+						class="w-full flex-1 min-h-0 flex flex-col gap-3 items-center justify-center"
+						aria-busy="true"
 					>
 						<Spinner className="size-5" />
+						<p class="text-sm text-gray-500" role="status">
+							{$i18n.t('Getting your chat ready…')}
+						</p>
 					</div>
 				{/if}
+
+				<BuddyDock bind:keyboardOpen bind:viewportHeight bind:viewportTop />
 			{/if}
 		</div>
 	</div>
 {/if}
 
 <style>
+	.buddy-startup-avatar {
+		position: absolute;
+		top: calc(var(--buddy-safe-top, 0px) + 10px);
+		left: calc(50% + var(--buddy-content-inset, 0px) / 2);
+		transform: translateX(-50%);
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 8px;
+	}
+	.buddy-startup-avatar span {
+		font-size: 12px;
+		font-weight: 600;
+		color: var(--buddy-text, #273c2f);
+	}
+	.buddy-shell :global(.buddy-feature-sidebar-trigger) {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		width: 44px;
+		min-width: 44px;
+		height: 44px;
+		min-height: 44px;
+		border-radius: 50%;
+		-webkit-app-region: no-drag;
+	}
+
+	.buddy-shell :global(.buddy-feature-sidebar-trigger:focus-visible) {
+		outline: 2px solid #76a98b;
+		outline-offset: 2px;
+	}
+	.buddy-shell {
+		--buddy-content-inset: 0px;
+		--buddy-dock-space: calc(88px + var(--buddy-safe-bottom, 0px));
+		position: fixed;
+		top: 0;
+		left: 0;
+		right: 0;
+		display: flex;
+		flex-direction: column;
+		width: 100%;
+		height: 100dvh;
+		min-height: 0;
+		box-sizing: border-box;
+		padding-top: var(--buddy-safe-top, 0px);
+		padding-right: var(--buddy-safe-right, 0px);
+		padding-bottom: var(--buddy-dock-space);
+		padding-left: var(--buddy-safe-left, 0px);
+		overflow: hidden;
+		overflow: clip;
+		background: var(--buddy-stage, #faf8f5);
+	}
+
+	.buddy-shell.buddy-keyboard-open {
+		--buddy-dock-space: 0px;
+	}
+
+	@media (min-width: 768px) {
+		.buddy-shell.buddy-sidebar-open {
+			--buddy-content-inset: var(--sidebar-width, 245px);
+			padding-left: calc(var(--buddy-safe-left, 0px) + var(--buddy-content-inset));
+		}
+	}
+
+	.buddy-page-content {
+		display: flex;
+		flex: 1;
+		width: 100%;
+		min-width: 0;
+		min-height: 0;
+		overflow: hidden;
+		overflow: clip;
+	}
+
+	.buddy-page-content > :global(*) {
+		width: 100%;
+		max-width: 100% !important;
+		height: 100%;
+		max-height: 100%;
+		min-height: 0;
+	}
+
+	.buddy-update-toast {
+		bottom: calc(100px + env(safe-area-inset-bottom, 0px));
+	}
 	.loading {
 		display: inline-block;
 		clip-path: inset(0 1ch 0 0);

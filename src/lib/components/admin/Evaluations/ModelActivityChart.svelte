@@ -2,6 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { getContext } from 'svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
+	import { getBuddyFontSize } from '$lib/utils/typography';
 
 	const i18n: any = getContext('i18n');
 
@@ -12,6 +13,14 @@
 	let chartCanvas: HTMLCanvasElement;
 	let chartInstance: any = null;
 	let Chart: any = null;
+
+	function getTooltipFont() {
+		return { size: getBuddyFontSize(12) };
+	}
+
+	function getTickFont() {
+		return { size: getBuddyFontSize(10) };
+	}
 
 	const createChart = async () => {
 		if (!chartCanvas || !history.length) return;
@@ -105,6 +114,9 @@
 						display: false // Hide legend for cleaner look
 					},
 					tooltip: {
+						titleFont: getTooltipFont,
+						bodyFont: getTooltipFont,
+						footerFont: getTooltipFont,
 						backgroundColor: 'rgba(17, 24, 39, 0.9)',
 						titleColor: '#f3f4f6',
 						bodyColor: '#d1d5db',
@@ -143,9 +155,7 @@
 						},
 						ticks: {
 							color: '#6b7280',
-							font: {
-								size: 10
-							},
+							font: getTickFont,
 							padding: 8,
 							stepSize: 1,
 							precision: 0,

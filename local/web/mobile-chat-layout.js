@@ -14,10 +14,10 @@
 	const root = document.documentElement;
 	const touchScreen = window.matchMedia('(pointer: coarse)');
 	const css = `
-html.owui-mobile-chat, html.owui-mobile-chat body {
+html.owui-mobile-chat:not(:has(.buddy-chat, .buddy-shell)), html.owui-mobile-chat:not(:has(.buddy-chat, .buddy-shell)) body {
 	overflow: hidden;
 }
-.owui-mobile-chat .app {
+.owui-mobile-chat:not(:has(.buddy-chat, .buddy-shell)) .app {
 	position: fixed;
 	top: var(--owui-chat-viewport-top);
 	left: 0;
@@ -25,71 +25,72 @@ html.owui-mobile-chat, html.owui-mobile-chat body {
 	height: var(--owui-chat-viewport-height);
 	overflow: hidden;
 }
-.owui-mobile-chat .app > div,
-.owui-mobile-chat #chat-container {
+.owui-mobile-chat:not(:has(.buddy-chat, .buddy-shell)) .app > div,
+.owui-mobile-chat:not(:has(.buddy-chat, .buddy-shell)) #chat-container {
 	height: 100% !important;
 	max-height: 100% !important;
 	min-height: 0;
 }
-.owui-mobile-chat .app > div {
+.owui-mobile-chat:not(:has(.buddy-chat, .buddy-shell)) .app > div {
 	overflow: hidden;
 }
-.owui-mobile-chat #chat-pane,
-.owui-mobile-chat #messages-container {
+.owui-mobile-chat:not(:has(.buddy-chat, .buddy-shell)) #chat-pane,
+.owui-mobile-chat:not(:has(.buddy-chat, .buddy-shell)) #messages-container {
 	min-height: 0;
 	overscroll-behavior-y: contain;
 }
 /* Keep one conversation scroll surface and give its content real bounds.
    Fixed-height wrappers with overflowing replies can paint blank on iOS. */
-.owui-mobile-chat #chat-pane:has(#messages-container [role="log"]) {
+.owui-mobile-chat:not(:has(.buddy-chat, .buddy-shell)) #chat-pane:has(#messages-container [role="log"]) {
 	overflow: hidden;
 }
-.owui-mobile-chat #messages-container:has([role="log"]) > .h-full,
-.owui-mobile-chat #messages-container:has([role="log"]) > .h-full > .h-full {
+.owui-mobile-chat:not(:has(.buddy-chat, .buddy-shell)) #messages-container:has([role="log"]) > .h-full,
+.owui-mobile-chat:not(:has(.buddy-chat, .buddy-shell)) #messages-container:has([role="log"]) > .h-full > .h-full {
 	height: auto !important;
 	min-height: 0;
 	flex: none;
 }
-.owui-mobile-chat #messages-container section:has(> [role="log"]) + .pb-18 {
+.owui-mobile-chat:not(:has(.buddy-chat, .buddy-shell)) #messages-container section:has(> [role="log"]) + .pb-18 {
 	padding-bottom: var(--owui-chat-tail-gap) !important;
 }
-.owui-mobile-chat #chat-input-container {
+.owui-mobile-chat:not(:has(.buddy-chat, .buddy-shell)) #chat-input-container {
 	max-height: min(24rem, calc(var(--owui-chat-viewport-height) * 0.4), var(--owui-chat-editor-limit, 24rem));
 	overflow-y: auto;
 	overscroll-behavior-y: contain;
 }
-.owui-mobile-chat #chat-input {
+.owui-mobile-chat:not(:has(.buddy-chat, .buddy-shell)) #chat-input {
 	/* Prevent iOS focus zoom from pushing the conversation off-screen. */
-	font-size: max(1rem, 16px) !important;
+	font-size: calc(max(1rem, 16px) + var(--buddy-font-size-offset, 0px)) !important;
 }
 /* Keep full response details tappable without spending two lines on their summary. */
-.owui-chat-compact .owui-run-footer {
+.owui-chat-compact:not(:has(.buddy-chat, .buddy-shell)) .owui-run-footer {
 	flex-wrap: nowrap;
 	margin-block: 0;
 }
-.owui-chat-compact .owui-run-footer .owui-run-model {
+.owui-chat-compact:not(:has(.buddy-chat, .buddy-shell)) .owui-run-footer .owui-run-model {
 	flex: 1 1 auto;
 }
-.owui-chat-compact .owui-run-footer time {
+.owui-chat-compact:not(:has(.buddy-chat, .buddy-shell)) .owui-run-footer time {
 	flex: none;
 }
-.owui-chat-compact .owui-run-footer .owui-run-count {
+.owui-chat-compact:not(:has(.buddy-chat, .buddy-shell)) .owui-run-footer .owui-run-count {
 	flex: 0 1 auto;
 	min-width: 0;
 	max-width: 55%;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
-.owui-mobile-ui.owui-chat-compact .owui-toolbar-trailing > div:first-child {
+.owui-mobile-ui:not(:has(.buddy-chat, .buddy-shell)).owui-chat-compact:not(:has(.buddy-chat, .buddy-shell)) .owui-toolbar-trailing > div:first-child {
 	max-width: clamp(48px, calc(100vw - 280px), 160px);
 }
-.owui-chat-compact #chat-pane > .flex.items-center.h-full > div {
+.owui-chat-compact:not(:has(.buddy-chat, .buddy-shell)) #chat-pane > .flex.items-center.h-full > div {
 	padding-top: 1rem;
 	padding-bottom: 1rem;
 	transform: none;
 }`;
 
 	let pendingFrame = null;
+	let layoutActive = false;
 	let messagesElement = null;
 	let messagesHeight = 0;
 	let messagesScrollHeight = 0;
@@ -148,6 +149,8 @@ html.owui-mobile-chat, html.owui-mobile-chat body {
 	}
 
 	function clearLayout() {
+		if (!layoutActive) return;
+		layoutActive = false;
 		watchMessages(null);
 		root.classList.remove('owui-mobile-chat', 'owui-chat-compact');
 		root.style.removeProperty('--owui-chat-viewport-height');
@@ -158,13 +161,23 @@ html.owui-mobile-chat, html.owui-mobile-chat body {
 
 	function updateLayout() {
 		pendingFrame = null;
+		// Buddy's native shell owns keyboard sizing, composer clearance, and scrolling.
+		if (document.querySelector('.buddy-chat, .buddy-shell')) {
+			clearLayout();
+			return;
+		}
 		const chat = document.getElementById('chat-container');
+		if (!chat) {
+			clearLayout();
+			return;
+		}
 		const mobile = window.innerWidth < 768 || touchScreen.matches;
-		if (!chat || !mobile || viewport.scale > 1.05 || viewport.height <= 0) {
+		if (!mobile || viewport.scale > 1.05 || viewport.height <= 0) {
 			clearLayout();
 			return;
 		}
 
+		layoutActive = true;
 		const messages = chat.querySelector('#messages-container');
 		watchMessages(messages);
 

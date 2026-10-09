@@ -1,6 +1,6 @@
-"""Local runtime patches for Open WebUI, applied by local/serve.py at startup.
+"""Local runtime patches for Buddy, applied by local/serve.py at startup.
 
-Nothing here edits Open WebUI's files. Each patch wraps one function, checks
+Nothing here edits the installed runtime's files. Each patch wraps one function, checks
 that the function still looks the way the patch expects, and skips itself
 (with a log line) if an upgrade changed it, so upgrading never breaks startup.
 
@@ -166,7 +166,7 @@ async def _recheck(manager, sessions, session):
         )
     elif status in (401, 403):
         log.info(
-            '%s: token rejected (HTTP %s) %.1fh after sign-in; Open WebUI will ask you to sign in again',
+            '%s: token rejected (HTTP %s) %.1fh after sign-in; Buddy will ask you to sign in again',
             session.provider,
             status,
             hours,

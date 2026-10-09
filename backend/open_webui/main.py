@@ -318,27 +318,13 @@ class CORSStaticFiles(StaticFiles):
 
 
 if LOG_FORMAT != 'json':
-    banner = rf"""
- ██████╗ ██████╗ ███████╗███╗   ██╗    ██╗    ██╗███████╗██████╗ ██╗   ██╗██╗
-██╔═══██╗██╔══██╗██╔════╝████╗  ██║    ██║    ██║██╔════╝██╔══██╗██║   ██║██║
-██║   ██║██████╔╝█████╗  ██╔██╗ ██║    ██║ █╗ ██║█████╗  ██████╔╝██║   ██║██║
-██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║    ██║███╗██║██╔══╝  ██╔══██╗██║   ██║██║
-╚██████╔╝██║     ███████╗██║ ╚████║    ╚███╔███╔╝███████╗██████╔╝╚██████╔╝██║
- ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝     ╚══╝╚══╝ ╚══════╝╚═════╝  ╚═════╝ ╚═╝
-
-
-v{VERSION} - building the best AI user interface.
+    banner = f"""
+Buddy v{VERSION}
+Your AI companion for ideas, answers, and getting things done.
 {f'Commit: {WEBUI_BUILD_HASH}' if WEBUI_BUILD_HASH != 'dev-build' else ''}
-https://github.com/open-webui/open-webui
+https://github.com/Andrew199617/Buddy
 """
-    try:
-        print(banner)
-    except UnicodeEncodeError:
-        # Stdout can't encode the box-drawing banner (Windows cp1252, redirected/headless stdout); fall back to ASCII.
-        # LICENSE covers this Open WebUI CLI identifier.
-        # Do not alter, remove, obscure, or replace it except as LICENSE permits:
-        # https://docs.openwebui.com/license.
-        print(f'Open WebUI v{VERSION} - building the best AI user interface.\nhttps://github.com/open-webui/open-webui')
+    print(banner)
 
 
 @asynccontextmanager
@@ -504,7 +490,7 @@ apply_orjson_http_json()
 # Do not alter, remove, obscure, or replace it except as LICENSE permits:
 # https://docs.openwebui.com/license.
 app = FastAPI(
-    title='Open WebUI',
+    title=WEBUI_NAME,
     docs_url='/docs' if ENV == 'dev' else None,
     openapi_url='/openapi.json' if ENV == 'dev' else None,
     redoc_url=None,
@@ -2014,7 +2000,7 @@ async def generate_messages(
     pipeline, then converts the response back to Anthropic Messages format.
 
     Supports both streaming and non-streaming requests.
-    All models configured in Open WebUI are accessible via this endpoint.
+    All models configured in Buddy are accessible via this endpoint.
 
     Authentication: Supports both standard Authorization header and
     Anthropic's x-api-key header (via middleware translation).
@@ -2600,7 +2586,7 @@ async def get_app_latest_release_version(user=Depends(get_verified_user)):
         timeout = aiohttp.ClientTimeout(total=1)
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
             async with session.get(
-                'https://api.github.com/repos/open-webui/open-webui/releases/latest',
+                'https://api.github.com/repos/Andrew199617/Buddy/releases/latest',
                 ssl=AIOHTTP_CLIENT_SESSION_SSL,
             ) as response:
                 response.raise_for_status()
@@ -2621,7 +2607,7 @@ async def get_app_changelog():
 @app.get('/api/usage')
 async def get_current_usage(user=Depends(get_verified_user)):
     """
-    Get current usage statistics for Open WebUI.
+    Get current usage statistics for Buddy.
     This is an experimental endpoint and subject to change.
     """
     try:
@@ -2776,40 +2762,18 @@ async def oauth_client_authorize(
     response: Response,
     user=Depends(get_verified_user),
 ):
-    # ensure_valid_client_registration
-    client = await oauth_client_manager.get_client(client_id)
-    client_info = await oauth_client_manager.get_client_info(client_id)
-    if client is None or client_info is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
-
-    if not await oauth_client_manager._preflight_authorization_url(client, client_info):
-        log.info(
-            'Detected invalid OAuth client %s; attempting re-registration',
-            client_id,
-        )
-
-        registered = await register_client(request, client_id)
-        if not registered:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail='Failed to re-register OAuth client',
-            )
-
-        client = await oauth_client_manager.get_client(client_id)
-        client_info = await oauth_client_manager.get_client_info(client_id)
-        if client is None or client_info is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail='OAuth client unavailable after re-registration',
-            )
-
-        if not await oauth_client_manager._preflight_authorization_url(client, client_info):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail='OAuth client registration is still invalid after re-registration',
-            )
-
+    # Select and validate the registration for this request's exact callback URI.
     return await oauth_client_manager.handle_authorize(request, client_id=client_id, user_id=user.id)
+
+
+@app.post('/oauth/clients/{client_id}/cancel')
+async def oauth_client_cancel(
+    client_id: str,
+    request: Request,
+    user=Depends(get_verified_user),
+):
+    cancelled = await oauth_client_manager.cancel_authorization(request, client_id=client_id, user_id=user.id)
+    return {'status': True, 'cancelled': cancelled}
 
 
 @app.get('/oauth/clients/{client_id}/callback')
@@ -2886,27 +2850,30 @@ async def get_manifest_json():
         # Do not alter, remove, obscure, or replace it except as LICENSE permits:
         # https://docs.openwebui.com/license.
         return {
+            'id': '/',
             'name': app.state.WEBUI_NAME,
             'short_name': app.state.WEBUI_NAME,
-            'description': f'{app.state.WEBUI_NAME} is an open, extensible, user-friendly interface for AI that adapts to your workflow.',
+            'description': 'Your AI companion for ideas, answers, and getting things done.',
             'start_url': '/',
+            'scope': '/',
             'display': 'standalone',
-            'background_color': '#343541',
+            'theme_color': '#27634B',
+            'background_color': '#FAF8F5',
             'icons': [
                 # LICENSE covers this Open WebUI install icon.
                 # Do not alter, remove, obscure, or replace it except as LICENSE permits:
                 # https://docs.openwebui.com/license.
                 {
-                    'src': '/static/logo.png',
+                    'src': '/static/web-app-manifest-192x192.png',
                     'type': 'image/png',
-                    'sizes': '500x500',
-                    'purpose': 'any',
+                    'sizes': '192x192',
+                    'purpose': 'any maskable',
                 },
                 {
-                    'src': '/static/logo.png',
+                    'src': '/static/web-app-manifest-512x512.png',
                     'type': 'image/png',
-                    'sizes': '500x500',
-                    'purpose': 'maskable',
+                    'sizes': '512x512',
+                    'purpose': 'any maskable',
                 },
             ],
             'share_target': {

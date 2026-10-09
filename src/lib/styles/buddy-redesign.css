@@ -1,0 +1,539 @@
+/* A quiet conversation canvas, with the native tools revealed when needed. */
+#app-layout.buddy-shell {
+	--buddy-safe-top: env(safe-area-inset-top, 0px);
+	--buddy-safe-right: env(safe-area-inset-right, 0px);
+	--buddy-safe-bottom: env(safe-area-inset-bottom, 0px);
+	--buddy-safe-left: env(safe-area-inset-left, 0px);
+	--buddy-stage: #faf8f5;
+	--buddy-panel: #ffffff;
+	--buddy-edge: rgba(39, 99, 75, 0.1);
+	--buddy-soft-text: #667368;
+	--buddy-glass: rgba(255, 255, 255, 0.82);
+	background: var(--buddy-stage);
+}
+
+.dark #app-layout.buddy-shell {
+	--buddy-stage: #111512;
+	--buddy-panel: #222724;
+	--buddy-edge: rgba(231, 245, 235, 0.09);
+	--buddy-soft-text: #9daa9f;
+	--buddy-glass: rgba(41, 46, 43, 0.9);
+	background: var(--buddy-stage);
+}
+
+.dark[style*='--color-gray-900: #000000'] #app-layout.buddy-shell {
+	--buddy-stage: #000000;
+}
+
+.buddy-chat {
+	--buddy-conversation-width: 1200px;
+	height: 100%;
+	max-height: 100%;
+	min-height: 0;
+	max-width: 100%;
+	overflow: hidden;
+	overflow: clip;
+	background: transparent;
+}
+
+/* Buddy stays outside the scrolling transcript and welcome content. */
+.buddy-chat .buddy-chat-frame,
+.buddy-chat .buddy-chat-workspace,
+.buddy-chat .buddy-conversation-frame {
+	min-height: 0;
+	overflow: hidden;
+	overflow: clip;
+}
+
+.buddy-chat #chat-pane {
+	min-height: 0;
+	overflow: hidden;
+	overflow: clip;
+}
+
+.buddy-chat #messages-container {
+	min-height: 0;
+	overscroll-behavior: contain;
+	padding: 12px 0 4px;
+}
+
+.buddy-chat .message-listitem {
+	max-width: var(--buddy-conversation-width);
+	padding-inline: clamp(14px, 2vw, 28px);
+	margin-bottom: 14px;
+}
+
+.buddy-chat #messages-container section + div {
+	padding-bottom: 10px;
+}
+
+.buddy-chat .assistant-message > .shrink-0 {
+	display: none;
+}
+
+.buddy-chat .buddy-assistant-stack {
+	min-width: 0;
+	padding-left: 0;
+}
+
+.buddy-chat .buddy-assistant-card {
+	width: fit-content;
+	min-width: 0;
+	max-width: 94%;
+	padding: 12px 16px;
+	border: 1px solid var(--buddy-edge);
+	border-radius: 21px 21px 21px 6px;
+	background: var(--buddy-panel);
+	animation: buddy-message-arrive 260ms ease-out;
+}
+
+/* Rich answers use the canvas; short replies keep their natural message width. */
+.buddy-chat .buddy-assistant-card:has(pre, table, iframe, textarea, .structured-output) {
+	width: 94%;
+}
+
+.buddy-chat .buddy-assistant-stack > .self-center {
+	margin-bottom: 5px;
+}
+
+.buddy-chat .buddy-assistant-card .markdown-prose {
+	overflow-wrap: anywhere;
+}
+
+.buddy-chat .buddy-assistant-card pre {
+	overflow-wrap: normal;
+}
+
+.buddy-chat #response-message-model-name {
+	color: var(--buddy-soft-text);
+	font-size: 0.75rem;
+	font-weight: 500;
+	letter-spacing: 0.01em;
+}
+
+.buddy-chat .buddy-assistant-card #response-content-container {
+	margin-top: 6px;
+}
+
+.buddy-chat .buddy-assistant-card .markdown-prose {
+	font-size: 1rem;
+	line-height: 1.7;
+}
+
+.buddy-chat .buddy-assistant-stack .buttons {
+	gap: 1px;
+	width: fit-content;
+	max-width: 100%;
+	margin-top: 4px;
+	padding-top: 0;
+	color: var(--buddy-soft-text);
+}
+
+.buddy-chat .buddy-assistant-stack .buttons button {
+	min-width: 32px;
+	min-height: 32px;
+	border-radius: 10px;
+}
+
+.buddy-chat .buddy-user-bubble {
+	width: fit-content;
+	max-width: 86%;
+	padding: 10px 15px;
+	border-radius: 21px 21px 6px 21px;
+	background: #e3ede4;
+	color: #294b38;
+	overflow-wrap: anywhere;
+	animation: buddy-message-arrive 240ms ease-out;
+}
+
+.buddy-chat .buddy-user-bubble .markdown-prose > :last-child {
+	margin-bottom: 0;
+}
+
+.buddy-chat .buddy-assistant-stack .owui-run-footer {
+	justify-content: flex-start;
+	min-height: 32px;
+	margin: 0 0 2px;
+	padding: 2px 5px;
+	text-align: start;
+}
+
+.buddy-chat .buddy-follow-ups {
+	max-width: 94%;
+	margin: 8px 0 4px;
+}
+
+.buddy-chat .buddy-follow-up-group {
+	margin-top: 0;
+}
+
+.buddy-chat .buddy-follow-up-label {
+	margin-bottom: 6px;
+	color: var(--buddy-soft-text);
+}
+
+.buddy-chat .buddy-follow-up-options {
+	flex-direction: row;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-top: 0;
+}
+
+.buddy-chat .buddy-follow-up-option {
+	display: flex;
+	max-width: 100%;
+	overflow: visible;
+}
+
+.buddy-chat .buddy-follow-up-button {
+	width: auto;
+	min-height: 40px;
+	padding: 8px 12px;
+	border: 1px solid var(--buddy-edge);
+	border-radius: 15px;
+	color: var(--buddy-soft-text);
+	background: transparent;
+}
+
+.buddy-chat .buddy-follow-up-button:hover {
+	background: var(--buddy-panel);
+}
+
+.buddy-chat .buddy-follow-up-text {
+	display: block;
+	white-space: normal;
+	overflow-wrap: anywhere;
+	-webkit-line-clamp: unset;
+}
+
+.buddy-chat .buddy-follow-up-options hr {
+	display: none;
+}
+
+.dark .buddy-chat .buddy-user-bubble {
+	background: #2b3d31;
+	color: #e0eee4;
+}
+
+.buddy-chat .buddy-composer-wrap {
+	flex-shrink: 0;
+	padding-bottom: 12px;
+}
+
+.buddy-chat .buddy-composer-wrap > div,
+.buddy-chat .buddy-welcome-composer > div {
+	width: 100%;
+	max-width: var(--buddy-conversation-width);
+	margin-inline: auto;
+}
+
+.buddy-chat .buddy-composer-content {
+	max-width: var(--buddy-conversation-width);
+}
+
+.buddy-chat .buddy-composer {
+	min-height: 58px;
+	padding: 0;
+	border: 1px solid var(--buddy-edge);
+	border-radius: 29px;
+	background: var(--buddy-glass);
+	box-shadow:
+		0 2px 6px rgba(24, 44, 31, 0.025),
+		inset 0 1px 0 rgba(255, 255, 255, 0.16);
+	backdrop-filter: blur(24px);
+	transition:
+		border-color 160ms ease,
+		box-shadow 160ms ease;
+}
+
+.buddy-chat .buddy-composer[data-expanded='true']:focus-within {
+	border-color: rgba(83, 145, 103, 0.45);
+	box-shadow: 0 0 0 3px rgba(126, 180, 144, 0.08);
+}
+
+/* Keep context details available while editing, with a quiet resting message bar. */
+.buddy-chat
+	form:has(.buddy-composer[data-expanded='false'])
+	> .owui-context-rail:not(:focus-within):not(:has([aria-expanded='true'])) {
+	display: none;
+}
+
+.buddy-chat .buddy-composer[data-expanded='false'] .buddy-composer-editor {
+	padding: 0;
+}
+
+.buddy-chat .buddy-composer[data-expanded='false'] #chat-input-container {
+	min-height: 56px;
+	padding: 16px 60px 14px 50px;
+}
+
+.buddy-chat #chat-input {
+	font-size: 1rem;
+	line-height: 1.5;
+}
+
+.buddy-chat #chat-input p {
+	margin: 0;
+}
+
+.buddy-chat .buddy-composer[data-expanded='false'] .buddy-composer-tools {
+	position: absolute;
+	inset: 0;
+	margin: 0;
+	pointer-events: none;
+}
+
+.buddy-chat .buddy-composer[data-expanded='false'] .buddy-composer-left {
+	position: absolute;
+	left: 9px;
+	bottom: 9px;
+	margin: 0;
+}
+
+.buddy-chat .buddy-composer[data-expanded='false'] .buddy-composer-actions {
+	position: absolute;
+	right: 9px;
+	bottom: 9px;
+	margin: 0;
+}
+
+.buddy-chat .buddy-composer[data-expanded='false'] .buddy-composer-model,
+.buddy-chat .buddy-composer[data-expanded='false'] .buddy-composer-integrations,
+.buddy-chat .buddy-composer[data-expanded='false'] .buddy-composer-divider,
+.buddy-chat .buddy-composer[data-expanded='false'] #chat-variables-button,
+.buddy-chat .buddy-composer[data-expanded='false']:has(#voice-input-button) .buddy-voice-mode {
+	display: none;
+}
+
+.buddy-chat .buddy-composer-tools button {
+	pointer-events: auto;
+	min-width: 36px;
+	min-height: 36px;
+}
+
+/* Center expanded touch targets; model selectors retain their label-and-arrow layout. */
+.buddy-chat .buddy-assistant-stack .buttons button,
+.buddy-chat .buddy-composer-tools button:not([id^='model-selector-']) {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.buddy-chat .buddy-composer[data-expanded='true'] {
+	border-radius: 24px;
+}
+
+.buddy-chat .buddy-composer[data-expanded='true'] #chat-input-container {
+	padding: 14px 6px 5px;
+	/* Keep room for the transcript when a notch and keyboard share the viewport. */
+	max-height: min(
+		28dvh,
+		max(48px, calc(var(--buddy-visible-height, 100dvh) * 0.28 - var(--buddy-safe-top, 0px)))
+	);
+	overflow-y: auto;
+	overscroll-behavior-y: contain;
+}
+
+.buddy-chat .buddy-composer[data-expanded='true'] .buddy-composer-tools {
+	margin: 2px 5px 7px;
+}
+
+.buddy-chat .buddy-composer #send-message-button {
+	background: #397653;
+	color: #ffffff;
+}
+
+.buddy-chat .buddy-composer #send-message-button:disabled {
+	background: #dde5dc;
+	color: #788278;
+}
+
+.dark .buddy-chat .buddy-composer #send-message-button {
+	background: #bfe2c7;
+	color: #254332;
+}
+
+.buddy-chat-welcome {
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	height: 100%;
+	min-height: 0;
+	margin: 0 auto;
+	padding: 0 14px 12px;
+	transform: none;
+}
+
+.buddy-welcome-body {
+	display: flex;
+	flex: 1;
+	min-height: 0;
+	flex-direction: column;
+	align-items: center;
+	justify-content: flex-start;
+	justify-content: safe center;
+	gap: 28px;
+	overflow: auto;
+	padding: 28px 14px 42px;
+	text-align: center;
+}
+
+.buddy-welcome-greeting {
+	max-width: 440px;
+}
+
+.buddy-welcome-greeting h1 {
+	margin: 10px 0 12px;
+	color: #283d30;
+	font-size: clamp(1.9rem, 4vw, 2.8rem);
+	font-weight: 560;
+	letter-spacing: -0.045em;
+	line-height: 1.16;
+}
+
+.dark .buddy-welcome-greeting h1 {
+	color: #e9f0e9;
+}
+
+.buddy-welcome-greeting p {
+	color: var(--buddy-soft-text);
+	font-size: 0.9375rem;
+	line-height: 1.6;
+}
+
+.buddy-welcome-greeting .buddy-welcome-eyebrow {
+	color: #56745c;
+	font-size: 0.8125rem;
+}
+
+.dark .buddy-welcome-greeting .buddy-welcome-eyebrow {
+	color: #9ab5a1;
+}
+
+.buddy-welcome-private {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	color: var(--buddy-soft-text);
+	font-size: 0.75rem;
+}
+
+.buddy-welcome-suggestions {
+	display: flex;
+	width: 100%;
+	max-width: 490px;
+	flex-wrap: wrap;
+	justify-content: center;
+	gap: 8px;
+	text-align: left;
+}
+
+.buddy-prompt-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	max-width: 180px;
+	min-height: 40px;
+	padding: 9px 12px;
+	border: 1px solid var(--buddy-edge);
+	border-radius: 14px;
+	color: var(--buddy-soft-text);
+	background: transparent;
+	font-size: 0.75rem;
+	transition:
+		background 150ms ease,
+		color 150ms ease;
+}
+
+.buddy-prompt-chip span {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.buddy-prompt-chip svg {
+	width: 13px;
+	height: 13px;
+	flex-shrink: 0;
+	opacity: 0.6;
+}
+
+.buddy-prompt-chip:hover {
+	background: var(--buddy-panel);
+	color: #56745c;
+}
+
+.buddy-welcome-composer {
+	flex-shrink: 0;
+	width: 100%;
+}
+
+.buddy-chat button:focus-visible {
+	outline: 2px solid #7baa88;
+	outline-offset: 3px;
+}
+
+@keyframes buddy-message-arrive {
+	from {
+		opacity: 0;
+		transform: translateY(6px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+@media (max-width: 640px) {
+	.buddy-chat .message-listitem {
+		padding-inline: max(8px, var(--buddy-safe-left), var(--buddy-safe-right));
+		margin-bottom: 12px;
+	}
+
+	.buddy-chat .buddy-assistant-card {
+		max-width: 97%;
+		padding: 11px 13px;
+		border-radius: 20px 20px 20px 6px;
+	}
+
+	.buddy-chat .buddy-assistant-card:has(pre, table, iframe, textarea, .structured-output) {
+		width: 97%;
+	}
+
+	.buddy-chat .buddy-user-bubble {
+		max-width: 92%;
+	}
+
+	.buddy-chat .buddy-follow-ups {
+		max-width: 97%;
+	}
+
+	.buddy-chat .buddy-assistant-card .markdown-prose {
+		font-size: 1rem;
+		line-height: 1.65;
+	}
+
+	.buddy-chat .buddy-composer-wrap {
+		padding-inline: 5px;
+	}
+
+	.buddy-chat-welcome {
+		padding-inline: 5px;
+	}
+
+	.buddy-welcome-body {
+		padding-bottom: 30px;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.buddy-chat .buddy-assistant-card,
+	.buddy-chat .buddy-user-bubble {
+		animation: none;
+	}
+
+	.buddy-chat .buddy-composer,
+	.buddy-prompt-chip {
+		transition: none;
+	}
+}

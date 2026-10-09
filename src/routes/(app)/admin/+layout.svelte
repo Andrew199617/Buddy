@@ -1,10 +1,10 @@
 <script lang="ts">
+	import SidebarToggleTooltip from '$lib/components/layout/SidebarToggleTooltip.svelte';
 	import { onMount, getContext } from 'svelte';
 	import { goto } from '$app/navigation';
 
 	import { WEBUI_NAME, config, mobile, showSettings, showSidebar, user } from '$lib/stores';
 	import { page } from '$app/stores';
-	import Tooltip from '$lib/components/common/Tooltip.svelte';
 
 	import Sidebar from '$lib/components/icons/Sidebar.svelte';
 
@@ -35,34 +35,28 @@
 </svelte:head>
 
 {#if loaded}
-	<div
-		class=" flex flex-col h-screen max-h-[100dvh] flex-1 min-w-0 transition-width duration-200 ease-in-out {$showSidebar
-			? 'md:max-w-[calc(100%-var(--sidebar-width))]'
-			: 'md:max-w-[calc(100%-42px)]'}  w-full max-w-full"
-	>
+	<div class=" flex flex-col h-screen max-h-[100dvh] flex-1 min-w-0 w-full max-w-full">
 		<nav class="pb-1 px-2.5 pt-2 backdrop-blur-xl drag-region select-none">
 			<div class=" flex items-center gap-0.5 md:gap-1">
-				{#if $mobile}
-					<div class="{$showSidebar ? 'md:hidden' : ''} self-center flex flex-none items-center">
-						<Tooltip
-							content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
-							interactive={true}
+				<div class="{$showSidebar ? 'md:hidden' : ''} self-center flex flex-none items-center">
+					<SidebarToggleTooltip interactive={true}>
+						<button
+							id="sidebar-toggle-button"
+							aria-expanded={$showSidebar}
+							aria-controls="sidebar"
+							type="button"
+							class="buddy-feature-sidebar-trigger cursor-pointer flex rounded-lg hover:bg-gray-100 dark:hover:bg-gray-850 transition cursor-"
+							aria-label={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
+							on:click={() => {
+								showSidebar.set(!$showSidebar);
+							}}
 						>
-							<button
-								id="sidebar-toggle-button"
-								class=" cursor-pointer flex rounded-lg hover:bg-gray-100 dark:hover:bg-gray-850 transition cursor-"
-								aria-label={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
-								on:click={() => {
-									showSidebar.set(!$showSidebar);
-								}}
-							>
-								<div class=" self-center p-1.5">
-									<Sidebar className="size-4" />
-								</div>
-							</button>
-						</Tooltip>
-					</div>
-				{/if}
+							<div class=" self-center p-1.5">
+								<Sidebar className="size-4" />
+							</div>
+						</button>
+					</SidebarToggleTooltip>
+				</div>
 
 				<div class="flex w-full items-center">
 					<div

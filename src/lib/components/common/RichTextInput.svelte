@@ -196,8 +196,7 @@
 	import FormattingButtons from './RichTextInput/FormattingButtons.svelte';
 
 	import { PASTED_TEXT_CHARACTER_LIMIT } from '$lib/constants';
-	import { createLowlight } from 'lowlight';
-	import hljs from 'highlight.js';
+	import { createLazyLowlight } from '$lib/utils/lazy-highlighting';
 
 	import type { SocketIOCollaborationProvider } from './RichTextInput/Collaboration';
 
@@ -205,16 +204,69 @@
 	export let oncompositionend = (e) => {};
 	export let onChange = (e) => {};
 
-	// create a lowlight instance with all languages loaded
-	const lowlight = createLowlight(
-		hljs.listLanguages().reduce(
-			(obj, lang) => {
-				obj[lang] = () => hljs.getLanguage(lang);
-				return obj;
-			},
-			{} as Record<string, any>
-		)
-	);
+	let highlightingLoading = false;
+	let highlightingError = false;
+
+	const HIGHLIGHTING_READY = 'buddy:code-highlighting-ready';
+
+	const createRefreshableHighlightingPlugin = (plugin: Plugin) => {
+		const key = (plugin as Plugin & { key: string }).key;
+		const originalState = plugin.spec.state;
+		if (!key.startsWith('lowlight$') || !originalState) {
+			return plugin;
+		}
+
+		return new Plugin({
+			...plugin.spec,
+			state: {
+				...originalState,
+				apply(transaction, value, oldState, newState) {
+					if (transaction.getMeta(HIGHLIGHTING_READY)) {
+						return originalState.init({}, newState);
+					}
+					return originalState.apply(transaction, value, oldState, newState);
+				}
+			}
+		});
+	};
+
+	const DeferredCodeBlockLowlight = CodeBlockLowlight.extend({
+		addProseMirrorPlugins() {
+			const plugins = this.parent?.() ?? [];
+			return plugins.map(createRefreshableHighlightingPlugin);
+		}
+	});
+
+	const refreshHighlighting = () => {
+		highlightingLoading = false;
+		highlightingError = false;
+		if (!editor || editor.isDestroyed) {
+			return;
+		}
+
+		// Refresh decorations without changing the document, undo history, or
+		// plugin views used by collaborative editors.
+		const transaction = editor.state.tr
+			.setMeta(HIGHLIGHTING_READY, true)
+			.setMeta('addToHistory', false)
+			.setMeta('preventUpdate', true);
+		editor.view.dispatch(transaction);
+	};
+
+	const handleHighlightingError = (error: unknown) => {
+		highlightingLoading = false;
+		highlightingError = true;
+		console.error('Code highlighting could not be loaded:', error);
+	};
+
+	const lowlight = createLazyLowlight({
+		onLoading: () => {
+			highlightingLoading = true;
+			highlightingError = false;
+		},
+		onReady: refreshHighlighting,
+		onError: handleHighlightingError
+	});
 
 	export let editor: Editor | null = null;
 
@@ -836,7 +888,7 @@
 
 				...(richText
 					? [
-							CodeBlockLowlight.configure({
+							DeferredCodeBlockLowlight.configure({
 								lowlight
 							}),
 							Typography,
@@ -946,8 +998,8 @@
 			],
 			content: provider ? undefined : content,
 			autofocus: messageInput ? true : false,
-			onTransaction: () => {
-				if (!editor) return;
+			onTransaction: ({ transaction }) => {
+				if (!editor || transaction.getMeta(HIGHLIGHTING_READY)) return;
 
 				// Defer Svelte reactivity trigger to rAF so we don't interleave
 				// DOM reads/writes with ProseMirror's updateStateInner.
@@ -1427,3 +1479,20 @@
 	dir="auto"
 	class="relative w-full min-w-full {className} {!editable ? 'cursor-not-allowed' : ''}"
 />
+
+{#if highlightingLoading || highlightingError}
+	<div class="mt-1 text-xs text-gray-500" role="status" aria-live="polite">
+		{#if highlightingError}
+			{$i18n.t('Code highlighting could not load. Your text is still editable.')}
+			<button
+				type="button"
+				class="ml-2 min-h-11 rounded-lg px-3 underline"
+				on:click={lowlight.retry}
+			>
+				{$i18n.t('Retry')}
+			</button>
+		{:else}
+			{$i18n.t('Loading code highlighting…')}
+		{/if}
+	</div>
+{/if}

@@ -251,6 +251,7 @@
 			const parts = toolId.split(':');
 			oauthRedirectHandler({
 				id: toolId,
+				name: tool.name,
 				serverId: parts.at(-1) ?? toolId,
 				authType: parts.length > 1 ? (parts[0] === 'server' ? parts[1] : parts[0]) : null
 			});

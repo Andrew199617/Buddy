@@ -1,6 +1,11 @@
 <script lang="ts">
 	import { flyAndScale } from '$lib/utils/transitions';
 	import { tick } from 'svelte';
+	import { mobile } from '$lib/stores';
+	import {
+		getMobileComposerMenuMaxHeight,
+		getMobileComposerMenuPosition
+	} from '$lib/utils/mobile-composer-menu';
 
 	/** Whether the dropdown is open */
 	export let show = false;
@@ -37,6 +42,7 @@
 	let settleTimers: number[] = [];
 	let resolvedMaxHeight = maxHeight;
 	let lastContentHeight = 0;
+	let menuOpenGeneration = 0;
 
 	/** Svelte action: moves the node to document.body and keeps it positioned as it resizes */
 	function portal(node: HTMLElement) {
@@ -53,9 +59,30 @@
 		});
 		resizeObserver.observe(node);
 
+		const viewport = window.visualViewport;
+		const mobileAnchor = mobileComposerActionAnchor();
+		const watchViewport = visualViewportAware || Boolean(mobileAnchor);
+		if (watchViewport) {
+			viewport?.addEventListener('resize', scheduleSettledPositionUpdates);
+			viewport?.addEventListener('scroll', schedulePositionUpdate);
+		}
+
+		let anchorResizeObserver: ResizeObserver | null = null;
+		if (mobileAnchor) {
+			anchorResizeObserver = new ResizeObserver(schedulePositionUpdate);
+			anchorResizeObserver.observe(mobileAnchor);
+			const composer = mobileAnchor.closest('.buddy-composer');
+			if (composer) anchorResizeObserver.observe(composer);
+		}
+
 		return {
 			destroy() {
 				resizeObserver.disconnect();
+				anchorResizeObserver?.disconnect();
+				if (watchViewport) {
+					viewport?.removeEventListener('resize', scheduleSettledPositionUpdates);
+					viewport?.removeEventListener('scroll', schedulePositionUpdate);
+				}
 				lastContentHeight = 0;
 				if (node.parentNode) {
 					node.parentNode.removeChild(node);
@@ -77,10 +104,12 @@
 				toggleOpen();
 			}
 		}
+		node.addEventListener('pointerdown', preserveMobileActionMenuFocus);
 		node.addEventListener('click', handleClick);
 		node.addEventListener('keydown', handleKeydown);
 		return {
 			destroy() {
+				node.removeEventListener('pointerdown', preserveMobileActionMenuFocus);
 				node.removeEventListener('click', handleClick);
 				node.removeEventListener('keydown', handleKeydown);
 			}
@@ -203,7 +232,113 @@
 		contentEl.style.maxHeight = resolvedMaxHeight;
 	}
 
+	function mobileComposerActionAnchor(): HTMLElement | null {
+		if (!$mobile) {
+			return null;
+		}
+		if (!triggerEl) return null;
+		let button = triggerEl.querySelector<HTMLElement>('button');
+		if (!button && triggerEl.matches('button')) {
+			button = triggerEl;
+		}
+		if (!button?.matches('#input-menu-button, #integration-menu-button, #available-tools-button'))
+			return null;
+		if (!button.closest('.buddy-chat .buddy-composer')) return null;
+		return button;
+	}
+
+	function mobileComposerActionInputFocused(): boolean {
+		const button = mobileComposerActionAnchor();
+		if (!button) return false;
+		const composer = button.closest('.buddy-composer');
+		if (composer?.getAttribute('data-expanded') === 'false') return false;
+		return Boolean(document.activeElement?.closest('#chat-input'));
+	}
+
+	function mobileComposerActionIsEditing(): boolean {
+		if (mobileComposerActionInputFocused()) return true;
+		const activeElement = document.activeElement;
+		if (
+			activeElement?.matches('input, textarea, [contenteditable="true"]') &&
+			contentEl?.contains(activeElement)
+		) {
+			return true;
+		}
+		const viewport = window.visualViewport;
+		// The keyboard can remain visible while Safari moves focus away from the editor.
+		return Boolean(viewport && window.innerHeight - viewport.height > 140);
+	}
+
+	function preserveMobileActionMenuFocus(event: PointerEvent): void {
+		if (!event.isPrimary || event.button !== 0 || !mobileComposerActionInputFocused()) return;
+		event.preventDefault();
+	}
+
+	function mobileComposerMenuViewport(button: HTMLElement) {
+		const viewport = visualViewportRect();
+		const shell = button.closest('.buddy-shell');
+		if (!shell) return viewport;
+		const shellRect = shell.getBoundingClientRect();
+		if (shellRect.width === 0 || shellRect.height === 0) return viewport;
+		// Anchor and shell rectangles share client coordinates even when iOS pans the page.
+		return {
+			left: shellRect.left,
+			top: shellRect.top,
+			width: Math.min(viewport.width, shellRect.width),
+			height: Math.min(viewport.height, shellRect.height)
+		};
+	}
+
+	function mobileMenuFixedOrigin(): DOMRect {
+		const probe = document.createElement('div');
+		probe.setAttribute('aria-hidden', 'true');
+		probe.style.cssText =
+			'position: fixed; top: 0; left: 0; width: 0; height: 0; visibility: hidden; pointer-events: none;';
+		document.body.appendChild(probe);
+		const origin = probe.getBoundingClientRect();
+		probe.remove();
+		return origin;
+	}
+
+	function positionMobileComposerActionMenu(): boolean {
+		const button = mobileComposerActionAnchor();
+		if (!button || !contentEl) return false;
+		const anchor = button.getBoundingClientRect();
+		// A closing composer can hide its tools before the outgoing menu is removed.
+		if (!button.isConnected || anchor.width === 0 || anchor.height === 0) return true;
+		const viewport = mobileComposerMenuViewport(button);
+		const editing = mobileComposerActionIsEditing();
+		const availableHeight = getMobileComposerMenuMaxHeight(anchor, viewport, editing);
+		resolvedMaxHeight = `min(${maxHeight}, ${availableHeight}px)`;
+		contentEl.style.position = 'fixed';
+		contentEl.style.zIndex = '9999';
+		contentEl.style.maxHeight = resolvedMaxHeight;
+		const menuSize = { width: contentEl.offsetWidth, height: contentEl.offsetHeight };
+		let menuAlign: 'start' | 'end' = 'start';
+		if (align === 'end') {
+			menuAlign = 'end';
+		}
+		const position = getMobileComposerMenuPosition(anchor, viewport, menuSize, menuAlign, editing);
+		const fixedOrigin = mobileMenuFixedOrigin();
+		contentEl.style.top = `${position.top - fixedOrigin.top}px`;
+		contentEl.style.left = `${position.left - fixedOrigin.left}px`;
+		contentEl.style.bottom = 'auto';
+		contentEl.style.right = 'auto';
+		return true;
+	}
+
+	function cancelPositionUpdates(): void {
+		if (positionFrame != null) {
+			cancelAnimationFrame(positionFrame);
+			positionFrame = undefined;
+		}
+		for (const timer of settleTimers) window.clearTimeout(timer);
+		settleTimers = [];
+	}
+
 	function positionContent() {
+		if (!show || !contentEl?.isConnected) return;
+		if (positionMobileComposerActionMenu()) return;
 		if (visualViewportAware) {
 			positionContentVisualViewport();
 		} else {
@@ -212,6 +347,7 @@
 	}
 
 	function schedulePositionUpdate() {
+		if (!show) return;
 		if (positionFrame != null) cancelAnimationFrame(positionFrame);
 		positionFrame = requestAnimationFrame(() => {
 			positionFrame = undefined;
@@ -220,6 +356,7 @@
 	}
 
 	function scheduleSettledPositionUpdates() {
+		if (!show) return;
 		for (const timer of settleTimers) window.clearTimeout(timer);
 		settleTimers = [];
 		schedulePositionUpdate();
@@ -229,11 +366,13 @@
 	}
 
 	async function afterOpen() {
+		const generation = ++menuOpenGeneration;
 		await tick();
+		if (!show || generation !== menuOpenGeneration || !contentEl?.isConnected) return;
 		positionContent();
 
 		// Re-check after transition renders real dimensions
-		if (visualViewportAware) {
+		if (visualViewportAware || mobileComposerActionAnchor()) {
 			scheduleSettledPositionUpdates();
 		} else {
 			setTimeout(positionContent, 50);
@@ -241,7 +380,9 @@
 
 		if (shouldFocusContent) {
 			shouldFocusContent = false;
-			contentEl?.focus();
+			if (!mobileComposerActionInputFocused()) {
+				contentEl?.focus();
+			}
 		}
 	}
 
@@ -258,6 +399,8 @@
 
 	function closeDropdown(restoreFocus = !!contentEl?.contains(document.activeElement)) {
 		if (!show) return;
+		menuOpenGeneration += 1;
+		cancelPositionUpdates();
 		show = false;
 		onOpenChange(false);
 		shouldFocusContent = false;
@@ -279,6 +422,8 @@
 	// React to external show changes (e.g. bind:show toggled by parent component)
 	$: if (show) {
 		afterOpen();
+	} else {
+		cancelPositionUpdates();
 	}
 
 	function handleWindowPointerDown(event: PointerEvent) {
@@ -306,20 +451,11 @@
 	onMount(() => {
 		onPointerDown = (e) => handleWindowPointerDown(e);
 		document.addEventListener('pointerdown', onPointerDown, true);
-		if (visualViewportAware) {
-			window.visualViewport?.addEventListener('resize', scheduleSettledPositionUpdates);
-			window.visualViewport?.addEventListener('scroll', schedulePositionUpdate);
-		}
 	});
 	onDestroy(() => {
-		if (positionFrame != null) cancelAnimationFrame(positionFrame);
-		for (const timer of settleTimers) window.clearTimeout(timer);
+		cancelPositionUpdates();
 		if (onPointerDown) {
 			document.removeEventListener('pointerdown', onPointerDown, true);
-		}
-		if (visualViewportAware) {
-			window.visualViewport?.removeEventListener('resize', scheduleSettledPositionUpdates);
-			window.visualViewport?.removeEventListener('scroll', schedulePositionUpdate);
 		}
 	});
 </script>

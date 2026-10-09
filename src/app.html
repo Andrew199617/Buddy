@@ -32,8 +32,27 @@
 			name="viewport"
 			content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
 		/>
-		<meta name="theme-color" content="#171717" />
+		<meta name="theme-color" content="#111512" />
+		<meta name="application-name" content="Buddy" />
+		<meta name="apple-mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-title" content="Buddy" />
+		<meta
+			name="description"
+			content="Your AI companion for ideas, answers, and getting things done."
+		/>
 		<meta name="robots" content="noindex,nofollow" />
+
+		<style>
+			:root {
+				--buddy-font-size-offset: 0px;
+			}
+
+			@media (max-width: 767px) {
+				:root {
+					--buddy-font-size-offset: 2px;
+				}
+			}
+		</style>
 
 		<script src="/static/loader.js" defer crossorigin="use-credentials"></script>
 		<link rel="stylesheet" href="/static/custom.css" crossorigin="use-credentials" />
@@ -56,7 +75,7 @@
 
 				if (localStorage.theme === 'system') {
 					document.documentElement.classList.add(prefersDarkTheme ? 'dark' : 'light');
-					metaThemeColorTag.setAttribute('content', prefersDarkTheme ? '#171717' : '#ffffff');
+					metaThemeColorTag.setAttribute('content', prefersDarkTheme ? '#111512' : '#FAF8F5');
 				} else if (localStorage.theme === 'oled-dark') {
 					document.documentElement.style.setProperty('--color-gray-800', '#101010');
 					document.documentElement.style.setProperty('--color-gray-850', '#050505');
@@ -66,13 +85,13 @@
 					metaThemeColorTag.setAttribute('content', '#000000');
 				} else if (localStorage.theme === 'light') {
 					document.documentElement.classList.add('light');
-					metaThemeColorTag.setAttribute('content', '#ffffff');
+					metaThemeColorTag.setAttribute('content', '#FAF8F5');
 				} else if (localStorage.theme === 'her') {
 					document.documentElement.classList.add('her');
 					metaThemeColorTag.setAttribute('content', '#983724');
 				} else {
 					document.documentElement.classList.add('dark');
-					metaThemeColorTag.setAttribute('content', '#171717');
+					metaThemeColorTag.setAttribute('content', '#111512');
 				}
 
 				// LICENSE covers these Open WebUI splash logo assets.
@@ -93,11 +112,11 @@
 						if (e.matches) {
 							document.documentElement.classList.add('dark');
 							document.documentElement.classList.remove('light');
-							metaThemeColorTag.setAttribute('content', '#171717');
+							metaThemeColorTag.setAttribute('content', '#111512');
 						} else {
 							document.documentElement.classList.add('light');
 							document.documentElement.classList.remove('dark');
-							metaThemeColorTag.setAttribute('content', '#ffffff');
+							metaThemeColorTag.setAttribute('content', '#FAF8F5');
 						}
 					}
 				});
@@ -107,6 +126,7 @@
 				logo.id = 'logo';
 				logo.style =
 					'position: absolute; width: auto; height: 6rem; top: 44%; left: 50%; transform: translateX(-50%); display:block;';
+				logo.alt = 'Buddy';
 				logo.loading = 'eager';
 				logo.fetchPriority = 'high';
 				// LICENSE covers this Open WebUI splash logo.
@@ -125,7 +145,7 @@
 			})();
 		</script>
 
-		<title>Open WebUI</title>
+		<title>Buddy</title>
 
 		%sveltekit.head%
 	</head>
@@ -162,8 +182,9 @@
 				https://docs.openwebui.com/license. -->
 				<img
 					id="logo-her"
+					alt="Buddy"
 					style="width: auto; height: 13rem"
-					src="/static/splash.png"
+					src="/static/splash-dark.png"
 					loading="eager"
 					fetchpriority="high"
 					class="animate-pulse-fast"
@@ -196,6 +217,26 @@
 				</div>
 			</div>
 
+			<p
+				id="buddy-loading-status"
+				role="status"
+				aria-live="polite"
+				style="
+					position: absolute;
+					top: calc(44% + 7rem);
+					left: 50%;
+					transform: translateX(-50%);
+					width: min(90%, 24rem);
+					text-align: center;
+					font:
+						calc(14px + var(--buddy-font-size-offset, 0px))/1.5 system-ui,
+						sans-serif;
+					color: #788579;
+				"
+			>
+				Getting Buddy ready…
+			</p>
+
 			<!-- <span style="position: absolute; bottom: 32px; left: 50%; margin: -36px 0 0 -36px">
 				Footer content
 			</span> -->
@@ -209,11 +250,11 @@
 		}
 
 		#splash-screen {
-			background: #fff;
+			background: #faf8f5;
 		}
 
 		html.dark #splash-screen {
-			background: #000;
+			background: var(--color-gray-900, #111512);
 		}
 
 		html.her #splash-screen {
@@ -238,7 +279,6 @@
 
 		html.her #logo-her {
 			display: block;
-			filter: invert(1);
 		}
 
 		html.her #progress-background {

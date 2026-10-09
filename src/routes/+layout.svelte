@@ -54,6 +54,9 @@
 	import { executeToolServer, getBackendConfig, getModels, getVersion } from '$lib/apis';
 	import { getSessionUser, updateUserTimezone, userSignOut } from '$lib/apis/auths';
 	import { getAllTags } from '$lib/apis/chats';
+	import { completeOAuthConnectRedirect, restoreOAuthConnectOverlay } from '$lib/apis/configs';
+	import { showOAuthConnect } from '$lib/stores/oauth-connect';
+	import BuddyAuthConnect from '$lib/components/buddy/BuddyAuthConnect.svelte';
 	import { chatCompletion } from '$lib/apis/openai';
 	import { isTemporaryChatId } from '$lib/utils/chatId';
 	import {
@@ -63,7 +66,12 @@
 		removeTerminalConnection
 	} from '$lib/utils/connections';
 
-	import { COMMUNITY_ORIGINS, WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
+	import {
+		COMMUNITY_ORIGINS,
+		WEBUI_API_BASE_URL,
+		WEBUI_BASE_URL,
+		resolveAppName
+	} from '$lib/constants';
 	import {
 		bestMatchingLanguage,
 		cleanText,
@@ -72,8 +80,10 @@
 		removeAllDetails
 	} from '$lib/utils';
 	import { setTextScale } from '$lib/utils/text-scale';
+	import { applyAppTheme } from '$lib/utils/theme';
 
 	import NotificationToast from '$lib/components/NotificationToast.svelte';
+	import BuddyNotifications from '$lib/components/buddy/BuddyNotifications.svelte';
 	import AppSidebar from '$lib/components/app/AppSidebar.svelte';
 	import SyncStatsModal from '$lib/components/chat/Settings/SyncStatsModal.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
@@ -159,7 +169,9 @@
 			}
 
 			disconnectWarningShown = true;
-			toast.warning($i18n.t('Connection lost. Reconnecting...'));
+			toast.warning($i18n.t('Connection lost. Reconnecting...'), {
+				id: 'buddy-connection-warning'
+			});
 		}, resumeDelay + DISCONNECT_TOAST_DELAY_MS);
 	};
 
@@ -184,8 +196,9 @@
 		_socket.on('connect', async () => {
 			console.log('connected', _socket.id);
 
-			// Cancel any pending disconnect toast if we reconnected quickly
+			// Clear both a pending timer and any warning already shown.
 			clearDisconnectToastTimer();
+			toast.dismiss('buddy-connection-warning');
 
 			if (hasConnectedOnce) {
 				socketConnected.set(true);
@@ -613,13 +626,14 @@
 					title: data.title,
 					content: timeStr
 				},
+				important: true,
 				duration: 30000,
 				unstyled: true
 			});
 
 			if ($isLastActiveTab) {
 				if ($settings?.notificationEnabled ?? false) {
-					new Notification(`${data.title} / Open WebUI`, {
+					new Notification(`${data.title} / ${$WEBUI_NAME}`, {
 						body: timeStr,
 						// LICENSE covers this Open WebUI notification identifier.
 						// Do not alter, remove, obscure, or replace it except as LICENSE permits:
@@ -757,7 +771,7 @@
 
 					if ($isLastActiveTab) {
 						if ($settings?.notificationEnabled ?? false) {
-							new Notification(`${displayTitle} / Open WebUI`, {
+							new Notification(`${displayTitle} / ${$WEBUI_NAME}`, {
 								body: contentPreview,
 								// LICENSE covers this Open WebUI notification identifier.
 								// Do not alter, remove, obscure, or replace it except as LICENSE permits:
@@ -775,6 +789,7 @@
 							content: contentPreview,
 							title: displayTitle
 						},
+						mobilePriority: 'info',
 						duration: 15000,
 						unstyled: true
 					});
@@ -870,7 +885,7 @@
 						// LICENSE covers this Open WebUI notification identifier.
 						// Do not alter, remove, obscure, or replace it except as LICENSE permits:
 						// https://docs.openwebui.com/license.
-						new Notification(`${title} / Open WebUI`, {
+						new Notification(`${title} / ${$WEBUI_NAME}`, {
 							body: data?.content,
 							icon: `${WEBUI_API_BASE_URL}/users/${data?.user?.id}/profile/image`
 						});
@@ -887,6 +902,7 @@
 						content: data?.content,
 						title: `${title}`
 					},
+					mobilePriority: 'info',
 					duration: 15000,
 					unstyled: true
 				});
@@ -1001,19 +1017,7 @@
 			localStorage.setItem('theme', newTheme);
 			theme.set(newTheme);
 
-			// Apply theme classes (mirrors logic from chat/Settings/General.svelte)
-			const themes = ['dark', 'light', 'oled-dark'];
-			let themeToApply =
-				newTheme === 'oled-dark' ? 'dark' : newTheme === 'her' ? 'light' : newTheme;
-			if (newTheme === 'system') {
-				themeToApply = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-			}
-			themes
-				.filter((e) => e !== themeToApply)
-				.forEach((e) => {
-					e.split(' ').forEach((cls) => document.documentElement.classList.remove(cls));
-				});
-			themeToApply.split(' ').forEach((cls) => document.documentElement.classList.add(cls));
+			applyAppTheme(newTheme);
 			return;
 		}
 		if (event.type === 'models:refresh') {
@@ -1075,7 +1079,12 @@
 		}
 	};
 
+	function handleOAuthPageShow() {
+		restoreOAuthConnectOverlay();
+	}
+
 	onMount(async () => {
+		window.addEventListener('pageshow', handleOAuthPageShow);
 		const originalFetch = window.fetch.bind(window);
 		window.fetch = async (input, init) => {
 			const response = await originalFetch(input, init);
@@ -1235,9 +1244,37 @@
 			}
 		});
 
+		performance.mark('buddy:bootstrap');
+		const updateStartupStatus = (message) => {
+			const status = document.getElementById('buddy-loading-status');
+			if (status) {
+				status.textContent = message;
+			}
+		};
+		updateStartupStatus('Checking your session…');
+
+		const sessionToken = localStorage.token ?? '';
+		const loadSession = async () => {
+			if (!sessionToken) {
+				return null;
+			}
+			try {
+				const session = await getSessionUser(sessionToken);
+				performance.mark('buddy:session-ready');
+				return session;
+			} catch (error) {
+				toast.error(String(error));
+				return null;
+			}
+		};
+		// Authentication and config can use the same token concurrently.
+		// No account data is cached between users.
+		const sessionUserPromise = loadSession();
+
 		let backendConfig = null;
 		try {
-			backendConfig = await getBackendConfig();
+			backendConfig = await getBackendConfig(sessionToken);
+			performance.mark('buddy:config-ready');
 			console.log('Backend config:', backendConfig);
 		} catch (error) {
 			if (error?.authRedirect) {
@@ -1247,11 +1284,17 @@
 				return;
 			}
 			console.error('Error loading backend config:', error);
+			if (sessionToken) {
+				// An expired token must still allow the public sign-in screen.
+				backendConfig = await getBackendConfig().catch(() => null);
+			}
 		}
+		updateStartupStatus('Getting your chat ready…');
 		// Initialize i18n even if we didn't get a backend config,
 		// so `/error` can show something that's not `undefined`.
 
 		await initI18n(localStorage?.locale, backendConfig?.i18n ?? {});
+		performance.mark('buddy:locale-ready');
 		if (!localStorage.locale) {
 			const languages = await getLanguages();
 			const browserLanguages = navigator.languages
@@ -1271,25 +1314,15 @@
 			// visual, textual, symbolic identifiers, metadata, and surrounding UI.
 			// Do not alter, remove, obscure, or replace it except as LICENSE permits:
 			// https://docs.openwebui.com/license.
-			await WEBUI_NAME.set(backendConfig.name);
+			await WEBUI_NAME.set(resolveAppName(backendConfig.name));
 
 			if ($config) {
 				await setupSocket($config.features?.enable_websocket ?? true);
 
-				if (localStorage.token) {
-					// Get Session User Info
-					const sessionUser = await getSessionUser(localStorage.token).catch((error) => {
-						toast.error(`${error}`);
-						return null;
-					});
-
+				if (sessionToken) {
+					const sessionUser = await sessionUserPromise;
 					if (sessionUser) {
 						await user.set(sessionUser);
-						try {
-							await config.set(await getBackendConfig());
-						} catch (error) {
-							console.error('Error refreshing backend config:', error);
-						}
 
 						// Keep user timezone in sync on every app load/refresh
 						const timezone = getUserTimezone();
@@ -1315,6 +1348,15 @@
 		} else {
 			// Redirect to /error when Backend Not Detected
 			await goto(`/error`);
+		}
+
+		performance.mark('buddy:app-shell-ready');
+		const connectionResult = await completeOAuthConnectRedirect();
+		if (connectionResult === 'error') {
+			toast.error($i18n.t('The connection could not be completed. You can try again.'));
+		}
+		if (!connectionResult) {
+			restoreOAuthConnectOverlay();
 		}
 
 		await tick();
@@ -1367,6 +1409,7 @@
 			document.removeEventListener('visibilitychange', handleVisibilityChange);
 			window.removeEventListener('pagehide', handlePageHidden);
 			window.removeEventListener('pageshow', handlePageVisible);
+			window.removeEventListener('pageshow', handleOAuthPageShow);
 		};
 	});
 
@@ -1415,22 +1458,33 @@
 {/if}
 
 {#if loaded}
-	{#if $isApp}
-		<div class="flex flex-row h-screen">
-			<AppSidebar />
+	<div
+		class="contents"
+		inert={$showOAuthConnect || undefined}
+		aria-hidden={$showOAuthConnect || undefined}
+	>
+		{#if $isApp}
+			<div class="flex flex-row h-screen">
+				<AppSidebar />
 
-			<div class="w-full flex-1 max-w-[calc(100%-4.5rem)]">
-				<slot />
+				<div class="w-full flex-1 max-w-[calc(100%-4.5rem)]">
+					<slot />
+				</div>
 			</div>
-		</div>
-	{:else}
-		<slot />
+		{:else}
+			<slot />
+		{/if}
+	</div>
+	{#if $showOAuthConnect}
+		<BuddyAuthConnect />
 	{/if}
 {/if}
 
 {#if $config?.features.enable_community_sharing}
 	<SyncStatsModal bind:show={showSyncStatsModal} eventData={syncStatsEventData} />
 {/if}
+
+<BuddyNotifications />
 
 <Toaster
 	theme={$theme.includes('dark')

@@ -10,6 +10,7 @@
 	export let open = false;
 	export let enabled = false;
 	export let width = 245;
+	export let panelElement: HTMLElement | null = null;
 	export let onOpenChange: (open: boolean) => void = () => {};
 
 	let mounted = false;
@@ -22,6 +23,7 @@
 	let lastTime = 0;
 	let velocity = 0;
 	let startProgress = 0;
+	let gestureWidth = 245;
 	let swipeProgress = 0;
 	let settling = false;
 	let settleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -174,6 +176,12 @@
 			return;
 		}
 
+		// The responsive mobile drawer can be wider than the saved desktop width.
+		gestureWidth = panelWidth;
+		if (panelElement) {
+			gestureWidth = panelElement.getBoundingClientRect().width || panelWidth;
+		}
+
 		const touch = e.touches[0];
 		const x = touch.clientX;
 
@@ -220,7 +228,7 @@
 			}
 
 			if ((direction === 'open' && dx > 0) || (direction === 'close' && dx < 0)) {
-				swipeProgress = Math.max(0, Math.min(1, startProgress + dx / panelWidth));
+				swipeProgress = Math.max(0, Math.min(1, startProgress + dx / gestureWidth));
 			}
 
 			if (absX < SWIPE_SLOP && absY < SWIPE_SLOP) {
@@ -249,7 +257,7 @@
 		lastX = touch.clientX;
 		lastTime = now;
 
-		swipeProgress = Math.max(0, Math.min(1, startProgress + dx / panelWidth));
+		swipeProgress = Math.max(0, Math.min(1, startProgress + dx / gestureWidth));
 	};
 
 	const onTouchEnd = () => {

@@ -1,30 +1,31 @@
-# Local Open WebUI customizations
+# Buddy local customizations
 
 Buddy's runtime customizations live in this tracked folder. User settings and
-installed Functions live in Open WebUI's private database. The launcher applies
+installed Functions live in Buddy's private database. The launcher applies
 the patches and rewrites the bundled `loader.js` hook on each start; no manual
 edits to `.venv` are needed. See [Buddy setup](../BUDDY.md) for installation.
 
-The tested runtime is Open WebUI **0.11.4**. Response usage tracking checks that
+The pinned runtime dependencies are Open WebUI **0.11.4**; the launcher runs
+Buddy's tracked backend and built frontend. Response usage tracking checks that
 version and the upstream function contracts before installing its hooks.
 
-| File | What it does |
-| --- | --- |
-| `web/reasoning-chip.js` | Thinking-level chip next to the model picker in the chat input |
-| `web/mobile-chat-layout.js` | Keeps mobile chat and long drafts visible above the keyboard |
-| `web/mobile-ui-polish.js` | Mobile text/icon proportions and adaptive full-screen model picker |
-| `web/model-edit-shortcut.js` | Direct native model editing from a pen button beside each model menu |
-| `web/mobile-settings.js` | Fullscreen phone Settings with grouped category navigation and native forms |
-| `web/chat-header.js` | Theme-aware translucent header, larger controls, and direct native Settings access |
-| `web/chat-actions-menu.js` | Modern native chat menu styling, touch targets, and keyboard-aware placement |
-| `web/model-activity.js` | Visible waiting/working status and elapsed time while the native response is pending |
-| `web/chat-usage-info.js` | Context usage and response/chat details, with tap access on mobile |
-| `usage_tracking.py` | Persists server timing and provider token usage for each new response run |
-| `functions/reasoning_level.py` | Always-on filter (in the DB) that sends the level in each connection's format |
-| `install_functions.py` | Installs or updates everything in `functions/` into the DB |
-| `owui_local_patches.py` | Startup patches: Slack PSS keep-alive, response run tracking, and `web/` scripts in `/static/loader.js` |
-| `serve.py` | `open-webui serve` plus the patches; `start-open-webui.ps1` uses it |
-| `tests/` | `.venv\Scripts\python.exe -m unittest discover -s local\tests -v` and `node --test local\tests\*.test.mjs` |
+| File                           | What it does                                                                                               |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `web/reasoning-chip.js`        | Thinking-level chip next to the model picker in the chat input                                             |
+| `web/mobile-chat-layout.js`    | Keeps mobile chat and long drafts visible above the keyboard                                               |
+| `web/mobile-ui-polish.js`      | Mobile text/icon proportions and adaptive full-screen model picker                                         |
+| `web/model-edit-shortcut.js`   | Direct native model editing from a pen button beside each model menu                                       |
+| `web/mobile-settings.js`       | Fullscreen phone Settings with grouped category navigation and native forms                                |
+| `web/chat-header.js`           | Theme-aware translucent header, larger controls, and direct native Settings access                         |
+| `web/chat-actions-menu.js`     | Modern native chat menu styling, touch targets, and keyboard-aware placement                               |
+| `web/model-activity.js`        | Visible waiting/working status and elapsed time while the native response is pending                       |
+| `web/chat-usage-info.js`       | Context usage and response/chat details, with tap access on mobile                                         |
+| `usage_tracking.py`            | Persists server timing and provider token usage for each new response run                                  |
+| `functions/reasoning_level.py` | Always-on filter (in the DB) that sends the level in each connection's format                              |
+| `install_functions.py`         | Installs or updates everything in `functions/` into the DB                                                 |
+| `owui_local_patches.py`        | Startup patches: Slack PSS keep-alive, response run tracking, and `web/` scripts in `/static/loader.js`    |
+| `serve.py`                     | Buddy's source backend plus the patches; `start-buddy.ps1` uses it                                         |
+| `tests/`                       | `.venv\Scripts\python.exe -m unittest discover -s local\tests -v` and `node --test local\tests\*.test.mjs` |
 
 ## Mobile chat layout
 
@@ -164,18 +165,18 @@ The chat input shows a gauge chip next to the model name. Click it to choose
 **Default**, **Off**, **Low**, **Medium**, **High**, **Extra high** or **Max**.
 The choice applies to every chat in that browser until you change it.
 
-* It sets the same `reasoning_effort` param as Chat Controls > Advanced Params,
+- It sets the same `reasoning_effort` param as Chat Controls > Advanced Params,
   just one click away. **Default** sends nothing extra, so the chat's Chat
   Controls value, your Settings default, or the model's own default applies.
-* QwenMOE (llama.cpp) turns the level into a thinking budget: low 1024, medium
+- QwenMOE (llama.cpp) turns the level into a thinking budget: low 1024, medium
   2048, high 4096, xhigh 8192, max 32768 tokens. Off disables thinking. Default
   uses the server's `--reasoning-budget 32768`.
-* Gateway models (gpt-6-*, claude-opus-5-5, luna) use the Responses API, which
+- Gateway models (gpt-6-\*, claude-opus-5-5, luna) use the Responses API, which
   expects `reasoning: {effort}`. `functions/reasoning_level.py` converts the
   value for those connections, and a chosen level overrides luna's built-in
   `max`. Chat Controls' Reasoning Effort goes through the same conversion.
-* If a model's API doesn't support a level, the API returns an error. Pick another.
-* How it's wired: Open WebUI loads `/static/loader.js` on every page as a hook
+- If a model's API doesn't support a level, the API returns an error. Pick another.
+- How it's wired: Open WebUI loads `/static/loader.js` on every page as a hook
   for custom scripts, and recopies it from its bundled frontend on each start.
   The launcher then appends `web/reasoning-chip.js`. If an Open WebUI update
   changes the input bar so the model picker can't be found, the chip simply

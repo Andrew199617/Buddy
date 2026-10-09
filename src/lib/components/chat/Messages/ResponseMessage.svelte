@@ -65,7 +65,14 @@
 	import RegenerateMenu from './ResponseMessage/RegenerateMenu.svelte';
 	import StatusHistory from './ResponseMessage/StatusHistory.svelte';
 	import FullHeightIframe from '$lib/components/common/FullHeightIframe.svelte';
-	import OutputEditView from './OutputEditView.svelte';
+	import { createLazyComponent } from '$lib/utils/lazy-component';
+	import LazyFeatureStatus from '$lib/components/common/LazyFeatureStatus.svelte';
+
+	const importOutputEditor = () => import('./OutputEditView.svelte');
+	const outputEditorFeature = createLazyComponent(importOutputEditor);
+	$: if (edit && editedOutput) {
+		void outputEditorFeature.load();
+	}
 	import { getOutputText, replaceOutputMessageText, type OutputItem } from './structuredOutput';
 
 	interface MessageType {
@@ -668,7 +675,7 @@
 
 {#key message.id}
 	<div
-		class=" flex w-full message-{message.id}"
+		class="assistant-message flex w-full message-{message.id}"
 		id="message-{message.id}"
 		dir={$settings.chatDirection}
 		style="scroll-margin-top: 3rem;"
@@ -680,7 +687,7 @@
 			/>
 		</div>
 
-		<div class="flex-auto w-0 pl-1 relative">
+		<div class="buddy-assistant-stack flex-auto w-0 pl-1 relative">
 			{#if !compactPreview}
 				<Name>
 					<Tooltip content={localizedModelName} placement="top-start">
@@ -692,7 +699,7 @@
 			{/if}
 
 			<div>
-				<div class="chat-{message.role} w-full min-w-full">
+				<div class="buddy-assistant-card chat-{message.role} w-full min-w-full">
 					<div>
 						{#if model?.info?.meta?.capabilities?.status_updates ?? true}
 							<StatusHistory statusHistory={message?.statusHistory} />
@@ -750,12 +757,22 @@
 							>
 								{#if editedOutput}
 									<!-- Structured output editor (visual + JSON toggle) -->
-									<OutputEditView
-										output={editedOutput}
-										onChange={(updated) => {
-											editedOutput = updated;
-										}}
-									/>
+									{#if $outputEditorFeature.component}
+										<svelte:component
+											this={$outputEditorFeature.component}
+											output={editedOutput}
+											onChange={(updated) => {
+												editedOutput = updated;
+											}}
+										/>
+									{:else}
+										<LazyFeatureStatus
+											feature="Message editor"
+											compact={true}
+											error={$outputEditorFeature.error}
+											onRetry={outputEditorFeature.load}
+										/>
+									{/if}
 								{:else}
 									<!-- Legacy textarea for messages without output -->
 									<textarea
@@ -1631,7 +1648,7 @@
 					{/if}
 
 					{#if (isLastMessage || ($settings?.keepFollowUpPrompts ?? false)) && message.done && !readOnly && (message?.followUps ?? []).length > 0}
-						<div class="my-2.5" in:fade={{ duration: 100 }}>
+						<div class="buddy-follow-ups my-2.5" in:fade={{ duration: 100 }}>
 							<FollowUps
 								followUps={message?.followUps}
 								onClick={(prompt) => {

@@ -21,7 +21,6 @@
 		models,
 		tags as allTags,
 		settings,
-		showSidebar,
 		WEBUI_NAME,
 		banners,
 		user,
@@ -105,13 +104,14 @@
 	import { uploadFile } from '$lib/apis/files';
 	import { createOpenAITextStream } from '$lib/apis/streaming';
 	import { getFunctions } from '$lib/apis/functions';
-	import { initiateOAuthRedirect } from '$lib/apis/configs';
+	import { consumeOAuthCancellation, initiateOAuthRedirect } from '$lib/apis/configs';
 	import { updateFolderById } from '$lib/apis/folders';
 
 	import Banner from '../common/Banner.svelte';
 	import MessageInput from '$lib/components/chat/MessageInput.svelte';
 	import Messages from '$lib/components/chat/Messages.svelte';
 	import Navbar from '$lib/components/chat/Navbar.svelte';
+	import { getBuddyActivity } from '$lib/components/buddy/chatActivity';
 	import ChatControls from './ChatControls.svelte';
 	import EventConfirmDialog from '../common/ConfirmDialog.svelte';
 	import DeleteConfirmDialog from '../common/ConfirmDialog.svelte';
@@ -417,7 +417,8 @@
 		currentId: null
 	};
 
-	let taskIds = null;
+	let taskIds: string[] | null = null;
+	$: buddyState = getBuddyActivity(history, generating, taskIds);
 
 	// Chat Input
 	let prompt = '';
@@ -753,6 +754,19 @@
 		});
 	};
 
+	const restoreOAuthToolSelection = () => {
+		const pendingToolId = sessionStorage.getItem('pendingOAuthToolId');
+		if (!pendingToolId) {
+			return;
+		}
+
+		sessionStorage.removeItem('pendingOAuthToolId');
+		sessionStorage.removeItem('oauthRedirectInProgressToolId');
+		if (!selectedToolIds.includes(pendingToolId)) {
+			selectedToolIds = [...selectedToolIds, pendingToolId];
+		}
+	};
+
 	const restoreChatInput = async (storageChatInput: string | null) => {
 		if (!storageChatInput || $temporaryChatEnabled) {
 			return false;
@@ -864,6 +878,7 @@
 			if (!(await restoreChatInput(storageChatInput))) {
 				await setDefaults();
 			}
+			restoreOAuthToolSelection();
 
 			messageInput?.focus({ preventScroll: true });
 		} else if (!embedded) {
@@ -949,6 +964,9 @@
 	};
 
 	const continueOAuthRedirect = async () => {
+		if (consumeOAuthCancellation()) {
+			return;
+		}
 		if (pendingOAuthTools.length === 0) {
 			sessionStorage.removeItem('oauthRedirectInProgressToolId');
 			return;
@@ -1610,7 +1628,8 @@
 				await tick();
 			}
 
-			if (storageChatInput) {
+			// Linked chats hydrate their draft in navigateHandler after the chat loads.
+			if (storageChatInput && !chatIdProp) {
 				prompt = '';
 				messageInput?.setText('');
 
@@ -2195,14 +2214,8 @@
 				.filter((id) => id && ($tools ?? []).find((t) => t.id === id));
 		}
 
-		// Restore tool selection after OAuth redirect
-		const pendingToolId = sessionStorage.getItem('pendingOAuthToolId');
-		if (pendingToolId) {
-			sessionStorage.removeItem('pendingOAuthToolId');
-			if (!selectedToolIds.includes(pendingToolId)) {
-				selectedToolIds = [...selectedToolIds, pendingToolId];
-			}
-		}
+		// Restore tool selection after OAuth redirect.
+		restoreOAuthToolSelection();
 
 		if ($page.url.searchParams.get('call') === 'true') {
 			openCallOverlay();
@@ -3764,7 +3777,7 @@
 					return null;
 				});
 			} else {
-				for (const taskId of taskIds) {
+				for (const taskId of taskIds ?? []) {
 					const res = await stopTask(localStorage.token, taskId).catch((error) => {
 						toast.error(`${error}`);
 						return null;
@@ -4068,6 +4081,7 @@
 	const oauthRedirectHandler = async (
 		tool: {
 			id: string;
+			name?: string;
 			serverId: string;
 			authType?: string | null;
 		},
@@ -4075,8 +4089,8 @@
 	) => {
 		await tick();
 		saveSessionSelectedModels();
-		await saveDraft(draft, null, false);
-		initiateOAuthRedirect(tool);
+		await saveDraft(draft, getDraftChatId(), false);
+		await initiateOAuthRedirect(tool);
 	};
 
 	const clearDraft = async (chatId: string | null = null) => {
@@ -4265,16 +4279,13 @@
 />
 
 <div
-	class="{embedded
-		? 'h-full'
-		: 'h-screen max-h-[100dvh]'} transition-width duration-200 ease-in-out {$showSidebar &&
-	!embedded
-		? '  md:max-w-[calc(100%-var(--sidebar-width))]'
-		: ' '} w-full max-w-full min-w-0 flex flex-col"
+	class="{embedded ? 'h-full' : 'h-screen max-h-[100dvh]'} w-full max-w-full min-w-0 flex flex-col"
 	id={chatContainerId}
+	class:buddy-chat={!embedded}
+	data-buddy-state={embedded ? undefined : buddyState}
 >
 	{#if !loading}
-		<div in:fade={{ duration: 50 }} class="w-full h-full flex flex-col">
+		<div in:fade={{ duration: 50 }} class="buddy-chat-frame w-full h-full flex flex-col">
 			{#if backgroundImage}
 				<div
 					class="pointer-events-none absolute top-0 left-0 w-full h-full bg-cover bg-center bg-no-repeat"
@@ -4285,8 +4296,10 @@
 				></div>
 			{/if}
 
-			<div class="w-full h-full flex">
-				<div class="h-full flex relative max-w-full min-w-0 flex-1 flex-col">
+			<div class="buddy-chat-workspace w-full h-full flex">
+				<div
+					class="buddy-conversation-frame h-full flex relative max-w-full min-w-0 flex-1 flex-col"
+				>
 					<FilesOverlay show={dragged} />
 					{#if embedded}
 						<div
@@ -4318,6 +4331,7 @@
 					{:else}
 						<Navbar
 							bind:this={navbarElement}
+							{buddyState}
 							{readOnly}
 							chat={{
 								id: $chatId,
@@ -4379,16 +4393,17 @@
 						/>
 					{/if}
 					<div id="chat-pane" class="flex flex-col flex-auto z-10 w-full @container overflow-auto">
-						{#if ($settings?.landingPageMode === 'chat' && !$selectedFolder) || createMessagesList(history, history.currentId).length > 0}
+						{#if createMessagesList(history, history.currentId).length > 0}
 							<div
 								class=" pb-2.5 flex flex-col justify-between w-full flex-auto overflow-auto h-0 max-w-full z-10 scrollbar-hidden"
 								id="messages-container"
 								bind:this={messagesContainerElement}
 								on:scroll={(e) => {
+									const scrollContainer = e.currentTarget;
 									autoScroll =
-										messagesContainerElement.scrollHeight - messagesContainerElement.scrollTop <=
-										messagesContainerElement.clientHeight + 5;
-									isNearTop = messagesContainerElement.scrollTop <= 100;
+										scrollContainer.scrollHeight - scrollContainer.scrollTop <=
+										scrollContainer.clientHeight + 5;
+									isNearTop = scrollContainer.scrollTop <= 100;
 								}}
 							>
 								<div class=" h-full w-full flex flex-col">
@@ -4405,7 +4420,7 @@
 										}}
 										bind:selectedModels
 										{atSelectedModel}
-										className={embedded ? 'h-full flex pt-4' : 'h-full flex pt-18'}
+										className={embedded ? 'h-full flex pt-4' : 'buddy-messages h-full flex pt-3'}
 										{sendMessage}
 										{showMessage}
 										{submitMessage}
@@ -4417,7 +4432,7 @@
 										{onToolCallResolved}
 										allowDelete={!(generating || taskIds?.length)}
 										forkHandler={handleForkChat}
-										topPadding={!embedded}
+										topPadding={false}
 										bottomPadding={files.length > 0}
 										{onSelect}
 										{onInsertToNote}
@@ -4434,7 +4449,7 @@
 							{:else}
 								<div
 									id={embedded ? messageInputDropzoneId : undefined}
-									class=" pb-2 {dragged ? 'z-0' : 'z-10'}"
+									class="buddy-composer-wrap pb-2 {dragged ? 'z-0' : 'z-10'}"
 								>
 									<MessageInput
 										bind:this={messageInput}
@@ -4588,7 +4603,7 @@
 								</div>
 							</div>
 						{:else}
-							<div class="flex items-center h-full">
+							<div class="buddy-empty-pane flex items-center h-full min-h-0">
 								<Placeholder
 									bind:selectedModelIdx
 									{history}

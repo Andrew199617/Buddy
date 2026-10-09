@@ -1,11 +1,13 @@
 <script lang="ts">
+	import SidebarToggleTooltip from '$lib/components/layout/SidebarToggleTooltip.svelte';
+	import type { Writable } from 'svelte/store';
+	import type { i18n as I18n } from 'i18next';
 	import { onMount, getContext } from 'svelte';
 	import { WEBUI_NAME, showSidebar, functions, mobile } from '$lib/stores';
 	import { page } from '$app/stores';
-	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import Sidebar from '$lib/components/icons/Sidebar.svelte';
 
-	const i18n = getContext('i18n');
+	const i18n = getContext<Writable<I18n>>('i18n');
 
 	onMount(async () => {});
 </script>
@@ -19,33 +21,28 @@
 	</title>
 </svelte:head>
 
-<div
-	class=" flex flex-col w-full h-screen max-h-[100dvh] transition-width duration-200 ease-in-out {$showSidebar
-		? 'md:max-w-[calc(100%-var(--sidebar-width))]'
-		: ''} max-w-full"
->
+<div class=" flex flex-col w-full h-screen max-h-[100dvh] max-w-full">
 	<nav class="   px-2.5 pt-1.5 backdrop-blur-xl w-full drag-region">
 		<div class=" flex items-center">
-			{#if $mobile}
-				<div class="{$showSidebar ? 'md:hidden' : ''} flex flex-none items-center self-end mt-1.5">
-					<Tooltip
-						content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
-						interactive={true}
+			<div class="{$showSidebar ? 'md:hidden' : ''} flex flex-none items-center self-end mt-1.5">
+				<SidebarToggleTooltip interactive={true}>
+					<button
+						id="sidebar-toggle-button"
+						aria-expanded={$showSidebar}
+						aria-controls="sidebar"
+						type="button"
+						aria-label={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
+						class="buddy-feature-sidebar-trigger cursor-pointer flex rounded-lg hover:bg-gray-100 dark:hover:bg-gray-850 transition cursor-"
+						on:click={() => {
+							showSidebar.set(!$showSidebar);
+						}}
 					>
-						<button
-							id="sidebar-toggle-button"
-							class=" cursor-pointer flex rounded-lg hover:bg-gray-100 dark:hover:bg-gray-850 transition cursor-"
-							on:click={() => {
-								showSidebar.set(!$showSidebar);
-							}}
-						>
-							<div class=" self-center p-1.5">
-								<Sidebar className="size-4" />
-							</div>
-						</button>
-					</Tooltip>
-				</div>
-			{/if}
+						<div class=" self-center p-1.5">
+							<Sidebar className="size-4" />
+						</div>
+					</button>
+				</SidebarToggleTooltip>
+			</div>
 
 			<div class=" flex w-full">
 				<div

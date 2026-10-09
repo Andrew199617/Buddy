@@ -101,6 +101,7 @@
 
 		initiateOAuthRedirect({
 			id: `server:mcp:${id}`,
+			name: name,
 			serverId: id,
 			authType: 'mcp'
 		});
@@ -861,7 +862,7 @@
 											{$i18n.t('Forward cookies')}
 										</label>
 										<p class="text-xs text-gray-500">
-											{$i18n.t('Forward cookies from your Open WebUI request to this server.')}
+											{$i18n.t('Forward cookies from your Buddy request to this server.')}
 										</p>
 									</div>
 									<Switch
@@ -1043,7 +1044,7 @@
 							Do not alter, remove, obscure, or replace it except as LICENSE permits:
 							https://docs.openwebui.com/license. -->
 							{$i18n.t(
-								'MCP support is experimental and its specification changes often, which can lead to incompatibilities. OpenAPI specification support is directly maintained by the Open WebUI team, making it the more reliable option for compatibility.'
+								'MCP support is experimental and its specification changes often, which can lead to incompatibilities. OpenAPI support uses a stable specification for compatibility.'
 							)}
 
 							<a class="font-normal underline" href="https://docs.openwebui.com/" target="_blank"

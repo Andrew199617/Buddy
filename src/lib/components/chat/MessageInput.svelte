@@ -81,7 +81,7 @@
 	import VoiceRecording from './MessageInput/VoiceRecording.svelte';
 	import ModelSelector from './ModelSelector.svelte';
 
-	import ToolServersModal from './ToolServersModal.svelte';
+	import ToolServersMenu from './ToolServersMenu.svelte';
 	import SkillsModal from './SkillsModal.svelte';
 
 	import RichTextInput from '../common/RichTextInput.svelte';
@@ -159,7 +159,7 @@
 	);
 
 	export let history;
-	export let taskIds = null;
+	export let taskIds: string[] | null = null;
 	export let askUser: AskUserPrompt = {
 		show: false,
 		questions: [],
@@ -692,11 +692,165 @@
 	let suggestions = null;
 	$: atSelectedModelName = resolveLocalizedModelName(atSelectedModel, $i18n.language);
 
+	function preserveComposerDialogFocus(event: PointerEvent): void {
+		if (!$mobile || !event.isPrimary || event.button !== 0) return;
+		if (!document.activeElement?.closest('#chat-input')) return;
+		event.preventDefault();
+	}
+
 	let showTools = false;
 	let showSkills = false;
 
 	let loaded = false;
 	let recording = false;
+	let composerFocused = false;
+	let composerMenuOpen = false;
+	$: composerExpanded =
+		composerFocused ||
+		composerMenuOpen ||
+		Boolean(prompt.trim()) ||
+		files.length > 0 ||
+		generating ||
+		recording ||
+		atSelectedModel !== undefined;
+
+	function handleComposerFocusIn(event: FocusEvent): void {
+		const editorFocused = event.target instanceof HTMLElement && event.target.id === 'chat-input';
+		// Keep initial editor autofocus quiet, while restored control focus reveals the tools.
+		if (event.relatedTarget || !editorFocused) {
+			composerFocused = true;
+		}
+	}
+
+	function trackComposerInteraction(form: HTMLElement) {
+		let firstTapPointerId: number | null = null;
+		let firstTapEditor: HTMLElement | null = null;
+
+		function cancelComposerPointer(): void {
+			firstTapPointerId = null;
+			firstTapEditor = null;
+		}
+
+		function handleComposerPointerDown(event: PointerEvent): void {
+			cancelComposerPointer();
+			const wasCollapsed = !composerExpanded;
+			composerFocused = true;
+
+			if (embedded || !event.isPrimary || event.button !== 0) {
+				return;
+			}
+
+			const target = event.target;
+			if (!(target instanceof Element)) {
+				return;
+			}
+
+			const composer = target.closest('.buddy-composer');
+			if (!composer || !form.contains(composer)) {
+				return;
+			}
+
+			const control = target.closest(
+				'button, a, input, textarea, select, [role="button"], [role="menuitem"], [contenteditable="false"]'
+			);
+			if (control) {
+				const opensComposerMenu = control.matches(
+					'button[id^="model-selector-"][id$="-button"], #owui-reasoning-chip'
+				);
+				const editorFocused = document.activeElement?.closest('#chat-input');
+				const touchInteraction =
+					event.pointerType === 'touch' || window.matchMedia('(pointer: coarse)').matches;
+				if (opensComposerMenu && editorFocused && touchInteraction) {
+					// Keep the keyboard from moving this trigger before its click opens the menu.
+					event.preventDefault();
+				}
+				return;
+			}
+			if (!wasCollapsed) {
+				return;
+			}
+
+			const editor = composer.querySelector<HTMLElement>('#chat-input[contenteditable="true"]');
+			if (!editor) {
+				return;
+			}
+
+			firstTapPointerId = event.pointerId;
+			firstTapEditor = editor;
+			// Expansion moves the editor before native pointer hit-testing finishes.
+			// Keep focus in this trusted gesture and prevent padding from blurring it.
+			event.preventDefault();
+			focus({ preventScroll: true });
+		}
+
+		function handleComposerPointerUp(event: PointerEvent): void {
+			if (event.pointerId !== firstTapPointerId) {
+				return;
+			}
+
+			const editor = firstTapEditor;
+			if (editor?.isConnected && editor.getAttribute('contenteditable') === 'true') {
+				// iOS needs keyboard focus during the tap, without tick or deferred work.
+				editor.focus({ preventScroll: true });
+			}
+		}
+
+		function handleComposerClick(event: MouseEvent): void {
+			if (!firstTapEditor || event.detail === 0) {
+				return;
+			}
+			if (event instanceof PointerEvent && event.pointerId !== firstTapPointerId) {
+				return;
+			}
+
+			const editor = firstTapEditor;
+			cancelComposerPointer();
+			// Touch browsers can retarget click to a control moved under the finger.
+			// Consume only the first editor gesture before that control handles click.
+			event.preventDefault();
+			event.stopPropagation();
+			if (editor.isConnected && editor.getAttribute('contenteditable') === 'true') {
+				editor.focus({ preventScroll: true });
+			}
+		}
+
+		function updateComposerMenus(): void {
+			composerMenuOpen = Boolean(
+				form.querySelector(
+					'.buddy-composer [aria-expanded="true"], .owui-context-rail [aria-expanded="true"]'
+				)
+			);
+		}
+		const menuObserver = new MutationObserver(updateComposerMenus);
+		menuObserver.observe(form, {
+			subtree: true,
+			attributes: true,
+			attributeFilter: ['aria-expanded']
+		});
+		form.addEventListener('pointerdown', handleComposerPointerDown);
+		form.addEventListener('pointerup', handleComposerPointerUp);
+		form.addEventListener('pointercancel', cancelComposerPointer);
+		form.addEventListener('click', handleComposerClick, true);
+		updateComposerMenus();
+		return {
+			destroy() {
+				form.removeEventListener('pointerdown', handleComposerPointerDown);
+				form.removeEventListener('pointerup', handleComposerPointerUp);
+				form.removeEventListener('pointercancel', cancelComposerPointer);
+				form.removeEventListener('click', handleComposerClick, true);
+				cancelComposerPointer();
+				menuObserver.disconnect();
+			}
+		};
+	}
+
+	function handleComposerFocusOut(event: FocusEvent): void {
+		const container = event.currentTarget as HTMLElement;
+		if (event.relatedTarget instanceof Node && container.contains(event.relatedTarget)) {
+			return;
+		}
+		composerFocused = false;
+	}
 
 	let isComposing = false;
 	// Safari has a bug where compositionend is not triggered correctly #16615
@@ -1631,7 +1785,6 @@
 	});
 </script>
 
-<ToolServersModal bind:show={showTools} {selectedToolIds} />
 <SkillsModal bind:show={showSkills} {selectedSkillIds} />
 
 <InputVariablesModal
@@ -1671,7 +1824,7 @@
 	<div class="w-full">
 		<div class=" mx-auto inset-x-0 bg-transparent flex justify-center">
 			<div
-				class="flex flex-col px-3 {($settings?.widescreenMode ?? null)
+				class="buddy-composer-content flex flex-col px-3 {($settings?.widescreenMode ?? null)
 					? 'max-w-full'
 					: 'max-w-[58rem]'} w-full"
 			>
@@ -1709,7 +1862,7 @@
 
 		<div class="bg-transparent">
 			<div
-				class="{($settings?.widescreenMode ?? null)
+				class="buddy-composer-content {($settings?.widescreenMode ?? null)
 					? 'max-w-full'
 					: 'max-w-[58rem]'} px-2 mx-auto inset-x-0"
 			>
@@ -1758,6 +1911,9 @@
 						/>
 					</div>
 					<form
+						use:trackComposerInteraction
+						on:focusin={handleComposerFocusIn}
+						on:focusout={handleComposerFocusOut}
 						class="w-full flex flex-col gap-1.5 {recording ? 'hidden' : ''}"
 						on:submit|preventDefault={() => {
 							dispatch('submit', prompt);
@@ -1893,7 +2049,8 @@
 
 						<div
 							id="message-input-container"
-							class="flex-1 flex flex-col relative w-full shadow-lg rounded-3xl border {$temporaryChatEnabled
+							data-expanded={composerExpanded}
+							class="buddy-composer flex-1 flex flex-col relative w-full shadow-lg rounded-3xl border {$temporaryChatEnabled
 								? 'border-dashed border-gray-100 dark:border-gray-800 hover:border-gray-200 focus-within:border-gray-200 hover:dark:border-gray-700 focus-within:dark:border-gray-700'
 								: ' border-gray-100/30 dark:border-gray-850/30 hover:border-gray-200 focus-within:border-gray-100 hover:dark:border-gray-800 focus-within:dark:border-gray-800'} {($settings?.highContrastMode ??
 							false)
@@ -2023,7 +2180,7 @@
 								</div>
 							{/if}
 
-							<div class="px-2 relative">
+							<div class="buddy-composer-editor px-2 relative">
 								{#if prompt.split('\n').length > 2}
 									<button
 										type="button"
@@ -2076,7 +2233,7 @@
 															navigator.maxTouchPoints > 0 ||
 															navigator.msMaxTouchPoints > 0
 														)}
-													placeholder={placeholder ? placeholder : $i18n.t('Send a Message')}
+													placeholder={placeholder ? placeholder : $i18n.t('Message Buddy…')}
 													largeTextAsFile={($settings?.largeTextAsFile ?? false) && !shiftKey}
 													autocomplete={$config?.features?.enable_autocomplete_generation &&
 														($settings?.promptAutocomplete ?? false)}
@@ -2109,6 +2266,12 @@
 													}}
 													on:keydown={async (e) => {
 														e = e.detail.event;
+														if (e.key === 'Escape' && $mobile && showTools) {
+															e.preventDefault();
+															e.stopPropagation();
+															showTools = false;
+															return;
+														}
 
 														const isCtrlPressed = e.ctrlKey || e.metaKey; // metaKey is for Cmd key on Mac
 														const suggestionsContainerElement =
@@ -2220,8 +2383,11 @@
 								</div>
 							</div>
 
-							<div class=" flex justify-between mt-0.5 mb-2 mx-0.5 max-w-full" dir="ltr">
-								<div class="ml-1 self-end flex items-center flex-1 min-w-0">
+							<div
+								class="buddy-composer-tools flex justify-between mt-0.5 mb-2 mx-0.5 max-w-full"
+								dir="ltr"
+							>
+								<div class="buddy-composer-left ml-1 self-end flex items-center flex-1 min-w-0">
 									<InputMenu
 										bind:files
 										selectedModels={selectedModelIds}
@@ -2294,11 +2460,13 @@
 
 									{#if showWebSearchButton || showImageGenerationButton || showCodeInterpreterButton || showToolsButton || showSkillsButton || (toggleFilters && toggleFilters.length > 0)}
 										<div
-											class="flex self-center w-[0.0625rem] h-4 mx-1 bg-gray-200/50 dark:bg-gray-800/50 shrink-0"
+											class="buddy-composer-divider flex self-center w-[0.0625rem] h-4 mx-1 bg-gray-200/50 dark:bg-gray-800/50 shrink-0"
 										/>
 									{/if}
 
-									<div class="flex flex-1 items-center min-w-0 overflow-x-auto scrollbar-none">
+									<div
+										class="buddy-composer-integrations flex flex-1 items-center min-w-0 overflow-x-auto scrollbar-none"
+									>
 										{#if showWebSearchButton || showImageGenerationButton || showCodeInterpreterButton || showToolsButton || showSkillsButton || (toggleFilters && toggleFilters.length > 0)}
 											<IntegrationsMenu
 												selectedModels={selectedModelIds}
@@ -2365,26 +2533,33 @@
 
 										<div class="ml-1 flex gap-1.5 shrink-0">
 											{#if (selectedToolIds ?? []).length > 0}
-												<Tooltip
-													content={$i18n.t('{{COUNT}} Available Tools', {
-														COUNT: (selectedToolIds ?? []).length
-													})}
-												>
-													<button
-														class="translate-y-[0.5px] px-1 flex gap-1 items-center text-gray-600 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-200 rounded-lg self-center transition"
-														aria-label={$i18n.t('Available Tools')}
-														type="button"
-														on:click={() => {
-															showTools = !showTools;
-														}}
+												<ToolServersMenu bind:show={showTools} {selectedToolIds}>
+													<Tooltip
+														content={$i18n.t('{{COUNT}} Available Tools', {
+															COUNT: (selectedToolIds ?? []).length
+														})}
 													>
-														<Wrench className="size-4" strokeWidth="1.75" />
+														<button
+															id="available-tools-button"
+															class="translate-y-[0.5px] px-1 flex gap-1 items-center text-gray-600 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-200 rounded-lg self-center transition"
+															aria-label={$i18n.t('Available Tools')}
+															on:pointerdown={preserveComposerDialogFocus}
+															aria-haspopup={$mobile ? 'menu' : 'dialog'}
+															type="button"
+															on:click={() => {
+																if (!$mobile) {
+																	showTools = !showTools;
+																}
+															}}
+														>
+															<Wrench className="size-4" strokeWidth="1.75" />
 
-														<span class="text-sm">
-															{(selectedToolIds ?? []).length}
-														</span>
-													</button>
-												</Tooltip>
+															<span class="text-sm">
+																{(selectedToolIds ?? []).length}
+															</span>
+														</button>
+													</Tooltip>
+												</ToolServersMenu>
 											{/if}
 
 											{#if (selectedSkillIds ?? []).length > 0}
@@ -2396,6 +2571,8 @@
 													<button
 														class="translate-y-[0.5px] px-1 flex gap-1 items-center text-gray-600 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-200 rounded-lg self-center transition"
 														aria-label={$i18n.t('Available Skills')}
+														on:pointerdown={preserveComposerDialogFocus}
+														aria-haspopup="dialog"
 														type="button"
 														on:click={() => {
 															showSkills = !showSkills;
@@ -2572,8 +2749,12 @@
 									</div>
 								</div>
 
-								<div class="self-end flex space-x-1 mr-1 min-w-0 gap-[0.03125rem]">
-									<div class="flex min-w-0 max-w-[10rem] items-center sm:max-w-[13rem]">
+								<div
+									class="buddy-composer-actions self-end flex items-center space-x-1 mr-1 min-w-0 gap-[0.03125rem]"
+								>
+									<div
+										class="buddy-composer-model flex min-w-0 max-w-[10rem] items-center sm:max-w-[13rem]"
+									>
 										<ModelSelector
 											bind:this={modelSelector}
 											bind:selectedModels
@@ -2605,7 +2786,7 @@
 											<Tooltip content={$i18n.t('Stop')}>
 												<button
 													aria-label={$i18n.t('Stop')}
-													class="bg-white hover:bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-white dark:hover:bg-gray-800 transition rounded-full p-[0.3125rem]"
+													class="flex items-center justify-center bg-white hover:bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-white dark:hover:bg-gray-800 transition rounded-full p-[0.3125rem]"
 													on:click={() => {
 														stopResponse();
 													}}
@@ -2632,7 +2813,7 @@
 												<Tooltip content={$i18n.t('Dictate')}>
 													<button
 														id="voice-input-button"
-														class=" text-gray-600 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-200 transition rounded-full p-1.5 self-center mr-0.5"
+														class="flex items-center justify-center text-gray-600 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-200 transition rounded-full p-1.5 self-center mr-0.5"
 														type="button"
 														on:click={async () => {
 															try {
@@ -2669,11 +2850,11 @@
 										{/if}
 
 										{#if !embedded && prompt === '' && files.length === 0 && ($_user?.role === 'admin' || ($_user?.permissions?.chat?.call ?? true))}
-											<div class=" flex items-center">
+											<div class="buddy-voice-mode flex items-center">
 												<!-- {$i18n.t('Call')} -->
 												<Tooltip content={$i18n.t('Voice mode')}>
 													<button
-														class=" bg-black text-white hover:bg-gray-900 dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full p-[0.3125rem] self-center"
+														class="flex items-center justify-center bg-black text-white hover:bg-gray-900 dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full p-[0.3125rem] self-center"
 														type="button"
 														on:click={async () => {
 															if (selectedModels.length > 1) {
@@ -2740,7 +2921,7 @@
 												>
 													<button
 														id="send-message-button"
-														class="{!(prompt === '' && files.length === 0) || uploadPending
+														class="flex items-center justify-center {!(prompt === '' && files.length === 0) || uploadPending
 															? 'bg-black text-white hover:bg-gray-900 dark:bg-white dark:text-black dark:hover:bg-gray-100 '
 															: 'text-white bg-gray-200 dark:text-gray-900 dark:bg-gray-700 disabled'} transition rounded-full p-[0.3125rem] self-center"
 														type="submit"

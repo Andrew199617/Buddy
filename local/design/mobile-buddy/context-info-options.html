@@ -1,0 +1,803 @@
+<div id="buddy-context-options" aria-label="Buddy context preview settings">
+	<div class="viz-carousel viz-dotted-background" aria-label="Buddy context designs">
+		<section data-variant="Floating label" aria-label="Floating label design">
+			<div class="buddy-preview-stage" id="buddy-floating-label"></div>
+		</section>
+		<section data-variant="Usage ring" aria-label="Usage ring design" hidden>
+			<div class="buddy-preview-stage" id="buddy-usage-ring"></div>
+		</section>
+		<section data-variant="Composer shortcut" aria-label="Composer shortcut design" hidden>
+			<div class="buddy-preview-stage" id="buddy-composer-shortcut"></div>
+		</section>
+	</div>
+	<template id="buddy-context-phone">
+		<div class="buddy-preview-app" data-keyboard="true">
+			<div class="buddy-preview-status" aria-hidden="true">
+				<span>6:06</span
+				><span class="buddy-preview-connectivity"
+					><i data-lucide="signal"></i><i data-lucide="wifi"></i><i data-lucide="battery"></i
+				></span>
+			</div>
+			<header class="buddy-preview-header">
+				<div class="buddy-preview-header-left">
+					<button
+						type="button"
+						class="buddy-preview-round cursor-interaction"
+						aria-label="Open sidebar"
+					>
+						<i data-lucide="menu"></i>
+					</button>
+					<button
+						type="button"
+						class="buddy-preview-quiet cursor-interaction"
+						aria-label="New chat"
+					>
+						<i data-lucide="message-circle-plus"></i>
+					</button>
+				</div>
+				<div class="buddy-preview-identity">
+					<img
+						class="buddy-preview-avatar"
+						src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIiBmaWxsPSJub25lIiBhcmlhLWhpZGRlbj0idHJ1ZSI+CgkJPGNpcmNsZSBjeD0iNTAiIGN5PSI1MCIgcj0iNDciIGZpbGw9IiNFREY1RUIiIC8+CgkJPGNpcmNsZSBjeD0iNTAiIGN5PSI1MCIgcj0iNDUuNSIgc3Ryb2tlPSIjMjc2MzRCIiBzdHJva2Utb3BhY2l0eT0iMC4xIiAvPgoJCTxjaXJjbGUgY3g9IjMzIiBjeT0iMzAiIHI9IjE5IiBmaWxsPSJ3aGl0ZSIgZmlsbC1vcGFjaXR5PSIwLjQ1IiAvPgoJCTxlbGxpcHNlIGN4PSI1MCIgY3k9IjgzIiByeD0iMjIiIHJ5PSIzLjUiIGZpbGw9IiMyNzYzNEIiIGZpbGwtb3BhY2l0eT0iMC4wOSIgLz4KCQk8ZyBjbGFzcz0iYnVkZHktYm9keSI+CgkJCTxnIGNsYXNzPSJidWRkeS1zcHJvdXQiPgoJCQkJPHBhdGggZD0iTTUwIDMyQzQ5IDI0IDQyIDIxIDM4IDIyQzM4IDI5IDQ0IDMzIDUwIDMyWiIgZmlsbD0iIzI3NjM0QiIgLz4KCQkJCTxwYXRoIGQ9Ik01MCAzMUM1MCAyMyA1NyAxOCA2NCAyMEM2MyAyOSA1NyAzMyA1MCAzMVoiIGZpbGw9IiM2NzlDNzUiIC8+CgkJCQk8cGF0aCBkPSJNNTAgMzRWMjciIHN0cm9rZT0iIzI3NjM0QiIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIC8+CgkJCTwvZz4KCQkJPGVsbGlwc2UgY3g9IjIyIiBjeT0iNTEiIHJ4PSI1IiByeT0iOSIgZmlsbD0iI0E5RDlCOCIgLz4KCQkJPGVsbGlwc2UgY3g9Ijc4IiBjeT0iNTEiIHJ4PSI1IiByeT0iOSIgZmlsbD0iI0E5RDlCOCIgLz4KCQkJPHBhdGgKCQkJCWQ9Ik0yMiA0N0MyMiAzNSAzMSAyOSA1MCAyOUM2OSAyOSA3OCAzNSA3OCA0N1Y1N0M3OCA2OCA3MCA3NSA1NiA3Nkw0NCA3NkwzMiA4M1Y3M0MyNSA3MCAyMiA2NSAyMiA1N1Y0N1oiCgkJCQlmaWxsPSIjRERGM0U0IgoJCQkJc3Ryb2tlPSIjMjc2MzRCIgoJCQkJc3Ryb2tlLXdpZHRoPSIyLjMiCgkJCQlzdHJva2UtbGluZWpvaW49InJvdW5kIgoJCQkvPgoJCQk8cGF0aAoJCQkJZD0iTTMwIDQwQzM0IDM1IDQwIDM0IDQ2IDM0IgoJCQkJc3Ryb2tlPSJ3aGl0ZSIKCQkJCXN0cm9rZS1vcGFjaXR5PSIwLjgiCgkJCQlzdHJva2Utd2lkdGg9IjMiCgkJCQlzdHJva2UtbGluZWNhcD0icm91bmQiCgkJCS8+CgkJCTxlbGxpcHNlIGN4PSIzMiIgY3k9IjU4IiByeD0iNSIgcnk9IjMiIGZpbGw9IiNFODk1NzgiIGZpbGwtb3BhY2l0eT0iMC40NSIgLz4KCQkJPGVsbGlwc2UgY3g9IjY4IiBjeT0iNTgiIHJ4PSI1IiByeT0iMyIgZmlsbD0iI0U4OTU3OCIgZmlsbC1vcGFjaXR5PSIwLjQ1IiAvPgoJCQk8ZyBjbGFzcz0iYnVkZHktZ2F6ZSI+CgkJCQk8ZyBjbGFzcz0iYnVkZHktZXllcyI+CgkJCQkJPGVsbGlwc2UgY3g9IjM4IiBjeT0iNTAiIHJ4PSIzIiByeT0iMy43IiBmaWxsPSIjMjQ0QjM4IiAvPgoJCQkJCTxlbGxpcHNlIGN4PSI2MiIgY3k9IjUwIiByeD0iMyIgcnk9IjMuNyIgZmlsbD0iIzI0NEIzOCIgLz4KCQkJCQk8Y2lyY2xlIGN4PSIzOSIgY3k9IjQ4LjgiIHI9IjAuODUiIGZpbGw9IndoaXRlIiAvPgoJCQkJCTxjaXJjbGUgY3g9IjYzIiBjeT0iNDguOCIgcj0iMC44NSIgZmlsbD0id2hpdGUiIC8+CgkJCQk8L2c+CgkJCTwvZz4KCQkJPGcgY2xhc3M9ImJ1ZGR5LXNtaWxlIj4KCQkJCTxwYXRoCgkJCQkJZD0iTTQ0IDYwQzQ3IDY0IDUzIDY0IDU2IDYwIgoJCQkJCXN0cm9rZT0iIzI3NjM0QiIKCQkJCQlzdHJva2Utd2lkdGg9IjIuNCIKCQkJCQlzdHJva2UtbGluZWNhcD0icm91bmQiCgkJCQkvPgoJCQkJPGVsbGlwc2UgY2xhc3M9ImJ1ZGR5LXNwZWFraW5nLW1vdXRoIiBjeD0iNTAiIGN5PSI2MiIgcng9IjQuMyIgcnk9IjIuOCIgZmlsbD0iIzI3NjM0QiIgLz4KCQkJPC9nPgoJCTwvZz4KCQk8Y2lyY2xlCgkJCWNsYXNzPSJidWRkeS10aGlua2luZy1vcmJpdCIKCQkJY3g9IjUwIgoJCQljeT0iNTAiCgkJCXI9IjQ1LjUiCgkJCXN0cm9rZT0iIzY3OUM3NSIKCQkJc3Ryb2tlLXdpZHRoPSIxLjciCgkJCXN0cm9rZS1saW5lY2FwPSJyb3VuZCIKCQkJc3Ryb2tlLWRhc2hhcnJheT0iMyAxMiAzIDI2OCIKCQkvPgoJCTxnIGNsYXNzPSJidWRkeS1zcGFya2xlIiBzdHJva2U9IiM2NzlDNzUiIHN0cm9rZS13aWR0aD0iMS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiPgoJCQk8cGF0aCBkPSJNNzkgMjVWMzFNNzYgMjhIODIiIC8+CgkJPC9nPgoJPHN0eWxlPi5idWRkeS1zcGVha2luZy1tb3V0aCwuYnVkZHktdGhpbmtpbmctb3JiaXR7ZGlzcGxheTpub25lfTwvc3R5bGU+PC9zdmc+"
+						alt="Buddy"
+						width="60"
+						height="60"
+					/>
+					<span class="buddy-preview-name">Buddy</span>
+				</div>
+				<div class="buddy-preview-header-right">
+					<button
+						type="button"
+						class="buddy-preview-quiet cursor-interaction"
+						aria-label="Temporary chat"
+					>
+						<i data-lucide="circle-dashed"></i>
+					</button>
+					<button
+						type="button"
+						class="buddy-preview-quiet cursor-interaction"
+						aria-label="Chat settings"
+					>
+						<i data-lucide="sliders-horizontal"></i>
+					</button>
+				</div>
+			</header>
+			<div class="buddy-preview-conversation">
+				<div class="buddy-preview-welcome">
+					<p class="buddy-preview-greeting">Good to see you.</p>
+					<h2>What's on your mind?</h2>
+					<p class="buddy-preview-intro">I'm here for the big ideas and the little things.</p>
+					<div class="buddy-preview-suggestions">
+						<button type="button" class="buddy-preview-prompt cursor-interaction">
+							Help me study <i data-lucide="arrow-up-right"></i>
+						</button>
+						<button type="button" class="buddy-preview-prompt cursor-interaction">
+							Give me ideas <i data-lucide="arrow-up-right"></i>
+						</button>
+					</div>
+				</div>
+			</div>
+			<div class="buddy-preview-input-area">
+				<button
+					type="button"
+					class="buddy-preview-context cursor-interaction"
+					aria-expanded="false"
+				>
+					<i data-lucide="info" class="buddy-preview-info"></i>
+					<span class="buddy-preview-context-label">Context 3.5K / 32K</span>
+					<svg class="buddy-preview-ring" viewBox="0 0 44 44" aria-hidden="true">
+						<circle cx="22" cy="22" r="18" class="buddy-preview-ring-track"></circle>
+						<circle
+							cx="22"
+							cy="22"
+							r="18"
+							pathLength="100"
+							class="buddy-preview-ring-value"
+						></circle>
+					</svg>
+					<span class="buddy-preview-percent">11%</span>
+				</button>
+				<div class="buddy-preview-composer">
+					<textarea rows="1" placeholder="Message Buddy..." aria-label="Message Buddy"></textarea>
+					<div class="buddy-preview-tools">
+						<button
+							type="button"
+							class="buddy-preview-tool cursor-interaction"
+							aria-label="Add attachment"
+						>
+							<i data-lucide="plus"></i>
+						</button>
+						<button
+							type="button"
+							class="buddy-preview-tool cursor-interaction"
+							aria-label="Workspace tools"
+						>
+							<i data-lucide="blocks"></i>
+						</button>
+						<button
+							type="button"
+							class="buddy-preview-tool buddy-preview-integrations cursor-interaction"
+							aria-label="Four connected tools"
+						>
+							<i data-lucide="wrench"></i><span>4</span>
+						</button>
+						<button
+							type="button"
+							class="buddy-preview-model cursor-interaction"
+							aria-label="Current model QwenMOE"
+						>
+							QwenMOE <i data-lucide="chevron-down"></i>
+						</button>
+						<button
+							type="button"
+							class="buddy-preview-tool cursor-interaction"
+							aria-label="Thinking mode"
+						>
+							<i data-lucide="gauge"></i>
+						</button>
+						<button
+							type="button"
+							class="buddy-preview-tool cursor-interaction"
+							aria-label="Dictate message"
+						>
+							<i data-lucide="mic"></i>
+						</button>
+						<button
+							type="button"
+							class="buddy-preview-voice cursor-interaction"
+							aria-label="Voice mode"
+						>
+							<i data-lucide="audio-lines"></i>
+						</button>
+					</div>
+				</div>
+				<div class="buddy-preview-details" role="dialog" aria-label="Context window" hidden>
+					<div class="buddy-preview-details-heading">
+						<h3>Context window</h3>
+						<button
+							type="button"
+							class="buddy-preview-dismiss cursor-interaction"
+							aria-label="Close context details"
+						>
+							<i data-lucide="x"></i>
+						</button>
+					</div>
+					<p class="buddy-preview-details-model">QwenMOE</p>
+					<div
+						class="buddy-preview-meter"
+						role="progressbar"
+						aria-label="Context window used"
+						aria-valuemin="0"
+						aria-valuemax="100"
+						aria-valuenow="11"
+					>
+						<div></div>
+					</div>
+					<div class="buddy-preview-detail-row">
+						<span>Used</span><strong class="buddy-preview-used">3.5K tokens</strong>
+					</div>
+					<div class="buddy-preview-detail-row">
+						<span>Capacity</span><strong>32K tokens</strong>
+					</div>
+					<div class="buddy-preview-detail-row">
+						<span>Available</span><strong class="buddy-preview-available">28.5K tokens</strong>
+					</div>
+					<p class="buddy-preview-pending" hidden>
+						Context details appear when usage is available.
+					</p>
+				</div>
+			</div>
+		</div>
+	</template>
+</div>
+<style>
+	#buddy-context-options .buddy-preview-stage {
+		min-height: 782px;
+		padding: 24px 8px;
+		box-sizing: border-box;
+		display: flex;
+		justify-content: center;
+		align-items: flex-start;
+	}
+	#buddy-context-options .buddy-preview-app {
+		--buddy-preview-canvas: light-dark(#faf8f5, #111512);
+		--buddy-preview-ink: light-dark(#293c31, #e4ede5);
+		--buddy-preview-soft: light-dark(#778277, #a3afa5);
+		--buddy-preview-panel: light-dark(#ffffff, #252e27);
+		--buddy-preview-glass: light-dark(rgb(255 255 255 / 82%), rgb(44 52 47 / 82%));
+		--buddy-preview-edge: light-dark(rgb(39 99 75 / 12%), rgb(221 243 228 / 14%));
+		--buddy-preview-accent: light-dark(#27634b, #a9d9b8);
+		--buddy-preview-shadow: light-dark(rgb(24 44 31 / 12%), rgb(0 0 0 / 32%));
+		width: 428px;
+		max-width: 100%;
+		height: 740px;
+		border-radius: 30px;
+		overflow: hidden;
+		display: flex;
+		flex-direction: column;
+		background: var(--buddy-preview-canvas);
+		color: var(--buddy-preview-ink);
+		font:
+			400 18px/1.45 -apple-system,
+			BlinkMacSystemFont,
+			'Segoe UI',
+			sans-serif;
+		box-shadow: 0 12px 40px var(--buddy-preview-shadow);
+		box-sizing: border-box;
+	}
+	#buddy-context-options .buddy-preview-app[data-keyboard='true'] {
+		height: 566px;
+	}
+	#buddy-context-options .buddy-preview-app * {
+		box-sizing: border-box;
+	}
+	#buddy-context-options .buddy-preview-app [hidden] {
+		display: none !important;
+	}
+	#buddy-context-options .buddy-preview-app button,
+	#buddy-context-options .buddy-preview-app textarea {
+		font-family: inherit;
+	}
+	#buddy-context-options .buddy-preview-app textarea {
+		color: inherit;
+	}
+	#buddy-context-options .buddy-preview-status {
+		height: 44px;
+		flex: none;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 0 30px;
+		font-size: 16px;
+		font-weight: 600;
+	}
+	#buddy-context-options .buddy-preview-connectivity {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+	#buddy-context-options .buddy-preview-connectivity svg {
+		width: 18px;
+		height: 18px;
+	}
+	#buddy-context-options .buddy-preview-header {
+		position: relative;
+		height: 104px;
+		flex: none;
+	}
+	#buddy-context-options .buddy-preview-header-left,
+	#buddy-context-options .buddy-preview-header-right {
+		position: absolute;
+		top: 8px;
+		display: flex;
+		gap: 2px;
+	}
+	#buddy-context-options .buddy-preview-header-left {
+		left: 14px;
+	}
+	#buddy-context-options .buddy-preview-header-right {
+		right: 12px;
+	}
+	#buddy-context-options .buddy-preview-round,
+	#buddy-context-options .buddy-preview-quiet {
+		width: 44px;
+		height: 44px;
+		display: inline-flex;
+		justify-content: center;
+		align-items: center;
+		border: 0;
+		background: transparent;
+		color: var(--buddy-preview-soft);
+		border-radius: 50%;
+		padding: 0;
+	}
+	#buddy-context-options .buddy-preview-round {
+		border: 1px solid var(--buddy-preview-edge);
+		background: var(--buddy-preview-glass);
+	}
+	#buddy-context-options .buddy-preview-round svg,
+	#buddy-context-options .buddy-preview-quiet svg {
+		width: 20px;
+		height: 20px;
+	}
+	#buddy-context-options .buddy-preview-identity {
+		display: flex;
+		align-items: center;
+		flex-direction: column;
+		gap: 6px;
+		padding-top: 0;
+	}
+	#buddy-context-options .buddy-preview-avatar {
+		border-radius: 50%;
+		box-shadow: 0 0 0 4px var(--buddy-preview-glass);
+	}
+	#buddy-context-options .buddy-preview-name {
+		font-size: 14px;
+		font-weight: 600;
+		padding: 2px 14px;
+		border-radius: 18px;
+		border: 1px solid var(--buddy-preview-edge);
+		background: var(--buddy-preview-glass);
+	}
+
+	#buddy-context-options .buddy-preview-conversation {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		align-items: center;
+	}
+	#buddy-context-options .buddy-preview-welcome {
+		width: 100%;
+		text-align: center;
+		padding: 0 18px 56px;
+	}
+	#buddy-context-options .buddy-preview-greeting {
+		font-size: 15px;
+		margin: 0 0 12px;
+		color: var(--buddy-preview-soft);
+	}
+	#buddy-context-options .buddy-preview-welcome h2 {
+		font-size: clamp(26px, 6.8vw, 31px);
+		line-height: 1.2;
+		font-weight: 600;
+		margin: 0 0 14px;
+		letter-spacing: -0.8px;
+	}
+	#buddy-context-options .buddy-preview-intro {
+		font-size: 16px;
+		line-height: 1.5;
+		margin: 0 auto 22px;
+		color: var(--buddy-preview-soft);
+		max-width: 360px;
+	}
+	#buddy-context-options .buddy-preview-suggestions {
+		display: flex;
+		justify-content: center;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+	#buddy-context-options .buddy-preview-prompt {
+		min-height: 44px;
+		padding: 10px 12px;
+		border: 1px solid var(--buddy-preview-edge);
+		border-radius: 15px;
+		font-size: 14px;
+		background: transparent;
+		color: var(--buddy-preview-soft);
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+	}
+	#buddy-context-options .buddy-preview-prompt svg {
+		width: 16px;
+		height: 16px;
+	}
+	#buddy-context-options .buddy-preview-input-area {
+		position: relative;
+		margin: 0 12px 12px;
+		flex: none;
+	}
+	#buddy-context-options .buddy-preview-composer {
+		position: relative;
+		padding: 13px 10px 9px;
+		border: 1px solid var(--buddy-preview-edge);
+		border-radius: 25px;
+		background: var(--buddy-preview-glass);
+		box-shadow: 0 2px 6px var(--buddy-preview-shadow);
+	}
+	#buddy-context-options .buddy-preview-composer textarea {
+		width: 100%;
+		display: block;
+		border: 0;
+		background: transparent;
+		resize: none;
+		height: 44px;
+		font-size: 18px;
+		padding: 4px 3px;
+		outline-color: var(--buddy-preview-accent);
+	}
+	#buddy-context-options .buddy-preview-composer textarea::placeholder {
+		color: var(--buddy-preview-soft);
+	}
+	#buddy-context-options .buddy-preview-tools {
+		display: flex;
+		gap: 1px;
+		align-items: center;
+		min-height: 44px;
+	}
+	#buddy-context-options .buddy-preview-tool,
+	#buddy-context-options .buddy-preview-model,
+	#buddy-context-options .buddy-preview-voice {
+		min-width: 36px;
+		height: 44px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		border: 0;
+		padding: 0;
+		background: transparent;
+		color: var(--buddy-preview-soft);
+		border-radius: 18px;
+	}
+	#buddy-context-options .buddy-preview-tool svg {
+		width: 18px;
+		height: 18px;
+	}
+	#buddy-context-options .buddy-preview-integrations {
+		gap: 3px;
+		min-width: 43px;
+		font-size: 14px;
+	}
+	#buddy-context-options .buddy-preview-model {
+		flex: 1;
+		min-width: 80px;
+		gap: 5px;
+		font-size: 15px;
+		white-space: nowrap;
+	}
+	#buddy-context-options .buddy-preview-model svg {
+		width: 14px;
+		height: 14px;
+	}
+	#buddy-context-options .buddy-preview-voice {
+		width: 40px;
+		min-width: 40px;
+		height: 40px;
+		border-radius: 50%;
+		background: var(--buddy-preview-ink);
+		color: var(--buddy-preview-canvas);
+	}
+	#buddy-context-options .buddy-preview-voice svg {
+		width: 22px;
+		height: 22px;
+	}
+	#buddy-context-options .buddy-preview-context {
+		position: absolute;
+		right: 4px;
+		bottom: calc(100% + 6px);
+		z-index: 2;
+		min-width: 44px;
+		min-height: 44px;
+		display: inline-flex;
+		align-items: center;
+		gap: 7px;
+		padding: 0 5px;
+		border: 0;
+		background: transparent;
+		color: var(--buddy-preview-soft);
+		font-size: 15px;
+		border-radius: 16px;
+	}
+	#buddy-context-options .buddy-preview-context > svg {
+		width: 18px;
+		height: 18px;
+	}
+	#buddy-context-options .buddy-preview-context:hover {
+		color: var(--buddy-preview-accent);
+	}
+	#buddy-context-options .buddy-preview-percent,
+	#buddy-context-options .buddy-preview-ring {
+		display: none;
+	}
+
+	#buddy-context-options [data-layout='ring'] .buddy-preview-context {
+		justify-content: center;
+		width: 44px;
+		right: 5px;
+		padding: 0;
+	}
+	#buddy-context-options [data-layout='ring'] .buddy-preview-context-label {
+		display: none;
+	}
+	#buddy-context-options
+		[data-layout='ring'][data-available='true']
+		.buddy-preview-context
+		> svg:first-child {
+		display: none;
+	}
+	#buddy-context-options [data-layout='ring'][data-available='true'] .buddy-preview-ring {
+		display: block;
+		width: 44px;
+		height: 44px;
+		position: absolute;
+		inset: 0;
+	}
+	#buddy-context-options [data-layout='ring'][data-available='true'] .buddy-preview-percent {
+		display: block;
+		font-size: 12px;
+		color: var(--buddy-preview-accent);
+		width: 100%;
+		text-align: center;
+	}
+	#buddy-context-options .buddy-preview-ring circle {
+		fill: none;
+		stroke-width: 2.5;
+	}
+	#buddy-context-options .buddy-preview-ring-track {
+		stroke: var(--buddy-preview-edge);
+	}
+	#buddy-context-options .buddy-preview-ring-value {
+		stroke: var(--buddy-preview-accent);
+		stroke-dasharray: 11 100;
+		stroke-linecap: round;
+		transform: rotate(-90deg);
+		transform-origin: center;
+	}
+	#buddy-context-options [data-layout='inline'] .buddy-preview-context {
+		top: 8px;
+		bottom: auto;
+		right: 7px;
+	}
+	#buddy-context-options [data-layout='inline'] .buddy-preview-context-label {
+		display: none;
+	}
+	#buddy-context-options [data-layout='inline'] .buddy-preview-context > svg {
+		width: 22px;
+		height: 22px;
+	}
+	#buddy-context-options [data-layout='inline'] .buddy-preview-composer textarea {
+		padding-right: 50px;
+	}
+	#buddy-context-options [data-layout='inline'] .buddy-preview-welcome {
+		padding-bottom: 24px;
+	}
+	#buddy-context-options .buddy-preview-details {
+		position: absolute;
+		right: 0;
+		bottom: calc(100% + 58px);
+		z-index: 5;
+		width: 310px;
+		max-width: 100%;
+		padding: 14px 16px 16px;
+		border: 1px solid var(--buddy-preview-edge);
+		border-radius: 22px;
+		background: var(--buddy-preview-panel);
+		box-shadow: 0 10px 30px var(--buddy-preview-shadow);
+	}
+	#buddy-context-options [data-layout='inline'] .buddy-preview-details {
+		bottom: calc(100% + 8px);
+	}
+	#buddy-context-options .buddy-preview-details-heading {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+	#buddy-context-options .buddy-preview-details-heading h3 {
+		font-size: 17px;
+		font-weight: 600;
+		margin: 0;
+	}
+	#buddy-context-options .buddy-preview-dismiss {
+		border: 0;
+		background: transparent;
+		width: 44px;
+		height: 44px;
+		border-radius: 50%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--buddy-preview-soft);
+	}
+	#buddy-context-options .buddy-preview-dismiss svg {
+		width: 18px;
+		height: 18px;
+	}
+	#buddy-context-options .buddy-preview-details-model {
+		margin: -4px 0 14px;
+		font-size: 13px;
+		color: var(--buddy-preview-soft);
+	}
+	#buddy-context-options .buddy-preview-meter {
+		height: 5px;
+		background: var(--buddy-preview-edge);
+		border-radius: 4px;
+		margin-bottom: 17px;
+		overflow: hidden;
+	}
+	#buddy-context-options .buddy-preview-meter > div {
+		height: 100%;
+		width: 11%;
+		background: var(--buddy-preview-accent);
+	}
+	#buddy-context-options .buddy-preview-detail-row {
+		display: flex;
+		justify-content: space-between;
+		gap: 10px;
+		font-size: 14px;
+		margin-top: 9px;
+	}
+	#buddy-context-options .buddy-preview-detail-row > span {
+		color: var(--buddy-preview-soft);
+	}
+	#buddy-context-options .buddy-preview-detail-row strong {
+		font-weight: 500;
+	}
+	#buddy-context-options .buddy-preview-pending {
+		font-size: 14px;
+		color: var(--buddy-preview-soft);
+	}
+	@media (max-width: 370px) {
+		#buddy-context-options .buddy-preview-header-left {
+			left: 7px;
+			gap: 0;
+		}
+		#buddy-context-options .buddy-preview-header-right {
+			right: 5px;
+			gap: 0;
+		}
+		#buddy-context-options .buddy-preview-quiet {
+			width: 36px;
+		}
+		#buddy-context-options .buddy-preview-tools {
+			justify-content: space-between;
+		}
+		#buddy-context-options .buddy-preview-tool {
+			min-width: 30px;
+		}
+		#buddy-context-options .buddy-preview-integrations {
+			display: none;
+		}
+		#buddy-context-options .buddy-preview-model {
+			min-width: 72px;
+		}
+		#buddy-context-options .buddy-preview-welcome {
+			padding-inline: 10px;
+		}
+		#buddy-context-options .buddy-preview-intro {
+			font-size: 15px;
+		}
+		#buddy-context-options .buddy-preview-context {
+			font-size: 14px;
+		}
+	}
+</style>
+<script>
+	(function () {
+		const root = document.getElementById('buddy-context-options');
+		const template = root.querySelector('#buddy-context-phone');
+		const previewState = {
+			keyboardVisible: true,
+			usageAvailable: true,
+			usagePercent: 11
+		};
+		const phones = [];
+
+		function applySavedPreview(saved) {
+			const values = saved?.modelContent;
+			if (values?.preview !== 'Buddy context') return;
+			if (typeof values.keyboardVisible === 'boolean') {
+				previewState.keyboardVisible = values.keyboardVisible;
+			}
+			if (typeof values.usageAvailable === 'boolean') {
+				previewState.usageAvailable = values.usageAvailable;
+			}
+			if (typeof values.usagePercent === 'number' && Number.isFinite(values.usagePercent)) {
+				previewState.usagePercent = Math.max(1, Math.min(95, values.usagePercent));
+			}
+		}
+		function savePreviewState() {
+			if (!window.openai?.setWidgetState) return;
+			window.openai
+				.setWidgetState({
+					modelContent: {
+						preview: 'Buddy context',
+						keyboardVisible: previewState.keyboardVisible,
+						usageAvailable: previewState.usageAvailable,
+						usagePercent: previewState.usagePercent
+					},
+					privateContent: null
+				})
+				.catch(function ignoreUnavailableState() {});
+		}
+		function handlePreviewChange() {
+			renderPreview();
+			savePreviewState();
+		}
+		function handleSavedPreview(event) {
+			const saved = event.detail?.globals?.widgetState;
+			if (!saved) return;
+			applySavedPreview(saved);
+			renderPreview();
+		}
+		applySavedPreview(window.openai?.widgetState);
+		window.addEventListener('openai:set_globals', handleSavedPreview);
+
+		function createPhone(containerId, layout, label) {
+			const container = root.querySelector('#' + containerId);
+			container.appendChild(template.content.cloneNode(true));
+			const phone = container.querySelector('.buddy-preview-app');
+			phone.dataset.layout = layout;
+			phone.setAttribute('aria-label', label);
+			phones.push(phone);
+			const contextButton = phone.querySelector('.buddy-preview-context');
+			const details = phone.querySelector('.buddy-preview-details');
+			const dismissButton = phone.querySelector('.buddy-preview-dismiss');
+			contextButton.setAttribute('aria-label', 'Open context window details');
+
+			function closeDetails() {
+				details.hidden = true;
+				contextButton.setAttribute('aria-expanded', 'false');
+				contextButton.focus({ preventScroll: true });
+			}
+			function toggleDetails() {
+				details.hidden = !details.hidden;
+				contextButton.setAttribute('aria-expanded', String(!details.hidden));
+				if (!details.hidden) {
+					dismissButton.focus({ preventScroll: true });
+				}
+			}
+			function handleEscape(event) {
+				if (event.key === 'Escape' && !details.hidden) {
+					event.preventDefault();
+					closeDetails();
+				}
+			}
+			contextButton.addEventListener('click', toggleDetails);
+			dismissButton.addEventListener('click', closeDetails);
+			phone.addEventListener('keydown', handleEscape);
+		}
+
+		function compactTokens(value) {
+			return (value / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+		}
+		function renderPreview() {
+			const percent = previewState.usagePercent;
+			const usedTokens = Math.round((32000 * percent) / 100);
+			const usedLabel = compactTokens(usedTokens);
+			for (const phone of phones) {
+				phone.dataset.keyboard = String(previewState.keyboardVisible);
+				phone.dataset.available = String(previewState.usageAvailable);
+				const contextLabel = phone.querySelector('.buddy-preview-context-label');
+				if (previewState.usageAvailable) {
+					contextLabel.textContent = 'Context ' + usedLabel + ' / 32K';
+				} else {
+					contextLabel.textContent = 'Context info';
+				}
+				phone.querySelector('.buddy-preview-percent').textContent = percent + '%';
+				phone.querySelector('.buddy-preview-ring-value').style.strokeDasharray = percent + ' 100';
+				const meter = phone.querySelector('.buddy-preview-meter');
+				meter.setAttribute('aria-valuenow', String(percent));
+				meter.firstElementChild.style.width = percent + '%';
+				phone.querySelector('.buddy-preview-used').textContent = usedLabel + ' tokens';
+				phone.querySelector('.buddy-preview-available').textContent =
+					compactTokens(32000 - usedTokens) + ' tokens';
+				meter.hidden = !previewState.usageAvailable;
+				phone.querySelector('.buddy-preview-pending').hidden = previewState.usageAvailable;
+				const detailRows = phone.querySelectorAll('.buddy-preview-detail-row');
+				for (const row of detailRows) {
+					row.hidden = !previewState.usageAvailable;
+				}
+			}
+		}
+		createPhone('buddy-floating-label', 'label', 'Buddy with a floating context label');
+		createPhone('buddy-usage-ring', 'ring', 'Buddy with a floating context usage ring');
+		createPhone(
+			'buddy-composer-shortcut',
+			'inline',
+			'Buddy with context details inside the composer'
+		);
+		renderPreview();
+		if (globalThis.lucide) {
+			lucide.createIcons();
+		}
+		if (globalThis.Tweak) {
+			const previewControls = new Tweak({
+				container: root,
+				onChange: handlePreviewChange
+			});
+			previewControls.addToggle(previewState, 'keyboardVisible', {
+				label: 'Keyboard visible'
+			});
+			previewControls.addToggle(previewState, 'usageAvailable', {
+				label: 'Usage available'
+			});
+			previewControls.addSlider(previewState, 'usagePercent', {
+				label: 'Context used',
+				min: 1,
+				max: 95,
+				step: 1,
+				unit: '%'
+			});
+		}
+	})();
+</script>
