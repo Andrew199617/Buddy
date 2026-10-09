@@ -133,6 +133,17 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(requested_effort({'reasoning': {'effort': 'low'}}), 'low')
         self.assertIsNone(requested_effort({'reasoning_effort': ''}))
 
+    def test_key_tracks_image_order_and_url_identity(self):
+        other_image = 'data:image/png;base64,b3RoZXI='
+        original = [ChatTurn('user', 'Compare these', [PNG_DATA_URL, other_image])]
+        same = [ChatTurn('user', 'Compare these', [PNG_DATA_URL, other_image])]
+        reordered = [ChatTurn('user', 'Compare these', [other_image, PNG_DATA_URL])]
+        self.assertEqual(conversation_key(original), conversation_key(same))
+        self.assertNotEqual(conversation_key(original), conversation_key(reordered))
+        first_url = [ChatTurn('user', 'Look', ['https://example.invalid/first.png'])]
+        edited_url = [ChatTurn('user', 'Look', ['https://example.invalid/edited.png'])]
+        self.assertNotEqual(conversation_key(first_url), conversation_key(edited_url))
+
 
 class ClaudeStreamTests(unittest.TestCase):
     def test_streams_text_thinking_and_tool_activity(self):
@@ -341,15 +352,28 @@ class ClaudeStreamTests(unittest.TestCase):
                 provider = claude_code.ClaudeCodeProvider(Path(directory), Path(directory))
                 conversation = parse_messages(
                     [
-                        {'role': 'user', 'content': 'My name is Ada'},
+                        {
+                            'role': 'user',
+                            'content': [
+                                {'type': 'text', 'text': 'My name is Ada'},
+                                {'type': 'image_url', 'image_url': {'url': PNG_DATA_URL}},
+                            ],
+                        },
                         {'role': 'assistant', 'content': 'Hi Ada'},
-                        {'role': 'user', 'content': 'Who am I?'},
+                        {
+                            'role': 'user',
+                            'content': [
+                                {'type': 'text', 'text': 'Who am I?'},
+                                {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/new.png'}},
+                            ],
+                        },
                     ]
                 )
                 turn = TurnRequest('opus', conversation, ProviderSettings(enable=True), directory)
                 provider._sessions.put(provider._session_key(turn, conversation.history), 'old-session')
-                with patch.object(claude_code, 'ChildProcess', FakeProcess), patch.object(
-                    claude_code, 'find_claude_cli', return_value='claude'
+                with (
+                    patch.object(claude_code, 'ChildProcess', FakeProcess),
+                    patch.object(claude_code, 'find_claude_cli', return_value='claude'),
                 ):
                     events = await collect(provider.run_turn(turn))
                 answered = conversation.history + [conversation.prompt, ChatTurn('assistant', 'You are Ada.')]
@@ -360,6 +384,10 @@ class ClaudeStreamTests(unittest.TestCase):
         self.assertIn('--resume', started[0].args)
         self.assertNotIn('--resume', started[1].args)
         self.assertIn('My name is Ada', started[1].written)
+        fresh_content = json.loads(started[1].written)['message']['content']
+        fresh_images = [block['source'] for block in fresh_content if block['type'] == 'image']
+        self.assertEqual(fresh_images[0]['data'], 'iVBORw0KGgo=')
+        self.assertEqual(fresh_images[1]['url'], 'https://example.invalid/new.png')
         self.assertEqual(stored_session, 'fresh-session')
 
     def test_rate_limit_events_become_usage_windows(self):
@@ -402,9 +430,139 @@ class ClaudeStreamTests(unittest.TestCase):
                 binary = bundles / version / 'abc' / 'claude.exe'
                 binary.parent.mkdir(parents=True)
                 binary.write_text('')
-            with patch.dict(os.environ, {'APPDATA': directory}):
+            with patch.dict(os.environ, {'APPDATA': directory}, clear=True):
                 newest = claude_code._newest_desktop_bundle()
             self.assertIn('2.1.295', newest)
+
+    def test_edited_history_image_starts_fresh_while_matching_history_resumes(self):
+        started = []
+
+        class FakeProcess:
+            def __init__(self, args, cwd, env):
+                started.append(self)
+                self.args = args
+                self.written = ''
+                self._lines = [
+                    json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'Compared.'}]}}),
+                    json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'session_id': 'fresh-id'}),
+                ]
+
+            async def write(self, text):
+                self.written += text
+
+            async def read_line(self):
+                if self._lines:
+                    return self._lines.pop(0)
+                return None
+
+            def stderr_text(self):
+                return ''
+
+            def close_stdin(self):
+                pass
+
+            def kill(self):
+                pass
+
+        async def run():
+            with tempfile.TemporaryDirectory() as directory:
+                provider = claude_code.ClaudeCodeProvider(Path(directory), Path(directory))
+
+                def image_conversation(image):
+                    return parse_messages(
+                        [
+                            {
+                                'role': 'user',
+                                'content': [
+                                    {'type': 'text', 'text': 'Describe it'},
+                                    {'type': 'image_url', 'image_url': {'url': image}},
+                                ],
+                            },
+                            {'role': 'assistant', 'content': 'A tree.'},
+                            {
+                                'role': 'user',
+                                'content': [
+                                    {'type': 'text', 'text': 'Compare this'},
+                                    {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/new.png'}},
+                                ],
+                            },
+                        ]
+                    )
+
+                original = image_conversation(PNG_DATA_URL)
+                edited = image_conversation('data:image/png;base64,b3RoZXI=')
+                original_turn = TurnRequest('opus', original, ProviderSettings(enable=True), directory)
+                edited_turn = TurnRequest('opus', edited, ProviderSettings(enable=True), directory)
+                provider._sessions.put(provider._session_key(original_turn, original.history), 'original-session')
+                with (
+                    patch.object(claude_code, 'ChildProcess', FakeProcess),
+                    patch.object(claude_code, 'find_claude_cli', return_value='claude'),
+                ):
+                    self.assertEqual(await collect(provider.run_turn(edited_turn)), [TextDelta('Compared.')])
+                    self.assertEqual(await collect(provider.run_turn(original_turn)), [TextDelta('Compared.')])
+
+        asyncio.run(run())
+        self.assertNotIn('--resume', started[0].args)
+        fresh_content = json.loads(started[0].written)['message']['content']
+        fresh_images = [block['source'] for block in fresh_content if block['type'] == 'image']
+        self.assertEqual(fresh_images[0]['data'], 'b3RoZXI=')
+        self.assertEqual(fresh_images[1]['url'], 'https://example.invalid/new.png')
+        self.assertEqual(started[1].args[started[1].args.index('--resume') + 1], 'original-session')
+        resumed_content = json.loads(started[1].written)['message']['content']
+        self.assertEqual(resumed_content[0]['text'], 'Compare this')
+        self.assertEqual(len(resumed_content), 2)
+        self.assertEqual(resumed_content[1]['source']['url'], 'https://example.invalid/new.png')
+
+    def test_finds_store_bundle_without_regular_appdata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bundle_root = (
+                Path(directory) / 'Packages' / 'Claude_test' / 'LocalCache' / 'Roaming' / 'Claude' / 'claude-code'
+            )
+            for version in ('2.1.9', '2.1.295', '2.1.30'):
+                binary = bundle_root / version / 'bundle-id' / 'claude.exe'
+                binary.parent.mkdir(parents=True)
+                binary.write_text('')
+            with (
+                patch.dict(os.environ, {'LOCALAPPDATA': directory}, clear=True),
+                patch.object(claude_code.sys, 'platform', 'win32'),
+            ):
+                newest = claude_code._newest_desktop_bundle()
+            self.assertEqual(newest, str(bundle_root / '2.1.295' / 'bundle-id' / 'claude.exe'))
+
+    def test_selects_newest_bundle_across_regular_and_store_installs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            regular_root = Path(directory) / 'regular'
+            local_root = Path(directory) / 'local'
+            regular_binary = regular_root / 'Claude' / 'claude-code' / '2.1.300' / 'bundle-id' / 'claude.exe'
+            store_root = local_root / 'Packages' / 'Claude_test' / 'LocalCache' / 'Roaming' / 'Claude' / 'claude-code'
+            store_binary = store_root / '2.1.295' / 'bundle-id' / 'claude.exe'
+            for binary in (regular_binary, store_binary):
+                binary.parent.mkdir(parents=True)
+                binary.write_text('')
+            # A matching directory is not an installed executable.
+            (store_root / '9.0.0' / 'bundle-id' / 'claude.exe').mkdir(parents=True)
+            with (
+                patch.dict(os.environ, {'APPDATA': str(regular_root), 'LOCALAPPDATA': str(local_root)}, clear=True),
+                patch.object(claude_code.sys, 'platform', 'win32'),
+            ):
+                newest = claude_code._newest_desktop_bundle()
+            self.assertEqual(newest, str(regular_binary))
+
+    def test_cli_discovery_preserves_explicit_and_native_precedence(self):
+        with (
+            patch.object(claude_code.os.path, 'isfile', return_value=True),
+            patch.object(claude_code, '_newest_desktop_bundle', return_value='store/claude.exe') as bundled,
+            patch.object(claude_code.shutil, 'which', return_value='path/claude.exe'),
+        ):
+            self.assertEqual(claude_code.find_claude_cli('configured/claude.exe'), 'configured/claude.exe')
+            self.assertEqual(claude_code.find_claude_cli(), 'path/claude.exe')
+            bundled.assert_not_called()
+        with (
+            patch.object(claude_code.shutil, 'which', return_value='npm/claude.cmd'),
+            patch.object(claude_code.Path, 'is_file', return_value=False),
+            patch.object(claude_code, '_newest_desktop_bundle', return_value='store/claude.exe'),
+        ):
+            self.assertEqual(claude_code.find_claude_cli(), 'store/claude.exe')
 
 
 class CodexTests(unittest.TestCase):
@@ -507,6 +665,20 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(effort('none'), 'low')
         self.assertIsNone(effort('max'))
         self.assertEqual(effort('high', is_task=True), 'low')
+
+    def test_edited_history_image_does_not_reuse_a_live_thread(self):
+        provider = codex.CodexProvider(Path('.'))
+        conversation = parse_messages([{'role': 'user', 'content': 'Compare this'}])
+        turn = TurnRequest('gpt-x', conversation, ProviderSettings(), '.')
+        original_history = [ChatTurn('user', 'Describe it', [PNG_DATA_URL]), ChatTurn('assistant', 'A tree.')]
+        edited_history = [
+            ChatTurn('user', 'Describe it', ['data:image/png;base64,b3RoZXI=']),
+            ChatTurn('assistant', 'A tree.'),
+        ]
+        live = codex.LiveThread('original-thread', generation=1, access='chat', cwd='.', usage_total=None)
+        provider._keep_live_thread(conversation_key(original_history), live)
+        self.assertIsNone(provider._take_live_thread(conversation_key(edited_history), turn, generation=1))
+        self.assertIs(provider._take_live_thread(conversation_key(original_history), turn, generation=1), live)
 
 
 class ProcessTests(unittest.TestCase):

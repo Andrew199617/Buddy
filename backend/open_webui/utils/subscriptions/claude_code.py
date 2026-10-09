@@ -76,11 +76,19 @@ def _desktop_bundle_version(path: Path) -> list[int]:
 
 
 def _newest_desktop_bundle() -> str | None:
-    """The Claude desktop app ships the CLI under %APPDATA%/Claude/claude-code."""
+    """Find the newest CLI shipped by regular or Windows Store Claude installs."""
+    bundles = []
     appdata = os.environ.get('APPDATA')
-    if not appdata:
-        return None
-    bundles = list((Path(appdata) / 'Claude' / 'claude-code').glob('*/*/claude.exe'))
+    if appdata:
+        bundles.extend((Path(appdata) / 'Claude' / 'claude-code').glob('*/*/claude.exe'))
+
+    local_appdata = os.environ.get('LOCALAPPDATA')
+    if sys.platform == 'win32' and local_appdata:
+        packages = Path(local_appdata) / 'Packages'
+        store_pattern = 'Claude_*/LocalCache/Roaming/Claude/claude-code/*/*/claude.exe'
+        bundles.extend(packages.glob(store_pattern))
+
+    bundles = [binary for binary in bundles if binary.is_file()]
     if not bundles:
         return None
     bundles.sort(key=_desktop_bundle_version)

@@ -39,6 +39,9 @@
 	let showSettingsModal = false;
 	let busy = false;
 	let checkTimer: ReturnType<typeof setTimeout> | null = null;
+	let disposed = false;
+	let refreshGeneration = 0;
+	let checkInFlight = false;
 
 	const CHECK_AGAIN_MS = 3000;
 
@@ -98,34 +101,81 @@
 		});
 	};
 
+	const getUsagePercent = (window: SubscriptionUsageWindow): number | null => {
+		if (typeof window.used_percent !== 'number' || !Number.isFinite(window.used_percent)) {
+			return null;
+		}
+		return window.used_percent;
+	};
+
+	const clearCheckTimer = () => {
+		if (checkTimer) {
+			clearTimeout(checkTimer);
+			checkTimer = null;
+		}
+	};
+
+	const refresh = async (fresh = true): Promise<boolean> => {
+		if (disposed) {
+			return false;
+		}
+		clearCheckTimer();
+		const generation = ++refreshGeneration;
+		checkInFlight = true;
+		try {
+			const nextProvider = await getSubscription(localStorage.token, provider.id, fresh);
+			if (disposed || generation !== refreshGeneration) {
+				return false;
+			}
+			provider = nextProvider;
+			return true;
+		} catch (error) {
+			if (disposed || generation !== refreshGeneration) {
+				return false;
+			}
+			throw error;
+		} finally {
+			if (generation === refreshGeneration) {
+				checkInFlight = false;
+				if (!disposed && provider.status?.checking) {
+					scheduleCheck();
+				}
+			}
+		}
+	};
+
 	// The first check starts the CLI and can take a while; ask until it answers.
 	const scheduleCheck = () => {
-		if (checkTimer) {
+		if (disposed || checkTimer || checkInFlight || !provider.status?.checking) {
 			return;
 		}
+		const generation = refreshGeneration;
 		checkTimer = setTimeout(async () => {
 			checkTimer = null;
+			if (disposed || generation !== refreshGeneration) {
+				return;
+			}
 			try {
 				await refresh(false);
 			} catch (error) {
-				toast.error(`${error}`);
+				if (!disposed) {
+					toast.error(`${error}`);
+				}
 			}
 		}, CHECK_AGAIN_MS);
 	};
 
 	$: if (providerStatus.checking) {
 		scheduleCheck();
+	} else {
+		clearCheckTimer();
 	}
 
 	onDestroy(() => {
-		if (checkTimer) {
-			clearTimeout(checkTimer);
-		}
+		disposed = true;
+		refreshGeneration += 1;
+		clearCheckTimer();
 	});
-
-	const refresh = async (fresh = true) => {
-		provider = await getSubscription(localStorage.token, provider.id, fresh);
-	};
 
 	const runAction = async (action: () => Promise<void>) => {
 		busy = true;
@@ -171,8 +221,9 @@
 
 	const handleSignedIn = () =>
 		runAction(async () => {
-			await refresh(true);
-			await onModelsChanged();
+			if (await refresh(true)) {
+				await onModelsChanged();
+			}
 		});
 </script>
 
@@ -247,24 +298,31 @@
 
 	{#if provider.settings.enable && providerStatus.signed_in}
 		{#each providerStatus.usage?.windows ?? [] as window}
+			{@const usedPercent = getUsagePercent(window)}
 			<div class="flex flex-col gap-1 text-[0.6875rem] text-gray-500 dark:text-gray-400">
 				<div class="flex flex-wrap justify-between gap-x-2">
 					<span>{$i18n.t('{{label}} limit', { label: window.label })}</span>
 					<span>
-						{$i18n.t('{{percent}}% used', { percent: window.used_percent ?? 0 })}
+						{#if usedPercent === null}
+							{$i18n.t('Usage unavailable')}
+						{:else}
+							{$i18n.t('{{percent}}% used', { percent: usedPercent })}
+						{/if}
 						{#if window.resets_at}
 							· {getResetText(window)}
 						{/if}
 					</span>
 				</div>
-				<div class="h-1 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-gray-850">
-					<div
-						class="h-full rounded-full {(window.used_percent ?? 0) >= 90
-							? 'bg-amber-500'
-							: 'bg-gray-400 dark:bg-gray-500'}"
-						style="width: {Math.min(100, Math.max(0, window.used_percent ?? 0))}%"
-					></div>
-				</div>
+				{#if usedPercent !== null}
+					<div class="h-1 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-gray-850">
+						<div
+							class="h-full rounded-full {usedPercent >= 90
+								? 'bg-amber-500'
+								: 'bg-gray-400 dark:bg-gray-500'}"
+							style="width: {Math.min(100, Math.max(0, usedPercent))}%"
+						></div>
+					</div>
+				{/if}
 			</div>
 		{/each}
 

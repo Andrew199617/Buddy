@@ -1,3 +1,28 @@
+<script context="module" lang="ts">
+	import { get, writable } from 'svelte/store';
+	import type { SubscriptionProviderId } from '$lib/apis/subscriptions';
+
+	// A pending start can outlive this dialog. Keep a reopened instance from
+	// starting another login before the old request has been cancelled.
+	const pendingProviderActions = writable({ claude: 0, codex: 0 });
+
+	const providerIsBusy = (providerId: SubscriptionProviderId) =>
+		get(pendingProviderActions)[providerId] > 0;
+
+	const beginProviderAction = (providerId: SubscriptionProviderId) => {
+		pendingProviderActions.update((actions) => ({
+			...actions,
+			[providerId]: actions[providerId] + 1
+		}));
+		return () => {
+			pendingProviderActions.update((actions) => ({
+				...actions,
+				[providerId]: actions[providerId] - 1
+			}));
+		};
+	};
+</script>
+
 <script lang="ts">
 	import { getContext, onDestroy } from 'svelte';
 	import { toast } from 'svelte-sonner';
@@ -27,7 +52,10 @@
 	let login: SubscriptionLogin = { state: 'idle' };
 	let code = '';
 	let busy = false;
+	let loginGeneration = 0;
+	let cancellation: Promise<void> | null = null;
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
+	$: busy = $pendingProviderActions[provider.id] > 0;
 
 	const inputClass =
 		'w-full rounded-xl bg-gray-50 px-3 py-2 text-sm outline-hidden dark:bg-gray-850 placeholder:text-gray-300 dark:placeholder:text-gray-700';
@@ -43,7 +71,36 @@
 		}
 	};
 
-	const handleLoginUpdate = (update: SubscriptionLogin) => {
+	const cancelWaitingLogin = (): Promise<void> => {
+		if (cancellation) {
+			return cancellation;
+		}
+		const finishAction = beginProviderAction(provider.id);
+		cancellation = cancelSubscriptionLogin(localStorage.token, provider.id)
+			.then(() => {})
+			.catch(() => {})
+			.finally(() => {
+				finishAction();
+				cancellation = null;
+			});
+		return cancellation;
+	};
+
+	const dismissLogin = () => {
+		loginGeneration += 1;
+		stopPolling();
+		const waiting = login.state === 'waiting';
+		login = { state: 'idle' };
+		code = '';
+		if (waiting) {
+			void cancelWaitingLogin();
+		}
+	};
+
+	const handleLoginUpdate = (update: SubscriptionLogin, generation: number) => {
+		if (generation !== loginGeneration || !show) {
+			return;
+		}
 		login = update;
 		if (login.state === 'success') {
 			stopPolling();
@@ -56,11 +113,14 @@
 	};
 
 	const pollLogin = async () => {
+		const generation = loginGeneration;
 		try {
-			handleLoginUpdate(await getSubscriptionLogin(localStorage.token, provider.id));
+			handleLoginUpdate(await getSubscriptionLogin(localStorage.token, provider.id), generation);
 		} catch (error) {
-			stopPolling();
-			toast.error(`${error}`);
+			if (generation === loginGeneration && show) {
+				stopPolling();
+				toast.error(`${error}`);
+			}
 		}
 	};
 
@@ -70,38 +130,51 @@
 	};
 
 	const startLogin = async (method: 'browser' | 'device') => {
-		busy = true;
+		if (providerIsBusy(provider.id)) {
+			return;
+		}
+		const generation = ++loginGeneration;
+		const finishAction = beginProviderAction(provider.id);
 		code = '';
 		try {
-			login = await startSubscriptionLogin(localStorage.token, provider.id, method);
+			const update = await startSubscriptionLogin(localStorage.token, provider.id, method);
+			if (generation !== loginGeneration || !show) {
+				if (update.state === 'waiting') {
+					await cancelWaitingLogin();
+				}
+				return;
+			}
+			login = update;
 			if (login.state === 'waiting') {
 				startPolling();
 			}
 		} catch (error) {
-			toast.error(`${error}`);
+			if (generation === loginGeneration && show) {
+				toast.error(`${error}`);
+			}
 		} finally {
-			busy = false;
+			finishAction();
 		}
 	};
 
 	const submitCode = async () => {
-		busy = true;
+		if (providerIsBusy(provider.id)) {
+			return;
+		}
+		const generation = loginGeneration;
+		const finishAction = beginProviderAction(provider.id);
 		try {
-			handleLoginUpdate(await submitSubscriptionLoginCode(localStorage.token, provider.id, code));
+			handleLoginUpdate(
+				await submitSubscriptionLoginCode(localStorage.token, provider.id, code),
+				generation
+			);
 		} catch (error) {
-			toast.error(`${error}`);
+			if (generation === loginGeneration && show) {
+				toast.error(`${error}`);
+			}
 		} finally {
-			busy = false;
+			finishAction();
 		}
-	};
-
-	// Runs however the dialog closes: the X button, Escape, or the backdrop.
-	const cancelPendingLogin = () => {
-		stopPolling();
-		if (login.state === 'waiting') {
-			cancelSubscriptionLogin(localStorage.token, provider.id).catch(() => {});
-		}
-		login = { state: 'idle' };
 	};
 
 	const close = () => {
@@ -115,10 +188,10 @@
 	};
 
 	$: if (!show) {
-		cancelPendingLogin();
+		dismissLogin();
 	}
 
-	onDestroy(cancelPendingLogin);
+	onDestroy(dismissLogin);
 </script>
 
 <Modal size="sm" bind:show>
