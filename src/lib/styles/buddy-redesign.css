@@ -311,6 +311,14 @@
 	min-height: 36px;
 }
 
+/* Center expanded touch targets; model selectors retain their label-and-arrow layout. */
+.buddy-chat .buddy-assistant-stack .buttons button,
+.buddy-chat .buddy-composer-tools button:not([id^='model-selector-']) {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+
 .buddy-chat .buddy-composer[data-expanded='true'] {
 	border-radius: 24px;
 }
