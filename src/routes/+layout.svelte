@@ -83,6 +83,7 @@
 	import { applyAppTheme } from '$lib/utils/theme';
 
 	import NotificationToast from '$lib/components/NotificationToast.svelte';
+	import BuddyNotifications from '$lib/components/buddy/BuddyNotifications.svelte';
 	import AppSidebar from '$lib/components/app/AppSidebar.svelte';
 	import SyncStatsModal from '$lib/components/chat/Settings/SyncStatsModal.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
@@ -622,6 +623,7 @@
 					title: data.title,
 					content: timeStr
 				},
+				important: true,
 				duration: 30000,
 				unstyled: true
 			});
@@ -784,6 +786,7 @@
 							content: contentPreview,
 							title: displayTitle
 						},
+						mobilePriority: 'info',
 						duration: 15000,
 						unstyled: true
 					});
@@ -896,6 +899,7 @@
 						content: data?.content,
 						title: `${title}`
 					},
+					mobilePriority: 'info',
 					duration: 15000,
 					unstyled: true
 				});
@@ -1476,6 +1480,8 @@
 {#if $config?.features.enable_community_sharing}
 	<SyncStatsModal bind:show={showSyncStatsModal} eventData={syncStatsEventData} />
 {/if}
+
+<BuddyNotifications />
 
 <Toaster
 	theme={$theme.includes('dark')

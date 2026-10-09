@@ -250,6 +250,31 @@ describe('mobile notification promises', () => {
 });
 
 describe('desktop compatibility', () => {
+	it('keeps a pending promise alive when its loading notice moves to desktop', async () => {
+		let resolveOperation: (value: string) => void = () => {};
+		const operation = new Promise<string>((resolve) => {
+			resolveOperation = resolve;
+		});
+		const factory = vi.fn(() => operation);
+		const id = toast.promise(factory, { loading: 'Saving', success: 'Saved' });
+		resizeToDesktop();
+
+		expect(originalToast).toHaveBeenCalledWith(
+			'Saving',
+			expect.objectContaining({ id: id, type: 'loading', promise: factory })
+		);
+		expect(factory).toHaveBeenCalledTimes(1);
+		resolveOperation('Done');
+		await vi.waitFor(() => {
+			expect(originalToast.success).toHaveBeenCalledWith(
+				'Saved',
+				expect.objectContaining({ id: id })
+			);
+		});
+		expect(get(mobileNotifications)).toEqual([]);
+		expect(factory).toHaveBeenCalledTimes(1);
+	});
+
 	it('delegates desktop calls and promise factories to the original API', () => {
 		viewportQuery.matches = false;
 		const options = { id: 'existing', duration: 9000 };
