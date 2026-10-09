@@ -2730,7 +2730,7 @@
 								</div>
 
 								<div
-									class="buddy-composer-actions self-end flex space-x-1 mr-1 min-w-0 gap-[0.03125rem]"
+									class="buddy-composer-actions self-end flex items-center space-x-1 mr-1 min-w-0 gap-[0.03125rem]"
 								>
 									<div
 										class="buddy-composer-model flex min-w-0 max-w-[10rem] items-center sm:max-w-[13rem]"
@@ -2766,7 +2766,7 @@
 											<Tooltip content={$i18n.t('Stop')}>
 												<button
 													aria-label={$i18n.t('Stop')}
-													class="bg-white hover:bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-white dark:hover:bg-gray-800 transition rounded-full p-[0.3125rem]"
+													class="flex items-center justify-center bg-white hover:bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-white dark:hover:bg-gray-800 transition rounded-full p-[0.3125rem]"
 													on:click={() => {
 														stopResponse();
 													}}
@@ -2793,7 +2793,7 @@
 												<Tooltip content={$i18n.t('Dictate')}>
 													<button
 														id="voice-input-button"
-														class=" text-gray-600 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-200 transition rounded-full p-1.5 self-center mr-0.5"
+														class="flex items-center justify-center text-gray-600 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-200 transition rounded-full p-1.5 self-center mr-0.5"
 														type="button"
 														on:click={async () => {
 															try {
@@ -2834,7 +2834,7 @@
 												<!-- {$i18n.t('Call')} -->
 												<Tooltip content={$i18n.t('Voice mode')}>
 													<button
-														class=" bg-black text-white hover:bg-gray-900 dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full p-[0.3125rem] self-center"
+														class="flex items-center justify-center bg-black text-white hover:bg-gray-900 dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full p-[0.3125rem] self-center"
 														type="button"
 														on:click={async () => {
 															if (selectedModels.length > 1) {
@@ -2901,7 +2901,7 @@
 												>
 													<button
 														id="send-message-button"
-														class="{!(prompt === '' && files.length === 0) || uploadPending
+														class="flex items-center justify-center {!(prompt === '' && files.length === 0) || uploadPending
 															? 'bg-black text-white hover:bg-gray-900 dark:bg-white dark:text-black dark:hover:bg-gray-100 '
 															: 'text-white bg-gray-200 dark:text-gray-900 dark:bg-gray-700 disabled'} transition rounded-full p-[0.3125rem] self-center"
 														type="submit"
