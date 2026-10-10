@@ -79,6 +79,27 @@ def _is_link(value: os.stat_result) -> bool:
     return stat.S_ISLNK(value.st_mode) or bool(getattr(value, 'st_file_attributes', 0) & reparse)
 
 
+def _entry_kind(entry: os.DirEntry) -> str | None:
+    """'directory' or 'file' for a listed entry the API could open, otherwise None.
+
+    Links, junctions and other reparse points, special files and multiply
+    linked files would be refused when opened, so listings leave them out.
+    """
+    value = entry.stat(follow_symlinks=False)
+    if _is_link(value):
+        return None
+    if stat.S_ISDIR(value.st_mode):
+        return 'directory'
+    if not stat.S_ISREG(value.st_mode):
+        return None
+    if sys.platform == 'win32':
+        # DirEntry.stat() reports no link count on Windows.
+        value = os.stat(entry.path, follow_symlinks=False)
+    if value.st_nlink > 1:
+        return None
+    return 'file'
+
+
 def _no_link_ancestors(absolute: Path) -> None:
     current = Path(absolute.anchor)
     for component in absolute.parts[1:]:
@@ -298,7 +319,11 @@ class WorkspaceCapabilities:
             raise
 
     async def _read_in_thread(self, pinned: PinnedPath) -> str:
-        operation = asyncio.create_task(asyncio.to_thread(self._read_text, pinned.descriptor))
+        return await self._in_worker(self._read_text, pinned.descriptor)
+
+    async def _in_worker(self, function, *args):
+        """Run blocking file work off the event loop while the caller keeps its handles open."""
+        operation = asyncio.create_task(asyncio.to_thread(function, *args))
         try:
             return await asyncio.shield(operation)
         except asyncio.CancelledError:
@@ -451,26 +476,29 @@ class WorkspaceCapabilities:
 
     async def _list_directory(self, grant: _Grant, input_path) -> dict:
         pinned, relative = self._pin(grant, input_path)
+        with pinned:
+            entries = await self._in_worker(self._list_entries, pinned, relative)
+        entries.sort(key=lambda entry: (entry['type'], entry['name']))
+        return {'path': relative, 'entries': entries}
+
+    def _list_entries(self, pinned: PinnedPath, relative: str) -> list[dict]:
+        # Listing grants nothing: opening an entry later pins its full path again.
+        # So entries are classified from the pinned directory instead of
+        # re-pinning every ancestor for each one.
         entries = []
-        with pinned, pinned.scandir() as listing:
+        with pinned.scandir() as listing:
             for index, entry in enumerate(listing):
                 if index >= MAX_DIRECTORY_ENTRIES:
                     _fail(413, 'This directory has too many entries.')
                 child_relative = f'{relative}/{entry.name}' if relative else entry.name
                 try:
-                    if entry.is_dir(follow_symlinks=False):
-                        kind = 'directory'
-                    elif entry.is_file(follow_symlinks=False):
-                        kind = 'file'
-                    else:
-                        continue
-                    child_pin, _ = self._pin(grant, child_relative, file=kind == 'file')
-                    with child_pin:
-                        entries.append({'name': entry.name, 'path': child_relative, 'type': kind})
-                except (CapabilityError, PermissionError, FileNotFoundError, NotADirectoryError):
+                    _relative_path(child_relative)
+                    kind = _entry_kind(entry)
+                except (CapabilityError, OSError):
                     continue
-        entries.sort(key=lambda entry: (entry['type'], entry['name']))
-        return {'path': relative, 'entries': entries}
+                if kind is not None:
+                    entries.append({'name': entry.name, 'path': child_relative, 'type': kind})
+        return entries
 
     async def _file(self, request: web.Request, session: _Session) -> dict:
         if request.method == 'GET':

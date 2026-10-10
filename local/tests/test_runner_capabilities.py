@@ -354,6 +354,48 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first, second)
         self.assertEqual(first['path'], str(self.project / 'nested'))
 
+    async def test_directory_listing_runs_off_the_event_loop_without_repinning_entries(self):
+        from unittest.mock import patch
+        from open_webui.utils.subscriptions import workspace_capabilities
+
+        for index in range(20):
+            (self.project / f'file-{index}.txt').write_text('x', encoding='utf-8')
+        await self.start()
+        await self.pair()
+        grant = await self.grant()
+        pinned_paths = []
+        original_init = PinnedPath.__init__
+
+        def counting_init(guard, *args, **kwargs):
+            pinned_paths.append(args)
+            original_init(guard, *args, **kwargs)
+
+        entered = threading.Event()
+        release = threading.Event()
+        original_kind = workspace_capabilities._entry_kind
+
+        def blocked_kind(entry):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError('Listing fixture was not released.')
+            return original_kind(entry)
+
+        with patch.object(PinnedPath, '__init__', counting_init), patch.object(workspace_capabilities, '_entry_kind', blocked_kind):
+            listing = asyncio.create_task(self.request('GET', '/v1/directories', params={'grantId': grant['id'], 'path': ''}))
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 5))
+                # The event loop keeps serving other requests while the listing runs.
+                status, _, _ = await self.request('GET', '/v1/host', token=False)
+                self.assertEqual(status, 200)
+                self.assertFalse(listing.done())
+            finally:
+                release.set()
+            status, body, _ = await listing
+        self.assertEqual(status, 200, body)
+        self.assertEqual(len(body['entries']), 22)
+        # Only the listed directory is pinned, not every entry's ancestor chain.
+        self.assertEqual(len(pinned_paths), 1)
+
     async def test_traversal_windows_drives_unc_and_ambiguous_paths_are_denied(self):
         await self.start()
         await self.pair()
@@ -397,6 +439,9 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
         await self.start()
         await self.pair()
         grant = await self.grant()
+        status, body, _ = await self.request('GET', '/v1/directories', params={'grantId': grant['id'], 'path': ''})
+        self.assertEqual(status, 200)
+        self.assertEqual([entry['name'] for entry in body['entries']], ['nested', 'hello.txt'])
         status, _, _ = await self.request('GET', '/v1/files', params={'grantId': grant['id'], 'path': 'hardlink.txt'})
         self.assertEqual(status, 403)
         status, _, _ = await self.request('PUT', '/v1/files', json={'grantId': grant['id'], 'path': 'hardlink.txt', 'content': 'changed'})
