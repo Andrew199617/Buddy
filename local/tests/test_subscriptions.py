@@ -698,11 +698,15 @@ class StandInConfig:
 
     def __init__(self):
         self.values = {}
+        # A key whose writes fail, to check what a failed save leaves behind.
+        self.failing_key = None
 
     async def get(self, key: str, default=None):
         return self.values.get(key, default)
 
     async def upsert(self, updates: dict) -> None:
+        if self.failing_key in updates:
+            raise RuntimeError(f'Could not save {self.failing_key}')
         self.values.update(updates)
 
 
@@ -773,6 +777,21 @@ class DeleteMachineTests(unittest.TestCase):
             self.assertTrue(settings['enable'])
         self.assertEqual(self.config.values['subscriptions.machines'], [])
         self.assertTrue(runner_connection.closed)
+
+    def test_a_failed_move_keeps_the_machine(self):
+        office_pc = {'id': 'office-pc', 'name': 'Office PC', 'url': 'http://office-pc:8765', 'key': 'test-key'}
+        self.config.values['subscriptions.machines'] = [office_pc]
+        self.config.values['subscriptions.codex'] = {'enable': True, 'machine_id': 'office-pc'}
+        self.config.failing_key = 'subscriptions.codex'
+        runner_connection = StandInRunnerConnection()
+        self.service._remote_machines['office-pc'] = runner_connection
+
+        with self.assertRaises(RuntimeError):
+            asyncio.run(self.service.delete_machine('office-pc'))
+
+        self.assertEqual(self.config.values['subscriptions.machines'], [office_pc])
+        self.assertEqual(self.config.values['subscriptions.codex']['machine_id'], 'office-pc')
+        self.assertFalse(runner_connection.closed)
 
     def test_this_server_cannot_be_removed(self):
         workspace = str(self.data_dir)
