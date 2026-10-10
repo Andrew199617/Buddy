@@ -473,6 +473,30 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.providers['claude'].calls, [])
         self.assertEqual(self.machines['runner-a'].processes, [])
 
+    async def test_chat_waits_for_a_current_status_instead_of_an_expired_plan_status(self):
+        # An hour ago the CLI used a plan. Since then it was switched to an API-billed login.
+        self.service.status_cache._entries['claude'] = self.service._CacheEntry(
+            {'installed': True, 'signed_in': True, 'api_billing': False}, time.monotonic() - 3600
+        )
+
+        async def api_billing_now():
+            return {'installed': True, 'signed_in': True, 'api_billing': True, 'message': 'Fixture API key login'}
+
+        self.providers['claude'].status_hook = api_billing_now
+        result = await self.fixture_chat()
+        self.assertEqual(len(result), 1)
+        self.assertIn('Fixture API key login', result[0]['error'])
+        self.assertEqual(self.providers['claude'].calls, [('status', 'runner-a', 'runner-a')])
+
+        # An expired status that still shows a plan lets the turn run after the check.
+        self.service.status_cache._entries['claude'].expires_at = time.monotonic() - 1
+        self.providers['claude'].status_hook = None
+        self.providers['claude'].calls.clear()
+        self.assertEqual(await self.fixture_chat(), [{'text': 'fixture response'}])
+        self.assertEqual(self.providers['claude'].calls, [
+            ('status', 'runner-a', 'runner-a'), ('run_turn', 'runner-a'),
+        ])
+
     async def test_enabled_legacy_remote_model_get_stays_empty_even_with_old_signed_in_cache(self):
         self.config.values['subscriptions.machines'][0].pop('revision')
         self.config.values['subscriptions.codex']['enable'] = False

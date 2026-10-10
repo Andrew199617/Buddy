@@ -910,7 +910,8 @@ class CachedLoader:
     """Caches one value per provider and serves the old value while refreshing.
 
     Model lists are requested on most page loads, and the CLIs take a few
-    seconds to answer, so only the first load waits for them.
+    seconds to answer, so only the first load waits for them. A caller that
+    must not act on an old value passes ``serve_expired=False`` and waits too.
     """
 
     def __init__(self, ttl_seconds: float, load: Callable[[str], Awaitable[Any]]):
@@ -951,14 +952,14 @@ class CachedLoader:
             self._refreshes[provider_id] = task
         return task
 
-    async def get(self, provider_id: str, fresh: bool = False) -> Any:
+    async def get(self, provider_id: str, fresh: bool = False, serve_expired: bool = True) -> Any:
         generation = self._generations.get(provider_id, 0)
         entry = self._entries.get(provider_id)
         if entry and not fresh and entry.expires_at > time.monotonic():
             return entry.value
 
         task = self._start_refresh(provider_id)
-        if entry and not fresh:
+        if entry and not fresh and serve_expired:
             return entry.value
         try:
             value = await asyncio.wait_for(asyncio.shield(task), FIRST_LOAD_WAIT_SECONDS)
@@ -1282,7 +1283,9 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
                 f'{PROVIDER_LABELS[provider_id]} subscription models are turned off in '
                 'Admin Settings → Connections → Subscriptions.'
             )
-        _require_plan(provider_id, await status_cache.get(provider_id))
+        # A status older than its TTL may predate a switch to API billing on
+        # the machine, so a turn waits for a current one.
+        _require_plan(provider_id, await status_cache.get(provider_id, serve_expired=False))
         async with _provider_lock(provider_id):
             if generation != _provider_generations.get(provider_id, 0):
                 raise SubscriptionError('The provider machine changed; refresh before starting another turn.')
