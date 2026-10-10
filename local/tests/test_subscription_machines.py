@@ -598,6 +598,15 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(public[0], {'id': 'local', 'name': 'This server', 'url': None})
         self.assertEqual(config['host']['key'], 'private-host-key', 'redaction must not mutate saved configuration')
 
+    async def test_malformed_observed_metadata_is_left_out_of_the_machine_list(self):
+        config = self.config.values['subscriptions.machines'][0]
+        config['host'] = 'not-a-host-record'
+        config['capabilities'] = ['files']
+        public = await self.service.describe_machines()
+        remote = next(machine for machine in public if machine['id'] == 'runner-a')
+        self.assertNotIn('host', remote)
+        self.assertNotIn('capabilities', remote)
+
     async def test_save_machine_persists_and_returns_only_whitelisted_observed_metadata(self):
         info = {
             'host': {

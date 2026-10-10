@@ -52,6 +52,9 @@ STATUS_TTL_SECONDS = 60
 MODELS_TTL_SECONDS = 600
 FIRST_LOAD_WAIT_SECONDS = 20
 MACHINES_CONFIG_KEY = 'subscriptions.machines'
+# Key-free metadata a runner reports in /health that is saved and shown.
+HOST_FIELDS = ('id', 'name', 'platform', 'version')
+CAPABILITY_FIELDS = ('directories', 'files', 'workspaces', 'terminals', 'pty', 'providerExecution')
 REVERIFY_MACHINE_MESSAGE = 'Verify the selected machine again in subscription settings before using its provider.'
 SINGLE_WORKER_MESSAGE = 'Subscription provider execution and host changes require one Buddy backend worker.'
 STARTUP_CLEANUP_MESSAGE = (
@@ -435,20 +438,29 @@ def _public_machine(config: dict) -> dict:
         machine['revision'] = config['revision']
     if isinstance(config.get('browser_url'), str):
         machine['browser_url'] = config['browser_url']
-    observed_host = config.get('host')
-    if isinstance(observed_host, dict):
-        machine['host'] = {
-            field: observed_host[field] for field in ('id', 'name', 'platform', 'version')
-            if isinstance(observed_host.get(field), str)
-        }
-    observed_capabilities = config.get('capabilities')
-    if isinstance(observed_capabilities, dict):
-        machine['capabilities'] = {
-            field: observed_capabilities[field]
-            for field in ('directories', 'files', 'workspaces', 'terminals', 'pty', 'providerExecution')
-            if isinstance(observed_capabilities.get(field), bool)
-        }
+    observed_host = _observed_host(config)
+    if observed_host is not None:
+        machine['host'] = observed_host
+    observed_capabilities = _observed_capabilities(config)
+    if observed_capabilities is not None:
+        machine['capabilities'] = observed_capabilities
     return machine
+
+
+def _observed_host(info: dict) -> dict | None:
+    """The host identity fields a runner reported, or None when it reported none."""
+    host = info.get('host')
+    if not isinstance(host, dict):
+        return None
+    return {field: host[field] for field in HOST_FIELDS if isinstance(host.get(field), str)}
+
+
+def _observed_capabilities(info: dict) -> dict | None:
+    """The capability flags a runner reported, or None when it reported none."""
+    capabilities = info.get('capabilities')
+    if not isinstance(capabilities, dict):
+        return None
+    return {field: capabilities[field] for field in CAPABILITY_FIELDS if isinstance(capabilities.get(field), bool)}
 
 
 def validate_browser_url(value: str | None) -> str | None:
@@ -557,16 +569,16 @@ async def _save_machine(
     if browser_url_supplied:
         saved['browser_url'] = browser_url
     # Only key-free, observed metadata reaches the UI. Paths in health are not grants.
-    observed_host = info.get('host')
-    if isinstance(observed_host, dict):
-        saved['host'] = {field: observed_host[field] for field in ('id', 'name', 'platform', 'version') if isinstance(observed_host.get(field), str)}
-    else:
+    observed_host = _observed_host(info)
+    if observed_host is None:
         saved.pop('host', None)
-    observed_capabilities = info.get('capabilities')
-    if isinstance(observed_capabilities, dict):
-        saved['capabilities'] = {field: observed_capabilities[field] for field in ('directories', 'files', 'workspaces', 'terminals', 'pty', 'providerExecution') if isinstance(observed_capabilities.get(field), bool)}
     else:
+        saved['host'] = observed_host
+    observed_capabilities = _observed_capabilities(info)
+    if observed_capabilities is None:
         saved.pop('capabilities', None)
+    else:
+        saved['capabilities'] = observed_capabilities
     updates = {MACHINES_CONFIG_KEY: configs}
     host_changed = bool(existing) and (
         previous_endpoint != url or previous_key != key
@@ -579,10 +591,7 @@ async def _save_machine(
         for provider_id in PROVIDERS:
             settings = await get_settings(provider_id)
             if settings.machine_id == saved['id']:
-                settings.enable = False
-                settings.access = ACCESS_CHAT
-                settings.workspace = ''
-                settings.cli_path = ''
+                _forget_machine_authority(settings)
                 updates[_config_key(provider_id)] = asdict(settings)
                 affected.append(provider_id)
     await Config.upsert(updates)
@@ -613,10 +622,7 @@ async def _delete_machine(machine_id: str) -> None:
     for provider_id in PROVIDERS:
         settings = await get_settings(provider_id)
         if settings.machine_id == machine_id:
-            settings.enable = False
-            settings.access = ACCESS_CHAT
-            settings.workspace = ''
-            settings.cli_path = ''
+            _forget_machine_authority(settings)
             # Keep the missing ID so execution cannot silently move to another host.
             updates[_config_key(provider_id)] = asdict(settings)
             affected.append(provider_id)
@@ -648,6 +654,14 @@ async def get_settings(provider_id: str) -> ProviderSettings:
         cli_path=str(stored.get('cli_path') or '').strip(),
         machine_id=str(stored.get('machine_id') or LOCAL_MACHINE_ID),
     )
+
+
+def _forget_machine_authority(settings: ProviderSettings) -> None:
+    """Turn the provider off and drop the access and paths approved on its machine."""
+    settings.enable = False
+    settings.access = ACCESS_CHAT
+    settings.workspace = ''
+    settings.cli_path = ''
 
 
 async def save_settings(
@@ -694,10 +708,7 @@ async def _save_settings(
     if settings.machine_id != previous.machine_id:
         # Paths and access belong to the old machine. A separate save is required
         # to enable a provider or approve access on the newly selected machine.
-        settings.enable = False
-        settings.access = ACCESS_CHAT
-        settings.workspace = ''
-        settings.cli_path = ''
+        _forget_machine_authority(settings)
     settings.workspace = settings.workspace.strip()
     settings.cli_path = settings.cli_path.strip()
     if settings.access not in ACCESS_LEVELS:
