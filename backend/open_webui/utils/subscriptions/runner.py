@@ -50,6 +50,7 @@ DEFAULT_PORT = 8765
 DEFAULT_STATE_DIR = Path.home() / '.buddy-runner'
 MAX_PENDING_STDIN_BYTES = 32 * 1024 * 1024
 MAX_PENDING_STDIN_ITEMS = 128
+MAX_WEBSOCKET_MESSAGE_BYTES = 32 * 1024 * 1024
 
 
 def _json_error(status: int, message: str) -> web.Response:
@@ -180,7 +181,7 @@ class Runner:
             return _json_error(503, 'The Runner is shutting down.')
         if len(self.command_requests) + len(self.processes) >= 16:
             return _json_error(429, 'The Runner process limit was reached.')
-        websocket = web.WebSocketResponse(heartbeat=30, max_msg_size=32 * 1024 * 1024)
+        websocket = web.WebSocketResponse(heartbeat=30, max_msg_size=MAX_WEBSOCKET_MESSAGE_BYTES)
         await websocket.prepare(request)
         self.websockets.add(websocket)
         process = None

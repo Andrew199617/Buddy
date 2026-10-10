@@ -2,6 +2,7 @@
 
 import asyncio
 import ctypes
+import hashlib
 import json
 import os
 import sys
@@ -717,6 +718,55 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
         await process.close()
         await self.assert_registry_empty(host)
         self.assertFalse(host.stdin_workers)
+
+    async def test_stdin_larger_than_one_runner_message_arrives_unchanged(self):
+        remote, host = await self.real_remote()
+        fixture = (
+            'import hashlib,sys; data=sys.stdin.buffer.read(); '
+            'print(len(data), hashlib.sha256(data).hexdigest(), flush=True)'
+        )
+        # Escaped JSON for this text is several times the Runner's patched limit.
+        text = ('café \U0001f600 line\n' * 20000) + 'end'
+        encoded = text.encode('utf-8')
+        with patch.object(runner, 'MAX_WEBSOCKET_MESSAGE_BYTES', 64 * 1024), patch.object(
+            machines, 'MAX_STDIN_MESSAGE_CHARS', 4096
+        ):
+            process = await remote.start_process([sys.executable, '-c', fixture], str(self.root))
+            await asyncio.wait_for(process.write(text), 10)
+            process.close_stdin()
+            reported = await asyncio.wait_for(process.read_line(), 10)
+        self.assertEqual(reported, f'{len(encoded)} {hashlib.sha256(encoded).hexdigest()}')
+        self.assertEqual(await process.wait(10), 0)
+        await process.close()
+        self.assertTrue(process.cleanup_confirmed)
+        await self.assert_registry_empty(host)
+
+    async def test_concurrent_stdin_writes_and_close_keep_each_write_whole(self):
+        received = []
+        finished = asyncio.Event()
+
+        async def exchange(socket):
+            async for message in socket:
+                command = json.loads(message.data)
+                if command['type'] == 'close_stdin':
+                    break
+                received.append(command['data'])
+            finished.set()
+            await socket.send_json({'type': 'exit', 'code': 0, 'stderr': ''})
+            await socket.close()
+
+        remote = await self.fake_remote(exchange)
+        process = await remote.start_process(['synthetic-fixture'], str(self.root))
+        first, second = 'a' * 50, 'b' * 50
+        with patch.object(machines, 'MAX_STDIN_MESSAGE_CHARS', 8):
+            writes = [asyncio.create_task(process.write(first)), asyncio.create_task(process.write(second))]
+            process.close_stdin()
+            await asyncio.gather(*writes)
+            await asyncio.wait_for(finished.wait(), 2)
+        self.assertTrue(all(len(piece) <= 8 for piece in received))
+        self.assertIn(''.join(received), (first + second, second + first))
+        self.assertEqual(await process.wait(2), 0)
+        await process.close()
 
     async def test_runner_pending_stdin_limits_report_failed_ack_after_cleanup(self):
         original_report = runner.Runner._report_process_failure

@@ -46,6 +46,9 @@ MAX_WEBSOCKET_MESSAGE_BYTES = 32 * 1024 * 1024
 # 100 lines a second from a streaming CLI; this covers a few minutes of that.
 MAX_REMOTE_STDOUT_BYTES = 16 * 1024 * 1024
 MAX_REMOTE_STDOUT_CHUNKS = 16384
+# The Runner drops a connection whose message exceeds 32 MiB. JSON escapes a
+# character into at most 12 bytes, so this many characters stay under 12 MiB.
+MAX_STDIN_MESSAGE_CHARS = 1024 * 1024
 
 
 class StartupCleanupUnconfirmedError(SubscriptionError):
@@ -189,6 +192,8 @@ class RemoteProcess(StreamedOutput):
         self._eof_posted = False
         self._close_task: asyncio.Task | None = None
         self._disposal_started = False
+        # Keeps each write's pieces together, as one local pipe write would.
+        self._write_lock = asyncio.Lock()
         self._receiver = asyncio.create_task(self._receive())
 
     @property
@@ -277,13 +282,21 @@ class RemoteProcess(StreamedOutput):
     def stderr_text(self) -> str:
         return self._stderr
 
+    def _closed_error(self) -> ProcessClosedError:
+        return ProcessClosedError(f'{os.path.basename(self.args[0])} is no longer running')
+
     async def write(self, text: str) -> None:
-        if self._websocket.closed or self._exited.is_set():
-            raise ProcessClosedError(f'{os.path.basename(self.args[0])} is no longer running')
-        try:
-            await self._websocket.send_json({'type': 'stdin', 'data': text})
-        except (aiohttp.ClientError, ConnectionResetError) as error:
-            raise ProcessClosedError(f'{os.path.basename(self.args[0])} is no longer running') from error
+        # Large input, such as a history with images, goes in bounded pieces.
+        # The Runner writes them in order, so the CLI reads the same bytes.
+        async with self._write_lock:
+            if self._websocket.closed or self._exited.is_set():
+                raise self._closed_error()
+            for start in range(0, len(text), MAX_STDIN_MESSAGE_CHARS):
+                piece = text[start:start + MAX_STDIN_MESSAGE_CHARS]
+                try:
+                    await self._websocket.send_json({'type': 'stdin', 'data': piece})
+                except (aiohttp.ClientError, ConnectionResetError) as error:
+                    raise self._closed_error() from error
 
     async def _send_quietly(self, message: dict) -> None:
         try:
@@ -293,7 +306,12 @@ class RemoteProcess(StreamedOutput):
             pass
 
     def close_stdin(self) -> None:
-        asyncio.get_running_loop().create_task(self._send_quietly({'type': 'close_stdin'}))
+        asyncio.get_running_loop().create_task(self._close_stdin_after_writes())
+
+    async def _close_stdin_after_writes(self) -> None:
+        # Never end stdin between the pieces of a write in progress.
+        async with self._write_lock:
+            await self._send_quietly({'type': 'close_stdin'})
 
     async def finish_output(self, timeout: float) -> None:
         try:
