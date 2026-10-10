@@ -50,15 +50,17 @@
 
 	const POLL_INTERVAL_MS = 2000;
 
+	type LoginOwner = {
+		providerId: SubscriptionProviderId;
+		machineId: string;
+		machineRevision?: string;
+	};
+
 	let login: SubscriptionLogin = { state: 'idle' };
 	let code = '';
 	let busy = false;
 	let loginGeneration = 0;
-	let loginOwner: {
-		providerId: SubscriptionProviderId;
-		machineId: string;
-		machineRevision?: string;
-	} | null = null;
+	let loginOwner: LoginOwner | null = null;
 	let disposed = false;
 	let cancellation: Promise<void> | null = null;
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -75,6 +77,21 @@
 		if (pollTimer) {
 			clearInterval(pollTimer);
 			pollTimer = null;
+		}
+	};
+
+	// A sign-in belongs to the computer that was selected when it started.
+	const ownsSelectedMachine = (owner: LoginOwner, selected: SubscriptionProvider) =>
+		owner.machineId === selected.settings.machine_id &&
+		owner.machineRevision === selected.machine?.revision;
+
+	// True while this dialog still shows the attempt that sent a request.
+	const isCurrentAttempt = (owner: LoginOwner, generation: number) =>
+		!disposed && show && generation === loginGeneration && ownsSelectedMachine(owner, provider);
+
+	const reportIfCurrent = (error: unknown, owner: LoginOwner, generation: number) => {
+		if (isCurrentAttempt(owner, generation)) {
+			toast.error(`${error}`);
 		}
 	};
 
@@ -113,14 +130,7 @@
 	};
 
 	const handleLoginUpdate = (update: SubscriptionLogin, generation: number) => {
-		if (
-			disposed ||
-			generation !== loginGeneration ||
-			!show ||
-			!loginOwner ||
-			loginOwner.machineId !== provider.settings.machine_id ||
-			loginOwner.machineRevision !== provider.machine?.revision
-		) {
+		if (!loginOwner || !isCurrentAttempt(loginOwner, generation)) {
 			return;
 		}
 		login = update;
@@ -151,13 +161,7 @@
 				generation
 			);
 		} catch (error) {
-			if (
-				!disposed &&
-				generation === loginGeneration &&
-				show &&
-				owner.machineId === provider.settings.machine_id &&
-				owner.machineRevision === provider.machine?.revision
-			) {
+			if (isCurrentAttempt(owner, generation)) {
 				loginGeneration += 1;
 				stopPolling();
 				toast.error(`${error}`);
@@ -191,13 +195,7 @@
 				owner.machineId,
 				owner.machineRevision
 			);
-			if (
-				disposed ||
-				generation !== loginGeneration ||
-				!show ||
-				owner.machineId !== provider.settings.machine_id ||
-				owner.machineRevision !== provider.machine?.revision
-			) {
+			if (!isCurrentAttempt(owner, generation)) {
 				if (update.state === 'waiting') {
 					await cancelWaitingLogin(owner);
 				}
@@ -208,15 +206,7 @@
 				startPolling();
 			}
 		} catch (error) {
-			if (
-				!disposed &&
-				generation === loginGeneration &&
-				show &&
-				owner.machineId === provider.settings.machine_id &&
-				owner.machineRevision === provider.machine?.revision
-			) {
-				toast.error(`${error}`);
-			}
+			reportIfCurrent(error, owner, generation);
 		} finally {
 			finishAction();
 		}
@@ -224,17 +214,10 @@
 
 	const submitCode = async () => {
 		const owner = loginOwner;
-		if (
-			disposed ||
-			!show ||
-			!owner ||
-			owner.machineId !== provider.settings.machine_id ||
-			owner.machineRevision !== provider.machine?.revision ||
-			providerIsBusy(provider.id)
-		) {
+		const generation = loginGeneration;
+		if (!owner || !isCurrentAttempt(owner, generation) || providerIsBusy(provider.id)) {
 			return;
 		}
-		const generation = loginGeneration;
 		const finishAction = beginProviderAction(provider.id);
 		try {
 			handleLoginUpdate(
@@ -248,15 +231,7 @@
 				generation
 			);
 		} catch (error) {
-			if (
-				!disposed &&
-				generation === loginGeneration &&
-				show &&
-				owner.machineId === provider.settings.machine_id &&
-				owner.machineRevision === provider.machine?.revision
-			) {
-				toast.error(`${error}`);
-			}
+			reportIfCurrent(error, owner, generation);
 		} finally {
 			finishAction();
 		}
@@ -275,11 +250,7 @@
 	$: if (!show) {
 		dismissLogin();
 	}
-	$: if (
-		loginOwner &&
-		(loginOwner.machineId !== provider.settings.machine_id ||
-			loginOwner.machineRevision !== provider.machine?.revision)
-	) {
+	$: if (loginOwner && !ownsSelectedMachine(loginOwner, provider)) {
 		show = false;
 		dismissLogin();
 	}
