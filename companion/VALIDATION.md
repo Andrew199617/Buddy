@@ -1,10 +1,11 @@
 # Canonical Buddy Runner validation
 
-The consolidation is based on Claude PR #2 at
-`50a3d32fde17f08a34907f43f86761d2689710aa`, refreshed immediately before final
-validation. Backend PR #3 preserves its original history by merging that base;
-it changes no `src` files relative to the base. PR #4 owns the combined browser
-UI and browser/mobile validation. Neither checkout writes Claude's shared ref.
+The current stack includes the verified rewritten Claude PR #2 base
+`474eef9575c42fc872438aca43a0847940c3b2b8` through an ordinary merge. It changes
+no `src` files relative to that base. The earlier
+`50a3d32fde17f08a34907f43f86761d2689710aa` history and validation records are
+preserved below. PR #4 owns the combined UI and browser/mobile validation.
+Neither checkout writes Claude's shared ref.
 
 ## Consolidation validation at cb26b4add
 
@@ -104,7 +105,7 @@ do not validate the current Runner implementation or a later combined build.
 See [the guide](README.md) for reproducible isolated test commands and the
 operator-only pairing refresh that preserves running provider processes.
 
-## Review follow-up
+## Review follow-up at 38a27f65
 
 The fresh PR review identified two process lifecycle defects: bounded-output
 failure could close the stream without confirming verified native cleanup, and
@@ -153,3 +154,43 @@ frontend fixes, and is running changed-runtime browser validation separately.
 The earlier 88-provider/30-Runner browser record above belongs to `cb26b4add`;
 it does not validate this follow-up. No new frontend build or typecheck pass is
 claimed for the backend-only corrections.
+
+## Rewritten Claude base reconciliation
+
+The actual remote Claude branch was verified at `474eef9575c42fc872438aca43a0847940c3b2b8`
+before integration. Its merge base with the earlier Claude history is `f48d6809`,
+and its tree differs from `50a3d32f` in 14 paths. Ordinary merge
+`b5f06012edfac5c77cd17877f74567af4aba1046` preserves both the reviewed PR #3
+head `38a27f65` and the new Claude head. A local recovery branch retains `38a27f65`.
+No force push, Claude-ref write or live runtime change is needed.
+
+The new upstream Codex thread cleanup, hooks tests, configuration, comments and
+UI import ordering are preserved. PR #3's Runner and permission code remains
+byte-identical to `38a27f65`. Deletion continues to disable affected providers,
+clear access and paths, retain the removed machine ID and require explicit
+reselection; it does not inherit upstream's automatic fallback to This server.
+Incoming deletion fixtures now verify that policy and atomic failure behavior.
+Discovery fixtures remain hermetic, and all previous image/discovery regressions
+and incoming test meanings are retained without duplicate cases.
+
+Final Python **3.11.16** validation against the reconciled new base:
+**244 tests, 240 passed, 4 POSIX-only skips, zero failures**, all seven suites
+exit 0. All 23 production/test raw SHA256 hashes match before and after the run.
+
+| Suite | Reconciled result |
+| --- | --- |
+| Offline subscriptions and CLI discovery | 47 passed, 3.586s |
+| Machine permissions and metadata | 20 passed, 1.208s |
+| Provider host transitions and recovery | 66 passed, 5.027s |
+| Native containment and temporary-file ownership | 29 run: 27 passed, 2 POSIX skips; 29.323s |
+| Remote cleanup and tracked startup integration | 25 passed, 15.847s |
+| Workspace pairing, grants, files and terminal races | 45 run: 43 passed, 2 POSIX skips; 27.973s |
+| Runner API boundaries and shutdown lifecycle | 12 passed, 4.978s |
+
+Evidence is `runner-claude-reconcile-validation.json`, its seven suite logs and
+`runner-claude-reconcile-final.json`. The final manifest verifies current-base
+ancestry, all 20 patch paths, zero `src` differences, unchanged Runner guards
+and exact preservation of incoming base paths outside intentional resolutions.
+PR #4 must reconcile its own UI/unread work with this base and validate the
+combined build. Earlier build/browser records remain historical; no new build,
+typecheck or changed-base browser pass is claimed by this backend validation.
