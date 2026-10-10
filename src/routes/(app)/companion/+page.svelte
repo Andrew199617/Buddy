@@ -314,7 +314,14 @@
 			notice = 'Paired for this page session. Closing or disconnecting clears the credential.';
 		} catch (cause) {
 			reportError(cause, generation);
-			if (generation === connectionGeneration && candidate === client) resetConnection();
+			if (generation === connectionGeneration && candidate === client) {
+				resetConnection();
+			} else if (generation === connectionGeneration && keepsInspectedHost(cause)) {
+				// Only the code needs fixing, so keep the inspected computer and the typed code.
+				host = inspectedHost;
+				hostEndpoint = inspectedEndpoint;
+				pairCode = code;
+			}
 		} finally {
 			if (candidate) {
 				pendingClients.delete(candidate);
@@ -322,6 +329,11 @@
 			}
 			if (!disposed && generation === connectionGeneration) connectionBusy = false;
 		}
+	}
+
+	/** A rejected, expired or rate-limited code says nothing about the computer's identity. */
+	function keepsInspectedHost(cause: unknown): boolean {
+		return cause instanceof CompanionError && !cause.hostChanged && cause.status !== 401;
 	}
 
 	function isUsableGrant(grant: CompanionGrant): boolean {
@@ -902,12 +914,15 @@
 				<div class="field-row">
 					<input
 						id="companion-code"
-						type="password"
+						class="pairing-code"
+						type="text"
 						bind:value={pairCode}
-						autocomplete="off"
-						autocapitalize="none"
+						autocomplete="one-time-code"
+						autocapitalize="characters"
+						autocorrect="off"
 						spellcheck="false"
-						placeholder="Enter the code shown by Buddy Runner"
+						placeholder="XXXX-XXXX-XXXX-XXXX-XXXX"
+						aria-describedby="companion-code-hint"
 					/>
 					<button
 						type="submit"
@@ -916,6 +931,11 @@
 						>{connectionBusy ? 'Connecting…' : 'Pair host'}</button
 					>
 				</div>
+				<p id="companion-code-hint" class="muted hint">
+					Five groups of four letters and digits, shown by Buddy Runner on that computer. Case,
+					spaces and dashes do not matter. A wrong code keeps this computer selected, so you can
+					correct it and try again.
+				</p>
 			</form>
 			<p class="muted hint">
 				Pairing uses a short-lived project credential held in memory. Buddy account tokens and
@@ -1359,6 +1379,11 @@
 	}
 	.pair-form {
 		margin-top: 20px;
+	}
+	.pairing-code {
+		font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+		font-size: 16px;
+		letter-spacing: 0.06em;
 	}
 	.host-identity {
 		display: flex;

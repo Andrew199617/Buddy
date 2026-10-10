@@ -28,6 +28,7 @@ from open_webui.utils.subscriptions.workspace_capabilities import (  # noqa: E40
     WorkspaceCapabilities,
     _Session,
     _digest,
+    _normalize_pairing_code,
 )
 from open_webui.utils.subscriptions.pinned_paths import PinnedPath, PinnedPathError  # noqa: E402
 from open_webui.utils.subscriptions.process import ProcessClosedError  # noqa: E402
@@ -240,6 +241,23 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status, 403)
         status, _, _ = await self.request('POST', '/v1/pair', token=False, json={'code': self.host.pairing_code})
         self.assertEqual(status, 403)
+
+    async def test_pairing_code_is_grouped_and_forgiving_to_type(self):
+        await self.start()
+        symbol = '[0-9ABCDEFGHJKMNPQRSTVWXYZ]'
+        self.assertRegex(self.host.pairing_code, rf'^{symbol}{{4}}(-{symbol}{{4}}){{4}}$')
+        self.assertEqual(_normalize_pairing_code(' ab0o-1il ZZ '), 'AB00111ZZ')
+        # Typed on a phone: lowercase, spaces for dashes, and O for zero.
+        typed = self.host.pairing_code.lower().replace('-', ' ').replace('0', 'o')
+        status, body, _ = await self.request('POST', '/v1/pair', token=False, json={'code': typed})
+        self.assertEqual(status, 200, body)
+        # The code is still single use.
+        status, _, _ = await self.request('POST', '/v1/pair', token=False, json={'code': self.host.pairing_code})
+        self.assertEqual(status, 403)
+        await self.start()
+        one_symbol_wrong = self.host.pairing_code[:-1] + ('0' if self.host.pairing_code[-1] != '0' else '1')
+        status, body, _ = await self.request('POST', '/v1/pair', token=False, json={'code': one_symbol_wrong})
+        self.assertEqual((status, body['error']), (403, 'Invalid pairing code.'))
 
     async def test_simultaneous_pairing_consumes_code_once(self):
         await self.start()

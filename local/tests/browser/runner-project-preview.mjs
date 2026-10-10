@@ -968,6 +968,35 @@ async function fileConflict(session, fixture, profile) {
 	await checkLayout(session);
 }
 
+async function wrongCodeRetry(session, fixture) {
+	const { page } = session;
+	await page.locator('#runner-computer').selectOption('fixture-pc');
+	await page.getByRole('button', { name: 'Inspect host', exact: true }).click();
+	await page.getByText('Host ID: ' + fixture.host.id, { exact: true }).waitFor();
+	const codeField = page.locator('#companion-code');
+	assert.equal(await codeField.getAttribute('type'), 'text', 'The code stays visible while typing');
+	const lastSymbol = fixture.code.at(-1) === '0' ? '1' : '0';
+	const mistyped = fixture.code.slice(0, -1) + lastSymbol;
+	await codeField.fill(mistyped);
+	await page.getByRole('button', { name: 'Pair host', exact: true }).click();
+	await page.getByRole('alert').filter({ hasText: 'Invalid pairing code.' }).waitFor();
+	assert.equal(
+		await page.getByText('Host ID: ' + fixture.host.id, { exact: true }).count(),
+		1,
+		'A wrong code keeps the inspected computer'
+	);
+	assert.equal(await codeField.inputValue(), mistyped, 'The typed code stays for correction');
+	await checkLayout(session);
+	// Typed on a phone: lowercase with spaces instead of dashes.
+	await codeField.fill(fixture.code.toLowerCase().replaceAll('-', ' '));
+	await page.getByRole('button', { name: 'Pair host', exact: true }).click();
+	await page.locator('#companion-grant').waitFor();
+	const authorization = sessionAuthorization(session.hostRequests);
+	await page.getByRole('button', { name: 'Disconnect and revoke', exact: true }).click();
+	await verifyRevoked(session, fixture, authorization);
+	await checkLayout(session);
+}
+
 async function crlfSave(session, fixture) {
 	const { page } = session;
 	const scriptPath = resolve(fixture.directory, 'project/start.cmd');
@@ -1337,7 +1366,8 @@ try {
 			'delayed-command-admission-fast',
 			'transient-poll',
 			'file-conflict',
-			'crlf-save'
+			'crlf-save',
+			'wrong-code-retry'
 		]) {
 			let fixture = null;
 			let session = null;
@@ -1571,6 +1601,7 @@ try {
 				if (scenario === 'transient-poll') await transientPoll(session, fixture);
 				if (scenario === 'file-conflict') await fileConflict(session, fixture, profile);
 				if (scenario === 'crlf-save') await crlfSave(session, fixture);
+				if (scenario === 'wrong-code-retry') await wrongCodeRetry(session, fixture);
 				results.push({
 					profile: profile.name,
 					scenario,

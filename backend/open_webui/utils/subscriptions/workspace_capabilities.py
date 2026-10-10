@@ -37,6 +37,11 @@ MAX_TERMINALS = 8
 MAX_TERMINAL_HISTORY = 64
 MAX_SESSIONS = 64
 MAX_DIRECTORY_ENTRIES = 5000
+# Crockford base32 leaves out I, L, O and U, so a code copied by eye or typed on
+# a phone is unambiguous. Five groups of four symbols carry 100 random bits.
+PAIRING_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+PAIRING_GROUPS = 5
+PAIRING_GROUP_LENGTH = 4
 CLEANUP_UNCONFIRMED = 'Command cleanup could not be confirmed. Stop the Runner on the host.'
 log = logging.getLogger(__name__)
 
@@ -78,6 +83,20 @@ def _duration(value: float, name: str) -> float:
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+
+def _new_pairing_code() -> str:
+    """A one-use code such as 7K3M-Q9TD-2XHA-PW4N-B8RE."""
+    groups = []
+    for _ in range(PAIRING_GROUPS):
+        groups.append(''.join(secrets.choice(PAIRING_ALPHABET) for _ in range(PAIRING_GROUP_LENGTH)))
+    return '-'.join(groups)
+
+
+def _normalize_pairing_code(value: str) -> str:
+    """Ignore case, spaces and dashes, and read O, I and L as the digits they resemble."""
+    compact = re.sub(r'[\s-]', '', value).upper()
+    return compact.translate(str.maketrans('OIL', '011'))
 
 
 def _content_version(text: str) -> str:
@@ -511,7 +530,9 @@ class WorkspaceCapabilities:
         if self._pairing_attempts > 8:
             _fail(403, 'Pairing is unavailable. Ask the host operator for a fresh code.')
         code = body.get('code')
-        if not isinstance(code, str) or len(code) > 100 or not hmac.compare_digest(_digest(code), self._pairing_digest):
+        if not isinstance(code, str) or len(code) > 100:
+            _fail(403, 'Invalid pairing code.')
+        if not hmac.compare_digest(_digest(_normalize_pairing_code(code)), self._pairing_digest):
             _fail(403, 'Invalid pairing code.')
         if self._pairing_used or self._closing or _now_ms() >= self._pairing_expires_at:
             _fail(403, 'Pairing is unavailable. Ask the host operator for a fresh code.')
@@ -527,8 +548,8 @@ class WorkspaceCapabilities:
         """Host-only refresh; current sessions and execution remain unchanged."""
         if self._closing:
             _fail(503, 'The execution host is shutting down.')
-        self.pairing_code = secrets.token_urlsafe(18)
-        self._pairing_digest = _digest(self.pairing_code)
+        self.pairing_code = _new_pairing_code()
+        self._pairing_digest = _digest(_normalize_pairing_code(self.pairing_code))
         self._pairing_expires_at = _now_ms() + self.pairing_ttl_ms
         self._pairing_attempts = 0
         self._pairing_used = False

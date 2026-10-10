@@ -43,7 +43,10 @@ permits non-browser workspace clients; it is off by default. Non-loopback binds
 are rejected. The old Node Companion CLI and server have been retired.
 
 With approved roots, the host prints a one-use pairing code valid for five
-minutes. Inspect the host name, current instance ID and endpoint in Buddy's
+minutes. The code is five dash-separated groups of four letters and digits
+(100 random bits); case, spaces and dashes do not matter when typing it, and
+O, I and L are read as 0, 1 and 1. Eight wrong attempts use up a code.
+Inspect the host name, current instance ID and endpoint in Buddy's
 project UI, then pair. Tokens expire after 30 minutes and stay in client memory.
 The same instance ID is shown by discovery, pairing and workspace responses.
 Restart changes it and invalidates all previous tokens, grants and sessions.
