@@ -9,6 +9,24 @@ const initialUser = structuredClone(user);
 const initialConfig = structuredClone(config);
 const results = [];
 const pinnedNavigation = ['notes', 'workspace', 'automations'];
+// Chat search pages hold this many chats (backend routers/chats.py).
+const searchPageSize = 60;
+
+function projectSearchPage(searchPage) {
+	if (searchPage === 1) {
+		const firstMatch = { ...chats[0], snippet: 'Project plan search match.' };
+		const otherMatches = Array.from({ length: searchPageSize - 1 }, (_, index) => ({
+			...chats[(index + 1) % chats.length],
+			id: `project-result-${index + 1}`,
+			title: `Project result ${index + 1}`
+		}));
+		return [firstMatch, ...otherMatches];
+	}
+	if (searchPage === 2) {
+		return [{ ...chats[1], id: 'project-result-page-2', title: 'Project result on page 2' }];
+	}
+	return [];
+}
 
 function configureNavigation({ knowledgeOnly = false, hiddenWorkspace = false } = {}) {
 	Object.assign(user, structuredClone(initialUser));
@@ -181,8 +199,8 @@ async function runHeaderScenario(options) {
 			searches.push({ query, searchPage });
 			if (query === 'slow') await new Promise((resolve) => setTimeout(resolve, 600));
 			let found = [];
-			if (query === 'project' && searchPage === 1)
-				found = [{ ...chats[0], snippet: 'Project plan search match.' }];
+			if (query === 'project') found = projectSearchPage(searchPage);
+			if (query === 'single') found = [{ ...chats[2], snippet: 'Only one match.' }];
 			if (query === 'slow') found = [{ ...chats[1], title: 'Stale search result' }];
 			await route.fulfill({
 				status: 200,
@@ -242,7 +260,7 @@ async function runHeaderScenario(options) {
 
 		await page.locator('#sidebar-search-button').click();
 		await page.locator('#sidebar-search-input').fill('project');
-		await page.locator('#sidebar-search-results a').waitFor({ state: 'visible' });
+		await page.locator('#sidebar-search-results a').first().waitFor({ state: 'visible' });
 		assert.match(
 			await page.locator('#sidebar-search-results').innerText(),
 			/Project plan search match/
@@ -273,14 +291,25 @@ async function runHeaderScenario(options) {
 			await page.locator('#sidebar-search-results a').first().waitFor({ state: 'visible' });
 		}
 		assert.equal(await page.locator('#sidebar-search-input').inputValue(), 'project');
-		const loadMore = page.locator('#sidebar-search-results').getByRole('button', {
-			name: 'Load more'
-		});
+		// A full page offers the next one; the short second page is the last.
+		const loadMore = page.locator('#sidebar-search-load-more');
 		await loadMore.click();
 		await loadMore.waitFor({ state: 'detached' });
+		assert.equal(await page.locator('#sidebar-search-results a').count(), searchPageSize + 1);
 		assert.ok(
-			searches.some((search) => search.searchPage === 2),
+			searches.some((search) => search.query === 'project' && search.searchPage === 2),
 			'Search supports pagination'
+		);
+		// Removing the focused Load more button hands focus to the first new result.
+		await page.waitForFunction(
+			() => document.activeElement?.getAttribute('href') === '/c/project-result-page-2'
+		);
+		await page.locator('#sidebar-search-input').fill('single');
+		await page.locator('#sidebar-search-results').getByText('Only one match.').waitFor();
+		assert.equal(await loadMore.count(), 0, 'A short first page offers no Load more');
+		assert.ok(
+			!searches.some((search) => search.query === 'single' && search.searchPage > 1),
+			'A short first page requests no further pages'
 		);
 		await page.locator('#sidebar-search-input').fill('nothing');
 		await page
@@ -299,7 +328,7 @@ async function runHeaderScenario(options) {
 		);
 		assert.equal(await page.locator('#sidebar-search-input').inputValue(), '');
 		await page.locator('#sidebar-search-input').fill('project');
-		await page.locator('#sidebar-search-results a').waitFor({ state: 'visible' });
+		await page.locator('#sidebar-search-results a').first().waitFor({ state: 'visible' });
 		await page.locator('#sidebar-search-input').press('Enter');
 		await page.waitForURL('**/c/mobile-preview-chat-1');
 		await page.locator('#chat-input').waitFor({ state: 'visible' });

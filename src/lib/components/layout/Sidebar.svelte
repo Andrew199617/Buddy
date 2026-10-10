@@ -103,6 +103,9 @@
 
 	const BREAKPOINT = 768;
 	const DEFAULT_PINNED_ITEMS = ['notes', 'workspace'];
+	// Chat search returns pages of this many chats (backend routers/chats.py), so a
+	// shorter page is the last one.
+	const SIDEBAR_SEARCH_PAGE_SIZE = 60;
 
 	let scrollTop = 0;
 	let sidebarSearchOpen = false;
@@ -173,7 +176,7 @@
 				...results.filter((chat) => !existingIds.has(chat.id))
 			];
 			sidebarSearchPage = searchPage;
-			sidebarSearchExhausted = results.length === 0;
+			sidebarSearchExhausted = results.length < SIDEBAR_SEARCH_PAGE_SIZE;
 		} catch {
 			if (version === sidebarSearchVersion && sidebarSearchOpen) {
 				sidebarSearchError = true;
@@ -201,13 +204,42 @@
 		}
 	};
 
-	const loadMoreSidebarSearch = () => {
+	const loadMoreSidebarSearch = async () => {
 		if (sidebarSearchLoading || sidebarSearchExhausted) {
 			return;
 		}
+		const firstNewResultIndex = sidebarSearchResults.length;
+		const nextPage = sidebarSearchPage + 1;
 		sidebarSearchLoading = true;
 		sidebarSearchError = false;
-		void fetchSidebarSearch(sidebarSearchVersion, sidebarSearchQuery.trim(), sidebarSearchPage + 1);
+		await fetchSidebarSearch(sidebarSearchVersion, sidebarSearchQuery.trim(), nextPage);
+		await tick();
+		restoreFocusAfterLoadMore(firstNewResultIndex);
+	};
+
+	// Load more is disabled while it loads and removed after the last page, and either
+	// drops its focus to the page body. In the phone drawer, its focus trap then sends
+	// focus from the removed button to the close button. Move focus to the first new
+	// result, back to Load more after an error, or to the last result when the final page
+	// was empty.
+	const restoreFocusAfterLoadMore = (firstNewResultIndex: number) => {
+		const focusedElement = document.activeElement;
+		let focusDropped = focusedElement === document.body;
+		if ($mobile && focusedElement?.id === 'buddy-sidebar-close') {
+			focusDropped = true;
+		}
+		if (!sidebarSearchOpen || !focusDropped) {
+			return;
+		}
+		const resultLinks = document.querySelectorAll<HTMLElement>('#sidebar-search-results a');
+		let target: HTMLElement | null = resultLinks[firstNewResultIndex] ?? null;
+		if (!target) {
+			target = document.getElementById('sidebar-search-load-more');
+		}
+		if (!target) {
+			target = resultLinks[resultLinks.length - 1] ?? null;
+		}
+		target?.focus();
 	};
 
 	// The full search adds filter suggestions, a chat preview and per-chat actions. Its
@@ -1303,6 +1335,7 @@
 						</div>
 						{#if sidebarSearchResults.length > 0 && !sidebarSearchExhausted}
 							<button
+								id="sidebar-search-load-more"
 								type="button"
 								class="buddy-sidebar-link w-full rounded-xl px-2.5 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-900"
 								disabled={sidebarSearchLoading}
