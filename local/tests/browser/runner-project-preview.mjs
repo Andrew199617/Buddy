@@ -924,6 +924,50 @@ async function operationConflict(session, fixture) {
 	await checkLayout(session);
 }
 
+async function fileConflict(session, fixture, profile) {
+	const { page } = session;
+	const notesPath = resolve(fixture.directory, 'project/notes.txt');
+	await inspectAndPair(page, fixture);
+	await page.locator('#companion-grant').selectOption({ label: 'Editable' });
+	await page.getByRole('button', { name: 'File notes.txt', exact: true }).click();
+	await page
+		.getByLabel('Allow editing this file on Disposable Runner PC.', { exact: true })
+		.check();
+	await page.locator('#companion-file-content').fill('Draft from the page\n');
+	writeFileSync(notesPath, 'Edited on the host meanwhile\n');
+	await page.getByRole('button', { name: 'Save to execution host', exact: true }).click();
+	const conflict = page.locator('.file-conflict');
+	await conflict.getByText('This file changed on Disposable Runner PC', { exact: false }).waitFor();
+	assert.equal(
+		readFileSync(notesPath, 'utf8'),
+		'Edited on the host meanwhile\n',
+		'A stale save never replaces newer host edits'
+	);
+	assert.equal(await page.locator('#companion-file-content').inputValue(), 'Draft from the page\n');
+	await checkLayout(session);
+	await page.screenshot({ path: resolve(outputDirectory, profile.name + '-file-conflict.png') });
+	await conflict.getByRole('button', { name: 'Overwrite host copy', exact: true }).click();
+	await waitUntil(
+		() => readFileSync(notesPath, 'utf8') === 'Draft from the page\n',
+		'Overwrite replaces the host copy after the user chooses it'
+	);
+	await page.locator('.file-conflict').waitFor({ state: 'detached' });
+	await page.locator('#companion-file-content').fill('Second draft\n');
+	writeFileSync(notesPath, 'Edited on the host again\n');
+	await page.getByRole('button', { name: 'Save to execution host', exact: true }).click();
+	await conflict.getByRole('button', { name: 'Reload from host', exact: true }).click();
+	await waitUntil(
+		async () =>
+			(await page.locator('#companion-file-content').inputValue()) === 'Edited on the host again\n',
+		'Reload shows the current host copy'
+	);
+	assert.equal(readFileSync(notesPath, 'utf8'), 'Edited on the host again\n');
+	const authorization = sessionAuthorization(session.hostRequests);
+	await page.getByRole('button', { name: 'Disconnect and revoke', exact: true }).click();
+	await verifyRevoked(session, fixture, authorization);
+	await checkLayout(session);
+}
+
 async function transientPoll(session, fixture) {
 	const { page } = session;
 	const authorization = await prepareRunningCommand(session, fixture);
@@ -1268,7 +1312,8 @@ try {
 			'delayed-command-admission-ready',
 			'delayed-command-admission-exited',
 			'delayed-command-admission-fast',
-			'transient-poll'
+			'transient-poll',
+			'file-conflict'
 		]) {
 			let fixture = null;
 			let session = null;
@@ -1500,6 +1545,7 @@ try {
 				if (scenario.startsWith('delayed-command-admission-'))
 					await delayedCommandAdmission(session, fixture, admission, profile, scenario);
 				if (scenario === 'transient-poll') await transientPoll(session, fixture);
+				if (scenario === 'file-conflict') await fileConflict(session, fixture, profile);
 				results.push({
 					profile: profile.name,
 					scenario,

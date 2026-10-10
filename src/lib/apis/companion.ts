@@ -41,6 +41,13 @@ export type CompanionDirectoryEntry = {
 	type: 'directory' | 'file';
 };
 
+export type CompanionFile = {
+	path: string;
+	content: string;
+	/** Identifies the contents that were read; a save made from an older copy is refused. */
+	version: string;
+};
+
 export type CompanionWorkspace = {
 	id: string;
 	name: string;
@@ -255,11 +262,21 @@ export class CompanionClient {
 
 	getFile(grantId: string, path: string) {
 		const query = new URLSearchParams({ grantId, path });
-		return this.request<{ path: string; content: string }>(`/v1/files?${query}`);
+		return this.request<CompanionFile>(`/v1/files?${query}`);
 	}
 
-	putFile(grantId: string, path: string, content: string) {
-		return this.request<{ path: string }>('/v1/files', 'PUT', { grantId, path, content });
+	/**
+	 * Saves over the version that was opened. If the host copy changed since
+	 * then, the Runner refuses with 409 unless overwrite is chosen.
+	 */
+	putFile(grantId: string, path: string, content: string, baseVersion: string, overwrite = false) {
+		return this.request<CompanionFile>('/v1/files', 'PUT', {
+			grantId,
+			path,
+			content,
+			baseVersion,
+			overwrite
+		});
 	}
 
 	async createWorkspace(grantId: string, path = ''): Promise<CompanionWorkspace> {

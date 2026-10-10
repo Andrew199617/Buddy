@@ -80,6 +80,11 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode('utf-8')).hexdigest()
 
 
+def _content_version(text: str) -> str:
+    """Identifies the file contents a client opened, so a save cannot silently replace newer edits."""
+    return _digest(text)
+
+
 def _identity(value: os.stat_result) -> tuple[int, int]:
     return value.st_dev, value.st_ino
 
@@ -563,7 +568,7 @@ class WorkspaceCapabilities:
                 content = await self._read_in_thread(pinned)
                 pinned.current_stat()
                 self._active(session, grant)
-                return {'path': relative, 'content': content}
+                return {'path': relative, 'content': content, 'version': _content_version(content)}
             finally:
                 pinned.close()
         body = await self._body(request)
@@ -581,21 +586,27 @@ class WorkspaceCapabilities:
             _fail(413, 'Files are limited to 1 MiB.')
         pinned, relative = self._open_file(grant, body.get('path'), True)
         try:
-            await self._read_in_thread(pinned)
+            current = await self._read_in_thread(pinned)
             pinned.current_stat()
             self._active(session, grant)
-            # No await between the final permission check and the bounded write.
-            descriptor = pinned.descriptor
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            view = memoryview(data)
-            while view:
-                written = os.write(descriptor, view)
-                view = view[written:]
-            os.ftruncate(descriptor, len(data))
-            os.fsync(descriptor)
-            return {'path': relative, 'content': content}
+            # A save made from an older copy would silently undo edits made on
+            # the host since it was opened, unless the user chose to overwrite.
+            if body.get('overwrite') is not True and body.get('baseVersion') != _content_version(current):
+                _fail(409, 'This file changed on the host after it was opened. Reload it, or overwrite the host copy.')
+            # No await between the final permission check and the replacement.
+            self._replace_contents(pinned, data)
+            return {'path': relative, 'content': content, 'version': _content_version(content)}
         finally:
             pinned.close()
+
+    def _replace_contents(self, pinned: PinnedPath, data: bytes) -> None:
+        """Save through one atomic rename, so any failure keeps the previous contents."""
+        try:
+            pinned.replace_file(data)
+        except PermissionError:
+            _fail(403, 'The host could not replace this file. Another program may have it open, or the host account cannot write to its folder. The previous contents were kept.')
+        except OSError:
+            _fail(500, 'The host could not save this file. The previous contents were kept.')
 
     def _validate_command(self, body: dict) -> None:
         executable = body.get('executable')
@@ -858,6 +869,9 @@ class WorkspaceCapabilities:
             response = web.json_response({'error': 'The host account cannot access this file or directory.'}, status=403)
         except (UnicodeError, ValueError, TypeError):
             response = web.json_response({'error': 'Invalid request.'}, status=400)
+        except OSError:
+            # Still a JSON reply with CORS headers, so the page can show it.
+            response = web.json_response({'error': 'The host could not complete this request.'}, status=500)
         response.headers['Cache-Control'] = 'no-store'
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['Vary'] = 'Origin'

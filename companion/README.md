@@ -92,7 +92,14 @@ Volume roots, traversal, drive/UNC paths, symlinks, junctions, reparse points an
 multiply linked files are refused. Replacing an approved root invalidates access
 to that grant only.
 Only existing UTF-8 text files up to 1 MiB are supported; editing additionally
-requires the host's explicit write approval.
+requires the host's explicit write approval. A save names the version it was
+opened from. If the file changed on the host since then, the Runner refuses the
+save with 409 and the page offers to reload or overwrite. A save writes a new
+file beside the original and renames it into place, so a failed save keeps the
+previous contents. This needs write access to the file's folder; on POSIX the
+file keeps its owner and mode, or the save is refused. On Windows the saved
+file takes its folder's inherited permissions and loses any alternate data
+streams, such as a download mark.
 
 **Opt-in commands run as the host OS account and can access beyond the selected
 project. Their working directory is not a sandbox.** Provider read access can

@@ -34,6 +34,8 @@
 	let filePath: string | null = null;
 	let fileContent = '';
 	let savedFileContent = '';
+	let fileVersion = '';
+	let fileConflict = false;
 	let fileWriteAccepted = false;
 	let terminal: CompanionTerminal | null = null;
 	let executable = '';
@@ -108,6 +110,8 @@
 		filePath = null;
 		fileContent = '';
 		savedFileContent = '';
+		fileVersion = '';
+		fileConflict = false;
 		fileWriteAccepted = false;
 		fileBusy = false;
 	}
@@ -461,6 +465,7 @@
 			filePath = file.path;
 			fileContent = file.content;
 			savedFileContent = file.content;
+			fileVersion = file.version;
 		} catch (cause) {
 			if (requestGeneration === fileGeneration) reportError(cause, generation);
 		} finally {
@@ -469,7 +474,8 @@
 		}
 	}
 
-	async function saveFile() {
+	/** Saves over the opened version; overwrite is only chosen after a reported conflict. */
+	async function writeFile(overwrite: boolean) {
 		const candidate = client;
 		const path = filePath;
 		const content = fileContent;
@@ -480,16 +486,36 @@
 		fileBusy = true;
 		error = '';
 		try {
-			await candidate.putFile(activeGrantId, path, content);
+			const saved = await candidate.putFile(activeGrantId, path, content, fileVersion, overwrite);
 			if (!isCurrent(candidate, generation) || requestGeneration !== fileGeneration) return;
 			savedFileContent = content;
+			fileVersion = saved.version;
+			fileConflict = false;
 			notice = `Saved ${path} on ${host?.name ?? 'the execution host'}.`;
 		} catch (cause) {
+			const isConflict = cause instanceof CompanionError && cause.status === 409;
+			if (isConflict && isCurrent(candidate, generation) && requestGeneration === fileGeneration) {
+				// Keep the edits and let the user choose; the host copy is unchanged.
+				fileConflict = true;
+				return;
+			}
 			reportError(cause, generation);
 		} finally {
 			if (isCurrent(candidate, generation) && requestGeneration === fileGeneration)
 				fileBusy = false;
 		}
+	}
+
+	function saveFile() {
+		void writeFile(false);
+	}
+
+	function overwriteHostFile() {
+		void writeFile(true);
+	}
+
+	function reloadFile() {
+		if (filePath !== null) void openFile(filePath);
 	}
 
 	async function createCommandSession() {
@@ -1021,7 +1047,26 @@
 					readonly={!activeGrant?.capabilities.write || !fileWriteAccepted}
 					spellcheck="false"
 				></textarea>
-				{#if activeGrant?.capabilities.write}
+				{#if activeGrant?.capabilities.write && fileConflict}
+					<div class="file-conflict" role="alert">
+						<p>
+							This file changed on {host?.name ?? 'the execution host'} after you opened it. Reload discards
+							your edits; overwrite replaces the host copy with them.
+						</p>
+						<div class="field-row conflict-actions">
+							<button type="button" on:click={reloadFile} disabled={fileBusy}
+								>Reload from host</button
+							>
+							<button
+								type="button"
+								class="primary"
+								on:click={overwriteHostFile}
+								disabled={fileBusy || !fileWriteAccepted}
+								>{fileBusy ? 'Saving…' : 'Overwrite host copy'}</button
+							>
+						</div>
+					</div>
+				{:else if activeGrant?.capabilities.write}
 					<button
 						class="primary"
 						on:click={saveFile}
@@ -1441,6 +1486,19 @@
 		font-size: 13px;
 		line-height: 1.5;
 		tab-size: 4;
+	}
+	.file-conflict {
+		padding: 12px 14px;
+		border: 1px solid #d69b87;
+		border-radius: 9px;
+		font-size: 14px;
+		line-height: 1.5;
+	}
+	.file-conflict p {
+		margin: 0 0 12px;
+	}
+	.conflict-actions {
+		flex-wrap: wrap;
 	}
 	.message {
 		border: 1px solid var(--buddy-edge, #dde6df);

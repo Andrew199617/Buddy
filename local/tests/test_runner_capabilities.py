@@ -348,7 +348,7 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         self.assertEqual([entry['name'] for entry in body['entries']], ['nested', 'hello.txt'])
         status, body, _ = await self.request('GET', '/v1/files', params={'grantId': grant['id'], 'path': 'nested/inside.txt'})
-        self.assertEqual((status, body), (200, {'path': 'nested/inside.txt', 'content': 'nested'}))
+        self.assertEqual((status, body), (200, {'path': 'nested/inside.txt', 'content': 'nested', 'version': _digest('nested')}))
         first = await self.workspace('nested')
         second = await self.workspace('nested')
         self.assertEqual(first, second)
@@ -532,7 +532,7 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(PinnedPath, '_windows_open', attempt_swap):
             status, body, _ = await self.request('GET', '/v1/files', params={'grantId': grant['id'], 'path': 'nested/inside.txt'})
             self.assertEqual((status, body['content']), (200, 'nested'))
-            status, body, _ = await self.request('PUT', '/v1/files', json={'grantId': grant['id'], 'path': 'nested/inside.txt', 'content': 'inside edited'})
+            status, body, _ = await self.request('PUT', '/v1/files', json={'grantId': grant['id'], 'path': 'nested/inside.txt', 'content': 'inside edited', 'baseVersion': body['version']})
             self.assertEqual((status, body['content']), (200, 'inside edited'))
         self.assertEqual(len(blocked), 6)
         self.assertEqual((self.outside / 'private.txt').read_text(encoding='utf-8'), 'outside secret fixture')
@@ -671,8 +671,10 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
         await self.start()
         await self.pair()
         grant = await self.grant()
-        status, body, _ = await self.request('PUT', '/v1/files', json={'grantId': grant['id'], 'path': 'hello.txt', 'content': 'short'})
-        self.assertEqual((status, body), (200, {'path': 'hello.txt', 'content': 'short'}))
+        status, body, _ = await self.request('PUT', '/v1/files', json={
+            'grantId': grant['id'], 'path': 'hello.txt', 'content': 'short', 'baseVersion': _digest('hello π'),
+        })
+        self.assertEqual((status, body), (200, {'path': 'hello.txt', 'content': 'short', 'version': _digest('short')}))
         self.assertEqual((self.project / 'hello.txt').read_text(encoding='utf-8'), 'short')
         status, _, _ = await self.request('PUT', '/v1/files', json={'grantId': grant['id'], 'path': 'new.txt', 'content': 'new'})
         self.assertEqual(status, 404)
@@ -690,6 +692,101 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
             headers={'Content-Type': 'application/json'},
         )
         self.assertEqual(status, 413)
+
+    async def test_save_refuses_a_stale_copy_unless_overwrite_is_chosen(self):
+        await self.start()
+        await self.pair()
+        grant = await self.grant()
+        status, opened, _ = await self.request('GET', '/v1/files', params={'grantId': grant['id'], 'path': 'hello.txt'})
+        self.assertEqual(status, 200, opened)
+        # Another program edits the file on the host after the page opened it.
+        (self.project / 'hello.txt').write_text('edited on the host', encoding='utf-8')
+        stale = {'grantId': grant['id'], 'path': 'hello.txt', 'content': 'stale page copy', 'baseVersion': opened['version']}
+        status, body, response = await self.request('PUT', '/v1/files', json=stale)
+        self.assertEqual(status, 409, body)
+        self.assertIn('changed on the host', body['error'])
+        self.assertEqual(response.headers['Access-Control-Allow-Origin'], ORIGIN)
+        self.assertEqual((self.project / 'hello.txt').read_text(encoding='utf-8'), 'edited on the host')
+        missing_version = {'grantId': grant['id'], 'path': 'hello.txt', 'content': 'no version'}
+        status, _, _ = await self.request('PUT', '/v1/files', json=missing_version)
+        self.assertEqual(status, 409)
+        status, body, _ = await self.request('PUT', '/v1/files', json={**stale, 'overwrite': True})
+        self.assertEqual((status, body['version']), (200, _digest('stale page copy')))
+        self.assertEqual((self.project / 'hello.txt').read_text(encoding='utf-8'), 'stale page copy')
+        status, body, _ = await self.request('PUT', '/v1/files', json={**stale, 'content': 'next save', 'baseVersion': body['version']})
+        self.assertEqual(status, 200, body)
+        self.assertEqual((self.project / 'hello.txt').read_text(encoding='utf-8'), 'next save')
+
+    async def test_failed_save_keeps_previous_contents_and_reports_json(self):
+        from unittest.mock import patch
+        from open_webui.utils.subscriptions import pinned_paths
+
+        await self.start()
+        await self.pair()
+        grant = await self.grant()
+        original_write_all = pinned_paths._write_all
+
+        def disk_full_after_prefix(descriptor, data):
+            original_write_all(descriptor, data[:4])
+            raise OSError(28, 'No space left on device')
+
+        save = {'grantId': grant['id'], 'path': 'nested/inside.txt', 'content': 'replacement text', 'baseVersion': _digest('nested')}
+        with patch.object(pinned_paths, '_write_all', disk_full_after_prefix):
+            status, body, response = await self.request('PUT', '/v1/files', json=save)
+        self.assertEqual(status, 500, body)
+        self.assertIn('previous contents were kept', body['error'])
+        # A JSON reply with CORS headers, so the page shows this instead of "cannot reach".
+        self.assertEqual(response.headers['Access-Control-Allow-Origin'], ORIGIN)
+        self.assertEqual((self.project / 'nested' / 'inside.txt').read_text(encoding='utf-8'), 'nested')
+        self.assertEqual(sorted(path.name for path in (self.project / 'nested').iterdir()), ['inside.txt'])
+        status, body, _ = await self.request('PUT', '/v1/files', json=save)
+        self.assertEqual(status, 200, body)
+        self.assertEqual((self.project / 'nested' / 'inside.txt').read_text(encoding='utf-8'), 'replacement text')
+        self.assertEqual(sorted(path.name for path in (self.project / 'nested').iterdir()), ['inside.txt'])
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows native handle sharing fixture')
+    async def test_windows_save_keeps_the_directory_pinned_during_the_rename(self):
+        from unittest.mock import patch
+        from open_webui.utils.subscriptions import pinned_paths
+
+        await self.start()
+        await self.pair()
+        grant = await self.grant()
+        nested = self.project / 'nested'
+        original_replace = os.replace
+        blocked = []
+
+        def replace_after_swap_attempt(source, destination, **options):
+            if Path(destination) == nested / 'inside.txt':
+                for directory in (nested, self.project):
+                    with self.assertRaises(PermissionError):
+                        directory.rename(directory.with_name(directory.name + '-swapped'))
+                    blocked.append(directory)
+            return original_replace(source, destination, **options)
+
+        with patch.object(pinned_paths.os, 'replace', replace_after_swap_attempt):
+            status, body, _ = await self.request('PUT', '/v1/files', json={
+                'grantId': grant['id'], 'path': 'nested/inside.txt', 'content': 'saved', 'baseVersion': _digest('nested'),
+            })
+        self.assertEqual(status, 200, body)
+        self.assertEqual(blocked, [nested, self.project])
+        self.assertEqual((nested / 'inside.txt').read_text(encoding='utf-8'), 'saved')
+        # The save released every handle it held.
+        nested.rename(self.project / 'renamed-nested')
+
+    @unittest.skipIf(sys.platform == 'win32', 'POSIX ownership and mode fixture')
+    async def test_posix_save_keeps_the_file_mode(self):
+        target = self.project / 'hello.txt'
+        target.chmod(0o640)
+        await self.start()
+        await self.pair()
+        grant = await self.grant()
+        status, body, _ = await self.request('PUT', '/v1/files', json={
+            'grantId': grant['id'], 'path': 'hello.txt', 'content': 'saved', 'baseVersion': _digest('hello π'),
+        })
+        self.assertEqual(status, 200, body)
+        self.assertEqual(target.stat().st_mode & 0o777, 0o640)
+        self.assertEqual(target.read_text(encoding='utf-8'), 'saved')
 
     async def test_request_bodies_are_objects_and_bounded(self):
         await self.start()

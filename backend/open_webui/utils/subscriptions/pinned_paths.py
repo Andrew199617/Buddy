@@ -7,6 +7,7 @@ swapped while a file, listing, or command startup uses the approved path.
 
 import os
 import errno
+import secrets
 import stat
 import sys
 from pathlib import Path
@@ -30,6 +31,21 @@ def _check_regular_file(value: os.stat_result) -> None:
         raise PinnedPathError('The requested path must be an existing regular file.')
     if value.st_nlink > 1:
         raise PinnedPathError('Hard-linked files cannot be accessed through a directory grant.')
+
+
+def _write_all(descriptor: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.write(descriptor, view)
+        view = view[written:]
+
+
+def _remove_temporary(name, parent=None) -> None:
+    # Best effort: the error that stopped the save is the one worth reporting.
+    try:
+        os.unlink(name, dir_fd=parent)
+    except OSError:
+        pass
 
 
 def _open_at(component, flags, parent=None):
@@ -246,6 +262,83 @@ class PinnedPath:
             raise PinnedPathError('The pinned directory is closed or unavailable.')
         target = self.path if sys.platform == 'win32' else self.directory_fd
         return os.scandir(target)
+
+    def replace_file(self, data: bytes) -> None:
+        """Replace the pinned file's contents in one rename.
+
+        The bytes go to a new temporary file beside it, which then takes the
+        file's name, so a failed or interrupted save leaves the old contents.
+        The file's directory and its ancestors stay held throughout, so none of
+        them can be renamed or replaced meanwhile. Afterwards the guard can
+        only be closed. On Windows the new file takes the folder's inherited
+        permissions and has no alternate data streams.
+        """
+        if self._closed or self.descriptor is None or not stat.S_ISREG(self.stat.st_mode):
+            raise PinnedPathError('Only an open pinned file can be replaced.')
+        temporary = f'.buddy-save-{secrets.token_hex(8)}.tmp'
+        if sys.platform == 'win32':
+            self._replace_windows(temporary, data)
+        else:
+            self._replace_posix(temporary, data)
+
+    def _replace_posix(self, temporary: str, data: bytes) -> None:
+        original = os.fstat(self.descriptor)
+        parent = self._descriptors[-2]
+        leaf = self.relative.split('/')[-1]
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, 'O_CLOEXEC', 0)
+        descriptor = os.open(temporary, flags, 0o600, dir_fd=parent)
+        try:
+            try:
+                _write_all(descriptor, data)
+                created = os.fstat(descriptor)
+                # Keep the file's owner. If that is not allowed, the save fails
+                # rather than silently handing the file to the Runner account.
+                if (created.st_uid, created.st_gid) != (original.st_uid, original.st_gid):
+                    os.fchown(descriptor, original.st_uid, original.st_gid)
+                os.fchmod(descriptor, stat.S_IMODE(original.st_mode))
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            os.replace(temporary, leaf, src_dir_fd=parent, dst_dir_fd=parent)
+        except BaseException:
+            _remove_temporary(temporary, parent)
+            raise
+
+    def _replace_windows(self, temporary: str, data: bytes) -> None:
+        temporary_path = self.path.parent / temporary
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_BINARY | os.O_NOINHERIT
+        descriptor = os.open(temporary_path, flags, 0o600)
+        try:
+            try:
+                _write_all(descriptor, data)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            self._prepare_windows_rename()
+            os.replace(temporary_path, self.path)
+        except BaseException:
+            _remove_temporary(temporary_path)
+            raise
+
+    def _prepare_windows_rename(self) -> None:
+        # A rename needs the file closed and write access to its directory,
+        # which the held directory handle does not share. The directory is
+        # first held again with write sharing but still without delete sharing,
+        # so it stays pinned and cannot be renamed while the rename runs.
+        directory = self.path.parent
+        handle = _kernel.CreateFileW(
+            str(directory), _READ_ATTRIBUTES | _LIST_DIRECTORY, _SHARE_READ | _SHARE_WRITE, None,
+            _OPEN_EXISTING, _OPEN_REPARSE_POINT | _BACKUP_SEMANTICS, None,
+        )
+        if handle == _INVALID_HANDLE:
+            raise ctypes.WinError(ctypes.get_last_error())
+        self._handles.append(handle)
+        _windows_information(handle, directory, directory=True)
+        previous_directory = self._handles.pop(-2)
+        _kernel.CloseHandle(previous_directory)
+        os.close(self.descriptor)
+        self._descriptors.remove(self.descriptor)
+        self.descriptor = None
 
     def current_stat(self) -> os.stat_result:
         if self._closed:
