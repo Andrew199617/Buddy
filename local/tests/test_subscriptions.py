@@ -495,6 +495,42 @@ class ClaudeStreamTests(unittest.TestCase):
         self.assertTrue(stopped_at_once)
         self.assertEqual(calls, ['close_stdin', 'finish_output', 'kill'])
 
+    def test_only_a_claude_plan_sign_in_counts_as_a_plan(self):
+        """Every other sign-in bills an API, a cloud provider, or a gateway, so its models stay hidden."""
+
+        def status_for(logged_in: bool, auth_method: str) -> dict:
+            class FakeMachine:
+                id = 'fake'
+                name = 'Fake machine'
+
+                async def find_tool(self, tool, configured_path=''):
+                    return 'claude'
+
+                async def chat_dir(self):
+                    return '.'
+
+                async def run(self, args, cwd, timeout, extra_env=None):
+                    if '--version' in args:
+                        return 0, '2.1.295 (Claude Code)', ''
+                    info = {'loggedIn': logged_in, 'authMethod': auth_method, 'email': 'ada@example.invalid'}
+                    return 0, json.dumps(info), ''
+
+            with tempfile.TemporaryDirectory() as directory:
+                provider = claude_code.ClaudeCodeProvider(Path(directory))
+                return asyncio.run(provider.status(ProviderSettings(enable=True), FakeMachine()))
+
+        plan = status_for(True, 'claude.ai')
+        self.assertTrue(plan['signed_in'])
+        self.assertNotIn('api_billing', plan)
+        self.assertNotIn('api_billing', status_for(False, 'none'))
+
+        for auth_method in ('api_key', 'api_key_helper', 'third_party', 'oauth_token', ''):
+            with self.subTest(auth_method=auth_method):
+                status = status_for(True, auth_method)
+                self.assertTrue(status['api_billing'])
+                self.assertIn('Claude', status['message'])
+        self.assertIn('Bedrock', status_for(True, 'third_party')['message'])
+
     def test_rate_limit_events_become_usage_windows(self):
         with tempfile.TemporaryDirectory() as directory:
             provider = claude_code.ClaudeCodeProvider(Path(directory))

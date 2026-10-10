@@ -52,6 +52,11 @@ READ_ONLY_TOOLS = 'Read,Grep,Glob,WebSearch'
 TRANSCRIPT_INTRO = 'Here is our conversation so far. Continue it by replying to my latest message.'
 INSTRUCTIONS_FILE = 'instructions'
 LOGIN_URL = re.compile(r'https://\S+/oauth/authorize\?\S+')
+# The authMethod `claude auth status --json` reports for a Claude plan sign-in.
+# The others bill elsewhere: 'api_key' and 'api_key_helper' bill the API,
+# 'third_party' bills Bedrock, Vertex, or Foundry, and 'oauth_token' is any
+# other token, such as a gateway's.
+PLAN_AUTH_METHOD = 'claude.ai'
 FALLBACK_MODELS = [
     ProviderModel(key='opus', value='opus', name='Claude Opus'),
     ProviderModel(key='sonnet', value='sonnet', name='Claude Sonnet'),
@@ -191,6 +196,24 @@ def _readable_error(text: str) -> str:
     if 'not logged in' in text.lower() or '/login' in text:
         return NOT_SIGNED_IN_MESSAGE
     return text
+
+
+def _not_a_plan_message(auth_method: str) -> str:
+    """Why a signed-in Claude Code account cannot run plan models."""
+    if auth_method == 'third_party':
+        return (
+            'Claude Code is set up to use a cloud provider such as Amazon Bedrock or Google Vertex AI, which bills '
+            'that account instead of a Claude plan. Remove that setup and sign in with your Claude account.'
+        )
+    if not auth_method:
+        return (
+            'Buddy could not confirm that Claude Code is signed in with a Claude plan. '
+            'Update Claude Code, then sign in with your Claude account.'
+        )
+    return (
+        'Claude Code is signed in with an Anthropic Console account, API key, or token, which bills API usage '
+        'instead of a Claude plan. Sign out and sign in with your Claude account.'
+    )
 
 
 class ClaudeStreamParser:
@@ -407,12 +430,9 @@ class ClaudeCodeProvider:
             },
             'usage': self.usage_summary(),
         }
-        if status['signed_in'] and ('console' in auth_method.lower() or 'api' in auth_method.lower()):
+        if status['signed_in'] and auth_method != PLAN_AUTH_METHOD:
             status['api_billing'] = True
-            status['message'] = (
-                'Claude Code is signed in with an Anthropic Console account, which bills API usage '
-                'instead of a Claude plan. Sign out and sign in with your Claude account.'
-            )
+            status['message'] = _not_a_plan_message(auth_method)
         return status
 
     async def list_models(self, settings: ProviderSettings, machine) -> list[ProviderModel]:
