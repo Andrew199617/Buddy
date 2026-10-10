@@ -214,6 +214,43 @@ def load_machine_router(service):
     return module
 
 
+class ExportableMemoryConfig(MemoryConfig):
+    async def get_all(self):
+        return copy.deepcopy(self.values)
+
+    async def get_namespace(self, namespace):
+        return {key: copy.deepcopy(value) for key, value in self.values.items() if key.startswith(f'{namespace}.')}
+
+
+def load_config_router(service, config):
+    """Execute the actual config import, export, and namespace endpoints offline."""
+    from pydantic import BaseModel
+
+    router_path = ROOT / 'backend' / 'open_webui' / 'routers' / 'configs.py'
+    tree = ast.parse(router_path.read_text(encoding='utf-8'))
+    names = ('ImportConfigForm', 'import_config', 'export_config', 'get_config_namespace')
+    nodes = [node for node in tree.body if isinstance(node, (ast.ClassDef, ast.AsyncFunctionDef)) and node.name in names]
+    for node in nodes:
+        if isinstance(node, ast.AsyncFunctionDef):
+            node.decorator_list = []
+    future_annotations = ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0)
+    module = types.ModuleType('config_router_under_test')
+    module.__dict__.update({
+        'BaseModel': BaseModel,
+        'Depends': lambda dependency: None,
+        'get_admin_user': lambda: None,
+        'Config': config,
+        'EVENTS': types.SimpleNamespace(CONFIG_IMPORTED='config.imported'),
+        'publish_event': AsyncMock(),
+        'keep_runner_keys': service.keep_runner_keys,
+        'redact_runner_keys': service.redact_runner_keys,
+    })
+    tree = ast.fix_missing_locations(ast.Module(body=[future_annotations, *nodes], type_ignores=[]))
+    with patch.dict(sys.modules, {module.__name__: module}):
+        exec(compile(tree, str(router_path), 'exec'), module.__dict__)
+    return module
+
+
 def enabled_settings(machine_id):
     return {
         'enable': True,
@@ -720,6 +757,70 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(value=value):
                 with self.assertRaises(self.service.SubscriptionError):
                     self.service.validate_browser_url(value)
+
+
+class RunnerKeyConfigExportTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.config = ExportableMemoryConfig({
+            'subscriptions.machines': [machine_config(), machine_config('runner-b', 'host-b')],
+            'subscriptions.claude': enabled_settings('runner-a'),
+            'ui.default_models': 'fixture-model',
+        })
+        self.service = load_service(self.config, ROOT / 'unused-offline-export-data')
+        self.router = load_config_router(self.service, self.config)
+
+    def assert_no_runner_keys(self, values):
+        machines = values['subscriptions.machines']
+        self.assertEqual([machine['id'] for machine in machines], ['runner-a', 'runner-b'])
+        for machine in machines:
+            self.assertNotIn('key', machine)
+
+    async def test_export_and_namespace_leave_runner_keys_out(self):
+        exported = await self.router.export_config(user=object())
+        self.assert_no_runner_keys(exported)
+        self.assertEqual(exported['ui.default_models'], 'fixture-model')
+        self.assertEqual(exported['subscriptions.machines'][0]['url'], machine_config()['url'])
+        namespace = await self.router.get_config_namespace('subscriptions', user=object())
+        self.assert_no_runner_keys(namespace)
+        self.assertEqual(namespace['subscriptions.claude'], enabled_settings('runner-a'))
+        stored = self.config.values['subscriptions.machines']
+        self.assertEqual(stored[0]['key'], 'fixture-key-runner-a', 'redaction must not change saved machines')
+
+    async def test_importing_an_export_keeps_saved_keys_and_returns_none(self):
+        exported = await self.router.export_config(user=object())
+        form = self.router.ImportConfigForm(config=exported)
+        response = await self.router.import_config(object(), form, user=object())
+        self.assert_no_runner_keys(response)
+        stored = self.config.values['subscriptions.machines']
+        self.assertEqual(stored[0]['key'], 'fixture-key-runner-a')
+        self.assertEqual(stored[1]['key'], 'fixture-key-runner-b')
+
+    async def test_import_keeps_a_key_only_for_the_same_machine_at_the_same_address(self):
+        moved = {**machine_config(), 'url': 'https://moved.example.invalid:8083'}
+        moved.pop('key')
+        equivalent = {**machine_config('runner-b', 'host-b'), 'url': 'HTTPS://RUNNER-B.EXAMPLE.INVALID:8083/'}
+        equivalent.pop('key')
+        unknown = {**machine_config('runner-c', 'host-c')}
+        unknown.pop('key')
+        replaced = {**machine_config('runner-d', 'host-d'), 'key': 'fixture-imported-key'}
+        imported = await self.service.keep_runner_keys({
+            'subscriptions.machines': [moved, equivalent, unknown, replaced],
+            'ui.default_models': 'fixture-model',
+        })
+        restored = imported['subscriptions.machines']
+        self.assertNotIn('key', restored[0])
+        self.assertEqual(restored[1]['key'], 'fixture-key-runner-b')
+        self.assertNotIn('key', restored[2])
+        self.assertEqual(restored[3]['key'], 'fixture-imported-key')
+        self.assertEqual(imported['ui.default_models'], 'fixture-model')
+
+    async def test_a_machine_without_a_key_asks_for_it_instead_of_connecting(self):
+        self.config.values['subscriptions.machines'][0].pop('key')
+        with patch.object(self.service, 'RemoteMachine') as factory:
+            with self.assertRaises(self.service.SubscriptionError) as caught:
+                await self.service.get_machine('runner-a')
+        factory.assert_not_called()
+        self.assertIn('runner key', str(caught.exception))
 
 
 class SubscriptionMachineRouterTests(unittest.IsolatedAsyncioTestCase):

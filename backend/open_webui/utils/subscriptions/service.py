@@ -413,13 +413,18 @@ async def get_machine(machine_id: str):
     if not config:
         raise SubscriptionError('The selected machine no longer exists. Choose another in the subscription settings.')
 
+    key = config.get('key') or ''
+    if not key:
+        # A config import keeps no key for a machine whose address changed.
+        raise SubscriptionError(f'Enter the runner key for {config["name"]} again in the subscription settings.')
+
     cached = _remote_machines.get(machine_id)
-    if cached and cached.matches(cached.name, config['url'], config['key']):
+    if cached and cached.matches(cached.name, config['url'], key):
         cached.name = config['name']
         return cached
     if cached:
         await cached.close()
-    machine = RemoteMachine(machine_id, config['name'], config['url'], config['key'])
+    machine = RemoteMachine(machine_id, config['name'], config['url'], key)
     _remote_machines[machine_id] = machine
     return machine
 
@@ -445,6 +450,50 @@ def _public_machine(config: dict) -> dict:
     if observed_capabilities is not None:
         machine['capabilities'] = observed_capabilities
     return machine
+
+
+def redact_runner_keys(values: dict) -> dict:
+    """Config values for export or display, with every runner key left out."""
+    machines = values.get(MACHINES_CONFIG_KEY)
+    if not isinstance(machines, list):
+        return values
+    redacted = []
+    for machine in machines:
+        if isinstance(machine, dict):
+            machine = {field: value for field, value in machine.items() if field != 'key'}
+        redacted.append(machine)
+    return {**values, MACHINES_CONFIG_KEY: redacted}
+
+
+async def keep_runner_keys(imported: dict) -> dict:
+    """Config values to import, with saved keys kept for machines exported without one.
+
+    A saved key is kept only for the same machine at the same address; a
+    machine whose address changed needs its key entered again.
+    """
+    machines = imported.get(MACHINES_CONFIG_KEY)
+    if not isinstance(machines, list):
+        return imported
+    saved_machines = {machine['id']: machine for machine in await _machine_configs()}
+    restored = []
+    for machine in machines:
+        if isinstance(machine, dict) and not machine.get('key'):
+            saved = saved_machines.get(machine.get('id')) or {}
+            same_address = _runner_address(saved.get('url')) == _runner_address(machine.get('url'))
+            if saved.get('key') and same_address:
+                machine = {**machine, 'key': saved['key']}
+        restored.append(machine)
+    return {**imported, MACHINES_CONFIG_KEY: restored}
+
+
+def _runner_address(url) -> str | None:
+    """The canonical runner origin, or the text as saved for a legacy, unsafe address."""
+    if not url:
+        return url
+    try:
+        return normalize_runner_url(url)
+    except SubscriptionError:
+        return url
 
 
 def _observed_host(info: dict) -> dict | None:
@@ -536,13 +585,8 @@ async def _save_machine(
 
     configs = await _machine_configs()
     existing = next((config for config in configs if config['id'] == machine_id), None) if machine_id else None
-    previous_endpoint = (existing or {}).get('url')
-    if previous_endpoint:
-        try:
-            previous_endpoint = normalize_runner_url(previous_endpoint)
-        except SubscriptionError:
-            # Replacing a legacy, unsafe address must reset provider authority.
-            pass
+    # Replacing a legacy, unsafe address must reset provider authority.
+    previous_endpoint = _runner_address((existing or {}).get('url'))
     previous_key = (existing or {}).get('key')
     previous_instance = ((existing or {}).get('host') or {}).get('id')
     key = (key or '').strip()

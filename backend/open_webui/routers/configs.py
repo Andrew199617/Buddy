@@ -25,6 +25,7 @@ from open_webui.utils.oauth import (
     recover_static_oauth_client_metadata,
     resolve_oauth_client_info,
 )
+from open_webui.utils.subscriptions.service import keep_runner_keys, redact_runner_keys
 from open_webui.utils.tools import (
     get_tool_server_data,
     get_tool_server_url,
@@ -99,7 +100,8 @@ class ImportConfigForm(BaseModel):
 
 @router.post('/import', response_model=dict)
 async def import_config(request: Request, form_data: ImportConfigForm, user=Depends(get_admin_user)):
-    await Config.upsert(form_data.config)
+    # Exports leave Buddy Runner keys out, so importing one keeps the saved keys.
+    await Config.upsert(await keep_runner_keys(form_data.config))
     await publish_event(
         request,
         EVENTS.CONFIG_IMPORTED,
@@ -107,7 +109,7 @@ async def import_config(request: Request, form_data: ImportConfigForm, user=Depe
         subject_id='import',
         data={'keys': list(form_data.config.keys())},
     )
-    return await Config.get_all()
+    return redact_runner_keys(await Config.get_all())
 
 
 ############################
@@ -117,12 +119,13 @@ async def import_config(request: Request, form_data: ImportConfigForm, user=Depe
 
 @router.get('/export', response_model=dict)
 async def export_config(user=Depends(get_admin_user)):
-    return await Config.get_all()
+    # A runner key can start processes on its computer; it never leaves the server.
+    return redact_runner_keys(await Config.get_all())
 
 
 @router.get('/namespace/{namespace}', response_model=dict)
 async def get_config_namespace(namespace: str, user=Depends(get_admin_user)):
-    return await Config.get_namespace(namespace)
+    return redact_runner_keys(await Config.get_namespace(namespace))
 
 
 ############################
