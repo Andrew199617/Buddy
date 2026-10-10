@@ -12,12 +12,8 @@ messages into a new thread.
 import asyncio
 import json
 import logging
-import os
-import shutil
-import sys
 from collections import OrderedDict
 from dataclasses import dataclass
-from pathlib import Path
 
 from open_webui.utils.subscriptions.common import (
     ACCESS_CHAT,
@@ -37,7 +33,8 @@ from open_webui.utils.subscriptions.events import (
     TokenUsage,
     TurnFailed,
 )
-from open_webui.utils.subscriptions.process import ChildProcess, ProcessClosedError, subscription_env
+from open_webui.utils.subscriptions.discovery import TOOL_CODEX
+from open_webui.utils.subscriptions.process import ProcessClosedError
 
 log = logging.getLogger(__name__)
 
@@ -56,38 +53,6 @@ REQUEST_TIMEOUT = 60
 
 class CodexRpcError(SubscriptionError):
     pass
-
-
-def _npm_vendor_binary(bin_dir: Path) -> str | None:
-    """npm installs a codex.cmd shim; the native binary sits in node_modules."""
-    executable_name = 'codex.exe' if sys.platform == 'win32' else 'codex'
-    package_dir = bin_dir / 'node_modules' / '@openai' / 'codex'
-    patterns = [
-        f'node_modules/@openai/codex-*/vendor/*/bin/{executable_name}',
-        f'vendor/*/codex/{executable_name}',
-    ]
-    for pattern in patterns:
-        matches = sorted(package_dir.glob(pattern))
-        if matches:
-            return str(matches[0])
-    return None
-
-
-def find_codex_cli(configured_path: str = '') -> str | None:
-    if configured_path:
-        if os.path.isfile(configured_path):
-            return configured_path
-        return None
-
-    on_path = shutil.which('codex')
-    if not on_path:
-        return None
-    if Path(on_path).suffix.lower() == '.exe':
-        return on_path
-    vendor_binary = _npm_vendor_binary(Path(on_path).parent)
-    if vendor_binary:
-        return vendor_binary
-    return on_path
 
 
 def readable_codex_error(message: str) -> str:
@@ -309,11 +274,12 @@ class CodexTurnParser:
 class CodexAppServer:
     """One ``codex app-server`` process and its JSON-RPC traffic."""
 
-    def __init__(self, cli: str, cwd: str, on_notification):
+    def __init__(self, machine, cli: str, cwd: str, on_notification):
+        self.machine = machine
         self.cli = cli
         self._cwd = cwd
         self._on_notification = on_notification
-        self._process: ChildProcess | None = None
+        self._process = None
         self._reader: asyncio.Task | None = None
         self._pending: dict[int, asyncio.Future] = {}
         self._thread_queues: dict[str, asyncio.Queue] = {}
@@ -332,7 +298,7 @@ class CodexAppServer:
             args = [self.cli, 'app-server']
             for feature in DISABLED_FEATURES:
                 args.extend(['--disable', feature])
-            self._process = ChildProcess(args, self._cwd, subscription_env())
+            self._process = await self.machine.start_process(args, self._cwd)
             self.generation += 1
             self._reader = asyncio.create_task(self._read_messages(self._process))
             client_info = {'name': 'buddy', 'title': 'Buddy', 'version': '1.0'}
@@ -383,7 +349,7 @@ class CodexAppServer:
     def unsubscribe(self, thread_id: str) -> None:
         self._thread_queues.pop(thread_id, None)
 
-    async def _read_messages(self, process: ChildProcess) -> None:
+    async def _read_messages(self, process) -> None:
         while True:
             line = await process.read_line()
             if line is None:
@@ -452,6 +418,7 @@ class CodexAppServer:
 @dataclass
 class LiveThread:
     thread_id: str
+    machine_id: str
     generation: int
     access: str
     cwd: str
@@ -459,7 +426,8 @@ class LiveThread:
 
 
 class CodexLogin:
-    def __init__(self, method: str, login_id: str, url: str, user_code: str | None):
+    def __init__(self, machine_id: str, method: str, login_id: str, url: str, user_code: str | None):
+        self.machine_id = machine_id
         self.method = method
         self.login_id = login_id
         self.url = url
@@ -482,9 +450,9 @@ class CodexProvider:
     id = PROVIDER_ID
     name = 'ChatGPT'
 
-    def __init__(self, chat_dir: Path):
-        self._chat_dir = chat_dir
-        self._server: CodexAppServer | None = None
+    def __init__(self):
+        # One app-server per machine, keyed by machine id.
+        self._servers: dict[str, CodexAppServer] = {}
         self._live_threads: OrderedDict[str, LiveThread] = OrderedDict()
         self._login: CodexLogin | None = None
         self._model_efforts: dict[str, list[str]] = {}
@@ -506,30 +474,33 @@ class CodexProvider:
                 login.state = 'error'
                 login.message = params.get('error') or 'Sign-in did not finish.'
 
-    def _cli_cwd(self) -> str:
-        """The app-server starts in Buddy's empty chat folder."""
-        self._chat_dir.mkdir(parents=True, exist_ok=True)
-        return str(self._chat_dir)
+    def _forget_machine_threads(self, machine_id: str) -> None:
+        for key, live in list(self._live_threads.items()):
+            if live.machine_id == machine_id:
+                del self._live_threads[key]
 
-    async def _server_for(self, settings: ProviderSettings) -> CodexAppServer:
-        cli = find_codex_cli(settings.cli_path)
+    async def _server_for(self, settings: ProviderSettings, machine) -> CodexAppServer:
+        """The machine's app-server; it starts in the machine's empty chat folder."""
+        cli = await machine.find_tool(TOOL_CODEX, settings.cli_path)
         if not cli:
-            raise SubscriptionError(NOT_INSTALLED_MESSAGE)
-        if self._server and self._server.cli != cli:
-            self._server.stop()
-            self._server = None
-            self._live_threads.clear()
-        if not self._server:
-            self._server = CodexAppServer(cli, self._cli_cwd(), self._on_notification)
-        await self._server.ensure_started()
-        return self._server
+            raise SubscriptionError(f'{machine.name}: {NOT_INSTALLED_MESSAGE}')
+        server = self._servers.get(machine.id)
+        if server and (server.cli != cli or server.machine is not machine):
+            server.stop()
+            server = None
+            self._forget_machine_threads(machine.id)
+        if not server:
+            server = CodexAppServer(machine, cli, await machine.chat_dir(), self._on_notification)
+            self._servers[machine.id] = server
+        await server.ensure_started()
+        return server
 
-    async def status(self, settings: ProviderSettings) -> dict:
-        cli = find_codex_cli(settings.cli_path)
+    async def status(self, settings: ProviderSettings, machine) -> dict:
+        cli = await machine.find_tool(TOOL_CODEX, settings.cli_path)
         if not cli:
             return {'installed': False, 'signed_in': False, 'message': NOT_INSTALLED_MESSAGE}
         try:
-            server = await self._server_for(settings)
+            server = await self._server_for(settings, machine)
             account_info = await server.request('account/read', {}, timeout=30)
         except SubscriptionError as error:
             return {'installed': True, 'cli_path': cli, 'signed_in': False, 'message': str(error)}
@@ -560,8 +531,8 @@ class CodexProvider:
         status['usage'] = self.rate_limits
         return status
 
-    async def list_models(self, settings: ProviderSettings) -> list[ProviderModel]:
-        server = await self._server_for(settings)
+    async def list_models(self, settings: ProviderSettings, machine) -> list[ProviderModel]:
+        server = await self._server_for(settings, machine)
         result = await server.request('model/list', {}, timeout=30)
         models = []
         for entry in result.get('data') or []:
@@ -585,15 +556,17 @@ class CodexProvider:
             )
         return models
 
-    async def start_login(self, settings: ProviderSettings, method: str) -> dict:
+    async def start_login(self, settings: ProviderSettings, machine, method: str) -> dict:
         await self.cancel_login()
-        server = await self._server_for(settings)
+        server = await self._server_for(settings, machine)
         if method == 'device':
             result = await server.request('account/login/start', {'type': 'chatgptDeviceCode'})
-            login = CodexLogin('device', result.get('loginId'), result.get('verificationUrl'), result.get('userCode'))
+            login = CodexLogin(
+                machine.id, 'device', result.get('loginId'), result.get('verificationUrl'), result.get('userCode')
+            )
         else:
             result = await server.request('account/login/start', {'type': 'chatgpt'})
-            login = CodexLogin('browser', result.get('loginId'), result.get('authUrl'), None)
+            login = CodexLogin(machine.id, 'browser', result.get('loginId'), result.get('authUrl'), None)
         self._login = login
         return login.to_dict()
 
@@ -608,18 +581,21 @@ class CodexProvider:
     async def cancel_login(self) -> None:
         login = self._login
         self._login = None
-        if not login or login.state != 'waiting' or not self._server or not self._server.running:
+        if not login or login.state != 'waiting':
+            return
+        server = self._servers.get(login.machine_id)
+        if not server or not server.running:
             return
         try:
-            await self._server.request('account/login/cancel', {'loginId': login.login_id}, timeout=10)
+            await server.request('account/login/cancel', {'loginId': login.login_id}, timeout=10)
         except SubscriptionError as error:
             log.info('Could not cancel the ChatGPT sign-in: %s', error)
 
-    async def logout(self, settings: ProviderSettings) -> None:
+    async def logout(self, settings: ProviderSettings, machine) -> None:
         await self.cancel_login()
-        server = await self._server_for(settings)
+        server = await self._server_for(settings, machine)
         await server.request('account/logout', None)
-        self._live_threads.clear()
+        self._forget_machine_threads(machine.id)
         self.rate_limits = None
 
     def _effort(self, turn: TurnRequest) -> str | None:
@@ -693,10 +669,9 @@ class CodexProvider:
         self._live_threads[key] = live
         while len(self._live_threads) > LIVE_THREAD_LIMIT:
             _, oldest = self._live_threads.popitem(last=False)
-            self._release_thread(oldest.thread_id)
+            self._release_thread(self._servers.get(oldest.machine_id), oldest.thread_id)
 
-    def _release_thread(self, thread_id: str) -> None:
-        server = self._server
+    def _release_thread(self, server: CodexAppServer | None, thread_id: str) -> None:
         if not server or not server.running:
             return
 
@@ -708,9 +683,8 @@ class CodexProvider:
 
         asyncio.create_task(unsubscribe())
 
-    def _interrupt_turn(self, thread_id: str, turn_id: str) -> None:
-        server = self._server
-        if not server or not server.running:
+    def _interrupt_turn(self, server: CodexAppServer, thread_id: str, turn_id: str) -> None:
+        if not server.running:
             return
 
         async def interrupt():
@@ -718,15 +692,16 @@ class CodexProvider:
                 await server.request('turn/interrupt', {'threadId': thread_id, 'turnId': turn_id}, timeout=10)
             except SubscriptionError as error:
                 log.debug('Could not interrupt Codex turn %s: %s', turn_id, error)
-            self._release_thread(thread_id)
+            self._release_thread(server, thread_id)
 
         asyncio.create_task(interrupt())
 
     async def run_turn(self, turn: TurnRequest):
         """Run one chat turn and yield its events."""
-        server = await self._server_for(turn.settings)
+        machine = turn.machine
+        server = await self._server_for(turn.settings, machine)
         conversation = turn.conversation
-        history_key = conversation_key(conversation.history, conversation.system)
+        history_key = f'{machine.id}|{conversation_key(conversation.history, conversation.system)}'
 
         live = None
         if not turn.is_task:
@@ -767,16 +742,18 @@ class CodexProvider:
             server.unsubscribe(thread_id)
             if completed and not turn.is_task:
                 answered = conversation.history + [conversation.prompt, ChatTurn('assistant', parser.reply_text)]
-                next_key = conversation_key(answered, conversation.system)
-                live = LiveThread(thread_id, server.generation, turn.access, turn.cwd, parser.usage_total)
+                next_key = f'{machine.id}|{conversation_key(answered, conversation.system)}'
+                live = LiveThread(
+                    thread_id, machine.id, server.generation, turn.access, turn.cwd, parser.usage_total
+                )
                 self._keep_live_thread(next_key, live)
             elif parser and not parser.finished:
-                self._interrupt_turn(thread_id, parser.turn_id)
+                self._interrupt_turn(server, thread_id, parser.turn_id)
             else:
-                self._release_thread(thread_id)
+                self._release_thread(server, thread_id)
 
     def stop(self) -> None:
-        if self._server:
-            self._server.stop()
-        self._server = None
+        for server in self._servers.values():
+            server.stop()
+        self._servers.clear()
         self._live_threads.clear()

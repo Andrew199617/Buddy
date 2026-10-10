@@ -43,6 +43,8 @@ RUN npm ci --force
 
 COPY . .
 ENV APP_BUILD_HASH=${BUILD_HASH}
+# The Buddy frontend build needs more than Node's default heap.
+ENV NODE_OPTIONS=--max-old-space-size=8192
 RUN npm run build && \
     if [ "$USE_SLIM" = "true" ]; then find build -type f -name '*.map' -delete; fi
 
@@ -53,6 +55,14 @@ RUN chown -R $UID:$GID /app/backend && \
     chmod -R g=u /app/backend/open_webui/static
 
 ######## WebUI backend ########
+# Buddy's production frontend server (local/serve-frontend.mjs) uses the build
+# output and Vite from this stage. Kept before `base` so `base` stays the
+# default target.
+FROM build AS web
+ENV NODE_ENV=production
+EXPOSE 8082
+CMD ["node", "local/serve-frontend.mjs", "--host", "0.0.0.0", "--port", "8082", "--backend", "http://buddy:8080", "--frontend-dir", "build"]
+
 FROM python:3.11-slim-bookworm AS base
 
 # Use args
@@ -203,6 +213,9 @@ RUN if [ "$USE_OLLAMA" = "true" ]; then \
 COPY --chown=$UID:$GID --from=build /app/build /app/build
 COPY --chown=$UID:$GID --from=build /app/CHANGELOG.md /app/CHANGELOG.md
 COPY --chown=$UID:$GID --from=build /app/package.json /app/package.json
+# Buddy's runtime patches and web scripts (run with `python /app/local/serve.py serve`)
+COPY --chown=$UID:$GID --from=build /app/local /app/local
+COPY --chown=$UID:$GID --from=build /app/BUDDY_CHANGELOG.md /app/BUDDY_CHANGELOG.md
 
 # copy backend files with the ownership and static permissions prepared above
 COPY --from=build /app/backend .

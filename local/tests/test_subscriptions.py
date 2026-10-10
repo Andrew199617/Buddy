@@ -16,7 +16,7 @@ from unittest.mock import patch
 ROOT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT_DIR / 'backend'))
 
-from open_webui.utils.subscriptions import claude_code, codex, streaming  # noqa: E402
+from open_webui.utils.subscriptions import claude_code, codex, discovery, runner, streaming  # noqa: E402
 from open_webui.utils.subscriptions.common import (  # noqa: E402
     ProviderSettings,
     TurnRequest,
@@ -37,6 +37,7 @@ from open_webui.utils.subscriptions.events import (  # noqa: E402
     TokenUsage,
     TurnFailed,
 )
+from open_webui.utils.subscriptions.machines import LocalMachine, RemoteMachine, temp_file_arg  # noqa: E402
 from open_webui.utils.subscriptions.process import ChildProcess, subscription_env  # noqa: E402
 
 PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgo='
@@ -225,7 +226,7 @@ class ClaudeStreamTests(unittest.TestCase):
 
     def test_turn_arguments_follow_access_level(self):
         with tempfile.TemporaryDirectory() as directory:
-            provider = claude_code.ClaudeCodeProvider(Path(directory), Path(directory))
+            provider = claude_code.ClaudeCodeProvider(Path(directory))
             conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
 
             def turn_args(access, **turn_options):
@@ -308,7 +309,7 @@ class ClaudeStreamTests(unittest.TestCase):
         started = []
 
         class FakeProcess:
-            def __init__(self, args, cwd, env):
+            def __init__(self, args):
                 messages, stderr = scripted_runs[len(started)]
                 started.append(self)
                 self.args = args
@@ -336,9 +337,19 @@ class ClaudeStreamTests(unittest.TestCase):
             def kill(self):
                 pass
 
+        class FakeMachine:
+            id = 'fake'
+            name = 'Fake machine'
+
+            async def find_tool(self, tool, configured_path=''):
+                return 'claude'
+
+            async def start_process(self, args, cwd, extra_env=None, temp_files=None):
+                return FakeProcess(args)
+
         async def run():
             with tempfile.TemporaryDirectory() as directory:
-                provider = claude_code.ClaudeCodeProvider(Path(directory), Path(directory))
+                provider = claude_code.ClaudeCodeProvider(Path(directory))
                 conversation = parse_messages(
                     [
                         {'role': 'user', 'content': 'My name is Ada'},
@@ -346,12 +357,11 @@ class ClaudeStreamTests(unittest.TestCase):
                         {'role': 'user', 'content': 'Who am I?'},
                     ]
                 )
-                turn = TurnRequest('opus', conversation, ProviderSettings(enable=True), directory)
+                turn = TurnRequest(
+                    'opus', conversation, ProviderSettings(enable=True), directory, machine=FakeMachine()
+                )
                 provider._sessions.put(provider._session_key(turn, conversation.history), 'old-session')
-                with patch.object(claude_code, 'ChildProcess', FakeProcess), patch.object(
-                    claude_code, 'find_claude_cli', return_value='claude'
-                ):
-                    events = await collect(provider.run_turn(turn))
+                events = await collect(provider.run_turn(turn))
                 answered = conversation.history + [conversation.prompt, ChatTurn('assistant', 'You are Ada.')]
                 return events, provider._sessions.get(provider._session_key(turn, answered))
 
@@ -364,7 +374,7 @@ class ClaudeStreamTests(unittest.TestCase):
 
     def test_rate_limit_events_become_usage_windows(self):
         with tempfile.TemporaryDirectory() as directory:
-            provider = claude_code.ClaudeCodeProvider(Path(directory), Path(directory))
+            provider = claude_code.ClaudeCodeProvider(Path(directory))
             self.assertIsNone(provider.usage_summary())
             provider._record_rate_limit(
                 {'status': 'allowed', 'rateLimitType': 'five_hour', 'utilization': 0.42, 'resetsAt': 1_800_000_000_000}
@@ -384,7 +394,7 @@ class ClaudeStreamTests(unittest.TestCase):
 
         async def run():
             with tempfile.TemporaryDirectory() as directory:
-                provider = claude_code.ClaudeCodeProvider(Path(directory), Path(directory))
+                provider = claude_code.ClaudeCodeProvider(Path(directory))
                 process = FakeProcess()
                 login = claude_code.ClaudeLogin(process)
                 login.watcher = asyncio.get_running_loop().create_future()
@@ -397,13 +407,18 @@ class ClaudeStreamTests(unittest.TestCase):
 
     def test_finds_newest_desktop_bundle(self):
         with tempfile.TemporaryDirectory() as directory:
-            bundles = Path(directory) / 'Claude' / 'claude-code'
-            for version in ('2.1.9', '2.1.295', '2.1.30'):
-                binary = bundles / version / 'abc' / 'claude.exe'
+            appdata = Path(directory) / 'Roaming'
+            local_appdata = Path(directory) / 'Local'
+            # The MSIX app's real files live under Packages; %APPDATA% is virtualized.
+            package_bundles = local_appdata / 'Packages' / 'Claude_abc123' / 'LocalCache' / 'Roaming' / 'Claude'
+            installs = [(appdata / 'Claude', '2.1.9'), (package_bundles, '2.1.295'), (appdata / 'Claude', '2.1.30')]
+            for root, version in installs:
+                binary = root / 'claude-code' / version / 'abc' / 'claude.exe'
                 binary.parent.mkdir(parents=True)
                 binary.write_text('')
-            with patch.dict(os.environ, {'APPDATA': directory}):
-                newest = claude_code._newest_desktop_bundle()
+            with patch.dict(os.environ, {'APPDATA': str(appdata), 'LOCALAPPDATA': str(local_appdata)}):
+                newest = discovery._newest_desktop_bundle()
+            self.assertIn('Claude_abc123', newest)
             self.assertIn('2.1.295', newest)
 
 
@@ -464,7 +479,7 @@ class CodexTests(unittest.TestCase):
                 self.method = method
                 return {'config': {'mcp_servers': {'node_repl': {'command': 'node'}}}}
 
-        provider = codex.CodexProvider(Path('.'))
+        provider = codex.CodexProvider()
         conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
 
         def thread_config(access):
@@ -495,7 +510,7 @@ class CodexTests(unittest.TestCase):
         self.assertIsNone(codex.summarize_rate_limits(None))
 
     def test_effort_uses_model_levels(self):
-        provider = codex.CodexProvider(Path('.'))
+        provider = codex.CodexProvider()
         provider._model_efforts['gpt-x'] = ['low', 'medium', 'high']
         conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
 
@@ -545,6 +560,103 @@ class ProcessTests(unittest.TestCase):
             return first, second, end
 
         self.assertEqual(asyncio.run(run()), ('echo:first', 'echo:second', None))
+
+
+class RunnerTests(unittest.TestCase):
+    """A real runner served in-process, driven through RemoteMachine."""
+
+    def run_with_runner(self, scenario, key='test-key', client_key=None):
+        from aiohttp.test_utils import TestServer
+
+        async def run():
+            with tempfile.TemporaryDirectory() as directory:
+                server = TestServer(runner.build_app(key, Path(directory)))
+                await server.start_server()
+                machine = RemoteMachine('pc', 'Test PC', str(server.make_url('')), client_key or key)
+                try:
+                    return await scenario(machine, Path(directory))
+                finally:
+                    await machine.close()
+                    await server.close()
+
+        return asyncio.run(run())
+
+    def test_health_and_short_commands(self):
+        async def scenario(machine, state_dir):
+            info = await machine.info()
+            returncode, stdout, _ = await machine.run(
+                [sys.executable, '-c', 'print("hello from runner")'], await machine.chat_dir(), 30
+            )
+            exists = await machine.path_exists(str(state_dir), 'dir')
+            missing = await machine.path_exists(str(state_dir / 'nope.txt'), 'file')
+            return info, returncode, stdout, exists, missing
+
+        info, returncode, stdout, exists, missing = self.run_with_runner(scenario)
+        self.assertTrue(info['ok'])
+        self.assertTrue(info['chat_dir'].endswith('chat'))
+        self.assertEqual((returncode, stdout.strip()), (0, 'hello from runner'))
+        self.assertTrue(exists)
+        self.assertFalse(missing)
+
+    def test_streams_a_process_over_pipes(self):
+        script = (
+            'import sys\n'
+            'print("instructions:" + open(sys.argv[1], encoding="utf-8").read(), flush=True)\n'
+            'for line in sys.stdin:\n'
+            '    print("echo:" + line.strip(), flush=True)\n'
+        )
+
+        async def scenario(machine, state_dir):
+            process = await machine.start_process(
+                [sys.executable, '-c', script, temp_file_arg('instructions')],
+                await machine.chat_dir(),
+                temp_files={'instructions': 'be brief'},
+            )
+            first = await asyncio.wait_for(process.read_line(), 20)
+            # JSON with escapes and a long line must pass through unchanged.
+            payload = json.dumps({'text': 'quote " slash \\ newline \\n', 'pad': 'x' * 10000})
+            await process.write(payload + '\n')
+            second = await asyncio.wait_for(process.read_line(), 20)
+            process.close_stdin()
+            end = await asyncio.wait_for(process.read_line(), 20)
+            code = await process.wait(20)
+            leftover_temp_files = list((state_dir / 'tmp').iterdir())
+            return first, second, payload, end, code, leftover_temp_files
+
+        first, second, payload, end, code, leftover = self.run_with_runner(scenario)
+        self.assertEqual(first, 'instructions:be brief')
+        self.assertEqual(second, 'echo:' + payload)
+        self.assertIsNone(end)
+        self.assertEqual(code, 0)
+        self.assertEqual(leftover, [])
+
+    def test_wrong_key_is_rejected(self):
+        async def scenario(machine, state_dir):
+            with self.assertRaises(SubscriptionError) as raised:
+                await machine.info()
+            return str(raised.exception)
+
+        message = self.run_with_runner(scenario, client_key='wrong-key')
+        self.assertIn('runner key', message)
+
+    def test_local_machine_substitutes_temp_files(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as directory:
+                machine = LocalMachine(Path(directory))
+                process = await machine.start_process(
+                    [sys.executable, '-c', 'import sys; print(open(sys.argv[1]).read())', temp_file_arg('notes')],
+                    await machine.chat_dir(),
+                    temp_files={'notes': 'hi'},
+                )
+                line = await asyncio.wait_for(process.read_line(), 20)
+                await process.wait(20)
+                temp_path = process.args[-1]
+                process.kill()
+                return line, os.path.exists(temp_path)
+
+        line, still_there = asyncio.run(run())
+        self.assertEqual(line, 'hi')
+        self.assertFalse(still_there)
 
 
 class StreamingTests(unittest.TestCase):

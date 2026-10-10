@@ -3,6 +3,7 @@
 
 	import type {
 		SubscriptionAccess,
+		SubscriptionMachine,
 		SubscriptionProvider,
 		SubscriptionSettings
 	} from '$lib/apis/subscriptions';
@@ -15,11 +16,13 @@
 
 	export let show = false;
 	export let provider: SubscriptionProvider;
+	export let machines: SubscriptionMachine[] = [];
 	// Resolves to true when the settings were saved.
 	export let onSave: (settings: Partial<SubscriptionSettings>) => Promise<boolean> = async () =>
 		true;
 
 	let access: SubscriptionAccess = 'chat';
+	let machineId = 'local';
 	let workspace = '';
 	let cliPath = '';
 	let saving = false;
@@ -53,13 +56,14 @@
 			value: 'full',
 			label: $i18n.t('Full access'),
 			description: $i18n.t(
-				'Can edit files and run terminal commands on this computer as you, without asking first.'
+				'Can edit files and run terminal commands on the machine as you, without asking first.'
 			)
 		}
 	];
 
 	const loadSettings = () => {
 		access = provider.settings.access;
+		machineId = provider.settings.machine_id;
 		workspace = provider.settings.workspace;
 		cliPath = provider.settings.cli_path;
 	};
@@ -70,7 +74,12 @@
 
 	const save = async () => {
 		saving = true;
-		const saved = await onSave({ access, workspace: workspace.trim(), cli_path: cliPath.trim() });
+		const saved = await onSave({
+			access,
+			machine_id: machineId,
+			workspace: workspace.trim(),
+			cli_path: cliPath.trim()
+		});
 		saving = false;
 		if (saved) {
 			show = false;
@@ -96,6 +105,20 @@
 		</div>
 
 		<form class="flex flex-col gap-4 text-sm" on:submit|preventDefault={save}>
+			<div class="flex flex-col gap-1">
+				<label class="text-xs text-gray-500" for="subscription-machine">{$i18n.t('Runs on')}</label>
+				<select id="subscription-machine" class={inputClass} bind:value={machineId}>
+					{#each machines as machine (machine.id)}
+						<option value={machine.id}>{machine.name}</option>
+					{/each}
+				</select>
+				<p class="text-xs text-gray-400 dark:text-gray-600">
+					{$i18n.t(
+						'The machine where the CLI runs, signs in, and works on files. Add machines under Machines.'
+					)}
+				</p>
+			</div>
+
 			<fieldset class="flex flex-col gap-1.5">
 				<legend class="mb-1 text-xs text-gray-500">{$i18n.t('What the model can do')}</legend>
 				{#each accessOptions as option}
@@ -121,7 +144,7 @@
 				{#if access === 'full'}
 					<p class="text-xs text-amber-700 dark:text-amber-400">
 						{$i18n.t(
-							'Anyone who can sign in to Buddy as an administrator can then run commands on this computer.'
+							'Anyone who can sign in to Buddy as an administrator can then run commands on that machine.'
 						)}
 					</p>
 				{/if}
