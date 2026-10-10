@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
-	import { createEventDispatcher, onMount, getContext } from 'svelte';
+	import { createEventDispatcher, onMount, onDestroy, getContext } from 'svelte';
 
 	const dispatch = createEventDispatcher();
 
@@ -62,6 +62,15 @@
 	let subscriptionsError = '';
 	let showMachineModal = false;
 	let editedMachine: SubscriptionMachine | null = null;
+	let disposed = false;
+	let subscriptionsGeneration = 0;
+	let modelsGeneration = 0;
+
+	onDestroy(() => {
+		disposed = true;
+		subscriptionsGeneration += 1;
+		modelsGeneration += 1;
+	});
 
 	let pipelineUrls: Record<string, boolean> = {};
 	let showAddOpenAIConnectionModal = false;
@@ -138,12 +147,20 @@
 	};
 
 	const loadSubscriptions = async () => {
+		if (disposed) return false;
+		const generation = ++subscriptionsGeneration;
+		modelsGeneration += 1;
 		try {
 			const result = await getSubscriptions(localStorage.token);
+			if (disposed || generation !== subscriptionsGeneration) return false;
 			subscriptionProviders = result.providers;
 			subscriptionMachines = result.machines;
+			subscriptionsError = '';
+			return true;
 		} catch (error) {
+			if (disposed || generation !== subscriptionsGeneration) return false;
 			subscriptionsError = `${error}`;
+			return false;
 		}
 	};
 
@@ -152,15 +169,26 @@
 		showMachineModal = true;
 	};
 
-	// Removing a machine can move providers back to this server, so reload both.
+	// Machine changes disable affected providers; reload their selected host and access.
 	const handleMachinesChanged = async (machines: SubscriptionMachine[]) => {
+		if (disposed) return;
 		subscriptionMachines = machines;
-		await loadSubscriptions();
-		await refreshModels();
+		if (await loadSubscriptions()) await refreshModels();
+	};
+
+	const handleSubscriptionSettingsChanged = async () => {
+		if (await loadSubscriptions()) await refreshModels();
 	};
 
 	const refreshModels = async () => {
-		await models.set(await getModels());
+		if (disposed) return;
+		const generation = ++modelsGeneration;
+		try {
+			const nextModels = await getModels();
+			if (!disposed && generation === modelsGeneration) models.set(nextModels);
+		} catch (error) {
+			if (!disposed && generation === modelsGeneration) toast.error(`${error}`);
+		}
 	};
 
 	const refreshModelListHandler = async () => {
@@ -422,6 +450,9 @@
 					)}
 				</p>
 
+				{#if subscriptionsError}
+					<p role="alert" class="text-xs text-red-600 dark:text-red-400">{subscriptionsError}</p>
+				{/if}
 				{#if subscriptionProviders}
 					<div>
 						<div class="mb-1.5 flex items-center justify-between gap-4">
@@ -471,12 +502,11 @@
 								{provider}
 								machines={subscriptionMachines}
 								onModelsChanged={refreshModels}
+								onSettingsChanged={handleSubscriptionSettingsChanged}
 							/>
 						{/each}
 					</div>
-				{:else if subscriptionsError}
-					<p class="text-xs text-red-600 dark:text-red-400">{subscriptionsError}</p>
-				{:else}
+				{:else if !subscriptionsError}
 					<div class="flex items-center gap-2 text-xs text-gray-400">
 						<Spinner className="size-3.5" />
 						{$i18n.t('Checking Claude Code and Codex…')}
