@@ -495,15 +495,20 @@ async def verify_machine(url: str, key: str) -> dict:
 
 
 async def save_machine(
-    machine_id: str | None, name: str, url: str, key: str | None, browser_url: str | None = None
+    machine_id: str | None, name: str, url: str, key: str | None, browser_url: str | None = None,
+    *, browser_url_supplied: bool | None = None
 ) -> dict:
+    """Preserve an omitted browser address; explicit null uses its supplied flag."""
     _require_single_worker()
     async with _machine_lock, _ProviderLocks():
-        return await _save_machine(machine_id, name, url, key, browser_url)
+        return await _save_machine(
+            machine_id, name, url, key, browser_url, browser_url_supplied=browser_url_supplied
+        )
 
 
 async def _save_machine(
-    machine_id: str | None, name: str, url: str, key: str | None, browser_url: str | None = None
+    machine_id: str | None, name: str, url: str, key: str | None, browser_url: str | None = None,
+    *, browser_url_supplied: bool | None = None
 ) -> dict:
     """Add or update a runner after checking that it answers with the key."""
     name = name.strip()
@@ -520,7 +525,10 @@ async def _save_machine(
     if not key:
         raise SubscriptionError('Enter the runner key from ~/.buddy-runner/key on that computer.')
 
-    browser_url = validate_browser_url(browser_url)
+    if browser_url_supplied is None:
+        browser_url_supplied = browser_url is not None
+    if browser_url_supplied:
+        browser_url = validate_browser_url(browser_url)
     info = await verify_machine(url, key)
 
     if existing:
@@ -536,7 +544,8 @@ async def _save_machine(
         saved = {'id': _machine_id_from_name(name, taken), 'name': name, 'url': url}
         saved['key'] = key
         configs.append(saved)
-    saved['browser_url'] = browser_url
+    if browser_url_supplied:
+        saved['browser_url'] = browser_url
     # Only key-free, observed metadata reaches the UI. Paths in health are not grants.
     observed_host = info.get('host')
     if isinstance(observed_host, dict):

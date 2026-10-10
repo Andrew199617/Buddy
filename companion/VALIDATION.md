@@ -194,3 +194,61 @@ and exact preservation of incoming base paths outside intentional resolutions.
 PR #4 must reconcile its own UI/unread work with this base and validate the
 combined build. Earlier build/browser records remain historical; no new build,
 typecheck or changed-base browser pass is claimed by this backend validation.
+
+## Independent completed review batch
+
+This local batch fixes four reproduced issues independently of the pending
+Runner transport choice: unsafe key storage, disconnected remote streams that
+still appeared live, cold/restarted Codex effort metadata, and machine editors
+clearing an omitted browser address. It also includes the five subscription
+client files supplied by PR #4 so standalone provider actions carry captured
+machine ID and revision proof. The stricter backend guards remain unchanged.
+
+The ordinary merge preserves concurrent PR #3 commit `982d21d8`, including its
+POSIX pending-stdin fixture correction. The historical Claude base is still
+`474eef95`. Newly observed Claude `d381d7a5` is not integrated in this batch:
+its implicit Docker/Tailscale HTTP exemptions require the pending product
+decision and further source reconciliation. No transport fix, latest-base
+validation or publication is claimed by this completed-batch record.
+
+The final Python **3.11.16** aggregate passed on unchanged production and test
+source: **297 tests run, 283 passed, 14 skipped, zero failures**, all ten suite
+exits zero. All 32 LF-normalized production/test/client hashes match before and
+after execution. Four skips are the existing native POSIX containment/workspace
+cases; the key suite adds eight native POSIX cases unavailable on Windows and
+two Windows symlink fixtures unavailable without the necessary privilege.
+Synthetic POSIX metadata tests do not establish native POSIX coverage.
+
+| Suite | Completed-batch result |
+| --- | --- |
+| Offline subscriptions and discovery | 47 passed, 2.974s |
+| Machine metadata and actual Pydantic forms | 28 passed, 1.916s |
+| Provider host transitions and recovery | 66 passed, 4.685s |
+| Native containment and temporary files | 29 run: 27 passed, 2 skips; 32.106s |
+| Remote cleanup and tracked startup | 25 passed, 20.003s |
+| Workspace boundaries and terminal races | 45 run: 43 passed, 2 skips; 34.681s |
+| Runner API boundaries and shutdown | 12 passed, 6.873s |
+| Key storage | 25 run: 15 passed, 10 skips; 0.246s |
+| Remote EOF liveness and cleanup debt | 7 passed, 1.475s |
+| Codex effort metadata lifecycle | 13 passed, 0.492s |
+
+Nine API tests also pass on the exact local client bytes with Node **22.23.3**
+and Vitest **1.6.1**. PR #4's isolated `b31a94b8` plus the identical supplied
+client patch built successfully with Node 22.23.3 and passed **60/60** synthetic
+desktop/phone provider cases. It reported zero fixture errors, external requests
+and WebSockets. Its served production index SHA256 is
+`79D692BE23712582D424814E2AE92052225AD54DAD119F6E056F4289F828C825`.
+All six client file hashes and patch SHA256
+`BC2E8D68D3367E0F1B47ACA3B9DF500071532B23E2AE4643809A7C0775D4CD4E`
+match the supplied provenance. These browser fixtures validate the supplied
+frontend with synthetic responses; they do not claim a new full combined build
+or actual Runner browser pass after the backend changes. No current full
+typecheck pass is claimed.
+
+Task evidence is `runner-followthrough-validation.json`, its ten suite logs,
+and `runner-followthrough-completed-batch.json`, which records the local commit,
+full historical-base patch, a delta from `b31a94b8`, and a backend-only delta.
+Independent source reviews found no confirmed blocker in the scoped completed
+fixes. Fixtures use temporary directories, disposable Python processes and
+ephemeral loopback servers; real provider accounts, saved keys, live grants,
+Docker, services and shared Claude refs remain untouched.
