@@ -16,7 +16,7 @@ from unittest.mock import patch
 ROOT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT_DIR / 'backend'))
 
-from open_webui.utils.subscriptions import runner  # noqa: E402
+from open_webui.utils.subscriptions import runner, streaming  # noqa: E402
 from open_webui.utils.subscriptions.conversation import (  # noqa: E402
     CONTINUE_PROMPT,
     ChatTurn,
@@ -24,11 +24,22 @@ from open_webui.utils.subscriptions.conversation import (  # noqa: E402
     conversation_key,
     parse_messages,
 )
-from open_webui.utils.subscriptions.events import SubscriptionError  # noqa: E402
+from open_webui.utils.subscriptions.events import (  # noqa: E402
+    ReasoningDelta,
+    StatusUpdate,
+    SubscriptionError,
+    TextDelta,
+    TokenUsage,
+    TurnFailed,
+)
 from open_webui.utils.subscriptions.machines import LocalMachine, RemoteMachine, temp_file_arg  # noqa: E402
 from open_webui.utils.subscriptions.process import ChildProcess, subscription_env  # noqa: E402
 
 PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgo='
+
+
+async def collect(async_iterable) -> list:
+    return [item async for item in async_iterable]
 
 
 class ConversationTests(unittest.TestCase):
@@ -243,6 +254,38 @@ class RunnerTests(unittest.TestCase):
         line, still_there = asyncio.run(run())
         self.assertEqual(line, 'hi')
         self.assertFalse(still_there)
+
+
+class StreamingTests(unittest.TestCase):
+    def test_stream_events_produce_openai_chunks(self):
+        async def events():
+            yield StatusUpdate('Running `ls`')
+            yield ReasoningDelta('thinking')
+            yield TextDelta('Hello')
+            yield TokenUsage(input_tokens=3, output_tokens=2, cached_input_tokens=1)
+            yield TurnFailed('Limit reached')
+
+        lines = asyncio.run(collect(streaming.stream_events(events(), 'codex.gpt-x')))
+        payloads = [json.loads(line[6:]) for line in lines if line.startswith('data: {')]
+        self.assertEqual(payloads[0]['event']['data']['description'], 'Running `ls`')
+        self.assertEqual(payloads[1]['choices'][0]['delta'], {'reasoning_content': 'thinking'})
+        self.assertEqual(payloads[2]['choices'][0]['delta'], {'content': 'Hello'})
+        self.assertEqual(payloads[3]['usage']['prompt_tokens'], 3)
+        self.assertEqual(payloads[3]['choices'], [])
+        self.assertEqual(payloads[4], {'error': {'message': 'Limit reached'}})
+        self.assertTrue(payloads[5]['event']['data']['hidden'])
+        self.assertEqual(payloads[6]['choices'][0]['finish_reason'], 'stop')
+        self.assertEqual(lines[-1], 'data: [DONE]\n\n')
+
+    def test_collect_events_builds_a_completion(self):
+        async def events():
+            yield TextDelta('Hi ')
+            yield TextDelta('there')
+            yield TokenUsage(input_tokens=1, output_tokens=2)
+
+        completion = asyncio.run(streaming.collect_events(events(), 'claude-code.opus'))
+        self.assertEqual(completion['choices'][0]['message']['content'], 'Hi there')
+        self.assertEqual(completion['usage']['total_tokens'], 3)
 
 
 if __name__ == '__main__':
