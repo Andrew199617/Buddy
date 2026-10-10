@@ -303,7 +303,8 @@ dry run first: `matching_paths` counts the uploads it will update, and
 ```powershell
 docker compose -f docker/buddy/compose.yaml run --rm --no-deps buddy python /app/local/update_upload_paths.py --old-data-dir "C:\path\to\data" --dry-run
 docker compose -f docker/buddy/compose.yaml run --rm --no-deps buddy python /app/local/update_upload_paths.py --old-data-dir "C:\path\to\data"
-docker compose -f docker/buddy/compose.yaml up -d
+# With the Runner TLS overlay, add -f docker/buddy/runner-tls.yaml after compose.yaml.
+docker compose -f docker/buddy/compose.yaml up -d --build
 ```
 
 The Windows folder is left unchanged as a backup. Do not start the Windows
