@@ -311,6 +311,8 @@ async function runPermissionScenario({ name, knowledgeOnly, hiddenWorkspace }) {
 		await assertProfileNavigation(page, { notes: true, workspace: true, automations: true });
 		await page.setViewportSize({ width: 1280, height: 900 });
 		await page.locator('#buddy-sidebar-close').waitFor({ state: 'visible' });
+		// The close control is already visible before resize handlers update the fallback links.
+		await page.locator('#sidebar-notes-button').waitFor({ state: 'detached' });
 		assert.equal(await page.locator('#sidebar-notes-button').count(), 0);
 		assert.equal(await page.locator('#sidebar-workspace-button').count(), hiddenWorkspace ? 1 : 0);
 		assert.equal(await page.locator('#sidebar-automations-button').count(), 0);
