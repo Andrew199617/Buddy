@@ -978,6 +978,11 @@ async def _load_status(provider_id: str) -> dict:
         return await get_provider(provider_id).status(settings, machine)
     except (SubscriptionError, OSError) as error:
         return {'installed': True, 'signed_in': False, 'message': str(error)}
+    except Exception as error:
+        # For example a runner connection that closed during the check. Every
+        # user's model list can wait on this refresh, so report signed out.
+        log.warning('Could not check the %s sign-in: %r', PROVIDER_LABELS[provider_id], error)
+        return {'installed': True, 'signed_in': False, 'message': f'Could not check the sign-in: {error}'}
     finally:
         _active_provider_tasks.get(provider_id, set()).discard(task)
 
@@ -993,7 +998,8 @@ async def _load_models(provider_id: str) -> list[ProviderModel]:
             machine = _tracking_machine(provider_id, await get_machine(settings.machine_id))
             _active_provider_tasks.setdefault(provider_id, set()).add(task)
         return await get_provider(provider_id).list_models(settings, machine)
-    except (SubscriptionError, OSError) as error:
+    except Exception as error:
+        # Includes a runner connection that closed during the request.
         log.warning('Could not list %s models: %s', PROVIDER_LABELS[provider_id], error)
         return []
     finally:
@@ -1132,8 +1138,17 @@ async def _provider_models(provider_id: str) -> list[dict]:
 
 
 async def get_subscription_models() -> list[dict]:
-    claude_models, codex_models = await asyncio.gather(_provider_models('claude'), _provider_models('codex'))
+    claude_models, codex_models = await asyncio.gather(_listed_models('claude'), _listed_models('codex'))
     return claude_models + codex_models
+
+
+async def _listed_models(provider_id: str) -> list[dict]:
+    """Every user's model list includes these, so a provider failure adds no models instead of failing it."""
+    try:
+        return await _provider_models(provider_id)
+    except Exception:
+        log.exception('Could not list %s subscription models', PROVIDER_LABELS[provider_id])
+        return []
 
 
 async def _apply_preset(request, payload: dict, metadata: dict, user) -> tuple[str, dict]:

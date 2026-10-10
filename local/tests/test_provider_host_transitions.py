@@ -559,6 +559,37 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(('list_models', 'local', 'local'), self.providers['claude'].calls)
         self.assertEqual(self.config.commits, [])
 
+    async def test_unexpected_refresh_errors_report_signed_out_instead_of_failing_the_model_list(self):
+        async def connection_closed():
+            # A lost runner connection surfaces as ProcessClosedError, a RuntimeError.
+            raise RuntimeError('Fixture runner connection closed')
+
+        self.config.values['subscriptions.codex']['enable'] = False
+        self.providers['claude'].status_hook = connection_closed
+        self.providers['claude'].models_hook = connection_closed
+        status = await self.service._load_status('claude')
+        self.assertFalse(status['signed_in'])
+        self.assertIn('Fixture runner connection closed', status['message'])
+        self.assertEqual(await self.service._load_models('claude'), [])
+        self.assertEqual(await self.service.get_subscription_models(), [])
+        self.assertFalse(self.service.status_cache._entries['claude'].value['signed_in'])
+
+    async def test_one_failing_provider_leaves_the_other_providers_models_listed(self):
+        model = types.SimpleNamespace(
+            key='fixture-model', value='fixture-model', name='Fixture model', description='', efforts=[]
+        )
+        self.providers['codex'].models_hook = AsyncMock(return_value=[model])
+        list_provider_models = self.service._provider_models
+
+        async def claude_fails(provider_id):
+            if provider_id == 'claude':
+                raise RuntimeError('Fixture settings read failed')
+            return await list_provider_models(provider_id)
+
+        with patch.object(self.service, '_provider_models', claude_fails):
+            models = await self.service.get_subscription_models()
+        self.assertEqual([entry['id'] for entry in models], ['codex.fixture-model'])
+
     async def test_deleted_host_can_be_explicitly_replaced_then_enabled_with_the_new_remote_guard(self):
         await self.service.delete_machine('runner-a')
         self.assertEqual(self.config.values['subscriptions.claude']['machine_id'], 'runner-a')
