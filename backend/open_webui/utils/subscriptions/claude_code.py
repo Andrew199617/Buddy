@@ -47,7 +47,8 @@ NOT_INSTALLED_MESSAGE = (
 )
 NOT_SIGNED_IN_MESSAGE = 'Claude is not signed in. Sign in under Admin Settings → Connections → Subscriptions.'
 EFFORT_LEVELS = ('low', 'medium', 'high', 'xhigh', 'max')
-READ_ONLY_TOOLS = 'Read,Grep,Glob,WebSearch,WebFetch'
+# No WebFetch: a prompt in the folder could make it send file contents to any URL.
+READ_ONLY_TOOLS = 'Read,Grep,Glob,WebSearch'
 TRANSCRIPT_INTRO = 'Here is our conversation so far. Continue it by replying to my latest message.'
 INSTRUCTIONS_FILE = 'instructions'
 LOGIN_URL = re.compile(r'https://\S+/oauth/authorize\?\S+')
@@ -598,7 +599,7 @@ class ClaudeCodeProvider:
             args.extend(['--strict-mcp-config', '--disable-slash-commands'])
             args.extend(['--setting-sources', ''])
             args.extend(['--tools', READ_ONLY_TOOLS])
-            args.extend(['--allowedTools', 'WebSearch,WebFetch'])
+            args.extend(['--allowedTools', 'WebSearch'])
         else:
             args.extend(['--append-system-prompt-file', instructions_path])
             args.append('--dangerously-skip-permissions')

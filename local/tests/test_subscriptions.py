@@ -277,6 +277,9 @@ class ClaudeStreamTests(unittest.TestCase):
             self.assertIn('--restricted', read_args)
             self.assertIn('--strict-mcp-config', read_args)
             self.assertEqual(read_args[read_args.index('--setting-sources') + 1], '')
+            # WebFetch could send the folder's files to any URL, so read mode neither offers nor approves it.
+            self.assertNotIn('WebFetch', read_args[read_args.index('--tools') + 1])
+            self.assertEqual(read_args[read_args.index('--allowedTools') + 1], 'WebSearch')
 
             full_args = turn_args('full', effort='max')
             self.assertIn('--dangerously-skip-permissions', full_args)
