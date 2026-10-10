@@ -39,8 +39,13 @@ from open_webui.utils.subscriptions.events import (  # noqa: E402
     TokenUsage,
     TurnFailed,
 )
-from open_webui.utils.subscriptions.machines import LocalMachine, RemoteMachine, temp_file_arg  # noqa: E402
-from open_webui.utils.subscriptions.process import ChildProcess, subscription_env  # noqa: E402
+from open_webui.utils.subscriptions.machines import (  # noqa: E402
+    LocalMachine,
+    RemoteMachine,
+    RemoteProcess,
+    temp_file_arg,
+)
+from open_webui.utils.subscriptions.process import ChildProcess, ProcessClosedError, subscription_env  # noqa: E402
 
 PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgo='
 
@@ -752,12 +757,22 @@ class CodexTests(unittest.TestCase):
         self.assertIsNone(codex.summarize_rate_limits(None))
 
     def test_effort_uses_model_levels(self):
+        # The resolver uses levels carried by the model entry. Turn execution
+        # separately verifies them against the current app-server.
         provider = codex.CodexProvider()
-        provider._model_efforts['gpt-x'] = ['low', 'medium', 'high']
         conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
+        model_efforts = ['low', 'medium', 'high']
 
         def effort(requested, is_task=False):
-            turn = TurnRequest('gpt-x', conversation, ProviderSettings(), '.', effort=requested, is_task=is_task)
+            turn = TurnRequest(
+                'gpt-x',
+                conversation,
+                ProviderSettings(),
+                '.',
+                effort=requested,
+                is_task=is_task,
+                efforts=model_efforts,
+            )
             return provider._effort(turn)
 
         self.assertEqual(effort('high'), 'high')
@@ -864,6 +879,66 @@ class ProcessTests(unittest.TestCase):
 
 
 class MachineTests(unittest.TestCase):
+    def test_runner_key_requires_https_outside_loopback(self):
+        allowed = [
+            'http://127.0.0.1:8765',
+            'http://localhost:8765',
+            'http://[::1]:8765',
+            'https://host.docker.internal:8765',
+            'https://100.122.80.32:8765',
+            'https://office-pc.tail83dea0.ts.net:8765',
+            'https://runner.example.com',
+        ]
+        refused = [
+            'http://192.168.1.20:8765',
+            'http://host.docker.internal:8765',
+            'http://100.122.80.32:8765',
+            'http://office-pc.tail83dea0.ts.net:8765',
+            'http://runner.example.com:8765',
+            'ftp://runner.example.com',
+        ]
+        for url in allowed:
+            with self.subTest(url=url):
+                RemoteMachine('pc', 'PC', url, 'test-key')
+        for url in refused:
+            with self.subTest(url=url):
+                with self.assertRaises(SubscriptionError):
+                    RemoteMachine('pc', 'PC', url, 'test-key')
+
+    def test_lost_runner_connection_is_inactive_but_cleanup_remains_unconfirmed(self):
+        import aiohttp
+
+        class DroppedConnection:
+            """A runner connection that sends one line, then drops without an exit event."""
+
+            closed = False
+
+            def __aiter__(self):
+                return self._messages()
+
+            async def _messages(self):
+                line = json.dumps({'type': 'stdout', 'data': 'partial\n'})
+                yield types.SimpleNamespace(type=aiohttp.WSMsgType.TEXT, data=line)
+
+            async def close(self):
+                self.closed = True
+
+        async def run():
+            connection = DroppedConnection()
+            process = RemoteProcess(connection, ['codex', 'app-server'], 7)
+            with self.assertRaisesRegex(ProcessClosedError, 'Runner connection ended'):
+                await process.wait(5)
+            self.assertEqual(process.returncode, -1)
+            self.assertTrue(process.disposal_started)
+            self.assertFalse(process.cleanup_confirmed)
+            with self.assertRaises(ProcessClosedError):
+                await process.write('another request\n')
+            with self.assertRaisesRegex(ProcessClosedError, 'Runner connection ended'):
+                await process.close()
+            self.assertTrue(connection.closed)
+
+        asyncio.run(run())
+
     def test_local_machine_substitutes_temp_files(self):
         async def run():
             with tempfile.TemporaryDirectory() as directory:
@@ -960,6 +1035,34 @@ class RunnerTests(unittest.TestCase):
 
         message = self.run_with_runner(scenario, client_key='wrong-key')
         self.assertIn('runner key', message)
+
+
+class RunnerKeyTests(unittest.TestCase):
+    def test_key_is_created_once_and_reused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            key_file = Path(directory) / 'state' / 'key'
+            created = runner.load_or_create_key(key_file)
+            self.assertEqual(runner.load_or_create_key(key_file), created)
+            self.assertGreaterEqual(len(created), 32)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX file modes')
+    def test_key_is_readable_only_by_its_owner(self):
+        old_umask = os.umask(0o022)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                key_file = Path(directory) / 'state' / 'key'
+                runner.load_or_create_key(key_file)
+                self.assertEqual(key_file.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(key_file.parent.stat().st_mode & 0o777, 0o700)
+
+                key_file.chmod(0o644)
+                original = key_file.read_bytes()
+                with self.assertRaises(ValueError):
+                    runner.load_or_create_key(key_file)
+                self.assertEqual(key_file.read_bytes(), original)
+                self.assertEqual(key_file.stat().st_mode & 0o777, 0o644)
+        finally:
+            os.umask(old_umask)
 
 
 class StreamingTests(unittest.TestCase):

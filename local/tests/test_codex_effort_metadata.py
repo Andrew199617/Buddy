@@ -101,7 +101,7 @@ class CodexEffortMetadataTests(unittest.IsolatedAsyncioTestCase):
         self.provider = CodexProvider()
         self.provider._server_for = AsyncMock(return_value=self.server)
 
-    def turn(self, effort=None, is_task=False):
+    def turn(self, effort=None, is_task=False, efforts=None):
         return TurnRequest(
             model='fixture-model',
             conversation=parse_messages([{'role': 'user', 'content': 'Fixture prompt'}]),
@@ -110,10 +110,11 @@ class CodexEffortMetadataTests(unittest.IsolatedAsyncioTestCase):
             effort=effort,
             is_task=is_task,
             machine=self.machine,
+            efforts=[] if efforts is None else list(efforts),
         )
 
-    async def run_turn(self, effort=None, is_task=False):
-        return [event async for event in self.provider.run_turn(self.turn(effort, is_task))]
+    async def run_turn(self, effort=None, is_task=False, efforts=None):
+        return [event async for event in self.provider.run_turn(self.turn(effort, is_task, efforts))]
 
     def turn_params(self):
         return [params for method, params in self.server.requests if method == 'turn/start']
@@ -121,7 +122,7 @@ class CodexEffortMetadataTests(unittest.IsolatedAsyncioTestCase):
     def model_reads(self):
         return [params for method, params in self.server.requests if method == 'model/list']
 
-    async def chat_from_rehydrated_registry(self, effort, workers=1):
+    async def chat_from_rehydrated_registry(self, effort, workers=1, model_efforts=None):
         config = MemoryConfig({'subscriptions.codex': {'enable': True, 'machine_id': 'local'}})
         service = load_service(config, ROOT / 'unused-offline-effort-test-data')
         service.PROVIDERS['codex'] = self.provider
@@ -142,7 +143,8 @@ class CodexEffortMetadataTests(unittest.IsolatedAsyncioTestCase):
         model_id = 'codex.fixture-model'
         # A backend restart may load the shared registry without provider discovery.
         registry = json.loads(json.dumps({model_id: {'subscription': {
-            'provider': 'codex', 'model': 'fixture-model', 'efforts': ['low', 'medium', 'high', 'xhigh'],
+            'provider': 'codex', 'model': 'fixture-model',
+            'efforts': ['low', 'medium', 'high', 'xhigh'] if model_efforts is None else model_efforts,
         }}}))
         return await service.generate_subscription_chat_completion(
             types.SimpleNamespace(state=types.SimpleNamespace()),
@@ -167,6 +169,45 @@ class CodexEffortMetadataTests(unittest.IsolatedAsyncioTestCase):
     async def test_cold_unsupported_effort_is_filtered_after_metadata_load(self):
         self.server.efforts = ['low', 'high']
         await self.run_turn('xhigh')
+        self.assertEqual(len(self.model_reads()), 1)
+        self.assertNotIn('effort', self.turn_params()[-1])
+
+    async def test_cold_carried_levels_cannot_authorize_an_unsupported_effort(self):
+        self.server.generation = 0
+        self.server.efforts = ['low']
+        await self.run_turn('high', efforts=['high'])
+        self.assertEqual(len(self.model_reads()), 1)
+        self.assertNotIn('effort', self.turn_params()[-1])
+
+    async def test_rehydrated_old_host_levels_are_replaced_with_current_server_levels(self):
+        self.server.generation = 0
+        self.server.efforts = ['low']
+        await self.chat_from_rehydrated_registry('high', model_efforts=['high'])
+        self.assertEqual(len(self.model_reads()), 1)
+        self.assertNotIn('effort', self.turn_params()[-1])
+
+    async def test_service_forwards_a_copy_of_valid_carried_model_levels(self):
+        observed = []
+        original = self.provider.run_turn
+
+        async def record(turn):
+            observed.append(list(turn.efforts))
+            async for event in original(turn):
+                yield event
+
+        self.provider.run_turn = record
+        await self.chat_from_rehydrated_registry('high', model_efforts=['low', None, 'high'])
+        self.assertEqual(observed, [['low', 'high']])
+
+    async def test_malformed_carried_levels_are_ignored_and_current_support_still_filters(self):
+        self.server.efforts = ['low']
+        await self.chat_from_rehydrated_registry('high', model_efforts='high')
+        self.assertNotIn('effort', self.turn_params()[-1])
+
+    async def test_warm_authoritative_metadata_avoids_discovery_despite_stale_carried_levels(self):
+        self.server.efforts = ['low']
+        await self.provider.list_models(ProviderSettings(), self.machine)
+        await self.run_turn('high', efforts=['high'])
         self.assertEqual(len(self.model_reads()), 1)
         self.assertNotIn('effort', self.turn_params()[-1])
 
@@ -218,8 +259,8 @@ class CodexEffortMetadataTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_known_empty_supported_levels_do_not_reload_or_accept_an_effort(self):
         self.server.efforts = []
-        await self.run_turn('high')
-        await self.run_turn('medium')
+        await self.run_turn('high', efforts=['high'])
+        await self.run_turn('medium', efforts=['medium'])
         self.assertEqual(len(self.model_reads()), 1)
         self.assertTrue(all('effort' not in params for params in self.turn_params()))
 

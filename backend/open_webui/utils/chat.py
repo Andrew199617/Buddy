@@ -223,7 +223,8 @@ async def generate_chat_completion(
                 model_ids = [
                     available_model['id']
                     for available_model in list(request.app.state.MODELS.values())
-                    if available_model.get('owned_by') != 'arena' and available_model['id'] not in model_ids
+                    if available_model.get('owned_by') not in ('arena', SUBSCRIPTION_OWNED_BY)
+                    and available_model['id'] not in model_ids
                 ]
 
             if isinstance(model_ids, list) and model_ids:
@@ -232,7 +233,7 @@ async def generate_chat_completion(
                 model_ids = [
                     available_model['id']
                     for available_model in list(request.app.state.MODELS.values())
-                    if available_model.get('owned_by') != 'arena'
+                    if available_model.get('owned_by') not in ('arena', SUBSCRIPTION_OWNED_BY)
                 ]
                 selected_model_id = random.choice(model_ids)
 

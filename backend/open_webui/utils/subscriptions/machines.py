@@ -20,6 +20,11 @@ import aiohttp
 
 from open_webui.utils.subscriptions.discovery import find_tool
 from open_webui.utils.subscriptions.events import SubscriptionError
+from open_webui.utils.subscriptions.runner_transport import (
+    normalize_runner_url,
+    runner_ssl_context,
+    runner_trace_config,
+)
 from open_webui.utils.subscriptions.process import (
     ChildProcess,
     MAX_CAPTURE_BYTES,
@@ -352,26 +357,35 @@ class RemoteProcess(StreamedOutput):
         await self.kill_and_wait(timeout)
 
 
+def check_runner_url(url: str) -> None:
+    """Compatibility check for callers that do not need the canonical origin."""
+    normalize_runner_url(url)
+
+
 class RemoteMachine:
     """A Buddy Runner on another computer or in a container."""
 
     def __init__(self, machine_id: str, name: str, url: str, key: str):
         self.id = machine_id
         self.name = name
-        self.url = url.rstrip('/')
+        self.url = normalize_runner_url(url)
         self._key = key
         self._session: aiohttp.ClientSession | None = None
         self._info: dict | None = None
 
     def matches(self, name: str, url: str, key: str) -> bool:
-        return self.name == name and self.url == url.rstrip('/') and self._key == key
+        return self.name == name and self.url == normalize_runner_url(url) and self._key == key
 
     def _headers(self) -> dict:
         return {'Authorization': f'Bearer {self._key}'}
 
     def _client(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(headers=self._headers())
+            connector = aiohttp.TCPConnector(ssl=runner_ssl_context())
+            self._session = aiohttp.ClientSession(
+                connector=connector, headers=self._headers(),
+                trace_configs=[runner_trace_config()],
+            )
         return self._session
 
     async def _request(self, method: str, path: str, payload: dict | None = None, timeout: float = 30) -> dict:

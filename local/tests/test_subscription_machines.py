@@ -3,8 +3,9 @@
 Run from the repository root:
     python -m unittest discover -s local/tests -p test_subscription_machines.py -v
 
-The loader executes production definitions with in-memory dependencies. It does
-not import Buddy's database, runtime configuration, providers, or HTTP clients.
+The loader executes production definitions with in-memory dependencies and the
+actual transport validator. It does not import Buddy's database, runtime
+configuration, or providers, and makes no HTTP requests.
 """
 
 import ast
@@ -18,7 +19,7 @@ import time
 import types
 import unittest
 import uuid
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 from unittest.mock import AsyncMock, patch
@@ -27,6 +28,10 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 SUBSCRIPTIONS = ROOT / 'backend' / 'open_webui' / 'utils' / 'subscriptions'
+sys.path.insert(0, str(ROOT / 'backend'))
+
+from open_webui.utils.subscriptions.runner_transport import normalize_runner_url  # noqa: E402
+from open_webui.utils.subscriptions.events import SubscriptionError  # noqa: E402
 
 
 class MemoryConfig:
@@ -115,6 +120,7 @@ def load_service(config, data_dir):
         'time': time,
         'asdict': asdict,
         'dataclass': dataclass,
+        'field': field,
         'fields': fields,
         'Path': Path,
         'Any': Any,
@@ -122,6 +128,8 @@ def load_service(config, data_dir):
         'Callable': Callable,
         'urlsplit': urlsplit,
         'uuid': uuid,
+        'normalize_runner_url': normalize_runner_url,
+        'SubscriptionError': SubscriptionError,
         'HTTPException': FakeHTTPException,
         'status': types.SimpleNamespace(HTTP_404_NOT_FOUND=404, HTTP_403_FORBIDDEN=403),
         'DATA_DIR': data_dir,
@@ -148,8 +156,7 @@ def load_service(config, data_dir):
             names = {target.id for target in node.targets if isinstance(target, ast.Name)}
             if names & {'ACCESS_CHAT', 'ACCESS_READ', 'ACCESS_FULL', 'ACCESS_LEVELS'}:
                 common_nodes.append(node)
-    events_tree = ast.parse((SUBSCRIPTIONS / 'events.py').read_text(encoding='utf-8'))
-    error_nodes = [node for node in events_tree.body if isinstance(node, ast.ClassDef) and node.name == 'SubscriptionError']
+    error_nodes = []
     machines_tree = ast.parse((SUBSCRIPTIONS / 'machines.py').read_text(encoding='utf-8'))
     error_nodes.extend(
         node for node in machines_tree.body
@@ -486,6 +493,70 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.config.values, before)
         self.assertEqual(self.config.commits, [])
         self.assertTrue(all(not provider.calls for provider in self.providers.values()))
+
+    async def test_runner_address_is_canonical_before_verification_and_persistence(self):
+        verify = AsyncMock(return_value={'host': {'id': 'fixture-new-host'}})
+        with patch.object(self.service, 'verify_machine', verify):
+            public = await self.service.save_machine(
+                None, 'New fixture PC', ' HTTPS://RUNNER.EXAMPLE.INVALID:443/ ', 'fixture-key'
+            )
+        verify.assert_awaited_once_with('https://runner.example.invalid', 'fixture-key')
+        self.assertEqual(public['url'], 'https://runner.example.invalid')
+        saved = next(item for item in self.config.values['subscriptions.machines'] if item['id'] == public['id'])
+        self.assertEqual(saved['url'], public['url'])
+        self.assertTrue(all(not provider.calls for provider in self.providers.values()))
+
+    async def test_unsafe_runner_addresses_fail_before_probe_or_config_write(self):
+        before = copy.deepcopy(self.config.values)
+        verify = AsyncMock()
+        with patch.object(self.service, 'verify_machine', verify):
+            for url in ('http://host.docker.internal:8083', 'http://100.122.80.32:8083',
+                        'http://192.0.2.10:8083', '\nhttps://runner.example.invalid'):
+                with self.subTest(url=url), self.assertRaises(self.service.SubscriptionError):
+                    await self.service.save_machine('runner-a', 'Fixture PC', url, 'fixture-key')
+        verify.assert_not_awaited()
+        self.assertEqual(self.config.values, before)
+        self.assertEqual(self.config.commits, [])
+        self.assertTrue(all(not provider.calls for provider in self.providers.values()))
+
+    async def test_equivalent_runner_origin_preserves_revision_and_provider_authority(self):
+        original = self.config.values['subscriptions.machines'][0]
+        original['url'] = 'https://RUNNER-A.EXAMPLE.INVALID:443/'
+        before_settings = copy.deepcopy(self.config.values['subscriptions.claude'])
+        with patch.object(self.service, 'verify_machine', AsyncMock(return_value={'host': original['host']})):
+            public = await self.service.save_machine(
+                'runner-a', original['name'], 'https://runner-a.example.invalid', None
+            )
+        self.assertEqual(public['url'], 'https://runner-a.example.invalid')
+        self.assertEqual(public['revision'], original['revision'])
+        self.assertEqual(self.config.values['subscriptions.claude'], before_settings)
+        self.assertTrue(all(not provider.calls for provider in self.providers.values()))
+        self.assertEqual(set(self.config.commits[0]), {'subscriptions.machines'})
+
+    async def test_upgrade_of_unsafe_legacy_origin_resets_provider_authority(self):
+        original = self.config.values['subscriptions.machines'][0]
+        original['url'] = 'http://runner-a.example.invalid:8083'
+        old_revision = original['revision']
+        with patch.object(self.service, 'verify_machine', AsyncMock(return_value={'host': original['host']})):
+            public = await self.service.save_machine(
+                'runner-a', original['name'], 'https://runner-a.example.invalid:8083', None
+            )
+        self.assertNotEqual(public['revision'], old_revision)
+        self.assert_reset('claude', 'runner-a')
+        self.assertEqual(self.providers['claude'].calls, ['cancel_login'])
+
+    async def test_direct_verification_normalizes_before_constructing_the_probe(self):
+        probe = FakeRemoteMachine('verify', 'Fixture probe', 'https://probe.example.invalid', 'fixture-key')
+        probe.info = AsyncMock(return_value={'host': {'id': 'fixture-probe'}})
+        with patch.object(self.service, 'RemoteMachine', return_value=probe) as factory:
+            await self.service.verify_machine(' HTTPS://PROBE.EXAMPLE.INVALID:443/ ', 'fixture-key')
+        factory.assert_called_once_with('verify', 'The runner', 'https://probe.example.invalid', 'fixture-key')
+        self.assertEqual(probe.closed, 1)
+        with patch.object(self.service, 'RemoteMachine') as factory:
+            with self.assertRaises(self.service.SubscriptionError):
+                await self.service.verify_machine('http://host.docker.internal:8083', 'fixture-key')
+        factory.assert_not_called()
+        self.assertEqual(self.config.commits, [])
 
     async def test_verification_closes_the_temporary_machine_after_a_successful_probe(self):
         info = {'host': {'id': 'fixture-verified-host'}, 'capabilities': {'files': True}}

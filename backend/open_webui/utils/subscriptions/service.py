@@ -42,6 +42,7 @@ from open_webui.utils.subscriptions.events import SubscriptionError
 from open_webui.utils.subscriptions.machines import (
     LOCAL_MACHINE_ID, LocalMachine, RemoteMachine, StartupCleanupUnconfirmedError,
 )
+from open_webui.utils.subscriptions.runner_transport import normalize_runner_url
 from open_webui.utils.subscriptions.streaming import collect_events, failure_events, stream_events
 
 log = logging.getLogger(__name__)
@@ -487,6 +488,7 @@ def _machine_id_from_name(name: str, taken: set[str]) -> str:
 
 
 async def verify_machine(url: str, key: str) -> dict:
+    url = normalize_runner_url(url)
     probe = RemoteMachine('verify', 'The runner', url, key)
     try:
         return await probe.info()
@@ -512,13 +514,19 @@ async def _save_machine(
 ) -> dict:
     """Add or update a runner after checking that it answers with the key."""
     name = name.strip()
-    url = url.strip().rstrip('/')
+    url = normalize_runner_url(url)
     if not name or not url:
         raise SubscriptionError('Enter a name and the runner address.')
 
     configs = await _machine_configs()
     existing = next((config for config in configs if config['id'] == machine_id), None) if machine_id else None
     previous_endpoint = (existing or {}).get('url')
+    if previous_endpoint:
+        try:
+            previous_endpoint = normalize_runner_url(previous_endpoint)
+        except SubscriptionError:
+            # Replacing a legacy, unsafe address must reset provider authority.
+            pass
     previous_key = (existing or {}).get('key')
     previous_instance = ((existing or {}).get('host') or {}).get('id')
     key = (key or '').strip() or (existing or {}).get('key', '')
@@ -1099,6 +1107,10 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
 
     provider_id = subscription['provider']
     provider = get_provider(provider_id)
+    model_efforts = subscription.get('efforts')
+    if not isinstance(model_efforts, list):
+        model_efforts = []
+    model_efforts = [effort for effort in model_efforts if isinstance(effort, str) and effort]
     is_task = bool(metadata.get('task'))
 
     try:
@@ -1130,6 +1142,7 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
                 effort=requested_effort(payload),
                 is_task=is_task,
                 machine=machine,
+                efforts=model_efforts,
             )
     except SubscriptionError as error:
         events = failure_events(str(error))
