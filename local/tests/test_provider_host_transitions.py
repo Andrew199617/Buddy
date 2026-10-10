@@ -590,6 +590,38 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
             models = await self.service.get_subscription_models()
         self.assertEqual([entry['id'] for entry in models], ['codex.fixture-model'])
 
+    async def test_model_list_does_not_wait_for_a_slow_sign_in(self):
+        self.config.values['subscriptions.codex']['enable'] = False
+        entered = asyncio.Event()
+        release = self.gate()
+
+        async def slow_sign_in():
+            entered.set()
+            await release.wait()
+
+        self.providers['claude'].start_hook = slow_sign_in
+        login = self.launch(self.service.start_login('claude', 'browser', 'runner-a', REVISION_A))
+        await asyncio.wait_for(entered.wait(), 1)
+        self.assertEqual(await asyncio.wait_for(self.service.get_subscription_models(), 1), [])
+        self.assertFalse(login.done())
+        self.assertNotIn(('status', 'runner-a', 'runner-a'), self.providers['claude'].calls)
+        release.set()
+        await asyncio.wait_for(login, 1)
+
+    async def test_model_list_serves_cached_models_while_the_provider_lock_is_held(self):
+        self.config.values['subscriptions.codex']['enable'] = False
+        self.seed_old_signed_in_cache()
+        for cache in (self.service.status_cache, self.service.models_cache):
+            cache._entries['claude'].expires_at = time.monotonic() - 1
+        lock = self.service._provider_lock('claude')
+        await lock.acquire()
+        try:
+            models = await asyncio.wait_for(self.service.get_subscription_models(), 1)
+        finally:
+            lock.release()
+        self.assertEqual([entry['id'] for entry in models], ['claude-code.fixture-model'])
+        self.assertEqual(self.providers['claude'].calls, [])
+
     async def test_deleted_host_can_be_explicitly_replaced_then_enabled_with_the_new_remote_guard(self):
         await self.service.delete_machine('runner-a')
         self.assertEqual(self.config.values['subscriptions.claude']['machine_id'], 'runner-a')

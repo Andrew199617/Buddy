@@ -918,6 +918,13 @@ class CachedLoader:
         if refresh is not None and not refresh.done():
             refresh.cancel()
 
+    def cached(self, provider_id: str) -> Any:
+        """The last loaded value, even if expired, without loading; None when there is none."""
+        entry = self._entries.get(provider_id)
+        if entry is None:
+            return None
+        return entry.value
+
     async def _refresh(self, provider_id: str) -> Any:
         generation = self._generations.get(provider_id, 0)
         value = await self._load(provider_id)
@@ -1117,24 +1124,37 @@ def _model_entry(provider_id: str, model: ProviderModel) -> dict:
 
 
 async def _provider_models(provider_id: str) -> list[dict]:
-    async with _provider_lock(provider_id):
-        settings = await get_settings(provider_id)
-        try:
-            _require_single_worker()
-            await _require_verified_machine(settings)
-            _require_provider_cleanup(provider_id)
-        except SubscriptionError:
-            return []
-        generation = _provider_generations.get(provider_id, 0)
+    # Every user's model list runs this, so it does not take the provider lock.
+    # Changes save settings before bumping the generation, so reading the
+    # generation first means a change made meanwhile empties this result.
+    generation = _provider_generations.get(provider_id, 0)
+    settings = await get_settings(provider_id)
+    try:
+        _require_single_worker()
+        await _require_verified_machine(settings)
+        _require_provider_cleanup(provider_id)
+    except SubscriptionError:
+        return []
     if not settings.enable:
         return []
-    provider_status = await status_cache.get(provider_id) or {}
+    provider_status = await _cached_for_model_list(status_cache, provider_id) or {}
     if not uses_plan(provider_status):
         return []
-    models = await models_cache.get(provider_id) or []
+    models = await _cached_for_model_list(models_cache, provider_id) or []
     if generation != _provider_generations.get(provider_id, 0):
         return []
     return [_model_entry(provider_id, model) for model in models]
+
+
+async def _cached_for_model_list(cache: CachedLoader, provider_id: str) -> Any:
+    """Serve only what is cached while an administrator's action holds the provider lock.
+
+    Sign-in, sign-out and runner checks can hold it for up to a minute, and a
+    refresh started now would wait behind them.
+    """
+    if _provider_lock(provider_id).locked():
+        return cache.cached(provider_id)
+    return await cache.get(provider_id)
 
 
 async def get_subscription_models() -> list[dict]:
