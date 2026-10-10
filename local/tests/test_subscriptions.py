@@ -550,6 +550,33 @@ class CodexTests(unittest.TestCase):
             ],
         )
 
+    def test_signing_out_releases_the_machines_threads(self):
+        class FakeServer:
+            running = True
+            generation = 1
+
+            def __init__(self):
+                self.requests = []
+
+            async def request(self, method, params=None, timeout=None):
+                self.requests.append((method, params))
+                return {}
+
+        provider = codex.CodexProvider()
+        server = FakeServer()
+        provider._servers['local'] = server
+        provider._keep_live_thread('chat-1', codex.LiveThread('on-local', 'local', 1, 'chat', '.', None))
+        provider._keep_live_thread('chat-2', codex.LiveThread('on-runner', 'office-pc', 1, 'chat', '.', None))
+
+        async def run():
+            provider._release_machine_threads('local')
+            # Let the release task send its request.
+            await asyncio.sleep(0)
+
+        asyncio.run(run())
+        self.assertEqual(server.requests, [('thread/unsubscribe', {'threadId': 'on-local'})])
+        self.assertEqual(list(provider._live_threads), ['chat-2'])
+
     def test_summarize_rate_limits(self):
         summary = codex.summarize_rate_limits(
             {

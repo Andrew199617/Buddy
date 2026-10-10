@@ -479,6 +479,13 @@ class CodexProvider:
             if live.machine_id == machine_id:
                 del self._live_threads[key]
 
+    def _release_machine_threads(self, machine_id: str) -> None:
+        """Unload and forget a machine's kept threads while its app-server keeps running."""
+        for key, live in list(self._live_threads.items()):
+            if live.machine_id == machine_id:
+                del self._live_threads[key]
+                self._release_live_thread(live)
+
     async def _server_for(self, settings: ProviderSettings, machine) -> CodexAppServer:
         """The machine's app-server; it starts in the machine's empty chat folder."""
         cli = await machine.find_tool(TOOL_CODEX, settings.cli_path)
@@ -595,7 +602,7 @@ class CodexProvider:
         await self.cancel_login()
         server = await self._server_for(settings, machine)
         await server.request('account/logout', None)
-        self._forget_machine_threads(machine.id)
+        self._release_machine_threads(machine.id)
         self.rate_limits = None
 
     def _effort(self, turn: TurnRequest) -> str | None:
