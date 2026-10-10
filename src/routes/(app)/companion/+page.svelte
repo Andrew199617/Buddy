@@ -44,6 +44,7 @@
 	let workspaceBusy = false;
 	let fileBusy = false;
 	let terminalBusy = false;
+	let commandUnconfirmed = false;
 	let stoppingTerminal = false;
 	let stopUnconfirmed = false;
 	let disposed = false;
@@ -65,6 +66,36 @@
 		return !disposed && generation === connectionGeneration && client === candidate;
 	}
 
+	function isCurrentTerminal(
+		candidate: CompanionClient,
+		generation: number,
+		requestGeneration: number,
+		terminalId: string
+	): boolean {
+		return (
+			isCurrent(candidate, generation) &&
+			requestGeneration === terminalGeneration &&
+			terminal?.id === terminalId &&
+			terminal.workspaceId === workspace?.id
+		);
+	}
+
+	function validateTerminalStatus(
+		updated: CompanionTerminal,
+		terminalId: string,
+		workspaceId: string | undefined
+	) {
+		if (
+			updated?.id !== terminalId ||
+			updated.workspaceId !== workspaceId ||
+			!['ready', 'running', 'exited', 'closed'].includes(updated.status) ||
+			typeof updated.output !== 'string' ||
+			(updated.exitCode !== null && !Number.isInteger(updated.exitCode))
+		) {
+			throw new CompanionError('The Runner did not confirm this command session status.', 502);
+		}
+	}
+
 	function stopPolling() {
 		if (pollTimer !== null) clearTimeout(pollTimer);
 		pollTimer = null;
@@ -84,6 +115,7 @@
 		stopPolling();
 		terminal = null;
 		terminalBusy = false;
+		commandUnconfirmed = false;
 		stoppingTerminal = false;
 		stopUnconfirmed = false;
 		pollFailures = 0;
@@ -369,6 +401,7 @@
 			clearTerminal();
 			const selected = await candidate.createWorkspace(grantId, path);
 			if (!isCurrent(candidate, generation) || requestGeneration !== browseGeneration) return;
+			executionRiskAccepted = false;
 			workspace = selected;
 			notice = `Selected ${selected.name} on ${host?.name ?? 'the execution host'}.`;
 		} catch (cause) {
@@ -431,6 +464,7 @@
 			!selectedWorkspace ||
 			!activeGrant?.capabilities.execute ||
 			!executionRiskAccepted ||
+			workspaceBusy ||
 			terminalBusy ||
 			stoppingTerminal ||
 			stopUnconfirmed
@@ -442,7 +476,11 @@
 		error = '';
 		try {
 			const created = await candidate.createTerminal(selectedWorkspace.id);
-			if (!isCurrent(candidate, generation) || requestGeneration !== terminalGeneration) {
+			if (
+				!isCurrent(candidate, generation) ||
+				requestGeneration !== terminalGeneration ||
+				workspace?.id !== selectedWorkspace.id
+			) {
 				void candidate.deleteTerminal(created.id).catch(() => {});
 				return;
 			}
@@ -464,9 +502,8 @@
 	) {
 		stopPolling();
 		if (
-			!isCurrent(candidate, generation) ||
-			requestGeneration !== terminalGeneration ||
-			terminal?.status !== 'running' ||
+			!isCurrentTerminal(candidate, generation, requestGeneration, terminalId) ||
+			(terminal?.status !== 'running' && !commandUnconfirmed) ||
 			stoppingTerminal ||
 			stopUnconfirmed
 		)
@@ -483,18 +520,34 @@
 		requestGeneration: number,
 		terminalId: string
 	) {
-		if (!isCurrent(candidate, generation) || requestGeneration !== terminalGeneration) return;
+		if (!isCurrentTerminal(candidate, generation, requestGeneration, terminalId)) return;
 		try {
 			const updated = await candidate.getTerminal(terminalId);
-			if (!isCurrent(candidate, generation) || requestGeneration !== terminalGeneration) return;
+			if (!isCurrentTerminal(candidate, generation, requestGeneration, terminalId)) return;
+			validateTerminalStatus(updated, terminalId, workspace?.id);
 			terminal = updated;
+			if (commandUnconfirmed && (updated.status === 'ready' || updated.status === 'exited')) {
+				pollFailures = 0;
+				pollErrorMessage =
+					'The command request remains unconfirmed. A ready or finished terminal cannot prove whether it ran. Run is disabled; use Stop before creating a new session.';
+				error = pollErrorMessage;
+				schedulePoll(candidate, generation, requestGeneration, terminalId);
+				return;
+			}
+			commandUnconfirmed = false;
 			pollFailures = 0;
 			if (error === pollErrorMessage) error = '';
 			pollErrorMessage = '';
 			schedulePoll(candidate, generation, requestGeneration, terminalId);
 		} catch (cause) {
-			if (!isCurrent(candidate, generation) || requestGeneration !== terminalGeneration) return;
+			if (!isCurrentTerminal(candidate, generation, requestGeneration, terminalId)) return;
 			reportError(cause, generation);
+			if (!isCurrentTerminal(candidate, generation, requestGeneration, terminalId)) return;
+			if (commandUnconfirmed) {
+				pollErrorMessage =
+					'Command acceptance is still unconfirmed. Run is disabled; check its status, retry Stop or disconnect.';
+				error = pollErrorMessage;
+			}
 			const transient =
 				!(cause instanceof CompanionError) ||
 				cause.status >= 500 ||
@@ -502,8 +555,10 @@
 				cause.status === 429;
 			if (transient && isCurrent(candidate, generation) && !stoppingTerminal && !stopUnconfirmed) {
 				pollFailures = Math.min(pollFailures + 1, 5);
-				pollErrorMessage =
-					'Command status is temporarily unavailable. Retrying; Stop and disconnect remain available.';
+				if (!commandUnconfirmed) {
+					pollErrorMessage =
+						'Command status is temporarily unavailable. Retrying; Stop and disconnect remain available.';
+				}
 				error = pollErrorMessage;
 				schedulePoll(
 					candidate,
@@ -516,35 +571,90 @@
 		}
 	}
 
-	async function runCommand() {
+	async function checkCommandStatus() {
 		const candidate = client;
 		const selectedTerminal = terminal;
 		if (
 			!candidate ||
 			!selectedTerminal ||
-			selectedTerminal.status === 'running' ||
-			!executionRiskAccepted ||
+			!commandUnconfirmed ||
+			workspaceBusy ||
 			terminalBusy ||
 			stoppingTerminal ||
 			stopUnconfirmed
 		)
 			return;
 		const generation = connectionGeneration;
-		const requestGeneration = terminalGeneration;
+		const requestGeneration = ++terminalGeneration;
+		terminalBusy = true;
+		try {
+			stopPolling();
+			await pollTerminal(candidate, generation, requestGeneration, selectedTerminal.id);
+		} finally {
+			if (isCurrentTerminal(candidate, generation, requestGeneration, selectedTerminal.id))
+				terminalBusy = false;
+		}
+	}
+
+	async function runCommand() {
+		const candidate = client;
+		const selectedTerminal = terminal;
+		const selectedWorkspace = workspace;
+		if (
+			!candidate ||
+			!selectedTerminal ||
+			!selectedWorkspace ||
+			selectedTerminal.workspaceId !== selectedWorkspace.id ||
+			selectedTerminal.status === 'running' ||
+			selectedTerminal.status === 'closed' ||
+			!executionRiskAccepted ||
+			commandUnconfirmed ||
+			workspaceBusy ||
+			terminalBusy ||
+			stoppingTerminal ||
+			stopUnconfirmed
+		)
+			return;
+		const generation = connectionGeneration;
+		const requestGeneration = ++terminalGeneration;
+		stopPolling();
 		error = '';
 		terminalBusy = true;
+		let commandSubmitted = false;
 		try {
 			const args: unknown = JSON.parse(argumentsJson);
 			if (!Array.isArray(args) || !args.every((argument) => typeof argument === 'string')) {
 				throw new Error('Arguments must be a JSON array of strings, for example ["--version"].');
 			}
 			if (!executable.trim()) throw new Error('Enter an executable name or path.');
+			commandSubmitted = true;
 			const updated = await candidate.runCommand(selectedTerminal.id, executable.trim(), args);
-			if (!isCurrent(candidate, generation) || requestGeneration !== terminalGeneration) return;
+			if (
+				!isCurrent(candidate, generation) ||
+				requestGeneration !== terminalGeneration ||
+				workspace?.id !== selectedWorkspace.id
+			)
+				return;
+			validateTerminalStatus(updated, selectedTerminal.id, selectedWorkspace.id);
 			terminal = updated;
 			schedulePoll(candidate, generation, requestGeneration, selectedTerminal.id);
 		} catch (cause) {
+			if (!isCurrentTerminal(candidate, generation, requestGeneration, selectedTerminal.id)) return;
 			reportError(cause, generation);
+			const uncertain = !(cause instanceof CompanionError) || cause.status >= 500;
+			if (
+				commandSubmitted &&
+				uncertain &&
+				isCurrentTerminal(candidate, generation, requestGeneration, selectedTerminal.id) &&
+				!stoppingTerminal &&
+				!stopUnconfirmed
+			) {
+				commandUnconfirmed = true;
+				pollErrorMessage =
+					'The command request was not confirmed. Checking its status; Stop and disconnect remain available.';
+				error = pollErrorMessage;
+				await pollTerminal(candidate, generation, requestGeneration, selectedTerminal.id);
+			}
 		} finally {
 			if (isCurrent(candidate, generation) && requestGeneration === terminalGeneration)
 				terminalBusy = false;
@@ -886,8 +996,9 @@
 		<div class="section-heading">
 			<h2 id="terminal-heading">Command session</h2>
 			{#if terminal}<span class="status"
-					>{#if stoppingTerminal}stopping{:else if stopUnconfirmed}stop unconfirmed{:else}{terminal.status}{/if}{terminal.exitCode !==
-					null
+					>{#if stoppingTerminal}stopping{:else if stopUnconfirmed}stop unconfirmed{:else if commandUnconfirmed}status
+						unconfirmed{:else}{terminal.status}{/if}{terminal.exitCode !== null &&
+					!commandUnconfirmed
 						? ` · exit ${terminal.exitCode}`
 						: ''}</span
 				>{/if}
@@ -908,7 +1019,7 @@
 					><input
 						type="checkbox"
 						bind:checked={executionRiskAccepted}
-						disabled={terminal !== null}
+						disabled={workspaceBusy || terminal !== null}
 					/><span>I understand execution has this host-level access.</span></label
 				>
 				<p class="muted hint">
@@ -916,7 +1027,9 @@
 					output. It has no interactive terminal, shell parser, or PTY.
 				</p>
 				{#if !terminal}
-					<button on:click={createCommandSession} disabled={!executionRiskAccepted || terminalBusy}
+					<button
+						on:click={createCommandSession}
+						disabled={!executionRiskAccepted || workspaceBusy || terminalBusy}
 						>{terminalBusy ? 'Creating…' : 'Create command session'}</button
 					>
 				{:else}
@@ -930,6 +1043,9 @@
 									spellcheck="false"
 									autocapitalize="none"
 									disabled={terminal.status === 'running' ||
+										terminal.status === 'closed' ||
+										commandUnconfirmed ||
+										workspaceBusy ||
 										terminalBusy ||
 										stoppingTerminal ||
 										stopUnconfirmed}
@@ -943,6 +1059,9 @@
 									spellcheck="false"
 									autocapitalize="none"
 									disabled={terminal.status === 'running' ||
+										terminal.status === 'closed' ||
+										commandUnconfirmed ||
+										workspaceBusy ||
 										terminalBusy ||
 										stoppingTerminal ||
 										stopUnconfirmed}
@@ -955,10 +1074,21 @@
 								class="primary"
 								disabled={!executable.trim() ||
 									terminal.status === 'running' ||
+									terminal.status === 'closed' ||
+									commandUnconfirmed ||
+									workspaceBusy ||
 									terminalBusy ||
 									stoppingTerminal ||
 									stopUnconfirmed}>{terminalBusy ? 'Starting…' : 'Run command'}</button
 							>
+							{#if commandUnconfirmed}
+								<button
+									type="button"
+									on:click={checkCommandStatus}
+									disabled={workspaceBusy || terminalBusy || stoppingTerminal || stopUnconfirmed}
+									>Check command status</button
+								>
+							{/if}
 							<button type="button" on:click={stopCommandSession} disabled={stoppingTerminal}
 								>{stoppingTerminal ? 'Stopping…' : 'Stop and remove session'}</button
 							>

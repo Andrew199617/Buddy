@@ -60,6 +60,7 @@ async function startFixture() {
 		writeFileSync(resolve(directory, name, 'notes.txt'), 'Original disposable project text\n');
 		writeFileSync(resolve(directory, name, 'another.txt'), 'Another disposable file\n');
 	}
+	mkdirSync(resolve(directory, 'project/second'));
 	const child = spawn(python, ['-B', '-c', fixtureScript, directory, origin], {
 		cwd: workspace,
 		env: { ...process.env, PYTHONPATH: resolve(workspace, 'backend'), PYTHONIOENCODING: 'utf-8' },
@@ -122,11 +123,16 @@ async function makeSession(browser, profile, fixture, intercept = null, delayedP
 				await context.addInitScript(
 					({ endpoint, path }) => {
 						const nativeFetch = window.fetch.bind(window);
+						let workspaceResponses = 0;
 						window.fetch = async (...args) => {
 							const response = await nativeFetch(...args);
 							const requestUrl = args[0] instanceof Request ? args[0].url : String(args[0]);
 							let matches = requestUrl === endpoint + path;
 							let expectedMethod = 'POST';
+							if (path === 'SECOND_WORKSPACE_PATH') {
+								matches = requestUrl === endpoint + '/v1/workspaces' && args[1]?.method === 'POST';
+								if (matches) matches = ++workspaceResponses === 2;
+							}
 							if (path === 'COMMAND_PATH') {
 								matches =
 									requestUrl.startsWith(endpoint + '/v1/terminals/') &&
@@ -542,6 +548,101 @@ async function lateWorkspace(session, fixture) {
 	await checkLayout(session);
 }
 
+async function workspaceTransition(session, fixture) {
+	const { page } = session;
+	await inspectAndPair(page, fixture);
+	await page.locator('#companion-grant').selectOption({ label: 'Editable' });
+	await page.getByRole('button', { name: 'Use this directory as project', exact: true }).click();
+	await page.getByText('Selected project: project', { exact: true }).waitFor();
+	await page.getByRole('button', { name: 'Folder second', exact: true }).click();
+	const workspaceResponse = page.waitForResponse(
+		(response) =>
+			response.url() === fixture.endpoint + '/v1/workspaces' &&
+			response.request().method() === 'POST'
+	);
+	await page.getByRole('button', { name: 'Use this directory as project', exact: true }).click();
+	await page.waitForFunction(() => window.__qaDelayedBodyReady === true);
+	const selectedWorkspace = (await (await workspaceResponse).json()).workspace;
+	const acknowledgment = page.getByLabel('I understand execution has this host-level access.', {
+		exact: true
+	});
+	const createSession = page.getByRole('button', { name: 'Create command session', exact: true });
+	assert.equal(
+		await acknowledgment.isDisabled(),
+		true,
+		'No execution consent during project transition'
+	);
+	assert.equal(
+		await createSession.isDisabled(),
+		true,
+		'No terminal creation during project transition'
+	);
+	assert.equal(await page.locator('#companion-executable').count(), 0);
+	// Dispatch queued events as well: handler guards must protect against an earlier UI event.
+	await acknowledgment.evaluate((element) => {
+		element.checked = true;
+		element.dispatchEvent(new Event('change', { bubbles: true }));
+	});
+	await createSession.dispatchEvent('click');
+	await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 100)));
+	assert.equal(
+		session.hostRequests.filter(
+			(request) => request.method === 'POST' && request.path === '/v1/terminals'
+		).length,
+		0,
+		'Pending project selection cannot create a terminal in the old project'
+	);
+	assert.equal(
+		session.hostRequests.filter(
+			(request) => request.method === 'POST' && request.path.endsWith('/commands')
+		).length,
+		0,
+		'Pending project selection cannot start a command in the old project'
+	);
+	await releaseDelayedBody(page);
+	await page.getByText('Selected project: second', { exact: true }).waitFor();
+	assert.equal(
+		await acknowledgment.isChecked(),
+		false,
+		'The new project needs fresh execution consent'
+	);
+	await acknowledgment.check();
+	const terminalResponse = page.waitForResponse(
+		(response) =>
+			response.url() === fixture.endpoint + '/v1/terminals' &&
+			response.request().method() === 'POST'
+	);
+	await createSession.click();
+	const createdTerminal = (await (await terminalResponse).json()).terminal;
+	assert.equal(
+		createdTerminal.workspaceId,
+		selectedWorkspace.id,
+		'Terminal belongs to the confirmed project'
+	);
+	await page.locator('#companion-executable').fill(commandNode);
+	await page
+		.locator('#companion-arguments')
+		.fill(JSON.stringify(['-e', 'console.log(process.cwd())']));
+	await page.getByRole('button', { name: 'Run command', exact: true }).click();
+	await page.getByText('exited · exit 0', { exact: true }).waitFor();
+	const actualTerminal = await fetch(fixture.endpoint + '/v1/terminals/' + createdTerminal.id, {
+		headers: { Origin: origin, Authorization: sessionAuthorization(session.hostRequests) }
+	});
+	assert.equal(actualTerminal.status, 200);
+	assert.ok(
+		(await actualTerminal.json()).terminal.output.includes(
+			resolve(fixture.directory, 'project/second')
+		),
+		'Actual command runs in the confirmed new directory'
+	);
+	await page.getByRole('button', { name: 'Stop and remove session', exact: true }).click();
+	await page.getByText('The command session was stopped and removed.', { exact: true }).waitFor();
+	const authorization = sessionAuthorization(session.hostRequests);
+	await page.getByRole('button', { name: 'Disconnect and revoke', exact: true }).click();
+	await verifyRevoked(session, fixture, authorization);
+	await checkLayout(session);
+}
+
 async function lateCommand(session, fixture, unmount) {
 	const { page } = session;
 	await inspectAndPair(page, fixture);
@@ -856,6 +957,285 @@ async function transientPoll(session, fixture) {
 	await checkLayout(session);
 }
 
+async function uncertainCommand(session, fixture, allowStatusRecovery, profile, scenario) {
+	const { page } = session;
+	await inspectAndPair(page, fixture);
+	await page.locator('#companion-grant').selectOption({ label: 'Editable' });
+	await page.getByRole('button', { name: 'Use this directory as project', exact: true }).click();
+	await page.getByText('Selected project: project', { exact: true }).waitFor();
+	await page.getByRole('button', { name: 'File notes.txt', exact: true }).click();
+	await page
+		.getByLabel('Allow editing this file on Disposable Runner PC.', { exact: true })
+		.check();
+	await page.locator('#companion-file-content').fill('Unsaved command recovery draft\n');
+	await page
+		.getByLabel('I understand execution has this host-level access.', { exact: true })
+		.check();
+	await page.getByRole('button', { name: 'Create command session', exact: true }).click();
+	await page.locator('#companion-executable').fill(commandNode);
+	await page
+		.locator('#companion-arguments')
+		.fill(
+			JSON.stringify([
+				'-e',
+				"console.log('accepted-with-lost-response'); setInterval(() => {}, 1000);"
+			])
+		);
+	await page.getByRole('button', { name: 'Run command', exact: true }).click();
+	await page.getByText('status unconfirmed', { exact: true }).waitFor();
+	await page
+		.getByRole('alert')
+		.filter({ hasText: 'Command acceptance is still unconfirmed' })
+		.waitFor();
+	assert.equal(await page.locator('.terminal-panel button[type="submit"]').isDisabled(), true);
+	assert.equal(
+		await page.getByRole('button', { name: 'Stop and remove session', exact: true }).isDisabled(),
+		false
+	);
+	assert.equal(
+		await page.locator('#companion-file-content').inputValue(),
+		'Unsaved command recovery draft\n'
+	);
+	await page.locator('.terminal-panel form').dispatchEvent('submit');
+	await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 100)));
+	assert.equal(
+		session.hostRequests.filter(
+			(request) => request.method === 'POST' && request.path.endsWith('/commands')
+		).length,
+		1,
+		'An unconfirmed accepted command cannot be submitted twice'
+	);
+	const authorization = sessionAuthorization(session.hostRequests);
+	const commandRequest = session.hostRequests.find(
+		(request) => request.method === 'POST' && request.path.endsWith('/commands')
+	);
+	const running = await fetch(fixture.endpoint + commandRequest.path.replace(/\/commands$/, ''), {
+		headers: { Origin: origin, Authorization: authorization }
+	});
+	assert.equal(
+		(await running.json()).terminal.status,
+		'running',
+		'Actual Runner accepted the request before response loss'
+	);
+	await page.screenshot({ path: resolve(outputDirectory, profile.name + '-' + scenario + '.png') });
+	allowStatusRecovery();
+	await page.getByRole('button', { name: 'Check command status', exact: true }).click();
+	await page.getByText('running', { exact: true }).waitFor();
+	assert.equal(await page.getByText('status unconfirmed', { exact: true }).count(), 0);
+	assert.equal(await page.getByRole('alert').count(), 0);
+	assert.equal(
+		await page.locator('#companion-file-content').inputValue(),
+		'Unsaved command recovery draft\n'
+	);
+	await page.getByRole('button', { name: 'Stop and remove session', exact: true }).click();
+	await page.getByText('The command session was stopped and removed.', { exact: true }).waitFor();
+	await page.getByRole('button', { name: 'Disconnect and revoke', exact: true }).click();
+	await verifyRevoked(session, fixture, authorization);
+	await checkLayout(session);
+}
+
+async function recoveryOverlap(session, fixture, delayed, profile, scenario) {
+	const { page } = session;
+	await inspectAndPair(page, fixture);
+	await page.locator('#companion-grant').selectOption({ label: 'Editable' });
+	await page.getByRole('button', { name: 'Use this directory as project', exact: true }).click();
+	await page.getByText('Selected project: project', { exact: true }).waitFor();
+	await page
+		.getByLabel('I understand execution has this host-level access.', { exact: true })
+		.check();
+	await page.getByRole('button', { name: 'Create command session', exact: true }).click();
+	await page.locator('#companion-executable').fill(commandNode);
+	await page
+		.locator('#companion-arguments')
+		.fill(
+			JSON.stringify([
+				'-e',
+				"console.log('recovery-overlap'); const timer = setInterval(() => { if (require('node:fs').existsSync('finish-command')) { clearInterval(timer); process.exit(0); } }, 25);"
+			])
+		);
+	await page.getByRole('button', { name: 'Run command', exact: true }).click();
+	await waitUntil(
+		() => delayed.held !== null,
+		'Automatic recovery reads actual running state before its reply is held'
+	);
+	const authorization = sessionAuthorization(session.hostRequests);
+	const commandRequest = session.hostRequests.find(
+		(request) => request.method === 'POST' && request.path.endsWith('/commands')
+	);
+	const terminalPath = commandRequest.path.replace(/\/commands$/, '');
+	writeFileSync(resolve(fixture.directory, 'project/finish-command'), 'finish disposable command');
+	await waitUntil(async () => {
+		const response = await fetch(fixture.endpoint + terminalPath, {
+			headers: { Origin: origin, Authorization: authorization }
+		});
+		return (await response.json()).terminal.status === 'exited';
+	}, 'Actual disposable command exits before manual status check');
+	await page.getByRole('button', { name: 'Check command status', exact: true }).click();
+	await page
+		.getByRole('alert')
+		.filter({ hasText: 'The command request remains unconfirmed' })
+		.waitFor();
+	const recoveryMessage = await page.getByRole('alert').innerText();
+	delayed.release();
+	await waitUntil(() => delayed.completed === true, 'Older automatic status response is released');
+	await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1000)));
+	assert.equal(
+		await page.getByText('status unconfirmed', { exact: true }).count(),
+		1,
+		'Older running state cannot replace the newer uncertainty decision'
+	);
+	assert.equal(
+		await page.getByRole('alert').innerText(),
+		recoveryMessage,
+		'Older status failure cannot replace newer manual recovery'
+	);
+	assert.equal(
+		await page.getByRole('button', { name: 'Run command', exact: true }).isDisabled(),
+		true
+	);
+	await page.screenshot({ path: resolve(outputDirectory, profile.name + '-' + scenario + '.png') });
+	await page.getByRole('button', { name: 'Stop and remove session', exact: true }).click();
+	await page.getByText('The command session was stopped and removed.', { exact: true }).waitFor();
+	await page.getByRole('button', { name: 'Disconnect and revoke', exact: true }).click();
+	await verifyRevoked(session, fixture, authorization);
+	await checkLayout(session);
+}
+
+async function delayedCommandAdmission(session, fixture, admission, profile, scenario) {
+	const { page } = session;
+	await inspectAndPair(page, fixture);
+	await page.locator('#companion-grant').selectOption({ label: 'Editable' });
+	await page.getByRole('button', { name: 'Use this directory as project', exact: true }).click();
+	await page.getByText('Selected project: project', { exact: true }).waitFor();
+	await page
+		.getByLabel('I understand execution has this host-level access.', { exact: true })
+		.check();
+	await page.getByRole('button', { name: 'Create command session', exact: true }).click();
+	await page.locator('#companion-executable').fill(commandNode);
+	let previousStatus = 'ready';
+	let expectedCommandRequests = 1;
+	if (scenario === 'delayed-command-admission-exited') {
+		await page
+			.locator('#companion-arguments')
+			.fill(JSON.stringify(['-e', "console.log('prior-acknowledged-command')"]));
+		await page.getByRole('button', { name: 'Run command', exact: true }).click();
+		await page.getByText('exited · exit 0', { exact: true }).waitFor();
+		assert.equal(
+			await page.getByRole('button', { name: 'Run command', exact: true }).isDisabled(),
+			false,
+			'A valid acknowledged command remains reusable'
+		);
+		previousStatus = 'exited';
+		expectedCommandRequests = 2;
+	}
+	let code = "console.log('delayed-admission'); setInterval(() => {}, 1000);";
+	if (scenario === 'delayed-command-admission-fast')
+		code = "console.log('fast-unacknowledged-command')";
+	await page.locator('#companion-arguments').fill(JSON.stringify(['-e', code]));
+	await page.getByRole('button', { name: 'Run command', exact: true }).click();
+	await page
+		.getByRole('alert')
+		.filter({ hasText: 'The command request remains unconfirmed' })
+		.waitFor();
+	assert.ok(admission.request, 'Disposable request is queued before actual Runner admission');
+	const authorization = sessionAuthorization(session.hostRequests);
+	assert.equal(admission.request.authorization, authorization);
+	const terminalPath = admission.request.path.replace(/\/commands$/, '');
+	const snapshot = await fetch(fixture.endpoint + terminalPath, {
+		headers: { Origin: origin, Authorization: authorization }
+	});
+	assert.equal(
+		(await snapshot.json()).terminal.status,
+		previousStatus,
+		'Actual ready or prior exited snapshot precedes admission of the queued new command'
+	);
+	assert.equal(
+		await page.getByRole('button', { name: 'Run command', exact: true }).isDisabled(),
+		true
+	);
+	await page.locator('.terminal-panel form').dispatchEvent('submit');
+	await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 100)));
+	assert.equal(
+		session.hostRequests.filter(
+			(request) => request.method === 'POST' && request.path.endsWith('/commands')
+		).length,
+		expectedCommandRequests,
+		'An unrelated ready/exited snapshot cannot permit resubmission'
+	);
+	admission.delivering = true;
+	const acknowledged = await fetch(fixture.endpoint + admission.request.path, {
+		method: 'POST',
+		headers: { Origin: origin, Authorization: authorization, 'Content-Type': 'application/json' },
+		body: JSON.stringify(admission.request.body)
+	});
+	assert.equal(
+		acknowledged.status,
+		200,
+		'Original queued request is admitted by the actual disposable Runner'
+	);
+	const acceptedTerminal = (await acknowledged.json()).terminal;
+	if (scenario === 'delayed-command-admission-fast') {
+		await waitUntil(async () => {
+			const response = await fetch(fixture.endpoint + terminalPath, {
+				headers: { Origin: origin, Authorization: authorization }
+			});
+			const actual = (await response.json()).terminal;
+			return actual.status === 'exited' && actual.exitCode === 0;
+		}, 'Fast admitted job finishes before the browser observes its running state');
+	}
+	admission.delivered = true;
+	for (const release of admission.statusWaiters.splice(0)) release();
+	await page.getByRole('button', { name: 'Check command status', exact: true }).click();
+	if (scenario === 'delayed-command-admission-fast') {
+		await waitUntil(
+			async () =>
+				(await page.getByLabel('Command output', { exact: true }).innerText()).includes(
+					'fast-unacknowledged-command'
+				),
+			'The browser inspects actual fast-job completion without observing running'
+		);
+		await page
+			.getByRole('alert')
+			.filter({ hasText: 'The command request remains unconfirmed' })
+			.waitFor();
+		assert.equal(await page.getByText('status unconfirmed', { exact: true }).count(), 1);
+		assert.equal(
+			await page.getByRole('button', { name: 'Run command', exact: true }).isDisabled(),
+			true,
+			'A fast lost-ack job requires Stop/new session when running was never observed'
+		);
+	} else {
+		await page.getByText('running', { exact: true }).waitFor();
+		assert.equal(
+			await page.getByRole('alert').count(),
+			0,
+			'Observing the newly admitted running job resolves submission uncertainty'
+		);
+	}
+	await page.screenshot({ path: resolve(outputDirectory, profile.name + '-' + scenario + '.png') });
+	await page.getByRole('button', { name: 'Stop and remove session', exact: true }).click();
+	await page.getByText('The command session was stopped and removed.', { exact: true }).waitFor();
+	await page
+		.getByLabel('I understand execution has this host-level access.', { exact: true })
+		.check();
+	const freshResponse = page.waitForResponse(
+		(response) =>
+			response.url() === fixture.endpoint + '/v1/terminals' &&
+			response.request().method() === 'POST'
+	);
+	await page.getByRole('button', { name: 'Create command session', exact: true }).click();
+	const freshTerminal = (await (await freshResponse).json()).terminal;
+	assert.notEqual(
+		freshTerminal.id,
+		acceptedTerminal.id,
+		'Confirmed Stop permits a fresh command session'
+	);
+	await page.locator('#companion-executable').waitFor();
+	await page.getByRole('button', { name: 'Disconnect and revoke', exact: true }).click();
+	await verifyRevoked(session, fixture, authorization);
+	await checkLayout(session);
+}
+
 const { chromium } = await import(process.env.BUDDY_PLAYWRIGHT_MODULE || 'playwright');
 const browser = await chromium.launch({ headless: true });
 try {
@@ -870,6 +1250,7 @@ try {
 			'late-file',
 			'late-pair',
 			'late-workspace',
+			'workspace-transition',
 			'late-command-switch',
 			'late-command-unmount',
 			'stop-retry',
@@ -878,16 +1259,132 @@ try {
 			'stop-delay',
 			'disconnect-failure',
 			'operation-conflict',
+			'uncertain-command-transport',
+			'uncertain-command-http',
+			'uncertain-command-json',
+			'uncertain-command-shape',
+			'recovery-overlap-running',
+			'recovery-overlap-error',
+			'delayed-command-admission-ready',
+			'delayed-command-admission-exited',
+			'delayed-command-admission-fast',
 			'transient-poll'
 		]) {
 			let fixture = null;
 			let session = null;
 			const delayed = { held: null, release: () => {} };
+			const admission = { request: null, delivering: false, delivered: false, statusWaiters: [] };
 			try {
 				fixture = await startFixture();
 				let injectedStopFailure = false;
 				let injectedPollFailure = false;
+				let allowStatusRecovery = false;
+				let recoveryReads = 0;
+				let admissionSubmissions = 0;
 				const interceptor = async (route, url) => {
+					if (
+						scenario.startsWith('delayed-command-admission-') &&
+						route.request().method() === 'POST' &&
+						url.pathname.endsWith('/commands')
+					) {
+						admissionSubmissions += 1;
+						if (scenario === 'delayed-command-admission-exited' && admissionSubmissions === 1)
+							return false;
+						admission.request = {
+							path: url.pathname,
+							body: route.request().postDataJSON(),
+							authorization: route.request().headers().authorization
+						};
+						await route.fulfill({
+							status: 503,
+							json: { error: 'Synthetic request transport failed before queued Runner admission' }
+						});
+						return true;
+					}
+					if (
+						scenario === 'delayed-command-admission-fast' &&
+						admission.delivering &&
+						!admission.delivered &&
+						route.request().method() === 'GET' &&
+						url.pathname.startsWith('/v1/terminals/')
+					) {
+						await new Promise((release) => admission.statusWaiters.push(release));
+					}
+					if (
+						scenario.startsWith('recovery-overlap-') &&
+						route.request().method() === 'POST' &&
+						url.pathname.endsWith('/commands')
+					) {
+						const response = await route.fetch();
+						assert.equal(response.status(), 200);
+						await route.abort('failed');
+						return true;
+					}
+					if (
+						scenario.startsWith('recovery-overlap-') &&
+						route.request().method() === 'GET' &&
+						url.pathname.startsWith('/v1/terminals/')
+					) {
+						recoveryReads += 1;
+						if (recoveryReads === 1) {
+							await route.fulfill({ status: 503, json: { error: 'Initial recovery unavailable' } });
+							return true;
+						}
+						if (recoveryReads === 2) {
+							const response = await route.fetch();
+							assert.equal((await response.json()).terminal.status, 'running');
+							await new Promise((release) => {
+								delayed.release = release;
+								delayed.held = route;
+							});
+							if (scenario === 'recovery-overlap-error')
+								await route.fulfill({
+									status: 503,
+									json: { error: 'Older automatic recovery failed' }
+								});
+							else await route.fulfill({ response });
+							delayed.completed = true;
+							return true;
+						}
+					}
+					if (
+						scenario.startsWith('uncertain-command-') &&
+						route.request().method() === 'POST' &&
+						url.pathname.endsWith('/commands')
+					) {
+						const response = await route.fetch();
+						assert.equal(
+							response.status(),
+							200,
+							'Actual disposable command starts before reply loss'
+						);
+						if (scenario === 'uncertain-command-transport') await route.abort('failed');
+						else if (scenario === 'uncertain-command-json')
+							await route.fulfill({ status: 200, contentType: 'application/json', body: '{' });
+						else if (scenario === 'uncertain-command-shape')
+							await route.fulfill({ status: 200, json: {} });
+						else
+							await route.fulfill({
+								status: 503,
+								json: { error: 'Injected lost command reply after actual acceptance' }
+							});
+						return true;
+					}
+					if (
+						scenario.startsWith('uncertain-command-') &&
+						!allowStatusRecovery &&
+						route.request().method() === 'GET' &&
+						url.pathname.startsWith('/v1/terminals/')
+					) {
+						if (scenario === 'uncertain-command-shape')
+							await route.fulfill({ status: 200, json: { terminal: { status: 'unknown' } } });
+						else
+							await route.fulfill({
+								status: 503,
+								json: { error: 'Injected unavailable command status' }
+							});
+						return true;
+					}
 					if (
 						scenario === 'disconnect-failure' &&
 						route.request().method() === 'DELETE' &&
@@ -956,6 +1453,7 @@ try {
 				let delayedPath = null;
 				if (scenario === 'late-pair') delayedPath = '/v1/pair';
 				if (scenario === 'late-workspace') delayedPath = '/v1/workspaces';
+				if (scenario === 'workspace-transition') delayedPath = 'SECOND_WORKSPACE_PATH';
 				if (scenario.startsWith('late-command-')) delayedPath = 'COMMAND_PATH';
 				if (scenario === 'stop-delay') delayedPath = 'STOP_PATH';
 				if (scenario === 'disconnect-failure') delayedPath = 'BROWSE_PATH';
@@ -966,12 +1464,27 @@ try {
 				if (scenario === 'late-file') await lateFile(session, fixture, delayed);
 				if (scenario === 'late-pair') await latePair(session, fixture);
 				if (scenario === 'late-workspace') await lateWorkspace(session, fixture);
+				if (scenario === 'workspace-transition') await workspaceTransition(session, fixture);
 				if (scenario.startsWith('late-command-'))
 					await lateCommand(session, fixture, scenario === 'late-command-unmount');
 				if (scenario.endsWith('stop-retry')) await stopRetry(session, fixture, scenario);
 				if (scenario === 'stop-delay') await delayedStop(session, fixture);
 				if (scenario === 'disconnect-failure') await disconnectFailure(session, fixture);
 				if (scenario === 'operation-conflict') await operationConflict(session, fixture);
+				if (scenario.startsWith('uncertain-command-'))
+					await uncertainCommand(
+						session,
+						fixture,
+						() => {
+							allowStatusRecovery = true;
+						},
+						profile,
+						scenario
+					);
+				if (scenario.startsWith('recovery-overlap-'))
+					await recoveryOverlap(session, fixture, delayed, profile, scenario);
+				if (scenario.startsWith('delayed-command-admission-'))
+					await delayedCommandAdmission(session, fixture, admission, profile, scenario);
 				if (scenario === 'transient-poll') await transientPoll(session, fixture);
 				results.push({
 					profile: profile.name,
@@ -998,6 +1511,7 @@ try {
 				);
 			} finally {
 				delayed.release();
+				for (const release of admission.statusWaiters.splice(0)) release();
 				await session?.context.close();
 				await fixture?.close();
 			}
