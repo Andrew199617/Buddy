@@ -16,7 +16,7 @@ from unittest.mock import patch
 ROOT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT_DIR / 'backend'))
 
-from open_webui.utils.subscriptions import claude_code, discovery, runner, streaming  # noqa: E402
+from open_webui.utils.subscriptions import claude_code, codex, discovery, runner, streaming  # noqa: E402
 from open_webui.utils.subscriptions.common import (  # noqa: E402
     ProviderSettings,
     TurnRequest,
@@ -414,6 +414,50 @@ class ClaudeStreamTests(unittest.TestCase):
                 newest = discovery._newest_desktop_bundle()
             self.assertIn('Claude_abc123', newest)
             self.assertIn('2.1.295', newest)
+
+
+class CodexTests(unittest.TestCase):
+    def test_turn_parser_streams_messages_activity_and_usage(self):
+        parser = codex.CodexTurnParser('turn-1')
+
+        def notify(method, **params):
+            return parser.handle({'method': method, 'params': {'threadId': 't', 'turnId': 'turn-1', **params}})
+
+        events = []
+        events += notify('item/started', item={'type': 'agentMessage', 'id': 'm1'})
+        events += notify('item/agentMessage/delta', itemId='m1', delta='Looking.')
+        events += notify('item/started', item={'type': 'commandExecution', 'command': 'ls -la'})
+        events += notify('item/completed', item={'type': 'commandExecution', 'exitCode': 2})
+        events += notify('item/started', item={'type': 'agentMessage', 'id': 'm2'})
+        events += notify('item/agentMessage/delta', itemId='m2', delta='Done.')
+        events += notify('item/completed', item={'type': 'agentMessage', 'id': 'm2', 'text': 'Done.'})
+        events += parser.handle({'method': 'item/agentMessage/delta', 'params': {'turnId': 'other', 'delta': 'x'}})
+        notify('thread/tokenUsage/updated', tokenUsage={'total': {'inputTokens': 120, 'outputTokens': 9}})
+        notify('turn/completed', turn={'id': 'turn-1', 'status': 'completed'})
+
+        self.assertEqual(parser.reply_text, 'Looking.\n\nDone.')
+        self.assertIn(StatusUpdate('Running `ls -la`'), events)
+        self.assertTrue(any(isinstance(event, ReasoningDelta) and 'exit code 2' in event.text for event in events))
+        self.assertTrue(parser.finished)
+        self.assertIsNone(parser.error)
+        usage = codex._usage_difference(parser.usage_total, {'inputTokens': 100, 'outputTokens': 4})
+        self.assertEqual(usage, TokenUsage(input_tokens=20, output_tokens=5))
+
+    def test_failed_turn_reports_the_api_message(self):
+        parser = codex.CodexTurnParser('turn-1')
+        api_error = json.dumps({'error': {'message': "The 'x' model is not supported."}})
+        error_params = {'turnId': 'turn-1', 'willRetry': False, 'error': {'message': api_error}}
+        parser.handle({'method': 'error', 'params': error_params})
+        parser.handle({'method': 'turn/completed', 'params': {'turn': {'id': 'turn-1', 'status': 'failed'}}})
+        self.assertEqual(parser.error, "The 'x' model is not supported.")
+
+    def test_retry_errors_are_only_status(self):
+        parser = codex.CodexTurnParser('turn-1')
+        events = parser.handle(
+            {'method': 'error', 'params': {'turnId': 'turn-1', 'willRetry': True, 'error': {'message': 'busy'}}}
+        )
+        self.assertEqual(events, [StatusUpdate('Retrying: busy')])
+        self.assertIsNone(parser.error)
 
 
 class ProcessTests(unittest.TestCase):
