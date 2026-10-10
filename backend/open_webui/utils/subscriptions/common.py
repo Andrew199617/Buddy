@@ -29,6 +29,8 @@ class ProviderSettings:
     access: str = ACCESS_CHAT
     workspace: str = ''
     cli_path: str = ''
+    # Which machine runs the CLI: 'local' (this server) or a Buddy Runner id.
+    machine_id: str = 'local'
 
 
 @dataclass

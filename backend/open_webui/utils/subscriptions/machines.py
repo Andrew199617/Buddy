@@ -222,6 +222,9 @@ class RemoteMachine:
         self._session: aiohttp.ClientSession | None = None
         self._info: dict | None = None
 
+    def matches(self, name: str, url: str, key: str) -> bool:
+        return self.name == name and self.url == url.rstrip('/') and self._key == key
+
     def _headers(self) -> dict:
         return {'Authorization': f'Bearer {self._key}'}
 
