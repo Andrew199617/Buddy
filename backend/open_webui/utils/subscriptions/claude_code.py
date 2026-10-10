@@ -9,11 +9,7 @@ subscription's limits.
 import asyncio
 import json
 import logging
-import os
 import re
-import shutil
-import sys
-import tempfile
 from pathlib import Path
 
 from open_webui.utils.subscriptions.common import (
@@ -38,12 +34,9 @@ from open_webui.utils.subscriptions.events import (
     TokenUsage,
     TurnFailed,
 )
-from open_webui.utils.subscriptions.process import (
-    ChildProcess,
-    ProcessClosedError,
-    run_command,
-    subscription_env,
-)
+from open_webui.utils.subscriptions.discovery import TOOL_CLAUDE
+from open_webui.utils.subscriptions.machines import temp_file_arg
+from open_webui.utils.subscriptions.process import ProcessClosedError
 
 log = logging.getLogger(__name__)
 
@@ -56,58 +49,13 @@ NOT_SIGNED_IN_MESSAGE = 'Claude is not signed in. Sign in under Admin Settings â
 EFFORT_LEVELS = ('low', 'medium', 'high', 'xhigh', 'max')
 READ_ONLY_TOOLS = 'Read,Grep,Glob,WebSearch,WebFetch'
 TRANSCRIPT_INTRO = 'Here is our conversation so far. Continue it by replying to my latest message.'
+INSTRUCTIONS_FILE = 'instructions'
 LOGIN_URL = re.compile(r'https://\S+/oauth/authorize\?\S+')
 FALLBACK_MODELS = [
     ProviderModel(key='opus', value='opus', name='Claude Opus'),
     ProviderModel(key='sonnet', value='sonnet', name='Claude Sonnet'),
     ProviderModel(key='haiku', value='haiku', name='Claude Haiku'),
 ]
-
-
-def _desktop_bundle_version(path: Path) -> list[int]:
-    version_name = path.parent.parent.name
-    numbers = []
-    for piece in version_name.split('.'):
-        if piece.isdigit():
-            numbers.append(int(piece))
-        else:
-            numbers.append(0)
-    return numbers
-
-
-def _newest_desktop_bundle() -> str | None:
-    """The Claude desktop app ships the CLI under %APPDATA%/Claude/claude-code."""
-    appdata = os.environ.get('APPDATA')
-    if not appdata:
-        return None
-    bundles = list((Path(appdata) / 'Claude' / 'claude-code').glob('*/*/claude.exe'))
-    if not bundles:
-        return None
-    bundles.sort(key=_desktop_bundle_version)
-    return str(bundles[-1])
-
-
-def find_claude_cli(configured_path: str = '') -> str | None:
-    if configured_path:
-        if os.path.isfile(configured_path):
-            return configured_path
-        return None
-
-    on_path = shutil.which('claude')
-    if on_path and Path(on_path).suffix.lower() in ('', '.exe'):
-        return on_path
-
-    executable_name = 'claude.exe' if sys.platform == 'win32' else 'claude'
-    native_install = Path.home() / '.local' / 'bin' / executable_name
-    if native_install.is_file():
-        return str(native_install)
-
-    bundled = _newest_desktop_bundle()
-    if bundled:
-        return bundled
-
-    # An npm install provides claude.cmd on Windows; it works, just more slowly.
-    return on_path
 
 
 def claude_effort(effort: str | None) -> str | None:
@@ -367,7 +315,7 @@ class ClaudeStreamParser:
 class ClaudeLogin:
     """A running ``claude auth login`` process and what the user should see."""
 
-    def __init__(self, process: ChildProcess):
+    def __init__(self, process):
         self.process = process
         self.state = 'waiting'
         self.url: str | None = None
@@ -390,8 +338,7 @@ class ClaudeCodeProvider:
     id = PROVIDER_ID
     name = 'Claude'
 
-    def __init__(self, state_dir: Path, chat_dir: Path):
-        self._chat_dir = chat_dir
+    def __init__(self, state_dir: Path):
         self._sessions = SessionStore(state_dir / 'claude-sessions.json')
         self._login: ClaudeLogin | None = None
         self._usage_windows: dict[str, dict] = {}
@@ -413,33 +360,28 @@ class ClaudeCodeProvider:
             'limit_reached': self._limit_reached,
         }
 
-    def _cli_cwd(self) -> str:
-        """Sign-in, status, and model checks run in Buddy's empty chat folder."""
-        self._chat_dir.mkdir(parents=True, exist_ok=True)
-        return str(self._chat_dir)
-
-    def _require_cli(self, settings: ProviderSettings) -> str:
-        cli = find_claude_cli(settings.cli_path)
+    async def _require_cli(self, settings: ProviderSettings, machine) -> str:
+        cli = await machine.find_tool(TOOL_CLAUDE, settings.cli_path)
         if not cli:
-            raise SubscriptionError(NOT_INSTALLED_MESSAGE)
+            raise SubscriptionError(f'{machine.name}: {NOT_INSTALLED_MESSAGE}')
         return cli
 
-    async def status(self, settings: ProviderSettings) -> dict:
-        cli = find_claude_cli(settings.cli_path)
+    async def status(self, settings: ProviderSettings, machine) -> dict:
+        """Sign-in, status, and model checks run in the machine's empty chat folder."""
+        cli = await machine.find_tool(TOOL_CLAUDE, settings.cli_path)
         if not cli:
             return {'installed': False, 'signed_in': False, 'message': NOT_INSTALLED_MESSAGE}
+        chat_dir = await machine.chat_dir()
 
         version = ''
         try:
-            _, version_output, _ = await run_command([cli, '--version'], self._cli_cwd(), subscription_env(), 30)
+            _, version_output, _ = await machine.run([cli, '--version'], chat_dir, 30)
             version = version_output.strip().split(' ')[0]
-        except (OSError, TimeoutError) as error:
+        except (OSError, TimeoutError, SubscriptionError) as error:
             log.warning('Could not read the Claude Code version: %s', error)
 
         try:
-            _, output, _ = await run_command(
-                [cli, 'auth', 'status', '--json'], self._cli_cwd(), subscription_env(), 30
-            )
+            _, output, _ = await machine.run([cli, 'auth', 'status', '--json'], chat_dir, 30)
             info = json.loads(output or '{}')
         except (OSError, TimeoutError, ValueError) as error:
             return {
@@ -472,8 +414,8 @@ class ClaudeCodeProvider:
             )
         return status
 
-    async def list_models(self, settings: ProviderSettings) -> list[ProviderModel]:
-        cli = self._require_cli(settings)
+    async def list_models(self, settings: ProviderSettings, machine) -> list[ProviderModel]:
+        cli = await self._require_cli(settings, machine)
         args = [
             cli,
             '-p',
@@ -489,7 +431,7 @@ class ClaudeCodeProvider:
             '--tools',
             '',
         ]
-        process = ChildProcess(args, self._cli_cwd(), subscription_env())
+        process = await machine.start_process(args, await machine.chat_dir())
         initialize = {
             'type': 'control_request',
             'request_id': 'buddy-models',
@@ -519,15 +461,15 @@ class ClaudeCodeProvider:
             return models
         return list(FALLBACK_MODELS)
 
-    async def start_login(self, settings: ProviderSettings, method: str) -> dict:
+    async def start_login(self, settings: ProviderSettings, machine, method: str) -> dict:
         await self.cancel_login()
-        cli = self._require_cli(settings)
-        # BROWSER=none keeps the CLI from opening a tab on this computer; Buddy
+        cli = await self._require_cli(settings, machine)
+        # BROWSER=none keeps the CLI from opening a tab on that computer; Buddy
         # shows the sign-in link instead, which also works from a phone.
-        process = ChildProcess(
+        process = await machine.start_process(
             [cli, 'auth', 'login', '--claudeai'],
-            self._cli_cwd(),
-            subscription_env({'BROWSER': 'none'}),
+            await machine.chat_dir(),
+            extra_env={'BROWSER': 'none'},
         )
         login = ClaudeLogin(process)
         self._login = login
@@ -602,12 +544,10 @@ class ClaudeCodeProvider:
         if login.watcher:
             login.watcher.cancel()
 
-    async def logout(self, settings: ProviderSettings) -> None:
-        cli = self._require_cli(settings)
+    async def logout(self, settings: ProviderSettings, machine) -> None:
+        cli = await self._require_cli(settings, machine)
         await self.cancel_login()
-        returncode, _, error_output = await run_command(
-            [cli, 'auth', 'logout'], self._cli_cwd(), subscription_env(), 60
-        )
+        returncode, _, error_output = await machine.run([cli, 'auth', 'logout'], await machine.chat_dir(), 60)
         self._sessions.clear()
         if returncode != 0:
             raise SubscriptionError(_shorten(error_output, 400) or 'Claude Code could not sign out.')
@@ -669,17 +609,9 @@ class ClaudeCodeProvider:
         return system or 'The user is chatting with you from Buddy, their personal chat app.'
 
     def _session_key(self, turn: TurnRequest, turns: list[ChatTurn]) -> str:
-        # Claude Code keeps sessions per working folder, so a session can only
-        # be resumed from the folder that created it.
-        return f'{turn.cwd}|{conversation_key(turns)}'
-
-    def _write_instructions(self, turn: TurnRequest) -> str:
-        instructions_file = tempfile.NamedTemporaryFile(
-            'w', encoding='utf-8', suffix='.md', prefix='buddy-instructions-', delete=False
-        )
-        with instructions_file:
-            instructions_file.write(self._instructions(turn))
-        return instructions_file.name
+        # Claude Code keeps sessions per machine and working folder, so a
+        # session can only be resumed where it was created.
+        return f'{turn.machine.id}|{turn.cwd}|{conversation_key(turns)}'
 
     async def _run_attempt(
         self,
@@ -687,12 +619,15 @@ class ClaudeCodeProvider:
         turn: TurnRequest,
         resume_id: str | None,
         message: dict,
-        instructions_path: str,
         attempt: 'ClaudeAttempt',
     ):
         """Run ``claude -p`` once, yielding events and recording the outcome in ``attempt``."""
         parser = attempt.parser
-        process = ChildProcess(self._turn_args(cli, turn, resume_id, instructions_path), turn.cwd, subscription_env())
+        process = await turn.machine.start_process(
+            self._turn_args(cli, turn, resume_id, temp_file_arg(INSTRUCTIONS_FILE)),
+            turn.cwd,
+            temp_files={INSTRUCTIONS_FILE: self._instructions(turn)},
+        )
         try:
             await process.write(json.dumps(message) + '\n')
             while not parser.finished:
@@ -716,41 +651,34 @@ class ClaudeCodeProvider:
 
     async def run_turn(self, turn: TurnRequest):
         """Run one chat turn and yield its events."""
-        cli = self._require_cli(turn.settings)
+        cli = await self._require_cli(turn.settings, turn.machine)
         conversation = turn.conversation
         resume_id = None
         if not turn.is_task:
             resume_id = self._sessions.get(self._session_key(turn, conversation.history))
 
-        instructions_path = self._write_instructions(turn)
         attempt = ClaudeAttempt()
-        try:
-            if resume_id:
-                message = user_message(conversation.prompt.text, conversation.prompt.images)
-                async for event in self._run_attempt(cli, turn, resume_id, message, instructions_path, attempt):
-                    yield event
-                if attempt.session_missing():
-                    log.info('Claude session %s no longer exists; starting from the chat text', resume_id)
-                    resume_id = None
-                    attempt = ClaudeAttempt()
+        if resume_id:
+            message = user_message(conversation.prompt.text, conversation.prompt.images)
+            async for event in self._run_attempt(cli, turn, resume_id, message, attempt):
+                yield event
+            if attempt.session_missing():
+                log.info('Claude session %s no longer exists; starting from the chat text', resume_id)
+                resume_id = None
+                attempt = ClaudeAttempt()
 
-            if not resume_id:
-                message = transcript_message(conversation.history, conversation.prompt)
-                async for event in self._run_attempt(cli, turn, None, message, instructions_path, attempt):
-                    yield event
+        if not resume_id:
+            message = transcript_message(conversation.history, conversation.prompt)
+            async for event in self._run_attempt(cli, turn, None, message, attempt):
+                yield event
 
-            failure = attempt.failure()
-            if failure:
-                yield TurnFailed(failure)
-            elif attempt.parser.session_id and not turn.is_task:
-                reply = ChatTurn('assistant', attempt.parser.reply_text)
-                answered = conversation.history + [conversation.prompt, reply]
-                self._sessions.put(self._session_key(turn, answered), attempt.parser.session_id)
-        finally:
-            try:
-                os.unlink(instructions_path)
-            except OSError:
-                pass
+        failure = attempt.failure()
+        if failure:
+            yield TurnFailed(failure)
+        elif attempt.parser.session_id and not turn.is_task:
+            reply = ChatTurn('assistant', attempt.parser.reply_text)
+            answered = conversation.history + [conversation.prompt, reply]
+            self._sessions.put(self._session_key(turn, answered), attempt.parser.session_id)
 
 
 class ClaudeAttempt:

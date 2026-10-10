@@ -6,6 +6,7 @@
 		getSubscription,
 		logoutSubscription,
 		updateSubscriptionConfig,
+		type SubscriptionMachine,
 		type SubscriptionProvider,
 		type SubscriptionSettings,
 		type SubscriptionUsageWindow
@@ -20,6 +21,7 @@
 	const i18n: any = getContext('i18n');
 
 	export let provider: SubscriptionProvider;
+	export let machines: SubscriptionMachine[] = [];
 	// Called after anything that can add or remove models.
 	export let onModelsChanged: () => Promise<void> = async () => {};
 
@@ -177,7 +179,12 @@
 </script>
 
 <SubscriptionLoginModal bind:show={showLoginModal} {provider} onSignedIn={handleSignedIn} />
-<SubscriptionSettingsModal bind:show={showSettingsModal} {provider} onSave={saveSettings} />
+<SubscriptionSettingsModal
+	bind:show={showSettingsModal}
+	{provider}
+	{machines}
+	onSave={saveSettings}
+/>
 
 <div class="flex w-full flex-col gap-1">
 	<div class="flex w-full items-center gap-2">
@@ -185,7 +192,10 @@
 			<div class="flex flex-wrap items-baseline gap-x-1.5">
 				<span class="whitespace-nowrap font-medium">{provider.name}</span>
 				<span class="text-xs text-gray-400 dark:text-gray-600">
-					{$i18n.t('via {{cli}}', { cli: cliName })} · {accessLabel}
+					{$i18n.t('via {{cli}} on {{machine}}', {
+						cli: cliName,
+						machine: provider.machine?.name ?? ''
+					})} · {accessLabel}
 				</span>
 			</div>
 			<div class="break-words text-xs text-gray-500 dark:text-gray-400">

@@ -1,0 +1,57 @@
+# Buddy in Docker: the backend plus the production frontend server.
+#
+#   docker compose -f docker/buddy/compose.yaml up -d --build
+#
+# Settings come from docker/buddy/.env (copy example.env). Claude Code and
+# Codex run on machines added in Admin Settings → Connections → Subscriptions,
+# such as a Buddy Runner on the Docker host (http://host.docker.internal:8765).
+name: buddy
+
+services:
+  buddy:
+    build:
+      context: ../..
+      target: base
+    image: buddy:local
+    command: ['python', '/app/local/serve.py', 'serve', '--host', '0.0.0.0', '--port', '8080']
+    environment:
+      DATA_DIR: /app/backend/data
+      WEBUI_NAME: Buddy
+      WEBUI_FAVICON_URL: /static/favicon.png
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:?Set WEBUI_SECRET_KEY in docker/buddy/.env}
+      WEBUI_URL: ${BUDDY_PUBLIC_URL:-http://localhost:8082}
+      MCP_OAUTH_ALLOWED_REDIRECT_HOSTS: ${BUDDY_ALLOWED_HOSTS:-}
+    volumes:
+      - buddy-data:/app/backend/data
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    ports:
+      - '${BUDDY_BACKEND_PORT:-8081}:8080'
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../..
+      target: web
+    image: buddy-web:local
+    command:
+      - node
+      - local/serve-frontend.mjs
+      - --host
+      - 0.0.0.0
+      - --port
+      - '8082'
+      - --backend
+      - http://buddy:8080
+      - --frontend-dir
+      - build
+      - --allowed-host
+      - ${BUDDY_TAILNET_HOST:-localhost}
+    depends_on:
+      - buddy
+    ports:
+      - '${BUDDY_PORT:-8082}:8082'
+    restart: unless-stopped
+
+volumes:
+  buddy-data:

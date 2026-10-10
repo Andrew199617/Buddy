@@ -140,13 +140,21 @@ ENV = os.getenv('ENV', 'dev')
 
 FROM_INIT_PY = os.getenv('FROM_INIT_PY', 'False').lower() == 'true'
 
-if FROM_INIT_PY:
-    PACKAGE_DATA = {'version': importlib.metadata.version('open-webui')}
-else:
+def _load_package_data() -> dict:
+    if FROM_INIT_PY:
+        try:
+            return {'version': importlib.metadata.version('open-webui')}
+        except importlib.metadata.PackageNotFoundError:
+            # Buddy's Docker image runs this checkout's backend through the CLI
+            # without installing the open-webui package.
+            pass
     try:
-        PACKAGE_DATA = json.loads((BASE_DIR / 'package.json').read_text())
+        return json.loads((BASE_DIR / 'package.json').read_text())
     except Exception:
-        PACKAGE_DATA = {'version': '0.0.0'}
+        return {'version': '0.0.0'}
+
+
+PACKAGE_DATA = _load_package_data()
 
 VERSION = PACKAGE_DATA['version']
 

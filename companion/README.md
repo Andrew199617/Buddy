@@ -1,124 +1,154 @@
-# Buddy companion
+# Buddy Runner project capabilities
 
-The companion is a separate execution host. Buddy's browser/mobile UI connects
-directly to its versioned JSON API; a future desktop UI can use the same API.
-Run the host on the computer containing the project: Andrew's PC initially,
-another PC or a private cloud machine later. Model-provider login, Buddy account
-authentication, and chat organization folders remain separate from host pairing
-and filesystem permissions.
+Buddy uses one execution host: the Python Buddy Runner on **127.0.0.1:8765**.
+The port remains configurable. This matches the existing Machines convention,
+avoids a second host on 8083, and is separate from Buddy's backend 8081 and
+frontend 8082. Tests use ephemeral loopback ports. No service is installed.
 
-## Initial local setup
+The Runner has two independent authorization boundaries:
 
-Use Node.js 22 from the Buddy checkout. The companion needs no npm dependencies.
+| API | Client | Authority |
+| --- | --- | --- |
+| Provider execution (`/health`, `/run`, `/process`) | Buddy backend | Privileged Runner key; OS-account execution |
+| Workspace API (`/v1/*`) | Browser, mobile, future desktop | Temporary origin-bound pairing token; explicit project grants |
+| Operator controls | Host operator | Privileged Runner key; browser Origin requests refused |
 
-```powershell
-# Start safely with no project grants and command execution disabled.
-node companion/cli.mjs
+The privileged key never goes to the workspace browser. Provider credentials
+remain on the selected provider machine. Provider login, chat organization
+folders, machine registration and a supplied path never create project grants.
 
-# Read-only access to this explicitly chosen project, for this process only.
-node companion/cli.mjs --root "C:\Projects\MyProject"
+## Start on the computer containing the project
 
-# Override the port and the exact browser origin when needed.
-node companion/cli.mjs --port 8084 --origin http://localhost:8082 --root "C:\Projects\MyProject"
-```
-
-Port **8083** is Andrew's chosen companion default next to the running Buddy
-frontend on **8082** and backend on **8081**. A read-only listener check found
-8083 available before local setup. Plane already owns ports 3300 and 3301 and
-was left running. The CLI binds `127.0.0.1` and fails clearly if the requested
-port is occupied; `--port` remains configurable. Tests use ephemeral loopback
-ports. Existing Buddy launchers are unchanged.
-
-Open **Companion** in Buddy's sidebar, inspect the machine name, host ID and
-endpoint, then enter the short-lived one-time code printed in the host's local
-terminal. The default allowed Buddy origins are the exact `localhost` and
-`127.0.0.1` origins on ports 8081 and 8082, covering the integrated Buddy app and
-its separate frontend. Supply `--origin` for a different actual browser origin.
-Pairing grants access only to the roots the host operator supplied. No roots
-are approved by default. Browser paths, uploaded folders, chat folder names,
-and pairing alone never add host directories.
-
-The picker browses within approved roots and selects a real project directory.
-Text files can be read; updating an existing file requires the explicit host
-`--write` capability. Symlinks/junctions and multiply linked files are refused,
-including links inside an approved root. Filesystem-volume roots cannot be
-granted. This deliberately excludes linked project directories in this first
-foundation.
-
-## Commands and terminal sessions
-
-Execution is off by default. To enable it deliberately for the supplied roots:
+Use Python 3.11 with Buddy's dependencies. From the checkout:
 
 ```powershell
-node companion/cli.mjs --root "C:\Projects\MyProject" --allow-host-execution
+# No roots, writes or workspace commands are approved by default.
+local\start-buddy-runner.ps1
+
+# Approve read-only access to exactly this project for this Runner instance.
+local\start-buddy-runner.ps1 -Root 'C:\Projects\Example'
+
+# Deliberately approve existing-file edits and whole-account commands.
+local\start-buddy-runner.ps1 -Root 'C:\Projects\Example' -WriteFiles -AllowHostExecution
+
+# A worktree can use an existing dependency environment.
+local\start-buddy-runner.ps1 -PythonPath 'C:\path\to\venv\Scripts\python.exe' -Port 8766 -Root 'C:\Projects\Example'
 ```
 
-**Commands run with the companion process's OS permissions and can access
-beyond the selected directory. A working directory is not an OS sandbox.**
-Read/write API checks enforce directory scope; command execution is a separate
-capability. An OS sandbox or dedicated low-privilege execution account is still
-needed before treating arbitrary commands as directory-confined.
+The Python CLI equivalents are repeated `--root`, `--write`,
+`--allow-host-execution`, `--name`, `--port`, and `--origin`. The default allowed
+browser origins are exactly localhost and 127.0.0.1 on ports 8081 and 8082.
+Supplying `--origin` replaces these defaults. `--allow-no-origin` explicitly
+permits non-browser workspace clients; it is off by default. Non-loopback binds
+are rejected. The old Node Companion CLI and server have been retired.
 
-The UI creates an owned command session in the selected project and accepts an
-executable plus a JSON string-array of arguments. The host uses argv execution
-without an implicit shell. Pipe-backed sessions support output, successive
-commands and stop/close; they are not a PTY or a persistent interactive shell.
-Shell state such as `cd` and environment changes does not survive between
-commands. Limits are 1 MiB text files, 256 KiB retained command output, 60-second
-commands, eight active sessions, 64 retained sessions and 10-minute idle expiry.
-Token expiry, disconnect, root revocation and shutdown clean up sessions.
-Windows uses a transient hidden Windows PowerShell supervisor with a native
-kill-on-close Job Object; Windows PowerShell is required for execution. POSIX
-uses process groups. No helper is installed persistently.
+With approved roots, the host prints a one-use pairing code valid for five
+minutes. Inspect the host name, current instance ID and endpoint in Buddy's
+project UI, then pair. Tokens expire after 30 minutes and stay in client memory.
+The same instance ID is shown by discovery, pairing and workspace responses.
+Restart changes it and invalidates all previous tokens, grants and sessions.
 
-## Other computers, phones and future desktop clients
+## Refresh pairing and revoke access without restarting providers
 
-`127.0.0.1` on a phone refers to the phone. It does not reach Andrew's PC. Choose
-the authenticated host's HTTPS endpoint when a private remote transport is
-configured. The UI always displays the execution host and endpoint beside the
-active project, file and command session.
+A host operator can obtain a fresh one-use code through
+`POST /workspace-pairing`, authenticated with the privileged Runner key from
+that host. The response is `{code, expiresAt, host}`. It invalidates the previous
+unused code and resets pairing attempts, while retaining existing grants,
+paired sessions and provider processes. The browser must never perform this
+operator request or receive that key. The code can then be entered on another
+device. At most 64 paired sessions are retained.
 
-Keep the companion on loopback on whichever execution machine owns the project.
-A later private HTTPS reverse proxy/tunnel can reach that loopback listener,
-rewrite upstream `Host` to its actual loopback address/port, preserve `Origin`,
-and allow only the exact Buddy browser origin configured with `--origin`.
-The client accepts HTTPS endpoints on other computers and HTTP only on loopback.
-The host address and port are configurable independently of the Buddy app.
+`GET /workspace-grants` lists the operator's current grant IDs.
+`DELETE /workspace-grants/{grant_id}` revokes one grant and stops its command
+sessions. These are key-authenticated operator routes that reject browser Origin
+requests. Revocation cannot approve or add a new root. Restart with explicit
+`--root` arguments to change the approved directory set. Workspace clients
+revoke only their own session through `DELETE /v1/session`.
 
-This foundation does not configure a tunnel, TLS, firewall rule, public bind,
-desktop package or persistent service. Remote deployment and device networking
-need a separate approved setup. Model logins can change independently without
-changing host permissions or passing provider credentials to the companion.
+The existing provider key is persistent and grants full execution as the Runner
+account. Browser tokens and directory approvals remain temporary and separate.
+Protect the Runner state directory and Buddy's configuration database as
+privileged secrets; neither belongs in source control or browser storage.
 
-## Security and lifecycle
+## Files, folders and commands
 
-- Random host identity, pairing code and bearer sessions exist in memory for
-  one host process. Codes are expiring and single-use with bounded attempts;
-  tokens expire after 30 minutes and are bound to the pairing browser origin. Restart to
-  issue a new code. Multi-device simultaneous pairing is future work.
-- Tokens stay in the client instance, never browser storage, URLs or Buddy's
-  database. Reload/navigation requires a fresh host pairing. Disconnect attempts
-  immediate revocation; unexpected network loss is bounded by server idle/token
-  expiry rather than a guaranteed immediate signal.
-- Exact Origin and Host validation defend cross-site requests and DNS rebinding.
-  Requests without Origin require explicit `--allow-no-origin` operator opt-in
-  for non-browser clients. CORS is not treated as authentication.
-- Every directory, file and workspace operation validates an opaque grant,
-  relative path, canonical containment and unchanged root identity. Absolute,
-  traversal, drive, UNC and link escapes are denied. Grants cannot be registered
-  through the network API.
-- No persistent credentials, grants or real project access were created during
-  implementation. Tests use only disposable fixture directories and processes.
+The directory picker browses approved roots and selects a real project folder.
+Direct file reads and edits use opaque grants and forward-slash relative paths.
+Volume roots, traversal, drive/UNC paths, symlinks, junctions, reparse points and
+multiply linked files are refused. Replacing an approved root invalidates access.
+Only existing UTF-8 text files up to 1 MiB are supported; editing additionally
+requires the host's explicit write approval.
+
+**Opt-in commands run as the host OS account and can access beyond the selected
+project. Their working directory is not a sandbox.** Provider read access can
+also be broader: Codex read-only mode blocks writes but permits reads elsewhere
+on disk. Those permissions are independent of project file API grants.
+
+Command sessions accept an executable plus a JSON string-array of arguments,
+without an implicit shell. They use pipes, not a PTY or persistent shell state.
+Limits include 256 KiB retained output, 60-second commands, eight active sessions,
+64 retained sessions and ten-minute idle expiry. Disconnect, token expiry, grant
+revocation, stop and shutdown dispose owned commands. Native Windows Job Objects
+contain descendants even after their leader exits; no PowerShell supervisor is
+needed. POSIX uses process groups. Deliberately detached POSIX processes require
+stronger OS isolation; no account-wide command API is a filesystem sandbox.
+
+Provider JSON pipes retain separate stderr and longer-lived stdin. Their pending
+output and short-command captures are bounded; timeouts and disconnects dispose
+the process tree. A Runner shutdown closes active provider processes as well.
+If a connected startup fails before a process identity or verified stop arrives,
+the provider retains an unconfirmed cleanup state and refuses new execution.
+The host operator must stop/restart that Runner, then restart Buddy's backend to
+clear that state. Ordinary failures to connect do not create this state. Failed
+cleanup retains the known process handle. Native cleanup can retry verification;
+an unconfirmed remote stop after transport loss needs operator recovery.
+
+## Browser, phone, Docker and other computers
+
+A registered machine's `url` is reached by Buddy's backend, for example
+`http://host.docker.internal:8765` from Docker Desktop. Its optional `browser_url`
+is a separately configured HTTPS origin or loopback HTTP origin. It is never
+inferred from the backend address. Registry metadata contains no key or grants.
+
+A phone's 127.0.0.1 addresses the phone itself. Remote PC/cloud access needs an
+approved private HTTPS transport to the execution host's loopback listener,
+rewriting its upstream Host header and preserving the browser Origin. No TLS,
+VPN, firewall, public listener, persistent service or Docker change is performed
+by this implementation. Future desktop clients can use the same versioned API.
+
+Discovery is `GET /v1/capabilities`; it advertises API support and observed host
+identity, not permission. Actual file/write/execute authority comes only from
+paired `GET /v1/grants`. Choosing a provider machine clears inherited access and
+paths; removing one disables its providers instead of silently using This server.
+After deletion, explicitly select a different computer or This server. The saved
+selection remains disabled with chat-only access and empty paths; enable it in a
+separate save. An unconfirmed old-process cleanup still blocks that recovery.
+Remote mutating provider actions include the expected saved machine ID and
+opaque revision, so stale UI requests fail before acting on a replaced machine
+even when its ID stays the same. Legacy registrations need verification and
+saving before remote mutations. Changing a backend URL, key or observed host
+instance disables affected providers, clears inherited access and paths, and
+quiesces old operations. Editing only the name or browser address grants nothing
+and retains the execution revision.
+
+Provider execution and host transitions require a single Buddy backend worker.
+The server refuses new provider execution and mutations with multiple workers,
+because process ownership and cancellation cannot be coordinated across them.
 
 ## Validation
 
+Run isolated Python fixtures; they create temporary state/project directories,
+ephemeral loopback servers and disposable Python children. They do not call real
+providers, read account credentials or approve live directories:
+
 ```powershell
-npm run test:companion
-node --test local/tests/*.test.mjs
-npm run check
-npm run build
+.venv\Scripts\python.exe -B -m unittest discover -s local\tests -p 'test_runner*.py' -v
+.venv\Scripts\python.exe -B -m unittest discover -s local\tests -p test_process_containment.py -v
+.venv\Scripts\python.exe -B -m unittest discover -s local\tests -p test_remote_process_cleanup.py -v
+.venv\Scripts\python.exe -B -m unittest discover -s local\tests -p 'test_subscription*.py' -v
+.venv\Scripts\python.exe -B -m unittest discover -s local\tests -p test_provider_host_transitions.py -v
 ```
 
-The tests exercise the actual HTTP host with temporary directories, explicit
-origins and disposable command children. See `VALIDATION.md` for the exact final
-results, environment and known repository-wide type-check limitations.
+See [validation evidence](VALIDATION.md). Native Windows coverage does not imply
+POSIX runtime coverage. The UI and combined desktop/mobile fixtures are delivered
+in the companion styling stack; backend PR #3 intentionally contains no src UI.
