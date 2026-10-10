@@ -92,9 +92,17 @@ async function unreadScenario(name, viewport, mobile) {
 		await page.locator('#sidebar-toggle-button').click();
 		await page.locator(`#sidebar a[href="/c/${chats[0].id}"]`).first().click();
 		await page.waitForURL(`**/c/${chats[0].id}`);
-		if (await page.locator('#buddy-sidebar-close').isVisible()) {
+		// Mobile chat selection closes the drawer before navigation finishes.
+		if (!mobile) {
 			await page.locator('#buddy-sidebar-close').click();
 		}
+		await page.waitForFunction(() => {
+			const sidebar = document.getElementById('sidebar');
+			return (
+				sidebar?.getAttribute('aria-hidden') === 'true' &&
+				sidebar.getBoundingClientRect().right <= 1
+			);
+		});
 		await expectUnread(page, false);
 		await updateUnread(page, 'setChatActive', chats[0].id, true);
 		await updateUnread(page, 'setChatActive', chats[0].id, false);
