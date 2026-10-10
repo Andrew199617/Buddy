@@ -209,6 +209,40 @@ class RemoteLivenessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.stop_requests, ['fixture-process-0'])
         self.assertTrue(process.cleanup_confirmed)
 
+    async def test_cleanup_after_the_machine_was_dropped_leaves_no_session_open(self):
+        async def exchange(socket, pid, index):
+            async for _ in socket:
+                pass
+
+        remote = await self.remote(exchange, confirms_stop=lambda: True)
+        process = await remote.start_process(['synthetic-command'], str(self.root))
+        first_session = remote._session
+        # Buddy drops the machine, for example after its key changed, before
+        # the process's cleanup was confirmed.
+        await remote.close()
+        self.assertFalse(process.cleanup_confirmed)
+
+        opened = []
+        new_session = remote._new_session
+
+        def record_session():
+            session = new_session()
+            opened.append(session)
+            return session
+
+        with patch.object(remote, '_new_session', record_session):
+            with patch.object(machines, 'STOP_REPLY_WAIT_SECONDS', 0.1):
+                await asyncio.wait_for(process.close(5), 2)
+            with self.assertRaisesRegex(machines.SubscriptionError, 'changed or removed'):
+                await remote.start_process(['another-synthetic-command'], str(self.root))
+        self.assertTrue(process.cleanup_confirmed)
+        self.assertEqual(self.stop_requests, ['fixture-process-0'])
+        self.assertIs(remote._session, first_session)
+        self.assertTrue(first_session.closed)
+        self.assertEqual(len(opened), 1)
+        self.assertTrue(opened[0].closed)
+        self.assertEqual(len(self.starts), 1)
+
     async def test_codex_eof_restarts_once_the_runner_confirms_cleanup(self):
         ready = [self.gate(), self.gate()]
         disconnect = self.gate()

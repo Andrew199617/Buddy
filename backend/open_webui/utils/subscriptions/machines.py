@@ -450,6 +450,9 @@ class RemoteMachine:
         self.url = normalize_runner_url(url)
         self._key = key
         self._session: aiohttp.ClientSession | None = None
+        # Set once Buddy drops this machine, for example after its address or
+        # key changed. Nothing closes a session opened after that.
+        self._closed = False
         self._info: dict | None = None
 
     def matches(self, name: str, url: str, key: str) -> bool:
@@ -458,18 +461,28 @@ class RemoteMachine:
     def _headers(self) -> dict:
         return {'Authorization': f'Bearer {self._key}'}
 
+    def _new_session(self) -> aiohttp.ClientSession:
+        connector = aiohttp.TCPConnector(ssl=runner_ssl_context())
+        return aiohttp.ClientSession(
+            connector=connector, headers=self._headers(),
+            trace_configs=[runner_trace_config()],
+        )
+
     def _client(self) -> aiohttp.ClientSession:
+        if self._closed:
+            raise SubscriptionError(f'{self.name} was changed or removed. Refresh before trying again.')
         if self._session is None or self._session.closed:
-            connector = aiohttp.TCPConnector(ssl=runner_ssl_context())
-            self._session = aiohttp.ClientSession(
-                connector=connector, headers=self._headers(),
-                trace_configs=[runner_trace_config()],
-            )
+            self._session = self._new_session()
         return self._session
 
-    async def _request(self, method: str, path: str, payload: dict | None = None, timeout: float = 30) -> dict:
+    async def _request(
+        self, method: str, path: str, payload: dict | None = None, timeout: float = 30,
+        session: aiohttp.ClientSession | None = None,
+    ) -> dict:
+        if session is None:
+            session = self._client()
         try:
-            async with self._client().request(
+            async with session.request(
                 method,
                 f'{self.url}{path}',
                 json=payload,
@@ -579,9 +592,18 @@ class RemoteMachine:
         return RemoteProcess(websocket, args, pid, process_id=process_id, machine=self)
 
     async def confirm_process_stopped(self, process_id: str) -> bool:
-        """Ask the Runner to stop a process whose connection ended, and confirm its cleanup."""
+        """Ask the Runner to stop a process whose connection ended, and confirm its cleanup.
+
+        A process started before Buddy dropped this machine can still need
+        this. That request uses a session of its own, closed when it ends.
+        """
         encoded_id = quote(process_id, safe='')
-        result = await self._request('POST', f'/processes/{encoded_id}/stop', timeout=15)
+        path = f'/processes/{encoded_id}/stop'
+        if not self._closed:
+            result = await self._request('POST', path, timeout=15)
+        else:
+            async with self._new_session() as session:
+                result = await self._request('POST', path, timeout=15, session=session)
         return result.get('stopped') is True
 
     async def _close_refused_start(self, websocket) -> None:
@@ -610,5 +632,6 @@ class RemoteMachine:
         raise StartupCleanupUnconfirmedError(detail)
 
     async def close(self) -> None:
+        self._closed = True
         if self._session and not self._session.closed:
             await self._session.close()
