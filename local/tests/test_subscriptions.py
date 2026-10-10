@@ -233,7 +233,7 @@ class ClaudeStreamTests(unittest.TestCase):
             provider = claude_code.ClaudeCodeProvider(Path(directory))
             conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
 
-            def turn_args(access, **turn_options):
+            def turn_args(access, resume_id=None, **turn_options):
                 turn = TurnRequest(
                     model='opus',
                     conversation=conversation,
@@ -241,7 +241,7 @@ class ClaudeStreamTests(unittest.TestCase):
                     cwd=directory,
                     **turn_options,
                 )
-                return provider._turn_args('claude', turn, turn_options.get('resume'), 'instructions.md')
+                return provider._turn_args('claude', turn, resume_id, 'instructions.md')
 
             chat_args = turn_args('chat', effort='none')
             self.assertIn('--system-prompt-file', chat_args)
@@ -265,10 +265,9 @@ class ClaudeStreamTests(unittest.TestCase):
             self.assertIn('--no-session-persistence', task_args)
             self.assertEqual(task_args[task_args.index('--tools') + 1], '')
 
-        resume_turn = TurnRequest('opus', conversation, ProviderSettings(), '.')
-        resume_args = provider._turn_args('claude', resume_turn, 'session-1', 'instructions.md')
-        resume_index = resume_args.index('--resume')
-        self.assertEqual(resume_args[resume_index + 1 : resume_index + 3], ['session-1', '--fork-session'])
+            resume_args = turn_args('chat', resume_id='session-1')
+            resume_index = resume_args.index('--resume')
+            self.assertEqual(resume_args[resume_index + 1 : resume_index + 3], ['session-1', '--fork-session'])
 
     def test_rebuilt_session_resends_earlier_images(self):
         history = [ChatTurn('user', 'Remember this chart', [PNG_DATA_URL]), ChatTurn('assistant', 'Got it.')]
