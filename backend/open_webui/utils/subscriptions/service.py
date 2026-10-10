@@ -149,16 +149,19 @@ async def save_machine(machine_id: str | None, name: str, url: str, key: str | N
 
 
 async def delete_machine(machine_id: str) -> None:
+    # Providers that used the machine move back to this server first. Their
+    # working folder and CLI path were paths on the removed machine, so they
+    # are cleared instead of being checked here.
+    for provider_id in PROVIDERS:
+        settings = await get_settings(provider_id)
+        if settings.machine_id == machine_id:
+            await save_settings(provider_id, {'machine_id': LOCAL_MACHINE_ID, 'workspace': '', 'cli_path': ''})
+
     configs = [config for config in await _machine_configs() if config['id'] != machine_id]
     await Config.upsert({MACHINES_CONFIG_KEY: configs})
     cached = _remote_machines.pop(machine_id, None)
     if cached:
         await cached.close()
-    # Providers that used the machine fall back to this server.
-    for provider_id in PROVIDERS:
-        settings = await get_settings(provider_id)
-        if settings.machine_id == machine_id:
-            await save_settings(provider_id, {'machine_id': LOCAL_MACHINE_ID})
 
 
 # Provider settings

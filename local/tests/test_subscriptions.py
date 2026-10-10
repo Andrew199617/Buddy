@@ -5,10 +5,12 @@ Run with the repository virtualenv:
 """
 
 import asyncio
+import importlib.util
 import json
 import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -689,6 +691,88 @@ class StreamingTests(unittest.TestCase):
         completion = asyncio.run(streaming.collect_events(events(), 'claude-code.opus'))
         self.assertEqual(completion['choices'][0]['message']['content'], 'Hi there')
         self.assertEqual(completion['usage']['total_tokens'], 3)
+
+
+class StandInConfig:
+    """Open WebUI's config table, kept in memory."""
+
+    def __init__(self):
+        self.values = {}
+
+    async def get(self, key: str, default=None):
+        return self.values.get(key, default)
+
+    async def upsert(self, updates: dict) -> None:
+        self.values.update(updates)
+
+
+class StandInRunnerConnection:
+    """A cached connection to a Buddy Runner that only records whether it was closed."""
+
+    def __init__(self):
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def load_subscription_service(data_dir: Path, config: StandInConfig):
+    """Load service.py with stand-ins for the Open WebUI modules that reach the database."""
+    stand_ins = {
+        'open_webui.env': types.SimpleNamespace(DATA_DIR=str(data_dir)),
+        'open_webui.models.config': types.SimpleNamespace(Config=config),
+        'open_webui.models.models': types.SimpleNamespace(Models=None),
+        'open_webui.utils.payload': types.SimpleNamespace(
+            apply_model_params_to_body_openai=None,
+            apply_system_prompt_to_body=None,
+        ),
+    }
+    service_path = ROOT_DIR / 'backend' / 'open_webui' / 'utils' / 'subscriptions' / 'service.py'
+    spec = importlib.util.spec_from_file_location('subscription_service_under_test', service_path)
+    service = importlib.util.module_from_spec(spec)
+    with patch.dict(sys.modules, stand_ins):
+        spec.loader.exec_module(service)
+    return service
+
+
+class DeleteMachineTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.data_dir = Path(directory.name)
+        self.config = StandInConfig()
+        self.service = load_subscription_service(self.data_dir, self.config)
+
+    def test_providers_move_to_this_server_and_forget_the_machines_paths(self):
+        # Paths that exist only on the machine being removed.
+        workspace = str(self.data_dir / 'office-pc-projects')
+        cli_path = str(self.data_dir / 'office-pc-claude.exe')
+        office_pc = {'id': 'office-pc', 'name': 'Office PC', 'url': 'http://office-pc:8765', 'key': 'test-key'}
+        self.config.values['subscriptions.machines'] = [office_pc]
+        self.config.values['subscriptions.claude'] = {
+            'enable': True,
+            'workspace': workspace,
+            'cli_path': cli_path,
+            'machine_id': 'office-pc',
+        }
+        self.config.values['subscriptions.codex'] = {
+            'enable': True,
+            'workspace': workspace,
+            'machine_id': 'office-pc',
+        }
+        runner_connection = StandInRunnerConnection()
+        self.service._remote_machines['office-pc'] = runner_connection
+
+        asyncio.run(self.service.delete_machine('office-pc'))
+
+        for provider_id in ('claude', 'codex'):
+            settings = self.config.values[f'subscriptions.{provider_id}']
+            self.assertEqual(settings['machine_id'], 'local')
+            self.assertEqual(settings['workspace'], '')
+            self.assertEqual(settings['cli_path'], '')
+            self.assertTrue(settings['enable'])
+        self.assertEqual(self.config.values['subscriptions.machines'], [])
+        self.assertTrue(runner_connection.closed)
 
 
 if __name__ == '__main__':
