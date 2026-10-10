@@ -1453,9 +1453,37 @@ async function machineCrudCase(browser, profile) {
 			'Registry never sends a saved key back'
 		);
 		assert.equal(
+			await machineDialog(page).getByRole('button', { name: 'Save', exact: true }).isEnabled(),
+			true,
+			'Opening a machine with its saved address does not ask for a key'
+		);
+		assert.equal(
+			await machineDialog(page).locator('#machine-key').getAttribute('placeholder'),
+			'Leave empty to keep the saved key'
+		);
+		assert.equal(
 			await machineDialog(page).locator('#machine-browser-url').inputValue(),
 			'http://127.0.0.1:8765'
 		);
+		const edited = machineDialog(page);
+		await edited.locator('#machine-url').fill('https://moved-runner.example.invalid');
+		assert.equal(
+			await edited.getByRole('button', { name: 'Save', exact: true }).isDisabled(),
+			true,
+			'A new address cannot reuse the saved key'
+		);
+		assert.equal(
+			await edited.locator('#machine-key').getAttribute('placeholder'),
+			'Enter the key for the new address'
+		);
+		await edited.getByText(/Buddy only sends the saved key to the saved address/).waitFor();
+		await edited.locator('#machine-url').fill('https://HOST.docker.internal:8765/');
+		assert.equal(
+			await edited.getByRole('button', { name: 'Save', exact: true }).isEnabled(),
+			true,
+			'The same origin keeps the saved key'
+		);
+		await edited.locator('#machine-url').fill('https://host.docker.internal:8765');
 		await machineDialog(page).locator('#machine-browser-url').fill('');
 		await machineDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
 		await machineDialog(page).waitFor({ state: 'hidden' });
@@ -1685,6 +1713,7 @@ async function staleStatusRegistryCase(browser, profile) {
 			await machineDialog(page)
 				.locator('#machine-url')
 				.fill('https://new-runner-a.example.invalid');
+			await machineDialog(page).locator('#machine-key').fill('synthetic-new-runner-a-key');
 			await machineDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
 			await machineDialog(page).waitFor({ state: 'hidden' });
 			await providerCard(page, 'Claude')
@@ -2189,6 +2218,7 @@ async function revisionReplacementCase(browser, profile, action) {
 		fixtures.externalRevisionReplacement();
 		await openMachine(page, 'Synthetic computer A');
 		await machineDialog(page).locator('#machine-url').fill('https://replacement-a.example.invalid');
+		await machineDialog(page).locator('#machine-key').fill('synthetic-replacement-key-a');
 		await machineDialog(page).locator('#machine-name').fill('Synthetic replacement computer A');
 		await machineDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
 		await machineDialog(page).waitFor({ state: 'hidden' });
@@ -2241,10 +2271,12 @@ async function loginRevisionCase(browser, profile, metadataOnly = false, equival
 		await machineDialog(page)
 			.locator('#machine-browser-url')
 			.fill('https://browser-a.example.invalid');
-		if (!metadataOnly)
+		if (!metadataOnly) {
 			await machineDialog(page)
 				.locator('#machine-url')
 				.fill('https://replacement-a.example.invalid');
+			await machineDialog(page).locator('#machine-key').fill('synthetic-replacement-key-a');
+		}
 		if (equivalentTarget) {
 			await machineDialog(page).locator('#machine-url').fill('https://host.docker.internal:8765/');
 			await machineDialog(page).locator('#machine-key').fill('synthetic-saved-key-a');

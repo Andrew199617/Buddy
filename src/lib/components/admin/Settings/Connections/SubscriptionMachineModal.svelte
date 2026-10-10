@@ -48,6 +48,25 @@
 	const secondaryButtonClass =
 		'shrink-0 whitespace-nowrap px-3.5 py-1.5 text-sm font-medium rounded-full border border-gray-200 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-gray-850 transition disabled:opacity-50';
 
+	// Compare origins so a trailing slash or letter case is not a new address.
+	const runnerOrigin = (value: string) => {
+		try {
+			return new URL(value.trim()).origin;
+		} catch {
+			return value.trim();
+		}
+	};
+
+	const getKeyPlaceholder = (changed: boolean) => {
+		if (!machine) {
+			return '';
+		}
+		if (changed) {
+			return $i18n.t('Enter the key for the new address');
+		}
+		return $i18n.t('Leave empty to keep the saved key');
+	};
+
 	const loadForm = () => {
 		name = machine?.name ?? '';
 		url = machine?.url ?? DEFAULT_URL;
@@ -66,6 +85,11 @@
 		key = '';
 		info = null;
 	}
+
+	// The saved key only ever goes to the saved address, so a new address needs its own key.
+	// Declared after the block above so it compares the address that loadForm just filled in.
+	$: addressChanged = machine !== null && runnerOrigin(url) !== runnerOrigin(machine.url ?? '');
+	$: keyMissing = addressChanged && !key.trim();
 
 	onMount(() => {
 		let initial = true;
@@ -120,8 +144,11 @@
 			if (isCurrent()) info = result;
 		});
 
-	const save = () =>
-		runAction(async (isCurrent) => {
+	const save = () => {
+		if (keyMissing) {
+			return;
+		}
+		return runAction(async (isCurrent) => {
 			const result = await saveSubscriptionMachine(localStorage.token, {
 				id: machine?.id,
 				name: name.trim(),
@@ -135,6 +162,7 @@
 				show = false;
 			}
 		}, true);
+	};
 
 	const remove = () =>
 		runAction(async (isCurrent) => {
@@ -238,10 +266,18 @@
 					type="password"
 					bind:value={key}
 					disabled={busy}
-					placeholder={machine ? $i18n.t('Leave empty to keep the saved key') : ''}
+					required={addressChanged}
+					placeholder={getKeyPlaceholder(addressChanged)}
 					autocomplete="off"
 					spellcheck="false"
 				/>
+				{#if addressChanged}
+					<p class="text-xs text-amber-700 dark:text-amber-400">
+						{$i18n.t(
+							'Buddy only sends the saved key to the saved address. Enter the Runner key from ~/.buddy-runner/key on the computer at the new address.'
+						)}
+					</p>
+				{/if}
 			</div>
 
 			{#if info}
@@ -280,7 +316,7 @@
 					<button
 						class="flex items-center gap-2 px-3.5 py-1.5 text-sm font-medium bg-black hover:bg-gray-900 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full disabled:opacity-50"
 						type="submit"
-						disabled={busy}
+						disabled={busy || keyMissing}
 					>
 						{$i18n.t('Save')}
 						{#if busy}
