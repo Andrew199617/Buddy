@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -106,11 +107,15 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
         child_pid = json.loads(await asyncio.wait_for(process.read_line(), 10))['child']
         self.assertTrue(is_running(child_pid))
         self.assertFalse(process.cleanup_confirmed)
+        self.assertFalse(process.disposal_started)
+        self.assertFalse(native.disposal_started)
         await process.close()
         self.assertTrue(process._confirmed_stopped.is_set())
         self.assertTrue(process._receiver.done())
         self.assertTrue(process._websocket.closed)
         self.assertTrue(process.cleanup_confirmed)
+        self.assertTrue(process.disposal_started)
+        self.assertTrue(native.disposal_started)
         self.assertFalse(is_running(native.pid))
         self.assertFalse(is_running(child_pid))
         self.assertTrue(native._tree_stopped)
@@ -161,6 +166,7 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
             await process.wait(1)
         self.assertFalse(process._confirmed_stopped.is_set())
         self.assertFalse(process.cleanup_confirmed)
+        self.assertTrue(process.disposal_started)
 
     async def test_delayed_ack_keeps_socket_open_and_concurrent_close_waits(self):
         received_kill = asyncio.Event()
@@ -182,6 +188,8 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(received_kill.wait(), 1)
         await asyncio.sleep(0.05)
         self.assertTrue(all(not close.done() for close in closes))
+        self.assertTrue(process.disposal_started)
+        self.assertIsNone(process.returncode)
         self.assertFalse(process._websocket.closed)
         allow_ack.set()
         await asyncio.gather(*closes)
@@ -495,6 +503,186 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(service.SubscriptionError):
             await tracked.revoke()
         self.assertIsNotNone(tracked.startup_cleanup_error)
+
+    async def test_runner_output_limit_reports_failed_exit_after_verified_cleanup_and_next_command_works(self):
+        remote, host = await self.real_remote()
+        service = load_service(MemoryConfig(), self.root / 'unused-offline-state')
+        service.StartupCleanupUnconfirmedError = machines.StartupCleanupUnconfirmedError
+        tracked = service.TrackingMachine(remote)
+        children = []
+
+        def bounded_process(args, cwd, extra_env, temp_files, temp_dir):
+            child = machines.ChildProcess(
+                args, cwd, machines.subscription_env(extra_env), output_limit_bytes=8
+            )
+            children.append(child)
+            return child
+
+        with patch.object(runner, 'start_local_process', side_effect=bounded_process):
+            code, _, stderr = await tracked.run(
+                [sys.executable, '-c', 'print("synthetic overflowing output",flush=True)'],
+                str(self.root), 10,
+            )
+        self.assertNotEqual(code, 0)
+        self.assertIn('OutputLimitError', stderr)
+        self.assertIn('buffer limit', stderr)
+        self.assertTrue(children[0].cleanup_confirmed)
+        self.assertIsNone(tracked.cleanup_error)
+        self.assertIsNone(tracked.startup_cleanup_error)
+        self.assertFalse(tracked.processes)
+        await self.assert_registry_empty(host)
+        code, stdout, stderr = await tracked.run(
+            [sys.executable, '-c', 'print("next fixture",flush=True)'], str(self.root), 10,
+        )
+        self.assertEqual((code, stdout.strip(), stderr), (0, 'next fixture', ''))
+        await tracked.revoke()
+
+    async def test_runner_output_failure_does_not_ack_when_native_cleanup_fails(self):
+        class UnverifiedProcess:
+            pid = 12345
+            returncode = 0
+            fail_cleanup = True
+
+            async def read_text(self):
+                raise OutputLimitError('synthetic output limit')
+
+            async def close(self):
+                if self.fail_cleanup:
+                    raise OSError('synthetic native verification failure')
+
+            def stderr_text(self):
+                return ''
+
+        remote, _ = await self.real_remote()
+        native = UnverifiedProcess()
+        try:
+            with patch.object(runner, 'start_local_process', return_value=native):
+                process = await remote.start_process(['synthetic-fixture'], str(self.root))
+                with self.assertRaisesRegex(ProcessClosedError, 'confirm'):
+                    await process.close(2)
+            self.assertFalse(process._confirmed_stopped.is_set())
+            self.assertFalse(process.cleanup_confirmed)
+        finally:
+            native.fail_cleanup = False
+
+    async def test_stop_preempts_blocked_runner_stdin_write(self):
+        remote, host = await self.real_remote()
+        process = await remote.start_process(
+            [sys.executable, '-c', 'import time; print("ready",flush=True); time.sleep(30)'],
+            str(self.root),
+        )
+        native = next(iter(host.processes))
+        self.assertEqual(await asyncio.wait_for(process.read_line(), 10), 'ready')
+        entered = threading.Event()
+        original_write = native._write_blocking
+
+        def observed_write(text):
+            entered.set()
+            original_write(text)
+
+        try:
+            with patch.object(native, '_write_blocking', side_effect=observed_write):
+                await asyncio.wait_for(process.write('x' * (2 * MAX_CAPTURE_BYTES)), 5)
+                async with asyncio.timeout(5):
+                    while not entered.is_set():
+                        await asyncio.sleep(0.01)
+                await process.close(2)
+            self.assertFalse(is_running(native.pid))
+            self.assertTrue(native.cleanup_confirmed)
+            await self.assert_registry_empty(host)
+        finally:
+            # This out-of-band owner guarantees fixture cleanup on the unfixed
+            # server, whose handler is blocked before it can read the kill.
+            await native.close()
+            await self.assert_registry_empty(host)
+
+    async def test_disconnect_preempts_blocked_runner_stdin_write(self):
+        remote, host = await self.real_remote()
+        process = await remote.start_process(
+            [sys.executable, '-c', 'import time; print("ready",flush=True); time.sleep(30)'], str(self.root)
+        )
+        native = next(iter(host.processes))
+        self.assertEqual(await asyncio.wait_for(process.read_line(), 10), 'ready')
+        entered = threading.Event()
+        original_write = native._write_blocking
+
+        def observed_write(text):
+            entered.set()
+            original_write(text)
+
+        try:
+            with patch.object(native, '_write_blocking', side_effect=observed_write):
+                await asyncio.wait_for(process.write('x' * (2 * MAX_CAPTURE_BYTES)), 5)
+                async with asyncio.timeout(5):
+                    while not entered.is_set():
+                        await asyncio.sleep(0.01)
+                await process._websocket.close()
+            await self.assert_registry_empty(host)
+            self.assertTrue(native.cleanup_confirmed)
+            self.assertFalse(host.stdin_workers)
+        finally:
+            await native.close()
+            await self.assert_registry_empty(host)
+
+    async def test_runner_stdin_preserves_order_before_close(self):
+        remote, host = await self.real_remote()
+        process = await remote.start_process(
+            [sys.executable, '-c', 'import sys; print(repr(sys.stdin.read()),flush=True)'], str(self.root)
+        )
+        for text in ('first\n', 'caf\u00e9\n', 'third\n'):
+            await process.write(text)
+        process.close_stdin()
+        self.assertEqual(await asyncio.wait_for(process.read_line(), 10), repr('first\ncaf\u00e9\nthird\n'))
+        self.assertEqual(await process.wait(10), 0)
+        await process.close()
+        await self.assert_registry_empty(host)
+        self.assertFalse(host.stdin_workers)
+
+    async def test_runner_pending_stdin_limits_report_failed_ack_after_cleanup(self):
+        original_report = runner.Runner._report_process_failure
+
+        async def report_after_output_finishes(host, child, socket, error):
+            await child.close()
+            await asyncio.sleep(0.05)
+            await original_report(host, child, socket, error)
+
+        for byte_limit, item_limit, extra_frames in ((8192, 128, ['x']), (32 * 1024 * 1024, 2, ['x', 'y'])):
+            with self.subTest(byte_limit=byte_limit, item_limit=item_limit):
+                remote, host = await self.real_remote()
+                process = await remote.start_process(
+                    [sys.executable, '-c', 'import time; print("ready",flush=True); time.sleep(30)'],
+                    str(self.root),
+                )
+                native = next(iter(host.processes))
+                self.assertEqual(await asyncio.wait_for(process.read_line(), 10), 'ready')
+                entered = threading.Event()
+                original_write = native._write_blocking
+
+                def observed_write(text):
+                    entered.set()
+                    original_write(text)
+
+                try:
+                    with patch.object(native, '_write_blocking', side_effect=observed_write), patch.object(
+                        runner, 'MAX_PENDING_STDIN_BYTES', byte_limit
+                    ), patch.object(runner, 'MAX_PENDING_STDIN_ITEMS', item_limit), patch.object(
+                        runner.Runner, '_report_process_failure', report_after_output_finishes
+                    ):
+                        await process.write('x' * 8192)
+                        async with asyncio.timeout(5):
+                            while not entered.is_set():
+                                await asyncio.sleep(0.01)
+                        for text in extra_frames:
+                            await process.write(text)
+                        self.assertNotEqual(await process.wait(10), 0)
+                        self.assertIn('Runner stdin buffer limit', process.stderr_text())
+                        await process.close()
+                    await self.assert_registry_empty(host)
+                    self.assertTrue(native.cleanup_confirmed)
+                    self.assertFalse(host.stdin_workers)
+                finally:
+                    await native.close()
+                    await self.assert_registry_empty(host)
 
 
 if __name__ == '__main__':

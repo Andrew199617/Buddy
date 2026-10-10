@@ -202,6 +202,7 @@ class ChildProcess(StreamedOutput):
         self._stop_lock = threading.Lock()
         self._cleanup_lock = threading.Lock()
         self._tree_stopped = False
+        self._disposal_started = False
         self._disposal_error: BaseException | None = None
         self._cleanup_done = threading.Event()
         self._job = None
@@ -273,6 +274,10 @@ class ChildProcess(StreamedOutput):
             and self._cleanup_done.is_set() and not self._monitor.is_alive()
             and readers_stopped and not self._cleanup_paths
         )
+
+    @property
+    def disposal_started(self) -> bool:
+        return self._disposal_started
 
     def stderr_text(self) -> str:
         return self._stderr_snapshot().decode('utf-8', 'replace').rstrip()
@@ -438,12 +443,14 @@ class ChildProcess(StreamedOutput):
 
     def kill(self) -> None:
         """Stop the process and any commands it started, and remove its temporary files."""
+        self._disposal_started = True
         self._stop_process_tree()
         self.close_stdin()
         self._remove_cleanup_paths()
 
     async def kill_and_wait(self, timeout: float = 5.0) -> None:
         """Stop the complete tree and confirm containment disposal and pipe EOF."""
+        self._disposal_started = True
         def kill_and_join():
             deadline = time.monotonic() + timeout
             self.kill()
@@ -464,9 +471,11 @@ class ChildProcess(StreamedOutput):
             raise
 
     async def close(self, timeout: float = 5.0) -> None:
+        self._disposal_started = True
         await self.kill_and_wait(timeout)
 
     def _stop_process_tree(self) -> None:
+        self._disposal_started = True
         with self._stop_lock:
             if self._tree_stopped:
                 return

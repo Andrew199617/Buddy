@@ -1,8 +1,10 @@
 """OpenAI models through the Codex CLI, billed to the user's ChatGPT plan.
 
-Buddy runs one ``codex app-server`` process and talks JSON-RPC to it over
-stdio, the same interface the Codex IDE extensions use. Codex signs in with
-"Sign in with ChatGPT" and keeps its credentials in its own config folder.
+Buddy runs one ``codex app-server`` process per machine (this server or a
+Buddy Runner) and talks JSON-RPC to it over its stdio, which a Buddy Runner
+relays over its connection. This is the same interface the Codex IDE
+extensions use. Codex signs in with "Sign in with ChatGPT" and keeps its
+credentials in its own config folder on that machine.
 
 Chats use in-memory (ephemeral) Codex threads. A thread stays loaded while the
 chat continues; any other state is rebuilt by injecting the chat's earlier
@@ -43,7 +45,6 @@ NOT_INSTALLED_MESSAGE = (
     'The Codex CLI was not found. Install it with "npm install -g @openai/codex" '
     'or set its path in the ChatGPT subscription settings.'
 )
-NOT_SIGNED_IN_MESSAGE = 'ChatGPT is not signed in. Sign in under Admin Settings → Connections → Subscriptions.'
 # Desktop-app features that add computer-use and browser tools to every thread,
 # and hooks, which run commands outside the read-only sandbox.
 DISABLED_FEATURES = ('plugins', 'apps', 'computer_use', 'browser_use', 'hooks')
@@ -479,6 +480,13 @@ class CodexProvider:
             if live.machine_id == machine_id:
                 del self._live_threads[key]
 
+    def _release_machine_threads(self, machine_id: str) -> None:
+        """Unload and forget a machine's kept threads while its app-server keeps running."""
+        for key, live in list(self._live_threads.items()):
+            if live.machine_id == machine_id:
+                del self._live_threads[key]
+                self._release_live_thread(live)
+
     async def _server_for(self, settings: ProviderSettings, machine) -> CodexAppServer:
         """The machine's app-server; it starts in the machine's empty chat folder."""
         cli = await machine.find_tool(TOOL_CODEX, settings.cli_path)
@@ -595,7 +603,7 @@ class CodexProvider:
         await self.cancel_login()
         server = await self._server_for(settings, machine)
         await server.request('account/logout', None)
-        self._forget_machine_threads(machine.id)
+        self._release_machine_threads(machine.id)
         self.rate_limits = None
 
     def _effort(self, turn: TurnRequest) -> str | None:
@@ -662,17 +670,28 @@ class CodexProvider:
         if not live:
             return None
         if live.generation != generation or live.access != turn.access or live.cwd != turn.cwd:
+            self._release_live_thread(live)
             return None
         return live
 
     def _keep_live_thread(self, key: str, live: LiveThread) -> None:
+        replaced = self._live_threads.pop(key, None)
+        if replaced:
+            self._release_live_thread(replaced)
         self._live_threads[key] = live
         while len(self._live_threads) > LIVE_THREAD_LIMIT:
             _, oldest = self._live_threads.popitem(last=False)
-            self._release_thread(self._servers.get(oldest.machine_id), oldest.thread_id)
+            self._release_live_thread(oldest)
 
-    def _release_thread(self, server: CodexAppServer | None, thread_id: str) -> None:
-        if not server or not server.running:
+    def _release_live_thread(self, live: LiveThread) -> None:
+        """Unload a thread Buddy no longer keeps, unless its app-server restarted since."""
+        server = self._servers.get(live.machine_id)
+        if not server or server.generation != live.generation:
+            return
+        self._release_thread(server, live.thread_id)
+
+    def _release_thread(self, server: CodexAppServer, thread_id: str) -> None:
+        if not server.running:
             return
 
         async def unsubscribe():

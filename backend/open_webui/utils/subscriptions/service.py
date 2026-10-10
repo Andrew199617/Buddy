@@ -234,7 +234,10 @@ class TrackingMachine:
         for previous in list(self.processes):
             if bool(getattr(previous, 'cleanup_confirmed', False)):
                 self.processes.discard(previous)
-            elif getattr(previous, 'returncode', None) is not None:
+            elif (
+                bool(getattr(previous, 'disposal_started', False))
+                or getattr(previous, 'returncode', None) is not None
+            ):
                 await self._dispose_process(previous)
         if not self.valid:
             return None
@@ -524,7 +527,13 @@ async def _save_machine(
         existing.update({'name': name, 'url': url, 'key': key})
         saved = existing
     else:
-        saved = {'id': _machine_id_from_name(name, {config['id'] for config in configs}), 'name': name, 'url': url}
+        taken = {config['id'] for config in configs}
+        for provider_id in PROVIDERS:
+            taken.add((await get_settings(provider_id)).machine_id)
+        taken.update(tracked.id for tracked in _tracked_machines.values())
+        # Deleted selections and retained cleanup owners must never reconnect
+        # automatically when a different host registers under the same name.
+        saved = {'id': _machine_id_from_name(name, taken), 'name': name, 'url': url}
         saved['key'] = key
         configs.append(saved)
     saved['browser_url'] = browser_url

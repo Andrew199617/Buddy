@@ -95,7 +95,11 @@ stronger OS isolation; no account-wide command API is a filesystem sandbox.
 
 Provider JSON pipes retain separate stderr and longer-lived stdin. Their pending
 output and short-command captures are bounded; timeouts and disconnects dispose
-the process tree. A Runner shutdown closes active provider processes as well.
+the process tree. Ordered stdin includes at most 32 MiB and 128 pending items,
+including the active write. Stop and disconnect handling remains responsive
+when a child does not read its stdin. Execution failures confirm native cleanup
+before reporting a failed exit; pending stops block fresh commands until cleanup
+is confirmed. A Runner shutdown closes active provider processes as well.
 If a connected startup fails before a process identity or verified stop arrives,
 the provider retains an unconfirmed cleanup state and refuses new execution.
 The host operator must stop/restart that Runner, then restart Buddy's backend to
@@ -123,6 +127,8 @@ paths; removing one disables its providers instead of silently using This server
 After deletion, explicitly select a different computer or This server. The saved
 selection remains disabled with chat-only access and empty paths; enable it in a
 separate save. An unconfirmed old-process cleanup still blocks that recovery.
+New registrations reserve retained selected and cleanup-owner IDs, so registering
+a different computer with a deleted computer's name cannot silently reconnect it.
 Remote mutating provider actions include the expected saved machine ID and
 opaque revision, so stale UI requests fail before acting on a replaced machine
 even when its ID stays the same. Legacy registrations need verification and

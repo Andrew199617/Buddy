@@ -5,10 +5,12 @@ Run with the repository virtualenv:
 """
 
 import asyncio
+import importlib.util
 import json
 import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -129,6 +131,8 @@ class ConversationTests(unittest.TestCase):
             self.assertIsNone(reloaded.get('a'))
             self.assertEqual(reloaded.get('c'), 'session-c')
 
+
+class CommonTests(unittest.TestCase):
     def test_requested_effort_reads_chip_and_responses_format(self):
         self.assertEqual(requested_effort({'reasoning_effort': 'High'}), 'high')
         self.assertEqual(requested_effort({'reasoning': {'effort': 'low'}}), 'low')
@@ -240,7 +244,7 @@ class ClaudeStreamTests(unittest.TestCase):
             provider = claude_code.ClaudeCodeProvider(Path(directory))
             conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
 
-            def turn_args(access, **turn_options):
+            def turn_args(access, resume_id=None, **turn_options):
                 turn = TurnRequest(
                     model='opus',
                     conversation=conversation,
@@ -248,7 +252,7 @@ class ClaudeStreamTests(unittest.TestCase):
                     cwd=directory,
                     **turn_options,
                 )
-                return provider._turn_args('claude', turn, turn_options.get('resume'), 'instructions.md')
+                return provider._turn_args('claude', turn, resume_id, 'instructions.md')
 
             chat_args = turn_args('chat', effort='none')
             self.assertIn('--system-prompt-file', chat_args)
@@ -272,10 +276,9 @@ class ClaudeStreamTests(unittest.TestCase):
             self.assertIn('--no-session-persistence', task_args)
             self.assertEqual(task_args[task_args.index('--tools') + 1], '')
 
-        resume_turn = TurnRequest('opus', conversation, ProviderSettings(), '.')
-        resume_args = provider._turn_args('claude', resume_turn, 'session-1', 'instructions.md')
-        resume_index = resume_args.index('--resume')
-        self.assertEqual(resume_args[resume_index + 1 : resume_index + 3], ['session-1', '--fork-session'])
+            resume_args = turn_args('chat', resume_id='session-1')
+            resume_index = resume_args.index('--resume')
+            self.assertEqual(resume_args[resume_index + 1 : resume_index + 3], ['session-1', '--fork-session'])
 
     def test_rebuilt_session_resends_earlier_images(self):
         history = [ChatTurn('user', 'Remember this chart', [PNG_DATA_URL]), ChatTurn('assistant', 'Got it.')]
@@ -432,25 +435,6 @@ class ClaudeStreamTests(unittest.TestCase):
 
         self.assertEqual(asyncio.run(run()), 'abc#state\n')
 
-    def test_finds_newest_desktop_bundle(self):
-        with tempfile.TemporaryDirectory() as directory:
-            appdata = Path(directory) / 'Roaming'
-            local_appdata = Path(directory) / 'Local'
-            # The MSIX app's real files live under Packages; %APPDATA% is virtualized.
-            package_bundles = local_appdata / 'Packages' / 'Claude_abc123' / 'LocalCache' / 'Roaming' / 'Claude'
-            installs = [(appdata / 'Claude', '2.1.9'), (package_bundles, '2.1.295'), (appdata / 'Claude', '2.1.30')]
-            for root, version in installs:
-                binary = root / 'claude-code' / version / 'abc' / 'claude.exe'
-                binary.parent.mkdir(parents=True)
-                binary.write_text('')
-            with (
-                patch.dict(os.environ, {'APPDATA': str(appdata), 'LOCALAPPDATA': str(local_appdata)}, clear=True),
-                patch.object(discovery.Path, 'home', return_value=Path(directory) / 'empty-home'),
-            ):
-                newest = discovery._newest_desktop_bundle()
-            self.assertIn('Claude_abc123', newest)
-            self.assertIn('2.1.295', newest)
-
     def test_edited_history_image_starts_fresh_while_matching_history_resumes(self):
         started = []
 
@@ -593,7 +577,6 @@ class ClaudeStreamTests(unittest.TestCase):
         ):
             self.assertEqual(discovery.find_claude_cli(), 'store/claude.exe')
 
-
 class CodexTests(unittest.TestCase):
     def test_turn_parser_streams_messages_activity_and_usage(self):
         parser = codex.CodexTurnParser('turn-1')
@@ -647,16 +630,20 @@ class CodexTests(unittest.TestCase):
 
     def test_thread_config_limits_chat_and_read_threads(self):
         class FakeServer:
+            def __init__(self):
+                self.methods = []
+
             async def request(self, method, params=None, timeout=None):
-                self.method = method
+                self.methods.append(method)
                 return {'config': {'mcp_servers': {'node_repl': {'command': 'node'}}}}
 
         provider = codex.CodexProvider()
         conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
+        server = FakeServer()
 
         def thread_config(access):
             turn = TurnRequest('gpt-x', conversation, ProviderSettings(access=access), '.')
-            return asyncio.run(provider._thread_config(FakeServer(), turn))
+            return asyncio.run(provider._thread_config(server, turn))
 
         chat_config = thread_config('chat')
         self.assertEqual(chat_config['mcp_servers'], {'node_repl': {'enabled': False}})
@@ -667,7 +654,90 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(read_config, {'mcp_servers': {'node_repl': {'enabled': False}}})
 
         self.assertIsNone(thread_config('full'))
+        # Chat and read threads read the effective config; full threads skip it.
+        self.assertEqual(server.methods, ['config/read', 'config/read'])
+
+    def test_hooks_are_a_disabled_feature(self):
+        # Hooks run commands outside the read-only sandbox.
         self.assertIn('hooks', codex.DISABLED_FEATURES)
+
+    def test_dropped_live_threads_are_released(self):
+        class FakeServer:
+            running = True
+            generation = 2
+
+            def __init__(self):
+                self.requests = []
+
+            async def request(self, method, params=None, timeout=None):
+                self.requests.append((method, params))
+                return {}
+
+        provider = codex.CodexProvider()
+        server = FakeServer()
+        provider._servers['local'] = server
+        conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
+        chat_turn = TurnRequest('gpt-x', conversation, ProviderSettings(access='chat'), '.')
+
+        def read_thread(thread_id, generation=2):
+            return codex.LiveThread(thread_id, 'local', generation, 'read', '.', None)
+
+        async def run():
+            # The chat's access level changed, so its kept thread is dropped.
+            provider._keep_live_thread('chat-1', read_thread('changed-access'))
+            changed_access = provider._take_live_thread('chat-1', chat_turn, server.generation)
+            # A newer thread for the same chat replaces the kept one.
+            provider._keep_live_thread('chat-2', read_thread('replaced'))
+            provider._keep_live_thread('chat-2', read_thread('replacement'))
+            # The app-server restarted since this thread was kept, so it is already gone.
+            provider._keep_live_thread('chat-3', read_thread('restarted', generation=1))
+            restarted = provider._take_live_thread('chat-3', chat_turn, server.generation)
+            # A thread whose access, folder and app-server still match is reused, not released.
+            provider._keep_live_thread('chat-4', codex.LiveThread('matching', 'local', 2, 'chat', '.', None))
+            matching = provider._take_live_thread('chat-4', chat_turn, server.generation)
+            # Let the release tasks send their requests.
+            await asyncio.sleep(0)
+            return changed_access, restarted, matching
+
+        changed_access, restarted, matching = asyncio.run(run())
+        self.assertIsNone(changed_access)
+        self.assertIsNone(restarted)
+        self.assertEqual(matching.thread_id, 'matching')
+        self.assertEqual(provider._live_threads['chat-2'].thread_id, 'replacement')
+        self.assertEqual(
+            server.requests,
+            [
+                ('thread/unsubscribe', {'threadId': 'changed-access'}),
+                ('thread/unsubscribe', {'threadId': 'replaced'}),
+            ],
+        )
+
+    def test_signing_out_releases_the_machines_threads(self):
+        class FakeServer:
+            running = True
+            generation = 1
+
+            def __init__(self):
+                self.requests = []
+
+            async def request(self, method, params=None, timeout=None):
+                self.requests.append((method, params))
+                return {}
+
+        provider = codex.CodexProvider()
+        server = FakeServer()
+        provider._servers['local'] = server
+        provider._keep_live_thread('chat-1', codex.LiveThread('on-local', 'local', 1, 'chat', '.', None))
+        provider._keep_live_thread('chat-2', codex.LiveThread('on-runner', 'office-pc', 1, 'chat', '.', None))
+
+        async def run():
+            provider._release_machine_threads('local')
+            # Let the release task send its request.
+            await asyncio.sleep(0)
+
+        asyncio.run(run())
+        self.assertEqual(server.requests, [('thread/unsubscribe', {'threadId': 'on-local'})])
+        self.assertEqual(list(provider._live_threads), ['chat-2'])
 
     def test_summarize_rate_limits(self):
         summary = codex.summarize_rate_limits(
@@ -734,6 +804,27 @@ class CodexTests(unittest.TestCase):
                 self.assertIsNone(discovery._npm_vendor_binary(bin_dir))
 
 
+class DiscoveryTests(unittest.TestCase):
+    def test_finds_newest_desktop_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            appdata = Path(directory) / 'Roaming'
+            local_appdata = Path(directory) / 'Local'
+            # The MSIX app's real files live under Packages; %APPDATA% is virtualized.
+            package_bundles = local_appdata / 'Packages' / 'Claude_abc123' / 'LocalCache' / 'Roaming' / 'Claude'
+            installs = [(appdata / 'Claude', '2.1.9'), (package_bundles, '2.1.295'), (appdata / 'Claude', '2.1.30')]
+            for root, version in installs:
+                binary = root / 'claude-code' / version / 'abc' / 'claude.exe'
+                binary.parent.mkdir(parents=True)
+                binary.write_text('')
+            with (
+                patch.dict(os.environ, {'APPDATA': str(appdata), 'LOCALAPPDATA': str(local_appdata)}, clear=True),
+                patch.object(discovery.Path, 'home', return_value=Path(directory) / 'empty-home'),
+            ):
+                newest = discovery._newest_desktop_bundle()
+            self.assertIn('Claude_abc123', newest)
+            self.assertIn('2.1.295', newest)
+
+
 class ProcessTests(unittest.TestCase):
     def test_env_drops_session_and_api_key_variables(self):
         variables = {
@@ -770,6 +861,27 @@ class ProcessTests(unittest.TestCase):
             return first, second, end
 
         self.assertEqual(asyncio.run(run()), ('echo:first', 'echo:second', None))
+
+
+class MachineTests(unittest.TestCase):
+    def test_local_machine_substitutes_temp_files(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as directory:
+                machine = LocalMachine(Path(directory))
+                process = await machine.start_process(
+                    [sys.executable, '-c', 'import sys; print(open(sys.argv[1]).read())', temp_file_arg('notes')],
+                    await machine.chat_dir(),
+                    temp_files={'notes': 'hi'},
+                )
+                line = await asyncio.wait_for(process.read_line(), 20)
+                await process.wait(20)
+                temp_path = process.args[-1]
+                process.kill()
+                return line, os.path.exists(temp_path)
+
+        line, still_there = asyncio.run(run())
+        self.assertEqual(line, 'hi')
+        self.assertFalse(still_there)
 
 
 class RunnerTests(unittest.TestCase):
@@ -849,25 +961,6 @@ class RunnerTests(unittest.TestCase):
         message = self.run_with_runner(scenario, client_key='wrong-key')
         self.assertIn('runner key', message)
 
-    def test_local_machine_substitutes_temp_files(self):
-        async def run():
-            with tempfile.TemporaryDirectory() as directory:
-                machine = LocalMachine(Path(directory))
-                process = await machine.start_process(
-                    [sys.executable, '-c', 'import sys; print(open(sys.argv[1]).read())', temp_file_arg('notes')],
-                    await machine.chat_dir(),
-                    temp_files={'notes': 'hi'},
-                )
-                line = await asyncio.wait_for(process.read_line(), 20)
-                await process.wait(20)
-                temp_path = process.args[-1]
-                process.kill()
-                return line, os.path.exists(temp_path)
-
-        line, still_there = asyncio.run(run())
-        self.assertEqual(line, 'hi')
-        self.assertFalse(still_there)
-
 
 class StreamingTests(unittest.TestCase):
     def test_stream_events_produce_openai_chunks(self):
@@ -899,6 +992,135 @@ class StreamingTests(unittest.TestCase):
         completion = asyncio.run(streaming.collect_events(events(), 'claude-code.opus'))
         self.assertEqual(completion['choices'][0]['message']['content'], 'Hi there')
         self.assertEqual(completion['usage']['total_tokens'], 3)
+
+
+class StandInConfig:
+    """Open WebUI's config table, kept in memory."""
+
+    def __init__(self):
+        self.values = {}
+        # A key whose writes fail, to check what a failed save leaves behind.
+        self.failing_key = None
+
+    async def get(self, key: str, default=None):
+        return self.values.get(key, default)
+
+    async def upsert(self, updates: dict) -> None:
+        if self.failing_key in updates:
+            raise RuntimeError(f'Could not save {self.failing_key}')
+        self.values.update(updates)
+
+
+class StandInRunnerConnection:
+    """A cached connection to a Buddy Runner that only records whether it was closed."""
+
+    def __init__(self):
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class StandInProvider:
+    """Provider cleanup without CLI discovery, accounts, or native processes."""
+
+    def __init__(self):
+        self.cancel_calls = 0
+
+    async def cancel_login(self) -> None:
+        self.cancel_calls += 1
+
+
+def load_subscription_service(data_dir: Path, config: StandInConfig):
+    """Load service.py with stand-ins for the Open WebUI modules that reach the database."""
+    stand_ins = {
+        'open_webui.env': types.SimpleNamespace(DATA_DIR=str(data_dir), UVICORN_WORKERS=1),
+        'open_webui.models.config': types.SimpleNamespace(Config=config),
+        'open_webui.models.models': types.SimpleNamespace(Models=None),
+        'open_webui.utils.payload': types.SimpleNamespace(
+            apply_model_params_to_body_openai=None,
+            apply_system_prompt_to_body=None,
+        ),
+    }
+    service_path = ROOT_DIR / 'backend' / 'open_webui' / 'utils' / 'subscriptions' / 'service.py'
+    spec = importlib.util.spec_from_file_location('subscription_service_under_test', service_path)
+    service = importlib.util.module_from_spec(spec)
+    with patch.dict(sys.modules, stand_ins):
+        spec.loader.exec_module(service)
+    return service
+
+
+class DeleteMachineTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.data_dir = Path(directory.name)
+        self.config = StandInConfig()
+        self.service = load_subscription_service(self.data_dir, self.config)
+        self.service.PROVIDERS = {provider: StandInProvider() for provider in ('claude', 'codex')}
+
+    def test_providers_retain_the_removed_machine_and_forget_its_permissions_and_paths(self):
+        # Paths that exist only on the machine being removed.
+        workspace = str(self.data_dir / 'office-pc-projects')
+        cli_path = str(self.data_dir / 'office-pc-claude.exe')
+        office_pc = {'id': 'office-pc', 'name': 'Office PC', 'url': 'http://office-pc:8765', 'key': 'test-key'}
+        self.config.values['subscriptions.machines'] = [office_pc]
+        self.config.values['subscriptions.claude'] = {
+            'enable': True,
+            'workspace': workspace,
+            'cli_path': cli_path,
+            'machine_id': 'office-pc',
+            'access': 'full',
+        }
+        self.config.values['subscriptions.codex'] = {
+            'enable': True,
+            'workspace': workspace,
+            'machine_id': 'office-pc',
+            'access': 'read',
+        }
+        runner_connection = StandInRunnerConnection()
+        self.service._remote_machines['office-pc'] = runner_connection
+
+        asyncio.run(self.service.delete_machine('office-pc'))
+
+        for provider_id in ('claude', 'codex'):
+            settings = self.config.values[f'subscriptions.{provider_id}']
+            self.assertEqual(settings['machine_id'], 'office-pc')
+            self.assertEqual(settings['access'], 'chat')
+            self.assertEqual(settings['workspace'], '')
+            self.assertEqual(settings['cli_path'], '')
+            self.assertFalse(settings['enable'])
+        self.assertEqual(self.config.values['subscriptions.machines'], [])
+        self.assertTrue(runner_connection.closed)
+        self.assertTrue(all(provider.cancel_calls == 1 for provider in self.service.PROVIDERS.values()))
+
+    def test_a_failed_atomic_reset_keeps_the_machine_and_provider_settings(self):
+        office_pc = {'id': 'office-pc', 'name': 'Office PC', 'url': 'http://office-pc:8765', 'key': 'test-key'}
+        self.config.values['subscriptions.machines'] = [office_pc]
+        self.config.values['subscriptions.claude'] = {
+            'enable': True, 'access': 'full', 'workspace': 'remote-only', 'machine_id': 'office-pc',
+        }
+        self.config.values['subscriptions.codex'] = {'enable': True, 'machine_id': 'office-pc'}
+        original = json.loads(json.dumps(self.config.values))
+        self.config.failing_key = 'subscriptions.codex'
+        runner_connection = StandInRunnerConnection()
+        self.service._remote_machines['office-pc'] = runner_connection
+
+        with self.assertRaises(RuntimeError):
+            asyncio.run(self.service.delete_machine('office-pc'))
+
+        self.assertEqual(self.config.values, original)
+        self.assertFalse(runner_connection.closed)
+        self.assertTrue(all(provider.cancel_calls == 0 for provider in self.service.PROVIDERS.values()))
+
+    def test_this_server_cannot_be_removed(self):
+        workspace = str(self.data_dir)
+        self.config.values['subscriptions.claude'] = {'workspace': workspace, 'machine_id': 'local'}
+
+        with self.assertRaises(SubscriptionError):
+            asyncio.run(self.service.delete_machine('local'))
+
+        self.assertEqual(self.config.values['subscriptions.claude']['workspace'], workspace)
 
 
 if __name__ == '__main__':

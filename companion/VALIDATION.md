@@ -1,17 +1,19 @@
 # Canonical Buddy Runner validation
 
-The consolidation is based on Claude PR #2 at
-`50a3d32fde17f08a34907f43f86761d2689710aa`, refreshed immediately before final
-validation. Backend PR #3 preserves its original history by merging that base;
-it changes no `src` files relative to the base. PR #4 owns the combined browser
-UI and browser/mobile validation. Neither checkout writes Claude's shared ref.
+The current stack includes the verified rewritten Claude PR #2 base
+`474eef9575c42fc872438aca43a0847940c3b2b8` through an ordinary merge. It changes
+no `src` files relative to that base. The earlier
+`50a3d32fde17f08a34907f43f86761d2689710aa` history and validation records are
+preserved below. PR #4 owns the combined UI and browser/mobile validation.
+Neither checkout writes Claude's shared ref.
 
-## Current validation
+## Consolidation validation at cb26b4add
 
-The final Python **3.11.16** aggregate ran seven isolated suites against unchanged
-production and test sources: **222 tests, 218 passed, 4 POSIX-only skips, zero
+The original consolidation Python **3.11.16** aggregate ran seven isolated suites
+against unchanged production and test sources: **222 tests, 218 passed, 4 POSIX-only skips, zero
 failures**, exit 0. Before/after SHA256 hashes matched for every production Python
-module and fixture. No code changed after this run.
+module and fixture within that run. The review follow-up below changes source;
+this 222-test record does not validate those subsequent corrections.
 
 | Check | Result |
 | --- | --- |
@@ -102,3 +104,93 @@ do not validate the current Runner implementation or a later combined build.
 
 See [the guide](README.md) for reproducible isolated test commands and the
 operator-only pairing refresh that preserves running provider processes.
+
+## Review follow-up at 38a27f65
+
+The fresh PR review identified two process lifecycle defects: bounded-output
+failure could close the stream without confirming verified native cleanup, and
+pending asynchronous remote disposal could be ignored before admitting new
+commands. Independent review also reproduced stale workspace reselection after
+directory replacement, delayed cleanup retries after natural command exit,
+deleted selected host IDs being reused by same-name registrations, and stop
+requests blocked behind a non-reading child's stdin write. Repeated handler
+cancellation also stopped the native child while interrupting Runner registry
+and stdin-worker cleanup, retaining capacity until shutdown.
+
+These corrections remain in PR #3's subscription/Runner scope. PR #4 owns the
+unread endpoint and frontend corrections. All reproduction fixtures use fake
+providers or disposable Python children and temporary directories. These fixes
+retain fail-closed cleanup, independent browser credentials, observed host
+identity and explicit host grants. Failed execution reports its nonzero exit and
+reason only after verified native cleanup. Pending stdin is bounded and ordered;
+kill and disconnect remain responsive while the active write is blocked. A
+delayed-acknowledgement regression verifies normal EOF cannot hide the failure.
+
+The final Python **3.11.16** aggregate passed against unchanged production and
+test sources: **238 tests, 234 passed, 4 POSIX-only skips, zero failures**, exit 0.
+Before/after raw SHA256 hashes match for all 23 Python production/test files.
+
+| Suite | Final result |
+| --- | --- |
+| Offline subscriptions and CLI discovery | 41 passed, 3.596s |
+| Machine permissions and metadata | 20 passed, 1.226s |
+| Provider host transitions and recovery | 66 passed, 5.551s |
+| Native containment and temporary-file ownership | 29 run: 27 passed, 2 POSIX skips; 31.566s |
+| Remote cleanup and tracked startup integration | 25 passed, 17.063s |
+| Workspace pairing, grants, files and terminal races | 45 run: 43 passed, 2 POSIX skips; 30.421s |
+| Runner API boundaries and shutdown lifecycle | 12 passed, 5.578s |
+
+Task-local evidence is `runner-review-fixes-validation.json` and the seven
+`runner-review-fixes-test_*.log` files. The first aggregate's historical expiry
+fixture required native setup within a 70 ms token lifetime and failed when the
+session expired during workspace creation. That run is preserved under
+`runner-review-fixes-failed-first-*`. The final fixture creates its workspace
+before expiring the test session, then verifies immediate rejection and bounded
+real sweeper cleanup. Runtime code did not change for that fixture correction.
+
+Independent source review found no remaining confirmed blocker in the process,
+host-selection and workspace corrections. PR #4 owns the unread endpoint and
+frontend fixes, and is running changed-runtime browser validation separately.
+The earlier 88-provider/30-Runner browser record above belongs to `cb26b4add`;
+it does not validate this follow-up. No new frontend build or typecheck pass is
+claimed for the backend-only corrections.
+
+## Rewritten Claude base reconciliation
+
+The actual remote Claude branch was verified at `474eef9575c42fc872438aca43a0847940c3b2b8`
+before integration. Its merge base with the earlier Claude history is `f48d6809`,
+and its tree differs from `50a3d32f` in 14 paths. Ordinary merge
+`b5f06012edfac5c77cd17877f74567af4aba1046` preserves both the reviewed PR #3
+head `38a27f65` and the new Claude head. A local recovery branch retains `38a27f65`.
+No force push, Claude-ref write or live runtime change is needed.
+
+The new upstream Codex thread cleanup, hooks tests, configuration, comments and
+UI import ordering are preserved. PR #3's Runner and permission code remains
+byte-identical to `38a27f65`. Deletion continues to disable affected providers,
+clear access and paths, retain the removed machine ID and require explicit
+reselection; it does not inherit upstream's automatic fallback to This server.
+Incoming deletion fixtures now verify that policy and atomic failure behavior.
+Discovery fixtures remain hermetic, and all previous image/discovery regressions
+and incoming test meanings are retained without duplicate cases.
+
+Final Python **3.11.16** validation against the reconciled new base:
+**244 tests, 240 passed, 4 POSIX-only skips, zero failures**, all seven suites
+exit 0. All 23 production/test raw SHA256 hashes match before and after the run.
+
+| Suite | Reconciled result |
+| --- | --- |
+| Offline subscriptions and CLI discovery | 47 passed, 3.586s |
+| Machine permissions and metadata | 20 passed, 1.208s |
+| Provider host transitions and recovery | 66 passed, 5.027s |
+| Native containment and temporary-file ownership | 29 run: 27 passed, 2 POSIX skips; 29.323s |
+| Remote cleanup and tracked startup integration | 25 passed, 15.847s |
+| Workspace pairing, grants, files and terminal races | 45 run: 43 passed, 2 POSIX skips; 27.973s |
+| Runner API boundaries and shutdown lifecycle | 12 passed, 4.978s |
+
+Evidence is `runner-claude-reconcile-validation.json`, its seven suite logs and
+`runner-claude-reconcile-final.json`. The final manifest verifies current-base
+ancestry, all 20 patch paths, zero `src` differences, unchanged Runner guards
+and exact preservation of incoming base paths outside intentional resolutions.
+PR #4 must reconcile its own UI/unread work with this base and validate the
+combined build. Earlier build/browser records remain historical; no new build,
+typecheck or changed-base browser pass is claimed by this backend validation.

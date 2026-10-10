@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -13,6 +14,7 @@ from aiohttp.test_utils import TestServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'backend'))
 from open_webui.utils.subscriptions import runner
+from open_webui.utils.subscriptions.process import OutputLimitError
 
 
 class RunnerBoundaryTests(unittest.IsolatedAsyncioTestCase):
@@ -69,6 +71,96 @@ class RunnerBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 403)
         status, _ = await self.request('GET', '/workspace-grants', paired)
         self.assertEqual(status, 403)
+
+    async def test_failed_execution_ack_cannot_report_successful_leader_exit(self):
+        class FinishedProcess:
+            returncode = 0
+            cleanup_finished = False
+
+            async def close(self):
+                self.cleanup_finished = True
+
+            def stderr_text(self):
+                return 'fixture stderr'
+
+        class RecordingSocket:
+            closed = False
+            messages = []
+
+            async def send_json(self, message):
+                self.messages.append(message)
+                self.assert_cleanup()
+
+            def assert_cleanup(self):
+                if not process.cleanup_finished:
+                    raise AssertionError('Exit acknowledgement preceded cleanup')
+
+            async def close(self):
+                self.closed = True
+
+        process = FinishedProcess()
+        socket = RecordingSocket()
+        await self.app['runner']._report_process_failure(
+            process, socket, OutputLimitError('fixture stdout overflow')
+        )
+        self.assertEqual(socket.messages, [{
+            'type': 'exit', 'code': 1,
+            'stderr': 'fixture stderr\nOutputLimitError: fixture stdout overflow',
+        }])
+        self.assertTrue(socket.closed)
+
+    async def test_repeated_handler_cancellation_finishes_disposal_and_registry_cleanup(self):
+        started = asyncio.Event()
+        handlers = []
+        original_send = runner.web.WebSocketResponse.send_json
+
+        async def record_handler(socket, event, *args, **kwargs):
+            if event.get('type') == 'started':
+                handlers.append(asyncio.current_task())
+                started.set()
+            return await original_send(socket, event, *args, **kwargs)
+
+        with patch.object(runner.web.WebSocketResponse, 'send_json', record_handler):
+            socket = await self.client.ws_connect(
+                self.server.make_url('/process'), headers={'Authorization': f'Bearer {self.key}'}
+            )
+            await socket.send_json({'type': 'start', 'args': [sys.executable, '-c', 'import time; time.sleep(30)']})
+            await socket.receive_json(timeout=10)
+            await asyncio.wait_for(started.wait(), 1)
+        host = self.app['runner']
+        native = next(iter(host.processes))
+        entered = threading.Event()
+        release = threading.Event()
+        original_stop = native._stop_process_tree
+
+        def delayed_stop():
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError('Synthetic native cleanup gate was not released')
+            original_stop()
+
+        try:
+            with patch.object(native, '_stop_process_tree', side_effect=delayed_stop):
+                socket_close = asyncio.create_task(socket.close())
+                async with asyncio.timeout(5):
+                    while not entered.is_set():
+                        await asyncio.sleep(0.01)
+                handlers[0].cancel()
+                await asyncio.sleep(0.05)
+                handlers[0].cancel()
+                await asyncio.sleep(0.05)
+                release.set()
+                await socket_close
+                async with asyncio.timeout(5):
+                    while host.processes:
+                        await asyncio.sleep(0.01)
+            self.assertTrue(native.cleanup_confirmed)
+            self.assertFalse(host.stdin_workers)
+        finally:
+            release.set()
+            await native.close()
+            await host._stop_stdin_worker(native)
+            host.processes.discard(native)
 
     async def test_operator_revocation_invalidates_browser_grant(self):
         paired = await self.pair()
