@@ -149,14 +149,18 @@ export async function createMockedPage(options = {}) {
   const requests = [];
   const errors = [];
   const blockedMutations = [];
-  await context.addInitScript((theme) => {
+  await context.addInitScript(({ theme, previewOrigin }) => {
+    if (location.origin !== previewOrigin) return;
     localStorage.setItem('token', 'mobile-preview-fake-token');
     localStorage.setItem('locale', 'en-US');
     localStorage.setItem('theme', theme);
     localStorage.setItem('sidebar', 'false');
     localStorage.setItem('sidebarWidth', '245');
     localStorage.setItem('changelog', '0.11.4');
-  }, options.colorScheme === 'dark' ? 'dark' : 'light');
+  }, {
+    theme: options.colorScheme === 'dark' ? 'dark' : 'light',
+    previewOrigin: origin
+  });
   await context.route('**/*', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -170,6 +174,16 @@ export async function createMockedPage(options = {}) {
     }
     if (url.pathname.startsWith('/ollama/')) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ version: '0.0.0', models: [] }) });
+      return;
+    }
+    if (url.pathname === '/static/loader.js' && ['GET', 'HEAD'].includes(request.method())) {
+      const buildDirectory = process.env.BUDDY_UI_TEST_BUILD || resolve(workspace, 'build');
+      const loader = readFileSync(resolve(buildDirectory, 'static/loader.js'));
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/javascript; charset=utf-8',
+        body: request.method() === 'HEAD' ? '' : loader
+      });
       return;
     }
     if (!url.pathname.startsWith('/api/')) {
