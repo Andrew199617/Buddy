@@ -379,9 +379,10 @@ class ProcessContainmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(child.stderr_text(), '')
 
     async def test_custom_stdout_cap_applies_before_event_loop_enqueue(self):
+        # One small write arrives as one chunk, and it can never fit the queue.
         child = self.start_child(
-            'import os, time\nos.write(1, b"x" * 4097)\ntime.sleep(20)\n',
-            output_limit_bytes=4096,
+            'import os, time\nos.write(1, b"x" * 200)\ntime.sleep(20)\n',
+            output_limit_bytes=64,
         )
         # Deliberately do not yield: queued callbacks cannot run on this loop.
         # The reader thread must reserve/count bytes before posting callbacks.
@@ -390,7 +391,7 @@ class ProcessContainmentTests(unittest.IsolatedAsyncioTestCase):
             time.sleep(0.01)
         self.assertIsInstance(child._output_error, subscription_process.OutputLimitError)
         self.assertEqual(child._chunks.qsize(), 0)
-        self.assertLessEqual(child._queued_bytes, 4096)
+        self.assertLessEqual(child._queued_bytes, 64)
         await child.kill_and_wait(5)
         with self.assertRaises(subscription_process.OutputLimitError):
             await child.read_text(timeout=5)
@@ -645,31 +646,57 @@ class ProcessContainmentTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(task, 15)
         await self.assert_stopped(descendant)
 
-    async def test_streamed_stdout_queue_overflow_fails_and_stops_process(self):
-        child = self.start_tree(output_stream='stdout')
-        descendant = await self.track_descendant()
-        (self.root / 'emit.ready').write_text('emit', encoding='ascii')
-        # Let output arrive without a consumer; providers can pause between streamed events.
-        await child.wait(5)
-        await self.assert_stopped(descendant)
-        captured_bytes = 0
-        with self.assertRaises(subscription_process.OutputLimitError):
-            while True:
-                text = await child.read_text(timeout=5)
-                if text is None:
-                    break
-                captured_bytes += len(text.encode('utf-8'))
-        self.assertLessEqual(captured_bytes, subscription_process.MAX_CAPTURE_BYTES)
+    async def test_unread_stdout_over_the_queue_budget_pauses_the_cli(self):
+        line_count = 128
+        line_text = 'x' * 32764
+        child = self.start_child(
+            f'for number in range({line_count}):\n'
+            '    print(f"{number:03d}" + "x" * 32764, flush=True)\n'
+        )
+        # Let 4 MiB arrive without a consumer; providers can pause between
+        # streamed events. The queue, one chunk in hand, and the pipe hold far
+        # less, so the CLI must wait on its write rather than be stopped.
+        await asyncio.sleep(1)
+        self.assertIsNone(child._output_error)
+        self.assertIsNone(child.returncode)
+        self.assertLessEqual(child._queued_bytes, subscription_process.MAX_CAPTURE_BYTES)
+        async with asyncio.timeout(20):
+            for number in range(line_count):
+                self.assertEqual(await child.read_line(), f'{number:03d}{line_text}')
+            self.assertIsNone(await child.read_line())
+        self.assertEqual(await child.wait(5), 0)
+
+    async def test_many_small_unread_writes_wait_for_the_reader(self):
+        line_count = subscription_process.MAX_PENDING_CHUNKS * 3
+        child = self.start_child(
+            'import time\n'
+            f'for number in range({line_count}):\n'
+            '    print(number, flush=True)\n'
+            '    time.sleep(0.002)\n'
+        )
+        # Each spaced-out write arrives as its own chunk while nothing reads.
+        await self.wait_until(
+            lambda: child._queued_chunks >= subscription_process.MAX_PENDING_CHUNKS,
+            'Unread stdout chunks did not fill the queue',
+        )
+        await asyncio.sleep(0.2)
+        self.assertIsNone(child._output_error)
+        self.assertEqual(child._queued_chunks, subscription_process.MAX_PENDING_CHUNKS)
+        async with asyncio.timeout(10):
+            for number in range(line_count):
+                self.assertEqual(await child.read_line(), str(number))
+            self.assertIsNone(await child.read_line())
+        self.assertEqual(await child.wait(5), 0)
 
     async def test_streamed_stdout_overflow_reaches_line_reader(self):
         child = self.start_tree(output_stream='stdout')
         descendant = await self.track_descendant()
         (self.root / 'emit.ready').write_text('emit', encoding='ascii')
-        await child.wait(5)
-        await self.assert_stopped(descendant)
         with self.assertRaises(subscription_process.OutputLimitError):
             while await asyncio.wait_for(child.read_line(), 5) is not None:
                 pass
+        await child.wait(5)
+        await self.assert_stopped(descendant)
 
     async def test_streamed_stderr_without_newline_has_bounded_tail(self):
         self.assertEqual(subscription_process.MAX_STDERR_BYTES, 256 * 1024)

@@ -107,6 +107,9 @@ class StreamedOutput:
     """Stdout text that arrives in pieces, read as text or as whole lines.
 
     Subclasses put decoded text into ``_chunks`` and None when stdout ends.
+    Unread text is limited to ``_output_limit_bytes`` and
+    ``_pending_chunk_limit`` chunks; each subclass decides what a producer
+    does while the queue is full.
     """
 
     def __init__(self):
@@ -114,7 +117,16 @@ class StreamedOutput:
         self._pending_text = ''
         self._stdout_closed = False
         self._output_error: OutputLimitError | None = None
+        self._pending_chunk_limit = MAX_PENDING_CHUNKS
         self._output_limit_bytes = MAX_CAPTURE_BYTES
+        self._queued_bytes = 0
+        self._queued_chunks = 0
+
+    def _queue_has_room(self, size: int) -> bool:
+        """Whether ``size`` more bytes of unread stdout fit the queue budget."""
+        if self._queued_chunks >= self._pending_chunk_limit:
+            return False
+        return self._queued_bytes + size <= self._output_limit_bytes
 
     def _raise_output_error(self) -> None:
         if self._output_error is not None:
@@ -175,7 +187,9 @@ class ChildProcess(StreamedOutput):
     """A contained CLI process with piped stdin and bounded output buffers.
 
     ``output_limit_bytes`` caps pending stdout before event-loop callbacks are
-    queued. Split stderr remains the default for provider JSON protocols.
+    queued. When the reader falls behind, the stdout thread waits instead of
+    reading, so the pipe fills and the CLI pauses. Split stderr remains the
+    default for provider JSON protocols.
     """
 
     def __init__(
@@ -190,9 +204,8 @@ class ChildProcess(StreamedOutput):
         self._cleanup_paths = list(cleanup_paths or [])
         self._loop = asyncio.get_running_loop()
         self._output_limit_bytes = output_limit_bytes
-        self._queue_lock = threading.Lock()
-        self._queued_bytes = 0
-        self._queued_chunks = 0
+        self._queue_condition = threading.Condition()
+        self._stdout_abandoned = False
         self._eof_posted = False
         self._stderr_lock = threading.Lock()
         self._stderr_tail = bytearray()
@@ -288,9 +301,10 @@ class ChildProcess(StreamedOutput):
 
     def _consume_chunk(self, chunk: str | None) -> None:
         if chunk is not None:
-            with self._queue_lock:
+            with self._queue_condition:
                 self._queued_bytes -= len(chunk.encode('utf-8'))
                 self._queued_chunks -= 1
+                self._queue_condition.notify_all()
 
     def _set_output_error(self, error: OutputLimitError) -> None:
         if self._output_error is None:
@@ -298,25 +312,43 @@ class ChildProcess(StreamedOutput):
             self._post(None)
             self.kill()
 
+    def _abandon_stdout(self) -> None:
+        """Stop waiting for the reader; kill() means later output is not needed."""
+        with self._queue_condition:
+            self._stdout_abandoned = True
+            self._queue_condition.notify_all()
+
+    def _reserve_queue_room(self, text: str) -> bool:
+        """Count ``text`` as unread output, waiting while the reader is behind.
+
+        While this waits the thread does not read the pipe, so the pipe fills
+        and the CLI pauses on its next write instead of being stopped. Returns
+        False when the text is dropped: after an output error, or once kill()
+        has abandoned the output.
+        """
+        size = len(text.encode('utf-8'))
+        if size > self._output_limit_bytes:
+            # Text that cannot fit even an empty queue would wait forever.
+            self._set_output_error(OutputLimitError('The CLI stdout buffer limit was reached'))
+            return False
+        with self._queue_condition:
+            while self._output_error is None and not self._queue_has_room(size):
+                if self._stdout_abandoned:
+                    return False
+                self._queue_condition.wait()
+            if self._output_error is not None:
+                return False
+            self._queued_bytes += size
+            self._queued_chunks += 1
+            return True
+
     def _post(self, item: str | None) -> None:
-        size = 0
-        exceeded = False
-        with self._queue_lock:
-            if item is None:
+        if item is None:
+            with self._queue_condition:
                 if self._eof_posted:
                     return
                 self._eof_posted = True
-            else:
-                if self._output_error is not None:
-                    return
-                size = len(item.encode('utf-8'))
-                if self._queued_bytes + size > self._output_limit_bytes or self._queued_chunks >= MAX_PENDING_CHUNKS:
-                    exceeded = True
-                else:
-                    self._queued_bytes += size
-                    self._queued_chunks += 1
-        if exceeded:
-            self._set_output_error(OutputLimitError('The CLI stdout buffer limit was reached'))
+        elif not self._reserve_queue_room(item):
             return
         try:
             self._loop.call_soon_threadsafe(self._chunks.put_nowait, item)
@@ -444,6 +476,7 @@ class ChildProcess(StreamedOutput):
     def kill(self) -> None:
         """Stop the process and any commands it started, and remove its temporary files."""
         self._disposal_started = True
+        self._abandon_stdout()
         self._stop_process_tree()
         self.close_stdin()
         self._remove_cleanup_paths()

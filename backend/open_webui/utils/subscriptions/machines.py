@@ -27,8 +27,6 @@ from open_webui.utils.subscriptions.runner_transport import (
 )
 from open_webui.utils.subscriptions.process import (
     ChildProcess,
-    MAX_CAPTURE_BYTES,
-    MAX_PENDING_CHUNKS,
     MAX_STDERR_BYTES,
     OutputLimitError,
     ProcessClosedError,
@@ -42,6 +40,12 @@ log = logging.getLogger(__name__)
 LOCAL_MACHINE_ID = 'local'
 TEMP_FILE_TOKEN = '{temp:%s}'
 MAX_WEBSOCKET_MESSAGE_BYTES = 32 * 1024 * 1024
+# Unread stdout from a Runner process. Its WebSocket also carries heartbeats
+# and the stop reply, which are only handled while it is read, so the output
+# is buffered instead of pausing the Runner. A stalled reader collects about
+# 100 lines a second from a streaming CLI; this covers a few minutes of that.
+MAX_REMOTE_STDOUT_BYTES = 16 * 1024 * 1024
+MAX_REMOTE_STDOUT_CHUNKS = 16384
 
 
 class StartupCleanupUnconfirmedError(SubscriptionError):
@@ -168,6 +172,8 @@ class RemoteProcess(StreamedOutput):
 
     def __init__(self, websocket: aiohttp.ClientWebSocketResponse, args: list[str], pid: int):
         super().__init__()
+        self._output_limit_bytes = MAX_REMOTE_STDOUT_BYTES
+        self._pending_chunk_limit = MAX_REMOTE_STDOUT_CHUNKS
         self.args = args
         self.pid = pid
         self.returncode: int | None = None
@@ -176,8 +182,6 @@ class RemoteProcess(StreamedOutput):
         self._exited = asyncio.Event()
         self._confirmed_stopped = asyncio.Event()
         self._connection_error: ProcessClosedError | None = None
-        self._queued_bytes = 0
-        self._queued_chunks = 0
         self._eof_posted = False
         self._close_task: asyncio.Task | None = None
         self._disposal_started = False
@@ -214,7 +218,9 @@ class RemoteProcess(StreamedOutput):
         if self._output_error is not None:
             return
         size = len(text.encode('utf-8'))
-        if self._queued_bytes + size > MAX_CAPTURE_BYTES or self._queued_chunks >= MAX_PENDING_CHUNKS:
+        # Never wait for the reader here: while the WebSocket is not read,
+        # heartbeat pongs and the stop reply wait too and the link drops.
+        if not self._queue_has_room(size):
             self._set_output_error(OutputLimitError('The remote CLI stdout buffer limit was reached'))
             return
         self._queued_bytes += size

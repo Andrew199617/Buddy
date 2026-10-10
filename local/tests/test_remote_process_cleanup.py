@@ -75,10 +75,10 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
         app = runner.build_app(self.key, self.root / 'state')
         return await self.remote(app), app['runner']
 
-    async def fake_remote(self, exchange):
+    async def fake_remote(self, exchange, heartbeat=None):
         async def process(request):
             self.assertEqual(request.headers.get('Authorization'), f'Bearer {self.key}')
-            socket = web.WebSocketResponse()
+            socket = web.WebSocketResponse(heartbeat=heartbeat)
             await socket.prepare(request)
             start = await socket.receive_json()
             self.assertEqual(start['type'], 'start')
@@ -213,7 +213,7 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_output_byte_limit_stops_remote_and_keeps_queue_bounded(self):
         async def exchange(socket):
-            await socket.send_json({'type': 'stdout', 'data': 'x' * (MAX_CAPTURE_BYTES + 1)})
+            await socket.send_json({'type': 'stdout', 'data': 'x' * (machines.MAX_REMOTE_STDOUT_BYTES + 1)})
             self.assertEqual((await socket.receive_json())['type'], 'kill')
             await socket.send_json({'type': 'stopped', 'pid': 12345})
             async for _ in socket:
@@ -221,30 +221,65 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         remote = await self.fake_remote(exchange)
         process = await remote.start_process(['synthetic-fixture'], str(self.root))
-        await asyncio.wait_for(process._exited.wait(), 2)
+        await asyncio.wait_for(process._exited.wait(), 5)
         with self.assertRaises(OutputLimitError):
             await process.read_text()
-        self.assertLessEqual(process._queued_bytes, MAX_CAPTURE_BYTES)
+        self.assertLessEqual(process._queued_bytes, machines.MAX_REMOTE_STDOUT_BYTES)
         self.assertEqual(process._queued_chunks, 0)
         self.assertEqual(process._chunks.qsize(), 1)
         await process.close()
 
-    async def test_output_chunk_limit_stops_remote_and_consumption_releases_budget(self):
+    async def test_unread_output_is_buffered_while_heartbeats_continue(self):
+        line_count = MAX_PENDING_CHUNKS * 3
+
         async def exchange(socket):
-            for _ in range(MAX_PENDING_CHUNKS + 1):
-                await socket.send_json({'type': 'stdout', 'data': 'x'})
+            for number in range(line_count):
+                await socket.send_json({'type': 'stdout', 'data': f'{number}\n'})
             self.assertEqual((await socket.receive_json())['type'], 'kill')
             await socket.send_json({'type': 'stopped', 'pid': 12345})
             async for _ in socket:
                 pass
 
-        remote = await self.fake_remote(exchange)
+        # The fixture Runner pings every 0.5 seconds and drops the link when a
+        # pong is 0.25 seconds late, like the real one with its 30 seconds.
+        remote = await self.fake_remote(exchange, heartbeat=0.5)
         process = await remote.start_process(['synthetic-fixture'], str(self.root))
-        await asyncio.wait_for(process._exited.wait(), 2)
+        # The reader stalls across several heartbeats while output arrives.
+        await asyncio.sleep(2)
+        self.assertIsNone(process._output_error)
+        self.assertFalse(process._exited.is_set())
+        self.assertEqual(process._queued_chunks, line_count)
+        lines = []
+        for _ in range(line_count):
+            lines.append(await asyncio.wait_for(process.read_line(), 1))
+        self.assertEqual(lines, [str(number) for number in range(line_count)])
+        await asyncio.wait_for(process.close(), 2)
+        self.assertTrue(process.cleanup_confirmed)
+
+    async def test_output_chunk_limit_stops_remote_and_confirms_cleanup_while_unread(self):
+        chunk_limit = MAX_PENDING_CHUNKS + 72
+        received_kill = asyncio.Event()
+
+        async def exchange(socket):
+            for _ in range(chunk_limit + 1):
+                await socket.send_json({'type': 'stdout', 'data': 'x'})
+            self.assertEqual((await socket.receive_json())['type'], 'kill')
+            received_kill.set()
+            await socket.send_json({'type': 'stopped', 'pid': 12345})
+            async for _ in socket:
+                pass
+
+        remote = await self.fake_remote(exchange, heartbeat=0.5)
+        with patch.object(machines, 'MAX_REMOTE_STDOUT_CHUNKS', chunk_limit):
+            process = await remote.start_process(['synthetic-fixture'], str(self.root))
+        # Nothing reads stdout, yet the stop reply is still read and confirms cleanup.
+        await asyncio.wait_for(received_kill.wait(), 2)
+        await asyncio.sleep(2)
+        self.assertTrue(process.cleanup_confirmed)
         with self.assertRaises(OutputLimitError):
             await process.read_line()
-        self.assertEqual(process._queued_chunks, MAX_PENDING_CHUNKS)
-        self.assertEqual(process._chunks.qsize(), MAX_PENDING_CHUNKS + 1)
+        self.assertEqual(process._queued_chunks, chunk_limit)
+        self.assertEqual(process._chunks.qsize(), chunk_limit + 1)
         await process.close()
 
     async def test_stdout_consumption_releases_pending_bytes_and_chunks(self):
