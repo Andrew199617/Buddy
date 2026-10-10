@@ -94,6 +94,14 @@ async def get_machine(machine_id: str):
     return machine
 
 
+async def describe_machines() -> list[dict]:
+    """Machines for the settings page; runner keys never leave the server."""
+    machines = [{'id': LOCAL_MACHINE_ID, 'name': LOCAL_MACHINE.name, 'url': None}]
+    for config in await _machine_configs():
+        machines.append({'id': config['id'], 'name': config['name'], 'url': config['url']})
+    return machines
+
+
 def _machine_id_from_name(name: str, taken: set[str]) -> str:
     base = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-') or 'machine'
     machine_id = base
@@ -310,6 +318,40 @@ def uses_plan(provider_status: dict) -> bool:
 def invalidate(provider_id: str) -> None:
     status_cache.invalidate(provider_id)
     models_cache.invalidate(provider_id)
+
+
+async def describe_provider(provider_id: str, fresh: bool = False) -> dict:
+    """Everything the Connections page shows for one provider."""
+    provider = get_provider(provider_id)
+    settings = await get_settings(provider_id)
+    provider_status = await status_cache.get(provider_id, fresh=fresh)
+    if provider_status is None:
+        # The CLI is still answering; the page shows "Checking" and asks again.
+        provider_status = {'checking': True}
+    models = []
+    if settings.enable and uses_plan(provider_status):
+        for model in await models_cache.get(provider_id, fresh=fresh) or []:
+            models.append({'id': _model_id(provider_id, model), 'name': model.name})
+
+    machine_name = LOCAL_MACHINE.name
+    default_workspace = ''
+    try:
+        machine = await get_machine(settings.machine_id)
+        machine_name = machine.name
+        default_workspace = await machine.default_workspace()
+    except SubscriptionError as error:
+        log.info('Could not describe the machine for %s: %s', provider_id, error)
+
+    return {
+        'id': provider_id,
+        'name': PROVIDER_LABELS[provider_id],
+        'settings': asdict(settings),
+        'status': provider_status,
+        'login': provider.login_state(),
+        'models': models,
+        'machine': {'id': settings.machine_id, 'name': machine_name},
+        'default_workspace': default_workspace,
+    }
 
 
 # Models and chat
