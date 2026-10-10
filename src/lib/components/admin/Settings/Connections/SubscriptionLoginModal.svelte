@@ -134,7 +134,18 @@
 		if (!loginOwner || !isCurrentAttempt(loginOwner, generation)) {
 			return;
 		}
+		const wasWaiting = login.state === 'waiting';
 		login = update;
+		const stoppedOnServer = login.state === 'idle' || login.state === 'cancelled';
+		if (wasWaiting && stoppedOnServer && !login.message) {
+			// Saving this provider's settings elsewhere cancels a pending sign-in on the server.
+			login = {
+				...login,
+				message: $i18n.t(
+					'This sign-in was stopped on the server, so its link or code no longer works. Start again.'
+				)
+			};
+		}
 		if (login.state !== 'waiting') {
 			// Any other response still in flight belongs to the completed polling flow.
 			loginGeneration += 1;
@@ -296,6 +307,12 @@
 				{#if login.state === 'error' && login.message}
 					<div
 						class="rounded-xl bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/40 dark:text-red-300"
+					>
+						{login.message}
+					</div>
+				{:else if login.message}
+					<div
+						class="rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
 					>
 						{login.message}
 					</div>

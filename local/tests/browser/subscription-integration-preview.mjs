@@ -577,6 +577,9 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		hasHeldConfig: () => Boolean(heldConfig),
 		hasHeldLogout: () => Boolean(heldLogout),
 		providerSettings: (id = 'claude') => ({ ...describeProvider(id).settings }),
+		cancelLoginOnServer() {
+			loginState = 'idle';
+		},
 		externalMachineSwitch() {
 			loginState = 'idle';
 			signedIn = false;
@@ -958,11 +961,8 @@ async function terminalPollCase(browser, profile, terminal) {
 		await loginDialog(page)
 			.getByRole('button', { name: 'Get sign-in link', exact: true })
 			.waitFor();
-		if (terminal === 'error' || terminal === 'code') {
-			await loginDialog(page)
-				.getByText('Synthetic terminal login result', { exact: true })
-				.waitFor();
-		}
+		// The server's reason stays visible whichever way the sign-in ended.
+		await loginDialog(page).getByText('Synthetic terminal login result', { exact: true }).waitFor();
 		const polls = fixtures.count('GET');
 		const modelReads = fixtures.count('GET', '/api/models');
 		assert.equal(polls, 1);
@@ -981,6 +981,30 @@ async function terminalPollCase(browser, profile, terminal) {
 		assert.equal(fixtures.count('GET', '/api/models'), modelReads);
 		assert.equal(fixtures.count('POST'), 1);
 		await dismiss(page, 'x');
+	});
+}
+
+async function serverCancelCase(browser, profile) {
+	await runCase(browser, profile, 'server-cancel', 'normal', async ({ page }, fixtures) => {
+		await openLogin(page);
+		await startLogin(page);
+		await loginDialog(page).getByText('Open Claude sign-in').waitFor();
+		fixtures.cancelLoginOnServer();
+		await loginDialog(page)
+			.getByText(
+				'This sign-in was stopped on the server, so its link or code no longer works. Start again.',
+				{ exact: true }
+			)
+			.waitFor();
+		assert.equal(
+			await loginDialog(page).getByRole('button', { name: 'Get sign-in link' }).isVisible(),
+			true
+		);
+		const polls = fixtures.count('GET');
+		await page.waitForTimeout(2200);
+		assert.equal(fixtures.count('GET'), polls, 'A sign-in stopped on the server stops polling');
+		await dismiss(page, 'x');
+		assert.equal(fixtures.count('DELETE'), 0, 'An idle dialog has nothing to cancel');
 	});
 }
 
@@ -2166,6 +2190,7 @@ try {
 		await terminalPollCase(browser, profile, 'cancelled');
 		await terminalPollCase(browser, profile, 'idle');
 		await terminalPollCase(browser, profile, 'code');
+		await serverCancelCase(browser, profile);
 		await successCase(browser, profile);
 		await codeLoginCase(browser, profile);
 		await codeLoginCase(browser, profile, true);
