@@ -30,7 +30,7 @@
 	export let machine: SubscriptionMachine | null = null;
 	export let onChanged: (machines: SubscriptionMachine[]) => void | Promise<void> = () => {};
 
-	const DEFAULT_URL = 'http://host.docker.internal:8765';
+	const DEFAULT_URL = 'https://host.docker.internal:8765';
 
 	let name = '';
 	let url = '';
@@ -205,7 +205,9 @@
 					required
 				/>
 				<p class="text-xs text-gray-400 dark:text-gray-600">
-					{$i18n.t('From Buddy in Docker, the computer running Docker is host.docker.internal.')}
+					{$i18n.t(
+						'Use HTTPS with a certificate trusted by Buddy. In Docker, host.docker.internal reaches the computer running Docker; Buddy must be able to reach the Runner port.'
+					)}
 				</p>
 			</div>
 
@@ -223,7 +225,7 @@
 				/>
 				<p class="text-xs text-gray-400 dark:text-gray-600">
 					{$i18n.t(
-						'Optional address your browser can reach directly. Runner address may use host.docker.internal for Buddy in Docker; a phone needs a reachable HTTPS address. This address creates no project or file permissions.'
+						'Optional pairing address your browser can reach directly: loopback HTTP on this computer, or reachable HTTPS for a phone. This address creates no project or file permissions.'
 					)}
 				</p>
 			</div>

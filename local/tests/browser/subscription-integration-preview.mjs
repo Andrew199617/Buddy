@@ -102,7 +102,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			id: 'runner-a',
 			revision: 'fixture-revision-a-1',
 			name: 'Synthetic computer A',
-			url: 'http://host.docker.internal:8765',
+			url: 'https://host.docker.internal:8765',
 			browser_url: 'http://127.0.0.1:8765',
 			host: {
 				id: 'fixture-host-a',
@@ -1242,7 +1242,7 @@ async function machineCrudCase(browser, profile) {
 		const dialog = machineDialog(page);
 		assert.equal(
 			await dialog.locator('#machine-url').inputValue(),
-			'http://host.docker.internal:8765'
+			'https://host.docker.internal:8765'
 		);
 		assert.equal(
 			await dialog.locator('#machine-browser-url').inputValue(),
@@ -1257,7 +1257,7 @@ async function machineCrudCase(browser, profile) {
 			.getByText('Connected to Synthetic verified computer A (fixture)', { exact: true })
 			.waitFor();
 		const verified = fixtures.requests.find((request) => request.path === machinesPath + '/verify');
-		assert.equal(verified.body.url, 'http://host.docker.internal:8765');
+		assert.equal(verified.body.url, 'https://host.docker.internal:8765');
 		assert.equal(verified.body.browser_url, 'http://127.0.0.1:8765');
 		await dialog.getByRole('button', { name: 'Save', exact: true }).click();
 		await dialog.waitFor({ state: 'hidden' });
@@ -1281,6 +1281,9 @@ async function machineCrudCase(browser, profile) {
 			(request) => request.method === 'POST' && request.path === machinesPath
 		);
 		assert.equal(updates.length, 2);
+		assert.equal(updates[0].body.url, 'https://host.docker.internal:8765');
+		assert.equal(updates[0].body.browser_url, 'http://127.0.0.1:8765');
+		assert.equal(updates[1].body.url, 'https://host.docker.internal:8765');
 		assert.equal(updates[1].body.id, 'runner-new');
 		assert.equal(
 			updates[1].body.browser_url,
@@ -2001,7 +2004,7 @@ async function loginRevisionCase(browser, profile, metadataOnly = false, equival
 				.locator('#machine-url')
 				.fill('https://replacement-a.example.invalid');
 		if (equivalentTarget) {
-			await machineDialog(page).locator('#machine-url').fill('http://host.docker.internal:8765/');
+			await machineDialog(page).locator('#machine-url').fill('https://host.docker.internal:8765/');
 			await machineDialog(page).locator('#machine-key').fill('synthetic-saved-key-a');
 		}
 		await machineDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
