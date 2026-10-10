@@ -646,6 +646,27 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(asyncio.run(run()), ('echo:first', 'echo:second', None))
 
 
+class MachineTests(unittest.TestCase):
+    def test_local_machine_substitutes_temp_files(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as directory:
+                machine = LocalMachine(Path(directory))
+                process = await machine.start_process(
+                    [sys.executable, '-c', 'import sys; print(open(sys.argv[1]).read())', temp_file_arg('notes')],
+                    await machine.chat_dir(),
+                    temp_files={'notes': 'hi'},
+                )
+                line = await asyncio.wait_for(process.read_line(), 20)
+                await process.wait(20)
+                temp_path = process.args[-1]
+                process.kill()
+                return line, os.path.exists(temp_path)
+
+        line, still_there = asyncio.run(run())
+        self.assertEqual(line, 'hi')
+        self.assertFalse(still_there)
+
+
 class RunnerTests(unittest.TestCase):
     """A real runner served in-process, driven through RemoteMachine."""
 
@@ -722,25 +743,6 @@ class RunnerTests(unittest.TestCase):
 
         message = self.run_with_runner(scenario, client_key='wrong-key')
         self.assertIn('runner key', message)
-
-    def test_local_machine_substitutes_temp_files(self):
-        async def run():
-            with tempfile.TemporaryDirectory() as directory:
-                machine = LocalMachine(Path(directory))
-                process = await machine.start_process(
-                    [sys.executable, '-c', 'import sys; print(open(sys.argv[1]).read())', temp_file_arg('notes')],
-                    await machine.chat_dir(),
-                    temp_files={'notes': 'hi'},
-                )
-                line = await asyncio.wait_for(process.read_line(), 20)
-                await process.wait(20)
-                temp_path = process.args[-1]
-                process.kill()
-                return line, os.path.exists(temp_path)
-
-        line, still_there = asyncio.run(run())
-        self.assertEqual(line, 'hi')
-        self.assertFalse(still_there)
 
 
 class StreamingTests(unittest.TestCase):
