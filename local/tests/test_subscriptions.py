@@ -214,6 +214,39 @@ class ClaudeStreamTests(unittest.TestCase):
         self.assertEqual(models[0].efforts, ['low', 'high'])
         self.assertEqual(models[1].value, 'claude-fable-5-1[1m]')
 
+    def test_rate_limit_events_become_usage_windows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            provider = claude_code.ClaudeCodeProvider(Path(directory))
+            self.assertIsNone(provider.usage_summary())
+            provider._record_rate_limit(
+                {'status': 'allowed', 'rateLimitType': 'five_hour', 'utilization': 0.42, 'resetsAt': 1_800_000_000_000}
+            )
+            provider._record_rate_limit({'status': 'rejected', 'rateLimitType': 'seven_day'})
+            summary = provider.usage_summary()
+        self.assertEqual(summary['windows'], [{'label': '5-hour', 'used_percent': 42, 'resets_at': 1_800_000_000}])
+        self.assertTrue(summary['limit_reached'])
+
+    def test_login_code_uses_only_the_first_line(self):
+        class FakeProcess:
+            def __init__(self):
+                self.written = ''
+
+            async def write(self, text):
+                self.written += text
+
+        async def run():
+            with tempfile.TemporaryDirectory() as directory:
+                provider = claude_code.ClaudeCodeProvider(Path(directory))
+                process = FakeProcess()
+                login = claude_code.ClaudeLogin(process)
+                login.watcher = asyncio.get_running_loop().create_future()
+                login.watcher.set_result(None)
+                provider._login = login
+                await provider.submit_login_code('  abc#state  \nextra\n')
+                return process.written
+
+        self.assertEqual(asyncio.run(run()), 'abc#state\n')
+
     def test_finds_newest_desktop_bundle(self):
         with tempfile.TemporaryDirectory() as directory:
             appdata = Path(directory) / 'Roaming'

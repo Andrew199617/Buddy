@@ -6,18 +6,41 @@ its own config folder. Anthropic counts ``claude -p`` usage against the Claude
 subscription's limits.
 """
 
+import asyncio
+import json
+import logging
+import re
+from pathlib import Path
+
 from open_webui.utils.subscriptions.common import (
     ProviderModel,
+    ProviderSettings,
     model_key,
 )
 from open_webui.utils.subscriptions.events import (
     ReasoningDelta,
     StatusUpdate,
+    SubscriptionError,
     TextDelta,
     TokenUsage,
 )
+from open_webui.utils.subscriptions.discovery import TOOL_CLAUDE
+from open_webui.utils.subscriptions.process import ProcessClosedError
 
+log = logging.getLogger(__name__)
+
+PROVIDER_ID = 'claude'
+NOT_INSTALLED_MESSAGE = (
+    'Claude Code was not found. Install it from https://claude.com/claude-code '
+    'or set its path in the Claude subscription settings.'
+)
 NOT_SIGNED_IN_MESSAGE = 'Claude is not signed in. Sign in under Admin Settings → Connections → Subscriptions.'
+LOGIN_URL = re.compile(r'https://\S+/oauth/authorize\?\S+')
+FALLBACK_MODELS = [
+    ProviderModel(key='opus', value='opus', name='Claude Opus'),
+    ProviderModel(key='sonnet', value='sonnet', name='Claude Sonnet'),
+    ProviderModel(key='haiku', value='haiku', name='Claude Haiku'),
+]
 
 
 def _shorten(text, limit: int = 160) -> str:
@@ -61,6 +84,30 @@ def _usage_from_result(usage: dict) -> TokenUsage:
         output_tokens=int(usage.get('output_tokens') or 0),
         cached_input_tokens=cache_read,
     )
+
+
+RATE_LIMIT_LABELS = {
+    'five_hour': '5-hour',
+    'seven_day': 'Weekly',
+    'seven_day_opus': 'Weekly Opus',
+    'seven_day_sonnet': 'Weekly Sonnet',
+}
+
+
+def rate_limit_window(info: dict) -> dict | None:
+    """One usage window from a Claude Code rate_limit_event, when it has numbers."""
+    utilization = info.get('utilization')
+    if not isinstance(utilization, (int, float)):
+        return None
+    used_percent = utilization * 100 if utilization <= 1 else utilization
+    resets_at = info.get('resetsAt')
+    if isinstance(resets_at, (int, float)) and resets_at > 10_000_000_000:
+        resets_at = resets_at / 1000
+    return {
+        'label': RATE_LIMIT_LABELS.get(info.get('rateLimitType'), 'Usage'),
+        'used_percent': round(used_percent),
+        'resets_at': resets_at,
+    }
 
 
 def _readable_error(text: str) -> str:
@@ -189,6 +236,245 @@ class ClaudeStreamParser:
         return [token_usage]
 
 
+class ClaudeLogin:
+    """A running ``claude auth login`` process and what the user should see."""
+
+    def __init__(self, process):
+        self.process = process
+        self.state = 'waiting'
+        self.url: str | None = None
+        self.message: str | None = None
+        self.output = ''
+        self.watcher: asyncio.Task | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            'state': self.state,
+            'method': 'code',
+            'url': self.url,
+            'user_code': None,
+            'needs_code': self.state == 'waiting',
+            'message': self.message,
+        }
+
+
+class ClaudeCodeProvider:
+    id = PROVIDER_ID
+    name = 'Claude'
+
+    def __init__(self, state_dir: Path):
+        self._login: ClaudeLogin | None = None
+        self._usage_windows: dict[str, dict] = {}
+        self._limit_reached = False
+
+    def _record_rate_limit(self, info: dict) -> None:
+        self._limit_reached = info.get('status') == 'rejected'
+        window = rate_limit_window(info)
+        if window:
+            self._usage_windows[window['label']] = window
+
+    def usage_summary(self) -> dict | None:
+        """Plan usage seen in recent replies; Claude Code reports it only while chatting."""
+        if not self._usage_windows and not self._limit_reached:
+            return None
+        return {
+            'plan': None,
+            'windows': list(self._usage_windows.values()),
+            'limit_reached': self._limit_reached,
+        }
+
+    async def _require_cli(self, settings: ProviderSettings, machine) -> str:
+        cli = await machine.find_tool(TOOL_CLAUDE, settings.cli_path)
+        if not cli:
+            raise SubscriptionError(f'{machine.name}: {NOT_INSTALLED_MESSAGE}')
+        return cli
+
+    async def status(self, settings: ProviderSettings, machine) -> dict:
+        """Sign-in, status, and model checks run in the machine's empty chat folder."""
+        cli = await machine.find_tool(TOOL_CLAUDE, settings.cli_path)
+        if not cli:
+            return {'installed': False, 'signed_in': False, 'message': NOT_INSTALLED_MESSAGE}
+        chat_dir = await machine.chat_dir()
+
+        version = ''
+        try:
+            _, version_output, _ = await machine.run([cli, '--version'], chat_dir, 30)
+            version = version_output.strip().split(' ')[0]
+        except (OSError, TimeoutError, SubscriptionError) as error:
+            log.warning('Could not read the Claude Code version: %s', error)
+
+        try:
+            _, output, _ = await machine.run([cli, 'auth', 'status', '--json'], chat_dir, 30)
+            info = json.loads(output or '{}')
+        except (OSError, TimeoutError, ValueError) as error:
+            return {
+                'installed': True,
+                'cli_path': cli,
+                'version': version,
+                'signed_in': False,
+                'message': f'Could not check the Claude sign-in: {error}',
+            }
+
+        auth_method = str(info.get('authMethod') or '')
+        status = {
+            'installed': True,
+            'cli_path': cli,
+            'version': version,
+            'signed_in': bool(info.get('loggedIn')),
+            'account': {
+                'email': info.get('email') or info.get('emailAddress'),
+                'organization': info.get('orgName') or info.get('organizationName'),
+                'plan': info.get('subscriptionType') or info.get('plan'),
+                'auth_method': auth_method,
+            },
+            'usage': self.usage_summary(),
+        }
+        if status['signed_in'] and ('console' in auth_method.lower() or 'api' in auth_method.lower()):
+            status['api_billing'] = True
+            status['message'] = (
+                'Claude Code is signed in with an Anthropic Console account, which bills API usage '
+                'instead of a Claude plan. Sign out and sign in with your Claude account.'
+            )
+        return status
+
+    async def list_models(self, settings: ProviderSettings, machine) -> list[ProviderModel]:
+        cli = await self._require_cli(settings, machine)
+        args = [
+            cli,
+            '-p',
+            '--input-format',
+            'stream-json',
+            '--output-format',
+            'stream-json',
+            '--verbose',
+            '--no-session-persistence',
+            '--strict-mcp-config',
+            '--setting-sources',
+            '',
+            '--tools',
+            '',
+        ]
+        process = await machine.start_process(args, await machine.chat_dir())
+        initialize = {
+            'type': 'control_request',
+            'request_id': 'buddy-models',
+            'request': {'subtype': 'initialize', 'hooks': None},
+        }
+        entries = []
+        try:
+            await process.write(json.dumps(initialize) + '\n')
+            async with asyncio.timeout(30):
+                while True:
+                    line = await process.read_line()
+                    if line is None:
+                        break
+                    message = _parse_json_line(line)
+                    if message.get('type') == 'control_response':
+                        response = (message.get('response') or {}).get('response') or {}
+                        entries = response.get('models') or []
+                        break
+        except (ProcessClosedError, TimeoutError) as error:
+            log.warning('Could not list Claude models: %s', error)
+        finally:
+            process.close_stdin()
+            process.kill()
+
+        models = models_from_initialize(entries)
+        if models:
+            return models
+        return list(FALLBACK_MODELS)
+
+    async def start_login(self, settings: ProviderSettings, machine, method: str) -> dict:
+        await self.cancel_login()
+        cli = await self._require_cli(settings, machine)
+        # BROWSER=none keeps the CLI from opening a tab on that computer; Buddy
+        # shows the sign-in link instead, which also works from a phone.
+        process = await machine.start_process(
+            [cli, 'auth', 'login', '--claudeai'],
+            await machine.chat_dir(),
+            extra_env={'BROWSER': 'none'},
+        )
+        login = ClaudeLogin(process)
+        self._login = login
+
+        try:
+            async with asyncio.timeout(30):
+                while not login.url:
+                    text = await process.read_text()
+                    if text is None:
+                        break
+                    login.output += text
+                    urls = LOGIN_URL.findall(login.output)
+                    if urls:
+                        login.url = urls[-1]
+        except TimeoutError:
+            pass
+
+        if not login.url:
+            process.kill()
+            login.state = 'error'
+            output = _shorten(login.output or process.stderr_text(), 400)
+            login.message = output or 'Claude Code did not provide a sign-in link.'
+            return login.to_dict()
+
+        login.watcher = asyncio.create_task(self._watch_login(login))
+        return login.to_dict()
+
+    async def _watch_login(self, login: ClaudeLogin) -> None:
+        while True:
+            text = await login.process.read_text()
+            if text is None:
+                break
+            login.output = (login.output + text)[-4000:]
+        returncode = await login.process.wait()
+        if login.state != 'waiting':
+            return
+        if returncode == 0:
+            login.state = 'success'
+            login.message = 'Signed in to Claude.'
+        else:
+            login.state = 'error'
+            tail = login.output.split('Paste code here if prompted >')[-1]
+            login.message = _shorten(tail or login.process.stderr_text(), 400) or 'Sign-in did not finish.'
+
+    async def submit_login_code(self, code: str) -> dict:
+        login = self._login
+        if not login or login.state != 'waiting':
+            raise SubscriptionError('There is no Claude sign-in waiting for a code. Start the sign-in again.')
+        lines = code.strip().splitlines()
+        code = lines[0].strip() if lines else ''
+        if not code:
+            raise SubscriptionError('Paste the code shown after you approve the sign-in.')
+        await login.process.write(code + '\n')
+        try:
+            await asyncio.wait_for(asyncio.shield(login.watcher), 60)
+        except TimeoutError:
+            login.message = 'Still waiting for Claude Code to finish signing in.'
+        return login.to_dict()
+
+    def login_state(self) -> dict:
+        if not self._login:
+            return {'state': 'idle'}
+        return self._login.to_dict()
+
+    async def cancel_login(self) -> None:
+        login = self._login
+        self._login = None
+        if not login:
+            return
+        login.state = 'cancelled'
+        login.process.kill()
+        if login.watcher:
+            login.watcher.cancel()
+
+    async def logout(self, settings: ProviderSettings, machine) -> None:
+        cli = await self._require_cli(settings, machine)
+        await self.cancel_login()
+        returncode, _, error_output = await machine.run([cli, 'auth', 'logout'], await machine.chat_dir(), 60)
+        if returncode != 0:
+            raise SubscriptionError(_shorten(error_output, 400) or 'Claude Code could not sign out.')
+
+
 def models_from_initialize(entries: list) -> list[ProviderModel]:
     """Build the model list from Claude Code's initialize response."""
     models = []
@@ -221,3 +507,16 @@ def models_from_initialize(entries: list) -> list[ProviderModel]:
             )
         )
     return models
+
+
+def _parse_json_line(line: str) -> dict:
+    line = line.strip()
+    if not line.startswith('{'):
+        return {}
+    try:
+        message = json.loads(line)
+    except ValueError:
+        return {}
+    if isinstance(message, dict):
+        return message
+    return {}
