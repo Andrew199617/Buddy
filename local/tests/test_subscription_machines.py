@@ -390,7 +390,24 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cached['runner-b'].closed, 0)
 
     async def test_editing_backend_address_resets_only_its_affected_provider(self):
-        await self.assert_identity_edit_resets(url='https://replacement.example.invalid:8083')
+        await self.assert_identity_edit_resets(
+            url='https://replacement.example.invalid:8083', key='fixture-key-runner-a'
+        )
+
+    async def test_new_backend_address_requires_a_key_instead_of_sending_the_saved_one(self):
+        before = copy.deepcopy(self.config.values)
+        verify = AsyncMock()
+        with patch.object(self.service, 'verify_machine', verify):
+            for key in (None, '', '   '):
+                with self.subTest(key=key), self.assertRaises(self.service.SubscriptionError) as caught:
+                    await self.service.save_machine(
+                        'runner-a', 'Test runner-a', 'https://replacement.example.invalid:8083', key
+                    )
+                self.assertIn('new address', str(caught.exception))
+        verify.assert_not_awaited()
+        self.assertEqual(self.config.values, before)
+        self.assertEqual(self.config.commits, [])
+        self.assertTrue(all(not provider.calls for provider in self.providers.values()))
 
     async def test_editing_backend_key_resets_its_codex_session_and_access(self):
         await self.assert_identity_edit_resets(key='replacement-fixture-key', provider_id='codex')
@@ -538,8 +555,9 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         original['url'] = 'http://runner-a.example.invalid:8083'
         old_revision = original['revision']
         with patch.object(self.service, 'verify_machine', AsyncMock(return_value={'host': original['host']})):
+            # The HTTPS origin is a new address, so the key must be entered again.
             public = await self.service.save_machine(
-                'runner-a', original['name'], 'https://runner-a.example.invalid:8083', None
+                'runner-a', original['name'], 'https://runner-a.example.invalid:8083', original['key']
             )
         self.assertNotEqual(public['revision'], old_revision)
         self.assert_reset('claude', 'runner-a')

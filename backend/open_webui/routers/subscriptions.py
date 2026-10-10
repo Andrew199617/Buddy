@@ -57,7 +57,7 @@ class MachineForm(BaseModel):
     id: Optional[str] = None
     name: str
     url: str
-    # Leave empty when editing to keep the saved key.
+    # Leave empty when editing to keep the saved key. A changed address needs the key.
     key: Optional[str] = None
     # Omit to keep the saved address; send null to clear it.
     browser_url: Optional[str] = None

@@ -543,7 +543,12 @@ async def _save_machine(
             pass
     previous_key = (existing or {}).get('key')
     previous_instance = ((existing or {}).get('host') or {}).get('id')
-    key = (key or '').strip() or (existing or {}).get('key', '')
+    key = (key or '').strip()
+    if not key and existing:
+        if previous_endpoint != url:
+            # A saved key is only ever sent to the address it was saved for.
+            raise SubscriptionError('Enter the runner key for the new address. The saved key stays with the old one.')
+        key = previous_key or ''
     if not key:
         raise SubscriptionError('Enter the runner key from ~/.buddy-runner/key on that computer.')
 
