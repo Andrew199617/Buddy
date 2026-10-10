@@ -31,6 +31,7 @@ import ssl
 import stat
 import sys
 import tempfile
+from collections import OrderedDict
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -51,6 +52,7 @@ DEFAULT_STATE_DIR = Path.home() / '.buddy-runner'
 MAX_PENDING_STDIN_BYTES = 32 * 1024 * 1024
 MAX_PENDING_STDIN_ITEMS = 128
 MAX_WEBSOCKET_MESSAGE_BYTES = 32 * 1024 * 1024
+MAX_STOPPED_PROCESS_RECORDS = 4096
 
 
 def _json_error(status: int, message: str) -> web.Response:
@@ -108,6 +110,11 @@ class Runner:
         self.websockets = set()
         # The connection that started each process, for shutdown acknowledgements.
         self.process_sockets = {}
+        # After a lost connection, Buddy asks about a process by the ID sent in
+        # its startup reply. Only verified cleanup moves an ID to the stopped
+        # records, which keep the most recent IDs.
+        self.running_process_ids = {}
+        self.stopped_process_ids = OrderedDict()
         self.command_requests = set()
         self.closing = False
         self._shutdown_task = None
@@ -187,6 +194,7 @@ class Runner:
         await websocket.prepare(request)
         self.websockets.add(websocket)
         process = None
+        process_id = None
         forwarder = None
         stdin_queue = asyncio.Queue()
         pending_stdin_bytes = 0
@@ -275,9 +283,11 @@ class Runner:
                 return websocket
             self.processes.add(process)
             self.process_sockets[process] = websocket
+            process_id = secrets.token_urlsafe(16)
+            self.running_process_ids[process_id] = process
             log.info('Started %s (pid %s)', os.path.basename(args[0]), process.pid)
             # Startup acknowledgement is covered by the same cleanup finally.
-            await websocket.send_json({'type': 'started', 'pid': process.pid})
+            await websocket.send_json({'type': 'started', 'pid': process.pid, 'id': process_id})
             forwarder = asyncio.create_task(forward_output())
             self.stdin_workers[process] = asyncio.create_task(write_stdin())
             async for message in websocket:
@@ -312,7 +322,7 @@ class Runner:
                 except (ConnectionResetError, RuntimeError):
                     pass
         finally:
-            cleanup = asyncio.create_task(self._dispose_connection(process, forwarder, websocket))
+            cleanup = asyncio.create_task(self._dispose_connection(process, process_id, forwarder, websocket))
             await _finish_owned_cleanup(cleanup)
         return websocket
 
@@ -334,13 +344,11 @@ class Runner:
             # exit acknowledgement that could falsely authorize fresh work.
             await websocket.close()
 
-    async def _dispose_connection(self, process, forwarder, websocket) -> None:
+    async def _dispose_connection(self, process, process_id, forwarder, websocket) -> None:
         try:
             if process is not None:
                 await process.close()
-                await self._stop_stdin_worker(process)
-                self.processes.discard(process)
-                self.process_sockets.pop(process, None)
+                await self._forget_stopped_process(process, process_id)
                 log.info('Stopped process %s', process.pid)
         finally:
             if forwarder is not None and not forwarder.done():
@@ -356,6 +364,33 @@ class Runner:
             if not worker.done():
                 worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
+
+    async def _forget_stopped_process(self, process, process_id: str | None) -> None:
+        """Release a process; call only after its native cleanup was verified."""
+        if process_id is not None:
+            self.running_process_ids.pop(process_id, None)
+            self.stopped_process_ids[process_id] = True
+            if len(self.stopped_process_ids) > MAX_STOPPED_PROCESS_RECORDS:
+                self.stopped_process_ids.popitem(last=False)
+        await self._stop_stdin_worker(process)
+        self.processes.discard(process)
+        self.process_sockets.pop(process, None)
+
+    async def stop_process(self, request: web.Request) -> web.Response:
+        """Stop a process whose connection Buddy lost, and confirm its cleanup."""
+        process_id = request.match_info['process_id']
+        if process_id in self.stopped_process_ids:
+            return web.json_response({'stopped': True})
+        process = self.running_process_ids.get(process_id)
+        if process is None:
+            # A restarted Runner cannot vouch for an earlier run's processes.
+            return _json_error(404, 'This Runner has no record of that process. It may have restarted.')
+        try:
+            await process.close()
+        except (OSError, RuntimeError, TimeoutError) as error:
+            return _json_error(500, f'Could not confirm that process {process.pid} stopped: {error}')
+        await self._forget_stopped_process(process, process_id)
+        return web.json_response({'stopped': True})
 
     async def _acknowledge_stopped(self, process) -> None:
         """Confirm verified cleanup to Buddy before its connection closes."""
@@ -430,6 +465,7 @@ def build_app(
     app.router.add_post('/paths/check', runner.check_path)
     app.router.add_post('/run', runner.run)
     app.router.add_get('/process', runner.process)
+    app.router.add_post('/processes/{process_id}/stop', runner.stop_process)
     app.router.add_get('/workspace-grants', runner.operator_grants)
     app.router.add_delete('/workspace-grants/{grant_id}', runner.revoke_grant)
     app.router.add_post('/workspace-pairing', runner.refresh_pairing)

@@ -287,6 +287,42 @@ class RunnerBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(self.app['runner'].processes, set())
                 await socket.close()
 
+    async def start_sleeping_process(self, provider):
+        socket = await self.client.ws_connect(self.server.make_url('/process'), headers=provider)
+        await socket.send_json({'type': 'start', 'args': [sys.executable, '-c', 'import time; time.sleep(30)']})
+        started = await socket.receive_json(timeout=10)
+        self.assertEqual(started['type'], 'started')
+        return socket, started['id']
+
+    async def test_process_id_confirms_cleanup_after_buddy_loses_the_connection(self):
+        provider = {'Authorization': f'Bearer {self.key}'}
+        host = self.app['runner']
+        socket, process_id = await self.start_sleeping_process(provider)
+        native = next(iter(host.processes))
+        status, _ = await self.request('POST', f'/processes/{process_id}/stop')
+        self.assertEqual(status, 401)
+        self.assertIsNone(native.returncode)
+        # Buddy lost the connection before the Runner noticed: the Runner stops it now.
+        status, body = await self.request('POST', f'/processes/{process_id}/stop', provider)
+        self.assertEqual((status, body), (200, {'stopped': True}))
+        self.assertTrue(native._tree_stopped)
+        self.assertNotIn(native, host.processes)
+        await socket.close()
+
+        # The Runner already stopped this one when its connection closed.
+        socket, process_id = await self.start_sleeping_process(provider)
+        await socket.close()
+        async with asyncio.timeout(10):
+            while host.processes:
+                await asyncio.sleep(0.02)
+        for _ in range(2):
+            status, body = await self.request('POST', f'/processes/{process_id}/stop', provider)
+            self.assertEqual((status, body), (200, {'stopped': True}))
+
+        status, body = await self.request('POST', '/processes/unknown-process/stop', provider)
+        self.assertEqual(status, 404)
+        self.assertIn('no record', body['error'])
+
     async def test_kill_acknowledges_only_after_native_cleanup(self):
         socket = await self.client.ws_connect(
             self.server.make_url('/process'), headers={'Authorization': f'Bearer {self.key}'}

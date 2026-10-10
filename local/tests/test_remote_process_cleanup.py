@@ -620,6 +620,33 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(tracked.startup_cleanup_error)
         self.assertFalse(tracked.processes)
 
+    async def test_lost_connection_cleanup_is_confirmed_by_the_runner_before_the_next_start(self):
+        remote, host = await self.real_remote()
+        service = load_service(MemoryConfig(), self.root / 'unused-offline-state')
+        service.StartupCleanupUnconfirmedError = machines.StartupCleanupUnconfirmedError
+        tracked = service.TrackingMachine(remote)
+        fixture = 'import time; print("ready",flush=True); time.sleep(30)'
+        process = await tracked.start_process([sys.executable, '-c', fixture], str(self.root))
+        self.assertEqual(await asyncio.wait_for(process.read_line(), 10), 'ready')
+        native = next(iter(host.processes))
+        self.assertTrue(process.process_id)
+        # The connection drops: Buddy never sends kill and never sees an acknowledgement.
+        await process._websocket.close()
+        await asyncio.wait_for(process._receiver, 5)
+        self.assertFalse(process.cleanup_confirmed)
+        self.assertEqual(process.returncode, -1)
+
+        # Disposing the old process asks the Runner, so the next start needs no restart.
+        second = await tracked.start_process([sys.executable, '-c', 'print("next",flush=True)'], str(self.root))
+        self.assertTrue(process.cleanup_confirmed)
+        self.assertNotIn(process, tracked.processes)
+        self.assertIsNone(tracked.cleanup_error)
+        self.assertFalse(is_running(native.pid))
+        self.assertEqual(await asyncio.wait_for(second.read_line(), 10), 'next')
+        await second.wait(10)
+        await tracked.revoke()
+        await self.assert_registry_empty(host)
+
     async def test_runner_output_limit_reports_failed_exit_after_verified_cleanup_and_next_command_works(self):
         remote, host = await self.real_remote()
         service = load_service(MemoryConfig(), self.root / 'unused-offline-state')

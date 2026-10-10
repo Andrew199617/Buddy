@@ -187,7 +187,11 @@ class TrackingMachine:
         if self.startup_cleanup_error is not None:
             raise SubscriptionError(self._startup_cleanup_message())
         if self.cleanup_error is not None or (not self.valid and (self.processes or self.startups)):
-            raise SubscriptionError('An old provider operation could not confirm that it stopped. Retry cleanup before using this provider.')
+            raise SubscriptionError(
+                'An old provider operation could not confirm that it stopped. Once its machine is reachable, '
+                'turn the provider off and on in subscription settings to retry cleanup. If its Runner '
+                'restarted, check that the old CLI stopped, then restart the Buddy backend.'
+            )
 
     def _startup_cleanup_message(self):
         return f'{STARTUP_CLEANUP_MESSAGE} Earlier machine: {self.name} ({self.id}).'
@@ -341,11 +345,9 @@ async def _quiesce_provider_safely(provider_id: str) -> None:
         await _quiesce_provider_work(provider_id)
     except Exception:
         # Failed cleanup must never leave a provider enabled for new work.
+        # Access, folder and CLI path stay, so turning it on retries cleanup.
         settings = await get_settings(provider_id)
         settings.enable = False
-        settings.access = ACCESS_CHAT
-        settings.workspace = ''
-        settings.cli_path = ''
         await Config.upsert({_config_key(provider_id): asdict(settings)})
         raise
 

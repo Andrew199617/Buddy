@@ -29,6 +29,7 @@ class RemoteLivenessTests(unittest.IsolatedAsyncioTestCase):
         self.gates = []
         self.readers = []
         self.starts = []
+        self.stop_requests = []
 
     async def asyncTearDown(self):
         for gate in self.gates:
@@ -58,7 +59,8 @@ class RemoteLivenessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message['type'], 'stdin')
         self.assertEqual(json.loads(message['data'])['method'], 'initialized')
 
-    async def remote(self, exchange, initialize=False):
+    async def remote(self, exchange, initialize=False, confirms_stop=None):
+        """A fixture Runner. With confirms_stop, it also answers cleanup checks by process ID."""
         async def process(request):
             self.assertEqual(request.headers.get('Authorization'), f'Bearer {self.key}')
             socket = web.WebSocketResponse()
@@ -68,14 +70,26 @@ class RemoteLivenessTests(unittest.IsolatedAsyncioTestCase):
             self.starts.append(start)
             index = len(self.starts) - 1
             pid = 12345 + index
-            await socket.send_json({'type': 'started', 'pid': pid})
+            started = {'type': 'started', 'pid': pid}
+            if confirms_stop is not None:
+                started['id'] = f'fixture-process-{index}'
+            await socket.send_json(started)
             if initialize:
                 await self.initialize_codex(socket)
             await exchange(socket, pid, index)
             return socket
 
+        async def stop(request):
+            self.assertEqual(request.headers.get('Authorization'), f'Bearer {self.key}')
+            self.stop_requests.append(request.match_info['process_id'])
+            if confirms_stop():
+                return web.json_response({'stopped': True})
+            return web.json_response({'error': 'This Runner has no record of that process.'}, status=404)
+
         app = web.Application()
         app.router.add_get('/process', process)
+        if confirms_stop is not None:
+            app.router.add_post('/processes/{process_id}/stop', stop)
         server = TestServer(app)
         await server.start_server()
         self.servers.append(server)
@@ -159,16 +173,59 @@ class RemoteLivenessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(process.returncode, -1)
         self.assertEqual(await process.wait(1), -1)
 
-    async def test_codex_eof_is_not_running_and_retained_debt_blocks_restart(self):
+    async def test_codex_eof_restarts_once_the_runner_confirms_cleanup(self):
+        ready = [self.gate(), self.gate()]
+        disconnect = self.gate()
+
+        async def exchange(socket, pid, index):
+            ready[index].set()
+            if index == 0:
+                await disconnect.wait()
+                await socket.close()
+                return
+            async for message in socket:
+                if json.loads(message.data)['type'] == 'kill':
+                    await socket.send_json({'type': 'stopped', 'pid': pid})
+
+        # The Runner stopped the CLI when the connection dropped and says so.
+        remote = await self.remote(exchange, initialize=True, confirms_stop=lambda: True)
+        _, tracked = self.tracked(remote)
+        server = codex.CodexAppServer(tracked, 'synthetic-codex', str(self.root), lambda _: None)
+        await asyncio.wait_for(server.ensure_started(), 2)
+        await asyncio.wait_for(ready[0].wait(), 2)
+        first = server._process
+        self.readers.append(server._reader)
+        disconnect.set()
+        await self.join_receiver(first)
+        await asyncio.wait_for(server._reader, 2)
+        self.assertFalse(server.running)
+        self.assertFalse(first.cleanup_confirmed)
+
+        await asyncio.wait_for(server.ensure_started(), 2)
+        await asyncio.wait_for(ready[1].wait(), 2)
+        self.readers.append(server._reader)
+        self.assertEqual(self.stop_requests, ['fixture-process-0'])
+        self.assertTrue(first.cleanup_confirmed)
+        self.assertNotIn(first, tracked.processes)
+        self.assertIsNone(tracked.cleanup_error)
+        self.assertEqual(len(self.starts), 2)
+        self.assertEqual(server.generation, 2)
+        self.assertTrue(server.running)
+        await tracked.revoke()
+        self.assertFalse(tracked.processes)
+
+    async def test_codex_eof_debt_blocks_restart_until_the_runner_confirms_cleanup(self):
         ready = self.gate()
         disconnect = self.gate()
+        self.runner_confirms_stop = False
 
         async def exchange(socket, pid, index):
             ready.set()
             await disconnect.wait()
             await socket.close()
 
-        remote = await self.remote(exchange, initialize=True)
+        # The Runner cannot confirm cleanup yet, for example while it is out of reach.
+        remote = await self.remote(exchange, initialize=True, confirms_stop=lambda: self.runner_confirms_stop)
         service, tracked = self.tracked(remote)
         server = codex.CodexAppServer(tracked, 'synthetic-codex', str(self.root), lambda _: None)
         await asyncio.wait_for(server.ensure_started(), 2)
@@ -196,6 +253,14 @@ class RemoteLivenessTests(unittest.IsolatedAsyncioTestCase):
             await tracked.start_process(['another-synthetic-command'], str(self.root))
         self.assertEqual(len(self.starts), 1)
         self.assertIn(process, tracked.processes)
+
+        # Retrying cleanup succeeds once the Runner confirms that the CLI stopped.
+        self.runner_confirms_stop = True
+        await tracked.revoke()
+        self.assertTrue(process.cleanup_confirmed)
+        self.assertFalse(tracked.processes)
+        self.assertIsNone(tracked.cleanup_error)
+        self.assertEqual(self.stop_requests, ['fixture-process-0', 'fixture-process-0'])
 
     async def test_confirmed_codex_exit_allows_a_fresh_tracked_start(self):
         ready = [self.gate(), self.gate()]

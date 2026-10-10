@@ -944,9 +944,10 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(result[0], BaseException)
         self.assertEqual(len(observed), 1)
         self.assertFalse(observed[0]['enable'])
-        self.assertEqual(observed[0]['access'], 'chat')
-        self.assertEqual(observed[0]['workspace'], '')
-        self.assertEqual(observed[0]['cli_path'], '')
+        # Only the switch turns off; turning it back on retries cleanup.
+        self.assertEqual(observed[0]['access'], 'read')
+        self.assertEqual(observed[0]['workspace'], 'C:\\fixture-project')
+        self.assertEqual(observed[0]['cli_path'], 'C:\\fixture-tools\\provider.exe')
         self.assertEqual(observed[0]['machine_id'], 'runner-a')
         self.assertEqual(len(self.config.commits), 2)
 
