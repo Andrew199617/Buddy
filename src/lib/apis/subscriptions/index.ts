@@ -15,8 +15,23 @@ export type SubscriptionSettings = {
 export type SubscriptionMachine = {
 	id: string;
 	name: string;
+	// Changes when this registry entry points at a different execution target.
+	revision?: string;
 	// Null for "This server".
 	url: string | null;
+	// Explicit browser address; the backend URL may not be reachable from a browser.
+	browser_url?: string | null;
+	host?: { id: string; name: string; platform: string; version: string };
+	capabilities?: SubscriptionMachineCapabilities;
+};
+
+export type SubscriptionMachineCapabilities = {
+	directories: boolean;
+	files: boolean;
+	workspaces: boolean;
+	terminals: boolean;
+	pty: boolean;
+	providerExecution?: boolean;
 };
 
 export type SubscriptionMachineInfo = {
@@ -26,6 +41,8 @@ export type SubscriptionMachineInfo = {
 	hostname: string;
 	chat_dir: string;
 	default_workspace: string;
+	host?: SubscriptionMachine['host'];
+	capabilities?: SubscriptionMachineCapabilities;
 };
 
 export type SubscriptionUsageWindow = {
@@ -72,7 +89,7 @@ export type SubscriptionProvider = {
 	status: SubscriptionStatus;
 	login: SubscriptionLogin;
 	models: { id: string; name: string }[];
-	machine: { id: string; name: string };
+	machine: { id: string; name: string; revision?: string };
 	default_workspace: string;
 };
 
@@ -98,6 +115,14 @@ const subscriptionRequest = async (
 	return data;
 };
 
+const withExpectedMachine = (path: string, machineId?: string, machineRevision?: string) => {
+	const guards = new URLSearchParams();
+	if (machineId !== undefined) guards.set('expected_machine_id', machineId);
+	if (machineRevision !== undefined) guards.set('expected_machine_revision', machineRevision);
+	if (!guards.size) return path;
+	return `${path}${path.includes('?') ? '&' : '?'}${guards}`;
+};
+
 export const getSubscriptions = async (
 	token: string
 ): Promise<{ providers: SubscriptionProvider[]; machines: SubscriptionMachine[] }> => {
@@ -106,17 +131,28 @@ export const getSubscriptions = async (
 
 export const saveSubscriptionMachine = async (
 	token: string,
-	machine: { id?: string; name: string; url: string; key?: string }
+	machine: { id?: string; name: string; url: string; key?: string; browser_url?: string | null }
 ): Promise<{ machine: SubscriptionMachine; machines: SubscriptionMachine[] }> => {
 	return subscriptionRequest(token, '/machines', 'POST', machine);
+};
+
+export const getSubscriptionMachines = async (
+	token: string
+): Promise<{ machines: SubscriptionMachine[] }> => {
+	return subscriptionRequest(token, '/machines');
 };
 
 export const verifySubscriptionMachine = async (
 	token: string,
 	url: string,
-	key: string
+	key: string,
+	browserUrl?: string
 ): Promise<SubscriptionMachineInfo> => {
-	return subscriptionRequest(token, '/machines/verify', 'POST', { url, key });
+	return subscriptionRequest(token, '/machines/verify', 'POST', {
+		url,
+		key,
+		browser_url: browserUrl
+	});
 };
 
 export const deleteSubscriptionMachine = async (
@@ -129,52 +165,96 @@ export const deleteSubscriptionMachine = async (
 export const getSubscription = async (
 	token: string,
 	providerId: SubscriptionProviderId,
-	refresh = false
+	refresh = false,
+	expectedMachineId?: string,
+	expectedMachineRevision?: string
 ): Promise<SubscriptionProvider> => {
-	return subscriptionRequest(token, `/${providerId}?refresh=${refresh ? 'true' : 'false'}`);
+	return subscriptionRequest(
+		token,
+		withExpectedMachine(
+			`/${providerId}?refresh=${refresh ? 'true' : 'false'}`,
+			expectedMachineId,
+			expectedMachineRevision
+		)
+	);
 };
 
 export const updateSubscriptionConfig = async (
 	token: string,
 	providerId: SubscriptionProviderId,
-	settings: Partial<SubscriptionSettings>
+	settings: Partial<SubscriptionSettings>,
+	expectedMachineId?: string,
+	expectedMachineRevision?: string
 ): Promise<SubscriptionProvider> => {
-	return subscriptionRequest(token, `/${providerId}/config`, 'POST', settings);
+	return subscriptionRequest(token, `/${providerId}/config`, 'POST', {
+		...settings,
+		expected_machine_id: expectedMachineId,
+		expected_machine_revision: expectedMachineRevision
+	});
 };
 
 export const startSubscriptionLogin = async (
 	token: string,
 	providerId: SubscriptionProviderId,
-	method: 'browser' | 'device' = 'browser'
+	method: 'browser' | 'device' = 'browser',
+	expectedMachineId?: string,
+	expectedMachineRevision?: string
 ): Promise<SubscriptionLogin> => {
-	return subscriptionRequest(token, `/${providerId}/login`, 'POST', { method });
+	return subscriptionRequest(token, `/${providerId}/login`, 'POST', {
+		method,
+		expected_machine_id: expectedMachineId,
+		expected_machine_revision: expectedMachineRevision
+	});
 };
 
 export const getSubscriptionLogin = async (
 	token: string,
-	providerId: SubscriptionProviderId
+	providerId: SubscriptionProviderId,
+	expectedMachineId?: string,
+	expectedMachineRevision?: string
 ): Promise<SubscriptionLogin> => {
-	return subscriptionRequest(token, `/${providerId}/login`);
+	return subscriptionRequest(
+		token,
+		withExpectedMachine(`/${providerId}/login`, expectedMachineId, expectedMachineRevision)
+	);
 };
 
 export const submitSubscriptionLoginCode = async (
 	token: string,
 	providerId: SubscriptionProviderId,
-	code: string
+	code: string,
+	expectedMachineId?: string,
+	expectedMachineRevision?: string
 ): Promise<SubscriptionLogin> => {
-	return subscriptionRequest(token, `/${providerId}/login/code`, 'POST', { code });
+	return subscriptionRequest(token, `/${providerId}/login/code`, 'POST', {
+		code,
+		expected_machine_id: expectedMachineId,
+		expected_machine_revision: expectedMachineRevision
+	});
 };
 
 export const cancelSubscriptionLogin = async (
 	token: string,
-	providerId: SubscriptionProviderId
+	providerId: SubscriptionProviderId,
+	expectedMachineId?: string,
+	expectedMachineRevision?: string
 ): Promise<SubscriptionLogin> => {
-	return subscriptionRequest(token, `/${providerId}/login`, 'DELETE');
+	return subscriptionRequest(
+		token,
+		withExpectedMachine(`/${providerId}/login`, expectedMachineId, expectedMachineRevision),
+		'DELETE'
+	);
 };
 
 export const logoutSubscription = async (
 	token: string,
-	providerId: SubscriptionProviderId
+	providerId: SubscriptionProviderId,
+	expectedMachineId?: string,
+	expectedMachineRevision?: string
 ): Promise<SubscriptionProvider> => {
-	return subscriptionRequest(token, `/${providerId}/logout`, 'POST');
+	return subscriptionRequest(
+		token,
+		withExpectedMachine(`/${providerId}/logout`, expectedMachineId, expectedMachineRevision),
+		'POST'
+	);
 };

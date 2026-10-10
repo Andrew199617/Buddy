@@ -1,5 +1,14 @@
+<script context="module" lang="ts">
+	import { writable } from 'svelte/store';
+	import type { SubscriptionMachine as MachineRegistryEntry } from '$lib/apis/subscriptions';
+
+	// Dismissing a dialog does not undo an accepted registry write.
+	const pendingMutations = writable(0);
+	const machineChanges = writable<MachineRegistryEntry[] | null>(null);
+</script>
+
 <script lang="ts">
-	import { getContext } from 'svelte';
+	import { getContext, onDestroy, onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
 
 	import {
@@ -19,15 +28,20 @@
 	export let show = false;
 	// The machine being edited, or null to add one.
 	export let machine: SubscriptionMachine | null = null;
-	export let onChanged: (machines: SubscriptionMachine[]) => void = () => {};
+	export let onChanged: (machines: SubscriptionMachine[]) => void | Promise<void> = () => {};
 
 	const DEFAULT_URL = 'http://host.docker.internal:8765';
 
 	let name = '';
 	let url = '';
+	let browserUrl = '';
 	let key = '';
 	let info: SubscriptionMachineInfo | null = null;
-	let busy = false;
+	let actionPending = false;
+	let wasOpen = false;
+	let disposed = false;
+	let formGeneration = 0;
+	$: busy = actionPending || $pendingMutations > 0;
 
 	const inputClass =
 		'w-full rounded-xl bg-gray-50 px-3 py-2 text-sm outline-hidden dark:bg-gray-850 placeholder:text-gray-300 dark:placeholder:text-gray-700';
@@ -37,53 +51,104 @@
 	const loadForm = () => {
 		name = machine?.name ?? '';
 		url = machine?.url ?? DEFAULT_URL;
+		browserUrl = machine?.browser_url ?? '';
 		key = '';
 		info = null;
 	};
 
-	$: if (show) {
+	$: if (show && !wasOpen) {
+		wasOpen = true;
+		formGeneration += 1;
 		loadForm();
+	} else if (!show && wasOpen) {
+		wasOpen = false;
+		formGeneration += 1;
+		key = '';
+		info = null;
 	}
 
-	const runAction = async (action: () => Promise<void>) => {
-		busy = true;
+	onMount(() => {
+		let initial = true;
+		return machineChanges.subscribe((machines) => {
+			if (initial) {
+				initial = false;
+				return;
+			}
+			if (!disposed && machines) {
+				Promise.resolve(onChanged(machines)).catch(() => {
+					// Registry reload errors are presented by the current Connections page.
+				});
+			}
+		});
+	});
+
+	onDestroy(() => {
+		disposed = true;
+		formGeneration += 1;
+		key = '';
+	});
+
+	const runAction = async (
+		action: (isCurrent: () => boolean) => Promise<void>,
+		mutates = false
+	) => {
+		if (disposed || !show || busy) return;
+		const generation = formGeneration;
+		const machineId = machine?.id;
+		const isCurrent = () =>
+			!disposed && show && generation === formGeneration && machine?.id === machineId;
+		actionPending = true;
+		if (mutates) pendingMutations.update((count) => count + 1);
 		try {
-			await action();
+			await action(isCurrent);
 		} catch (error) {
-			toast.error(`${error}`);
+			if (isCurrent()) toast.error(`${error}`);
 		} finally {
-			busy = false;
+			actionPending = false;
+			if (mutates) pendingMutations.update((count) => count - 1);
 		}
 	};
 
 	const verify = () =>
-		runAction(async () => {
-			info = await verifySubscriptionMachine(localStorage.token, url.trim(), key.trim());
+		runAction(async (isCurrent) => {
+			const result = await verifySubscriptionMachine(
+				localStorage.token,
+				url.trim(),
+				key.trim(),
+				browserUrl.trim() || undefined
+			);
+			if (isCurrent()) info = result;
 		});
 
 	const save = () =>
-		runAction(async () => {
+		runAction(async (isCurrent) => {
 			const result = await saveSubscriptionMachine(localStorage.token, {
 				id: machine?.id,
 				name: name.trim(),
 				url: url.trim(),
+				browser_url: browserUrl.trim() || null,
 				key: key.trim() || undefined
 			});
-			toast.success($i18n.t('Saved {{name}}', { name: result.machine.name }));
-			onChanged(result.machines);
-			show = false;
-		});
+			machineChanges.set(result.machines);
+			if (isCurrent()) {
+				toast.success($i18n.t('Saved {{name}}', { name: result.machine.name }));
+				show = false;
+			}
+		}, true);
 
 	const remove = () =>
-		runAction(async () => {
+		runAction(async (isCurrent) => {
 			if (!machine) {
 				return;
 			}
+			const machineName = machine.name;
 			const result = await deleteSubscriptionMachine(localStorage.token, machine.id);
-			toast.success($i18n.t('Removed {{name}}', { name: machine.name }));
-			onChanged(result.machines);
-			show = false;
-		});
+			machineChanges.set(result.machines);
+			if (isCurrent()) {
+				toast.success($i18n.t('Removed {{name}}', { name: machineName }));
+				show = false;
+			}
+		}, true);
 </script>
 
 <Modal size="sm" bind:show>
@@ -120,6 +185,7 @@
 					id="machine-name"
 					class={inputClass}
 					bind:value={name}
+					disabled={busy}
 					placeholder={$i18n.t('My PC')}
 					autocomplete="off"
 					required
@@ -132,6 +198,7 @@
 					id="machine-url"
 					class={inputClass}
 					bind:value={url}
+					disabled={busy}
 					placeholder={DEFAULT_URL}
 					autocomplete="off"
 					spellcheck="false"
@@ -143,12 +210,32 @@
 			</div>
 
 			<div class="flex flex-col gap-1">
+				<label class="text-xs text-gray-500" for="machine-browser-url"
+					>{$i18n.t('Browser address')}</label
+				>
+				<input
+					id="machine-browser-url"
+					class={inputClass}
+					bind:value={browserUrl}
+					disabled={busy}
+					autocomplete="off"
+					spellcheck="false"
+				/>
+				<p class="text-xs text-gray-400 dark:text-gray-600">
+					{$i18n.t(
+						'Optional address your browser can reach directly. Runner address may use host.docker.internal for Buddy in Docker; a phone needs a reachable HTTPS address. This address creates no project or file permissions.'
+					)}
+				</p>
+			</div>
+
+			<div class="flex flex-col gap-1">
 				<label class="text-xs text-gray-500" for="machine-key">{$i18n.t('Runner key')}</label>
 				<input
 					id="machine-key"
 					class={inputClass}
 					type="password"
 					bind:value={key}
+					disabled={busy}
 					placeholder={machine ? $i18n.t('Leave empty to keep the saved key') : ''}
 					autocomplete="off"
 					spellcheck="false"

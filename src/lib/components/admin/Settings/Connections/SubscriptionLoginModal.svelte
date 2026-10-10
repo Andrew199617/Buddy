@@ -1,15 +1,15 @@
 <script context="module" lang="ts">
 	import { get, writable } from 'svelte/store';
-	import type { SubscriptionProviderId } from '$lib/apis/subscriptions';
+	import type { SubscriptionProviderId as BusyProviderId } from '$lib/apis/subscriptions';
 
 	// A pending start can outlive this dialog. Keep a reopened instance from
 	// starting another login before the old request has been cancelled.
 	const pendingProviderActions = writable({ claude: 0, codex: 0 });
 
-	const providerIsBusy = (providerId: SubscriptionProviderId) =>
+	const providerIsBusy = (providerId: BusyProviderId) =>
 		get(pendingProviderActions)[providerId] > 0;
 
-	const beginProviderAction = (providerId: SubscriptionProviderId) => {
+	const beginProviderAction = (providerId: BusyProviderId) => {
 		pendingProviderActions.update((actions) => ({
 			...actions,
 			[providerId]: actions[providerId] + 1
@@ -32,6 +32,7 @@
 		getSubscriptionLogin,
 		startSubscriptionLogin,
 		submitSubscriptionLoginCode,
+		type SubscriptionProviderId,
 		type SubscriptionLogin,
 		type SubscriptionProvider
 	} from '$lib/apis/subscriptions';
@@ -53,6 +54,12 @@
 	let code = '';
 	let busy = false;
 	let loginGeneration = 0;
+	let loginOwner: {
+		providerId: SubscriptionProviderId;
+		machineId: string;
+		machineRevision?: string;
+	} | null = null;
+	let disposed = false;
 	let cancellation: Promise<void> | null = null;
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
 	$: busy = $pendingProviderActions[provider.id] > 0;
@@ -71,12 +78,18 @@
 		}
 	};
 
-	const cancelWaitingLogin = (): Promise<void> => {
+	const cancelWaitingLogin = (owner = loginOwner): Promise<void> => {
+		if (!owner) return Promise.resolve();
 		if (cancellation) {
 			return cancellation;
 		}
-		const finishAction = beginProviderAction(provider.id);
-		cancellation = cancelSubscriptionLogin(localStorage.token, provider.id)
+		const finishAction = beginProviderAction(owner.providerId);
+		cancellation = cancelSubscriptionLogin(
+			localStorage.token,
+			owner.providerId,
+			owner.machineId,
+			owner.machineRevision
+		)
 			.then(() => {})
 			.catch(() => {})
 			.finally(() => {
@@ -90,15 +103,24 @@
 		loginGeneration += 1;
 		stopPolling();
 		const waiting = login.state === 'waiting';
+		const owner = loginOwner;
+		loginOwner = null;
 		login = { state: 'idle' };
 		code = '';
 		if (waiting) {
-			void cancelWaitingLogin();
+			void cancelWaitingLogin(owner);
 		}
 	};
 
 	const handleLoginUpdate = (update: SubscriptionLogin, generation: number) => {
-		if (generation !== loginGeneration || !show) {
+		if (
+			disposed ||
+			generation !== loginGeneration ||
+			!show ||
+			!loginOwner ||
+			loginOwner.machineId !== provider.settings.machine_id ||
+			loginOwner.machineRevision !== provider.machine?.revision
+		) {
 			return;
 		}
 		login = update;
@@ -107,17 +129,33 @@
 			toast.success($i18n.t('Signed in to {{name}}', { name: provider.name }));
 			onSignedIn();
 			show = false;
-		} else if (login.state === 'error') {
+		} else if (login.state !== 'waiting') {
 			stopPolling();
 		}
 	};
 
 	const pollLogin = async () => {
 		const generation = loginGeneration;
+		const owner = loginOwner;
+		if (disposed || !owner || !show) return;
 		try {
-			handleLoginUpdate(await getSubscriptionLogin(localStorage.token, provider.id), generation);
+			handleLoginUpdate(
+				await getSubscriptionLogin(
+					localStorage.token,
+					owner.providerId,
+					owner.machineId,
+					owner.machineRevision
+				),
+				generation
+			);
 		} catch (error) {
-			if (generation === loginGeneration && show) {
+			if (
+				!disposed &&
+				generation === loginGeneration &&
+				show &&
+				owner.machineId === provider.settings.machine_id &&
+				owner.machineRevision === provider.machine?.revision
+			) {
 				stopPolling();
 				toast.error(`${error}`);
 			}
@@ -130,17 +168,35 @@
 	};
 
 	const startLogin = async (method: 'browser' | 'device') => {
-		if (providerIsBusy(provider.id)) {
+		if (disposed || !show || providerIsBusy(provider.id)) {
 			return;
 		}
 		const generation = ++loginGeneration;
+		const owner = {
+			providerId: provider.id,
+			machineId: provider.settings.machine_id,
+			machineRevision: provider.machine?.revision
+		};
+		loginOwner = owner;
 		const finishAction = beginProviderAction(provider.id);
 		code = '';
 		try {
-			const update = await startSubscriptionLogin(localStorage.token, provider.id, method);
-			if (generation !== loginGeneration || !show) {
+			const update = await startSubscriptionLogin(
+				localStorage.token,
+				owner.providerId,
+				method,
+				owner.machineId,
+				owner.machineRevision
+			);
+			if (
+				disposed ||
+				generation !== loginGeneration ||
+				!show ||
+				owner.machineId !== provider.settings.machine_id ||
+				owner.machineRevision !== provider.machine?.revision
+			) {
 				if (update.state === 'waiting') {
-					await cancelWaitingLogin();
+					await cancelWaitingLogin(owner);
 				}
 				return;
 			}
@@ -149,7 +205,13 @@
 				startPolling();
 			}
 		} catch (error) {
-			if (generation === loginGeneration && show) {
+			if (
+				!disposed &&
+				generation === loginGeneration &&
+				show &&
+				owner.machineId === provider.settings.machine_id &&
+				owner.machineRevision === provider.machine?.revision
+			) {
 				toast.error(`${error}`);
 			}
 		} finally {
@@ -158,18 +220,38 @@
 	};
 
 	const submitCode = async () => {
-		if (providerIsBusy(provider.id)) {
+		const owner = loginOwner;
+		if (
+			disposed ||
+			!show ||
+			!owner ||
+			owner.machineId !== provider.settings.machine_id ||
+			owner.machineRevision !== provider.machine?.revision ||
+			providerIsBusy(provider.id)
+		) {
 			return;
 		}
 		const generation = loginGeneration;
 		const finishAction = beginProviderAction(provider.id);
 		try {
 			handleLoginUpdate(
-				await submitSubscriptionLoginCode(localStorage.token, provider.id, code),
+				await submitSubscriptionLoginCode(
+					localStorage.token,
+					owner.providerId,
+					code,
+					owner.machineId,
+					owner.machineRevision
+				),
 				generation
 			);
 		} catch (error) {
-			if (generation === loginGeneration && show) {
+			if (
+				!disposed &&
+				generation === loginGeneration &&
+				show &&
+				owner.machineId === provider.settings.machine_id &&
+				owner.machineRevision === provider.machine?.revision
+			) {
 				toast.error(`${error}`);
 			}
 		} finally {
@@ -190,8 +272,19 @@
 	$: if (!show) {
 		dismissLogin();
 	}
+	$: if (
+		loginOwner &&
+		(loginOwner.machineId !== provider.settings.machine_id ||
+			loginOwner.machineRevision !== provider.machine?.revision)
+	) {
+		show = false;
+		dismissLogin();
+	}
 
-	onDestroy(dismissLogin);
+	onDestroy(() => {
+		disposed = true;
+		dismissLogin();
+	});
 </script>
 
 <Modal size="sm" bind:show>

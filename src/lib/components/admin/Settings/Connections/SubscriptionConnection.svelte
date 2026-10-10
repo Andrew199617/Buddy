@@ -1,5 +1,13 @@
+<script context="module" lang="ts">
+	import { writable } from 'svelte/store';
+	import type { SubscriptionProviderId } from '$lib/apis/subscriptions';
+
+	const pendingSettings = writable<Record<string, number>>({});
+	const settingsChanges = writable<{ providerId: SubscriptionProviderId } | null>(null);
+</script>
+
 <script lang="ts">
-	import { getContext, onDestroy } from 'svelte';
+	import { getContext, onDestroy, onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
 
 	import {
@@ -24,6 +32,8 @@
 	export let machines: SubscriptionMachine[] = [];
 	// Called after anything that can add or remove models.
 	export let onModelsChanged: () => Promise<void> = async () => {};
+	// Reload the current registry and models after an accepted config write, including across remounts.
+	export let onSettingsChanged: () => Promise<void> = onModelsChanged;
 
 	const PLAN_NAMES: Record<string, string> = {
 		free: 'Free',
@@ -44,12 +54,29 @@
 	let disposed = false;
 	let refreshGeneration = 0;
 	let checkInFlight = false;
+	let settingsInFlight = false;
+	let observedProvider = provider;
+	let observedMachines = machines;
+	let observedMachineId = provider.settings.machine_id;
+	let observedMachineRevision = provider.machine?.revision;
+	$: settingsBlocked = settingsInFlight || ($pendingSettings[provider.id] ?? 0) > 0;
 
 	const CHECK_AGAIN_MS = 3000;
 
 	$: providerStatus = provider.status ?? {};
 	$: accessLabel = getAccessLabel(provider.settings.access);
 	$: cliName = provider.id === 'claude' ? 'Claude Code' : 'Codex';
+
+	// Sign-in and permission drafts belong to the selected computer, not just the provider id.
+	$: if (
+		provider.settings.machine_id !== observedMachineId ||
+		provider.machine?.revision !== observedMachineRevision
+	) {
+		observedMachineId = provider.settings.machine_id;
+		observedMachineRevision = provider.machine?.revision;
+		showLoginModal = false;
+		showSettingsModal = false;
+	}
 
 	const getAccessLabel = (access: string) => {
 		if (access === 'read') {
@@ -117,18 +144,39 @@
 		}
 	};
 
+	const invalidateChecks = () => {
+		clearCheckTimer();
+		refreshGeneration += 1;
+		checkInFlight = false;
+	};
+
+	// A registry reload or settings change replaces the context of an outstanding check.
+	$: if (provider !== observedProvider || machines !== observedMachines) {
+		observedProvider = provider;
+		observedMachines = machines;
+		invalidateChecks();
+		scheduleCheck();
+	}
+
 	const refresh = async (fresh = true): Promise<boolean> => {
-		if (disposed) {
+		if (disposed || settingsBlocked) {
 			return false;
 		}
 		clearCheckTimer();
 		const generation = ++refreshGeneration;
 		checkInFlight = true;
 		try {
-			const nextProvider = await getSubscription(localStorage.token, provider.id, fresh);
+			const nextProvider = await getSubscription(
+				localStorage.token,
+				provider.id,
+				fresh,
+				provider.settings.machine_id,
+				provider.machine?.revision
+			);
 			if (disposed || generation !== refreshGeneration) {
 				return false;
 			}
+			observedProvider = nextProvider;
 			provider = nextProvider;
 			return true;
 		} catch (error) {
@@ -148,7 +196,7 @@
 
 	// The first check starts the CLI and can take a while; ask until it answers.
 	const scheduleCheck = () => {
-		if (disposed || checkTimer || checkInFlight || !provider.status?.checking) {
+		if (disposed || settingsBlocked || checkTimer || checkInFlight || !provider.status?.checking) {
 			return;
 		}
 		const generation = refreshGeneration;
@@ -179,46 +227,135 @@
 		clearCheckTimer();
 	});
 
+	onMount(() => {
+		let initial = true;
+		return settingsChanges.subscribe((change) => {
+			if (initial) {
+				initial = false;
+				return;
+			}
+			if (!disposed && change?.providerId === provider.id) {
+				const generation = refreshGeneration;
+				Promise.resolve(onSettingsChanged()).catch((error) => {
+					if (!disposed && generation === refreshGeneration) toast.error(`${error}`);
+				});
+			}
+		});
+	});
+
+	$: if (!settingsBlocked && providerStatus.checking) scheduleCheck();
+
 	const runAction = async (action: () => Promise<void>) => {
+		if (disposed || busy) return;
 		busy = true;
 		try {
 			await action();
 		} catch (error) {
-			toast.error(`${error}`);
+			if (!disposed) toast.error(`${error}`);
 		} finally {
 			busy = false;
 		}
 	};
 
-	const saveSettings = async (settings: Partial<SubscriptionSettings>) => {
-		try {
-			provider = await updateSubscriptionConfig(localStorage.token, provider.id, settings);
-		} catch (error) {
-			toast.error(`${error}`);
+	const saveSettings = async (
+		settings: Partial<SubscriptionSettings>,
+		isDialogCurrent: () => boolean = () => true
+	) => {
+		if (disposed || settingsBlocked) {
 			return false;
 		}
-		toast.success($i18n.t('{{name}} subscription settings saved', { name: provider.name }));
-		await onModelsChanged();
-		return true;
+		invalidateChecks();
+		const generation = refreshGeneration;
+		const providerId = provider.id;
+		const expectedMachineId = provider.settings.machine_id;
+		const expectedMachineRevision = provider.machine?.revision;
+		settingsInFlight = true;
+		pendingSettings.update((pending) => ({
+			...pending,
+			[providerId]: (pending[providerId] ?? 0) + 1
+		}));
+		try {
+			const nextProvider = await updateSubscriptionConfig(
+				localStorage.token,
+				providerId,
+				settings,
+				expectedMachineId,
+				expectedMachineRevision
+			);
+			settingsChanges.set({ providerId });
+			if (disposed || generation !== refreshGeneration) {
+				return false;
+			}
+			observedProvider = nextProvider;
+			provider = nextProvider;
+			if (isDialogCurrent()) {
+				toast.success($i18n.t('{{name}} subscription settings saved', { name: provider.name }));
+			}
+			return !disposed && generation === refreshGeneration;
+		} catch (error) {
+			if (!disposed && generation === refreshGeneration && isDialogCurrent()) {
+				toast.error(`${error}`);
+			}
+			return false;
+		} finally {
+			settingsInFlight = false;
+			pendingSettings.update((pending) => ({
+				...pending,
+				[providerId]: (pending[providerId] ?? 1) - 1
+			}));
+			scheduleCheck();
+		}
 	};
 
 	const toggleEnabled = async () => {
 		const enable = provider.settings.enable;
+		const optimisticProvider = provider;
+		const machineId = provider.settings.machine_id;
+		const machineRevision = provider.machine?.revision;
+		const generation = refreshGeneration + 1;
 		const saved = await saveSettings({ enable });
 		if (!saved) {
-			provider.settings.enable = !enable;
+			if (!disposed && provider === optimisticProvider && generation === refreshGeneration) {
+				provider.settings.enable = !enable;
+			}
 			return;
 		}
-		if (enable && provider.status.installed && !provider.status.signed_in) {
+		if (
+			!disposed &&
+			generation === refreshGeneration &&
+			provider.settings.machine_id === machineId &&
+			provider.machine?.revision === machineRevision &&
+			enable &&
+			provider.settings.enable &&
+			provider.status.installed &&
+			!provider.status.signed_in
+		) {
 			showLoginModal = true;
 		}
 	};
 
 	const signOut = () =>
 		runAction(async () => {
-			provider = await logoutSubscription(localStorage.token, provider.id);
-			toast.success($i18n.t('Signed out of {{name}}', { name: provider.name }));
-			await onModelsChanged();
+			invalidateChecks();
+			const generation = refreshGeneration;
+			const providerId = provider.id;
+			const expectedMachineId = provider.settings.machine_id;
+			const expectedMachineRevision = provider.machine?.revision;
+			try {
+				const nextProvider = await logoutSubscription(
+					localStorage.token,
+					providerId,
+					expectedMachineId,
+					expectedMachineRevision
+				);
+				settingsChanges.set({ providerId });
+				if (disposed || generation !== refreshGeneration) return;
+				observedProvider = nextProvider;
+				provider = nextProvider;
+				toast.success($i18n.t('Signed out of {{name}}', { name: provider.name }));
+			} catch (error) {
+				if (!disposed && generation === refreshGeneration) throw error;
+			}
 		});
 
 	const handleSignedIn = () =>
