@@ -189,12 +189,30 @@ def build_app(key: str, state_dir: Path) -> web.Application:
 
 
 def load_or_create_key(key_file: Path) -> str:
+    """The runner's bearer key, readable only by the user that runs the runner.
+
+    Anyone who can read the key can run commands through the runner, so a new
+    key (and a folder created for it) is owner-only from the start, and an
+    existing key's permissions are repaired. The folder of an existing key is
+    left alone, since --key-file may point into a shared folder. On Windows the
+    user profile's ACLs keep the default folder private.
+    """
     if key_file.is_file():
+        _make_owner_only(key_file)
         return key_file.read_text(encoding='utf-8').strip()
-    key_file.parent.mkdir(parents=True, exist_ok=True)
+    key_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     key = secrets.token_urlsafe(32)
-    key_file.write_text(key, encoding='utf-8')
+    descriptor = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, 'w', encoding='utf-8') as file:
+        file.write(key)
+    _make_owner_only(key_file)
     return key
+
+
+def _make_owner_only(key_file: Path) -> None:
+    if os.name == 'nt':
+        return
+    key_file.chmod(0o600)
 
 
 def main() -> None:

@@ -753,6 +753,31 @@ class RunnerTests(unittest.TestCase):
         self.assertIn('runner key', message)
 
 
+class RunnerKeyTests(unittest.TestCase):
+    def test_key_is_created_once_and_reused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            key_file = Path(directory) / 'state' / 'key'
+            created = runner.load_or_create_key(key_file)
+            self.assertEqual(runner.load_or_create_key(key_file), created)
+            self.assertGreaterEqual(len(created), 32)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX file modes')
+    def test_key_is_readable_only_by_its_owner(self):
+        old_umask = os.umask(0o022)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                key_file = Path(directory) / 'state' / 'key'
+                runner.load_or_create_key(key_file)
+                self.assertEqual(key_file.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(key_file.parent.stat().st_mode & 0o777, 0o700)
+
+                key_file.chmod(0o644)
+                runner.load_or_create_key(key_file)
+                self.assertEqual(key_file.stat().st_mode & 0o777, 0o600)
+        finally:
+            os.umask(old_umask)
+
+
 class StreamingTests(unittest.TestCase):
     def test_stream_events_produce_openai_chunks(self):
         async def events():
