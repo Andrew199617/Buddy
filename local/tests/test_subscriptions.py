@@ -669,6 +669,28 @@ class ProcessTests(unittest.TestCase):
 
 
 class MachineTests(unittest.TestCase):
+    def test_runner_key_is_only_sent_over_private_routes(self):
+        allowed = [
+            'http://127.0.0.1:8765',
+            'http://localhost:8765',
+            'http://host.docker.internal:8765',
+            'http://100.122.80.32:8765',
+            'http://office-pc.tail83dea0.ts.net:8765',
+            'https://runner.example.com',
+        ]
+        refused = [
+            'http://192.168.1.20:8765',
+            'http://runner.example.com:8765',
+            'ftp://runner.example.com',
+        ]
+        for url in allowed:
+            with self.subTest(url=url):
+                RemoteMachine('pc', 'PC', url, 'test-key')
+        for url in refused:
+            with self.subTest(url=url):
+                with self.assertRaises(SubscriptionError):
+                    RemoteMachine('pc', 'PC', url, 'test-key')
+
     def test_lost_runner_connection_counts_as_exited(self):
         import aiohttp
 

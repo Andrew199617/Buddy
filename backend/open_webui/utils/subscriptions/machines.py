@@ -8,6 +8,7 @@ live on the machine.
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ import socket
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -32,6 +34,13 @@ log = logging.getLogger(__name__)
 
 LOCAL_MACHINE_ID = 'local'
 TEMP_FILE_TOKEN = '{temp:%s}'
+
+# Hosts whose plain-http traffic cannot be read on the way: this computer,
+# Docker Desktop's route to its host, and Tailscale, which encrypts every
+# connection between devices.
+LOCAL_RUNNER_HOSTS = ('localhost', 'host.docker.internal')
+TAILSCALE_NAME_SUFFIX = '.ts.net'
+TAILSCALE_NETWORKS = (ipaddress.ip_network('100.64.0.0/10'), ipaddress.ip_network('fd7a:115c:a1e0::/48'))
 
 
 def temp_file_arg(name: str) -> str:
@@ -216,10 +225,43 @@ class RemoteProcess(StreamedOutput):
         asyncio.get_running_loop().create_task(self._send_quietly({'type': 'kill'}, then_close=True))
 
 
+def _is_private_route(host: str) -> bool:
+    host = host.lower()
+    if host in LOCAL_RUNNER_HOSTS or host.endswith(TAILSCALE_NAME_SUFFIX):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if address.is_loopback:
+        return True
+    return any(address in network for network in TAILSCALE_NETWORKS)
+
+
+def check_runner_url(url: str) -> None:
+    """Refuse an address that would send the runner key in plain text over a network.
+
+    The key lets whoever holds it run any command on the runner, so plain http
+    is only accepted where nobody can read the traffic on the way; anything
+    else needs https.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme == 'https' and parsed.hostname:
+        return
+    if parsed.scheme != 'http' or not parsed.hostname:
+        raise SubscriptionError('Enter the runner address as http://host:port or https://host:port.')
+    if not _is_private_route(parsed.hostname):
+        raise SubscriptionError(
+            'Use https:// for a runner on another computer, or reach it over Tailscale, '
+            'so the runner key is never sent in plain text.'
+        )
+
+
 class RemoteMachine:
     """A Buddy Runner on another computer or in a container."""
 
     def __init__(self, machine_id: str, name: str, url: str, key: str):
+        check_runner_url(url)
         self.id = machine_id
         self.name = name
         self.url = url.rstrip('/')
