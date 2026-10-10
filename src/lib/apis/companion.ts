@@ -343,11 +343,22 @@ export class CompanionClient {
 		return response.terminal;
 	}
 
+	/**
+	 * Resolves once the Runner confirms that this command session stopped. The Runner
+	 * removes a session from a live pairing only after a confirmed stop, so "not found"
+	 * means an earlier stop went through and its reply was lost. A retry treats it as stopped.
+	 */
 	async deleteTerminal(terminalId: string): Promise<void> {
-		const response = await this.request<{ terminal: CompanionTerminal }>(
-			`/v1/terminals/${encodeURIComponent(terminalId)}`,
-			'DELETE'
-		);
+		let response: { terminal: CompanionTerminal };
+		try {
+			response = await this.request<{ terminal: CompanionTerminal }>(
+				`/v1/terminals/${encodeURIComponent(terminalId)}`,
+				'DELETE'
+			);
+		} catch (cause) {
+			if (cause instanceof CompanionError && cause.status === 404) return;
+			throw cause;
+		}
 		if (response?.terminal?.id !== terminalId || response.terminal.status !== 'closed') {
 			throw new CompanionError(
 				'The Runner did not confirm that this command session stopped.',

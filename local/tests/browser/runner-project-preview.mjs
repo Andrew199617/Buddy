@@ -777,6 +777,36 @@ async function stopRetry(session, fixture, mode) {
 	await checkLayout(session);
 }
 
+async function lostStopReply(session, fixture) {
+	const { page } = session;
+	const authorization = await prepareRunningCommand(session, fixture);
+	await page.getByRole('button', { name: 'Stop and remove session', exact: true }).click();
+	await page.getByRole('alert').filter({ hasText: 'Stop was not confirmed' }).waitFor();
+	const terminalPath = session.hostRequests.findLast(
+		(request) => request.method === 'DELETE' && request.path.startsWith('/v1/terminals/')
+	).path;
+	const removed = await fetch(fixture.endpoint + terminalPath, {
+		headers: { Origin: origin, Authorization: authorization }
+	});
+	assert.equal(
+		removed.status,
+		404,
+		'The Runner stopped and removed the session before its reply was lost'
+	);
+	await page.getByRole('button', { name: 'Stop and remove session', exact: true }).click();
+	await page.getByText('The command session was stopped and removed.', { exact: true }).waitFor();
+	assert.equal(await page.locator('#companion-executable').count(), 0);
+	assert.equal(
+		await page.getByRole('alert').filter({ hasText: 'Stop was not confirmed' }).count(),
+		0,
+		'A retry that finds the session already removed confirms the stop'
+	);
+	await page.getByRole('button', { name: 'Create command session', exact: true }).waitFor();
+	await page.getByRole('button', { name: 'Disconnect and revoke', exact: true }).click();
+	await verifyRevoked(session, fixture, authorization);
+	await checkLayout(session);
+}
+
 async function delayedStop(session, fixture) {
 	const { page } = session;
 	const authorization = await prepareRunningCommand(session, fixture);
@@ -1369,6 +1399,7 @@ try {
 			'stop-retry',
 			'grant-stop-retry',
 			'workspace-stop-retry',
+			'lost-stop-reply',
 			'stop-delay',
 			'disconnect-failure',
 			'operation-conflict',
@@ -1553,6 +1584,18 @@ try {
 						});
 						return true;
 					}
+					if (
+						scenario === 'lost-stop-reply' &&
+						!injectedStopFailure &&
+						route.request().method() === 'DELETE' &&
+						url.pathname.startsWith('/v1/terminals/')
+					) {
+						injectedStopFailure = true;
+						const response = await route.fetch();
+						assert.equal(response.status(), 200, 'The actual Runner confirms the first stop');
+						await route.abort('failed');
+						return true;
+					}
 					if (scenario === 'capability-mismatch' && url.pathname === '/v1/capabilities') {
 						const response = await route.fetch();
 						await route.fulfill({
@@ -1599,6 +1642,7 @@ try {
 				if (scenario.startsWith('late-command-'))
 					await lateCommand(session, fixture, scenario === 'late-command-unmount');
 				if (scenario.endsWith('stop-retry')) await stopRetry(session, fixture, scenario);
+				if (scenario === 'lost-stop-reply') await lostStopReply(session, fixture);
 				if (scenario === 'stop-delay') await delayedStop(session, fixture);
 				if (scenario === 'disconnect-failure') await disconnectFailure(session, fixture);
 				if (scenario === 'operation-conflict') await operationConflict(session, fixture);
