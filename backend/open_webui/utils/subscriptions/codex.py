@@ -679,14 +679,21 @@ class CodexProvider:
         The read-only sandbox blocks writes but not reads anywhere on disk, and
         MCP servers from the user's Codex config (such as a JavaScript REPL) run
         outside it. Chat threads therefore get no command, file, or MCP tools;
-        read threads keep read-only commands but get no MCP servers.
+        read threads keep read-only commands but get no MCP servers. The working
+        folder may be someone else's repository, so neither loads its AGENTS.md
+        files or skills, which could steer those reads.
         """
         if turn.access == ACCESS_FULL:
             return None
 
         effective = await server.request('config/read', {'includeLayers': False, 'cwd': turn.cwd})
         server_names = ((effective.get('config') or {}).get('mcp_servers') or {}).keys()
-        config = {'mcp_servers': {name: {'enabled': False} for name in server_names}}
+        config = {
+            'mcp_servers': {name: {'enabled': False} for name in server_names},
+            # The user's own ~/.codex/AGENTS.md still applies.
+            'project_doc_max_bytes': 0,
+            'skills.include_instructions': False,
+        }
         if turn.access == ACCESS_CHAT:
             # Dotted keys leave the app-server's other feature switches alone.
             config['features.shell_tool'] = False

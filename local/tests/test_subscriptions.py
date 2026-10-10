@@ -780,7 +780,17 @@ class CodexTests(unittest.TestCase):
         self.assertFalse(chat_config['features.unified_exec'])
 
         read_config = thread_config('read')
-        self.assertEqual(read_config, {'mcp_servers': {'node_repl': {'enabled': False}}})
+        # The folder's AGENTS.md files and skills could steer reads, so neither loads.
+        self.assertEqual(
+            read_config,
+            {
+                'mcp_servers': {'node_repl': {'enabled': False}},
+                'project_doc_max_bytes': 0,
+                'skills.include_instructions': False,
+            },
+        )
+        self.assertEqual(chat_config['project_doc_max_bytes'], 0)
+        self.assertFalse(chat_config['skills.include_instructions'])
 
         self.assertIsNone(thread_config('full'))
         # Chat and read threads read the effective config; full threads skip it.
