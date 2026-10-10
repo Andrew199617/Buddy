@@ -1183,9 +1183,9 @@ async function delayedCommandAdmission(session, fixture, admission, profile, sce
 			return actual.status === 'exited' && actual.exitCode === 0;
 		}, 'Fast admitted job finishes before the browser observes its running state');
 	}
-	admission.delivered = true;
-	for (const release of admission.statusWaiters.splice(0)) release();
 	await page.getByRole('button', { name: 'Check command status', exact: true }).click();
+	admission.allowStatusRecovery = true;
+	for (const release of admission.statusWaiters.splice(0)) release();
 	if (scenario === 'delayed-command-admission-fast') {
 		await waitUntil(
 			async () =>
@@ -1273,7 +1273,12 @@ try {
 			let fixture = null;
 			let session = null;
 			const delayed = { held: null, release: () => {} };
-			const admission = { request: null, delivering: false, delivered: false, statusWaiters: [] };
+			const admission = {
+				request: null,
+				delivering: false,
+				allowStatusRecovery: false,
+				statusWaiters: []
+			};
 			try {
 				fixture = await startFixture();
 				let injectedStopFailure = false;
@@ -1302,13 +1307,22 @@ try {
 						return true;
 					}
 					if (
-						scenario === 'delayed-command-admission-fast' &&
-						admission.delivering &&
-						!admission.delivered &&
+						scenario.startsWith('delayed-command-admission-') &&
 						route.request().method() === 'GET' &&
 						url.pathname.startsWith('/v1/terminals/')
 					) {
-						await new Promise((release) => admission.statusWaiters.push(release));
+						const recoveryAllowedAtRead = admission.allowStatusRecovery;
+						let response = await route.fetch();
+						// Let the explicit recovery click own the first admitted-job response.
+						// Earlier ready/exited reads still reach the page before admission.
+						if (admission.delivering && !recoveryAllowedAtRead) {
+							if (!admission.allowStatusRecovery)
+								await new Promise((release) => admission.statusWaiters.push(release));
+							// Fast jobs must be inspected after completion, never through a held running snapshot.
+							response = await route.fetch();
+						}
+						await route.fulfill({ response });
+						return true;
 					}
 					if (
 						scenario.startsWith('recovery-overlap-') &&
