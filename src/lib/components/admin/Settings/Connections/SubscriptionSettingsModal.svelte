@@ -114,7 +114,7 @@
 				</select>
 				<p class="text-xs text-gray-400 dark:text-gray-600">
 					{$i18n.t(
-						'The machine where the CLI runs, signs in, and works on files.'
+						'The machine where the CLI runs, signs in, and works on files. Add machines under Machines.'
 					)}
 				</p>
 			</div>

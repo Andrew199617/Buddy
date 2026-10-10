@@ -26,6 +26,8 @@
 	import AddConnectionModal from '$lib/components/AddConnectionModal.svelte';
 	import OllamaConnection from './Connections/OllamaConnection.svelte';
 	import SubscriptionConnection from './Connections/SubscriptionConnection.svelte';
+	import SubscriptionMachineModal from './Connections/SubscriptionMachineModal.svelte';
+	import Cog6 from '$lib/components/icons/Cog6.svelte';
 	import AdminSettingRow from './AdminSettingRow.svelte';
 	import AdminSettingSection from './AdminSettingSection.svelte';
 
@@ -58,6 +60,8 @@
 	let subscriptionProviders: SubscriptionProvider[] | null = null;
 	let subscriptionMachines: SubscriptionMachine[] = [];
 	let subscriptionsError = '';
+	let showMachineModal = false;
+	let editedMachine: SubscriptionMachine | null = null;
 
 	let pipelineUrls: Record<string, boolean> = {};
 	let showAddOpenAIConnectionModal = false;
@@ -141,6 +145,18 @@
 		} catch (error) {
 			subscriptionsError = `${error}`;
 		}
+	};
+
+	const openMachineModal = (machine: SubscriptionMachine | null) => {
+		editedMachine = machine;
+		showMachineModal = true;
+	};
+
+	// Removing a machine can move providers back to this server, so reload both.
+	const handleMachinesChanged = async (machines: SubscriptionMachine[]) => {
+		subscriptionMachines = machines;
+		await loadSubscriptions();
+		await refreshModels();
 	};
 
 	const refreshModels = async () => {
@@ -247,6 +263,12 @@
 		await config.set(await getBackendConfig());
 	};
 </script>
+
+<SubscriptionMachineModal
+	bind:show={showMachineModal}
+	machine={editedMachine}
+	onChanged={handleMachinesChanged}
+/>
 
 <AddConnectionModal
 	bind:show={showAddOpenAIConnectionModal}
@@ -401,6 +423,48 @@
 				</p>
 
 				{#if subscriptionProviders}
+					<div>
+						<div class="mb-1.5 flex items-center justify-between gap-4">
+							<div class="text-xs text-gray-600 dark:text-gray-400">
+								{$i18n.t('Machines')}
+							</div>
+							<Tooltip content={$i18n.t('Add machine')}>
+								<button
+									class="flex size-6 items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-black/5 hover:text-gray-700 dark:text-gray-600 dark:hover:bg-white/5 dark:hover:text-gray-300"
+									type="button"
+									aria-label={$i18n.t('Add machine')}
+									on:click={() => openMachineModal(null)}
+								>
+									<Plus />
+								</button>
+							</Tooltip>
+						</div>
+						<div class="flex flex-col gap-1">
+							{#each subscriptionMachines as machine (machine.id)}
+								<div class="flex items-center justify-between gap-2">
+									<div class="min-w-0">
+										<span class="text-sm">{machine.name}</span>
+										<span class="ml-1.5 break-all text-xs text-gray-400 dark:text-gray-600">
+											{machine.url ?? $i18n.t('Runs the CLIs inside the Buddy server')}
+										</span>
+									</div>
+									{#if machine.url}
+										<Tooltip content={$i18n.t('Configure')}>
+											<button
+												class="p-1 rounded-lg transition hover:bg-gray-100 dark:hover:bg-gray-850"
+												type="button"
+												aria-label={$i18n.t('Configure {{name}}', { name: machine.name })}
+												on:click={() => openMachineModal(machine)}
+											>
+												<Cog6 />
+											</button>
+										</Tooltip>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					</div>
+
 					<div class="flex flex-col gap-3">
 						{#each subscriptionProviders as provider (provider.id)}
 							<SubscriptionConnection
