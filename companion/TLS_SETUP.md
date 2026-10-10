@@ -42,8 +42,26 @@ local\start-buddy-runner.ps1 `
 The Python equivalents are `--tls-cert` and `--tls-key`. Both must be supplied.
 Keep the existing approved state directory and intended launcher arguments;
 this example adds no project roots, write permission or commands. The listener
-remains `127.0.0.1:8765`. No TLS flag retains loopback HTTP for local clients.
-The TLS server requires TLS 1.2 or newer.
+remains `127.0.0.1:8765`. The Runner has one listener: with these flags it
+speaks only HTTPS, on loopback as well, and without them only HTTP. The TLS
+server requires TLS 1.2 or newer.
+
+## The Projects page with a TLS Runner
+
+The Projects page connects from the browser. Its default host address,
+`http://127.0.0.1:8765`, stops working once the Runner uses TLS. Choose one of
+these instead, and enter the address in the page's Host address field or as the
+machine's browser address in Machines:
+
+- Use `https://localhost:8765`. The certificate must also list `localhost` in
+  its Subject Alternative Name (or `127.0.0.1`, to use that address), and the
+  browser must trust its issuer. This setup does not install that trust; adding
+  a private CA to Windows or the browser is a separate operator decision.
+- Keep this Runner for Buddy in Docker, and start a second Runner without the
+  TLS flags for the Projects page, on another free loopback port and with its
+  own `-StateDir`. Approve project roots only on that Runner, and use
+  `http://127.0.0.1:<port>`. Each Runner has its own key, pairing codes and
+  project grants.
 
 ## Docker trust scoped to Runner requests
 
