@@ -662,17 +662,28 @@ class CodexProvider:
         if not live:
             return None
         if live.generation != generation or live.access != turn.access or live.cwd != turn.cwd:
+            self._release_live_thread(live)
             return None
         return live
 
     def _keep_live_thread(self, key: str, live: LiveThread) -> None:
+        replaced = self._live_threads.pop(key, None)
+        if replaced:
+            self._release_live_thread(replaced)
         self._live_threads[key] = live
         while len(self._live_threads) > LIVE_THREAD_LIMIT:
             _, oldest = self._live_threads.popitem(last=False)
-            self._release_thread(self._servers.get(oldest.machine_id), oldest.thread_id)
+            self._release_live_thread(oldest)
 
-    def _release_thread(self, server: CodexAppServer | None, thread_id: str) -> None:
-        if not server or not server.running:
+    def _release_live_thread(self, live: LiveThread) -> None:
+        """Unload a thread Buddy no longer keeps, unless its app-server restarted since."""
+        server = self._servers.get(live.machine_id)
+        if not server or server.generation != live.generation:
+            return
+        self._release_thread(server, live.thread_id)
+
+    def _release_thread(self, server: CodexAppServer, thread_id: str) -> None:
+        if not server.running:
             return
 
         async def unsubscribe():

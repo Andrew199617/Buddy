@@ -499,6 +499,57 @@ class CodexTests(unittest.TestCase):
         self.assertIsNone(thread_config('full'))
         self.assertIn('hooks', codex.DISABLED_FEATURES)
 
+    def test_dropped_live_threads_are_released(self):
+        class FakeServer:
+            running = True
+            generation = 2
+
+            def __init__(self):
+                self.requests = []
+
+            async def request(self, method, params=None, timeout=None):
+                self.requests.append((method, params))
+                return {}
+
+        provider = codex.CodexProvider()
+        server = FakeServer()
+        provider._servers['local'] = server
+        conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
+        chat_turn = TurnRequest('gpt-x', conversation, ProviderSettings(access='chat'), '.')
+
+        def read_thread(thread_id, generation=2):
+            return codex.LiveThread(thread_id, 'local', generation, 'read', '.', None)
+
+        async def run():
+            # The chat's access level changed, so its kept thread is dropped.
+            provider._keep_live_thread('chat-1', read_thread('changed-access'))
+            changed_access = provider._take_live_thread('chat-1', chat_turn, server.generation)
+            # A newer thread for the same chat replaces the kept one.
+            provider._keep_live_thread('chat-2', read_thread('replaced'))
+            provider._keep_live_thread('chat-2', read_thread('replacement'))
+            # The app-server restarted since this thread was kept, so it is already gone.
+            provider._keep_live_thread('chat-3', read_thread('restarted', generation=1))
+            restarted = provider._take_live_thread('chat-3', chat_turn, server.generation)
+            # A thread whose access, folder and app-server still match is reused, not released.
+            provider._keep_live_thread('chat-4', codex.LiveThread('matching', 'local', 2, 'chat', '.', None))
+            matching = provider._take_live_thread('chat-4', chat_turn, server.generation)
+            # Let the release tasks send their requests.
+            await asyncio.sleep(0)
+            return changed_access, restarted, matching
+
+        changed_access, restarted, matching = asyncio.run(run())
+        self.assertIsNone(changed_access)
+        self.assertIsNone(restarted)
+        self.assertEqual(matching.thread_id, 'matching')
+        self.assertEqual(provider._live_threads['chat-2'].thread_id, 'replacement')
+        self.assertEqual(
+            server.requests,
+            [
+                ('thread/unsubscribe', {'threadId': 'changed-access'}),
+                ('thread/unsubscribe', {'threadId': 'replaced'}),
+            ],
+        )
+
     def test_summarize_rate_limits(self):
         summary = codex.summarize_rate_limits(
             {
