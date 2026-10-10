@@ -236,6 +236,9 @@ class ChildProcess(StreamedOutput):
         self._queue_condition = threading.Condition()
         self._stdout_abandoned = False
         self._eof_posted = False
+        self._stdin_lock = threading.Lock()
+        self._stdin_writes = 0
+        self._stdin_close_requested = False
         self._stderr_lock = threading.Lock()
         self._stderr_tail = bytearray()
         self._stderr_total_bytes = 0
@@ -428,17 +431,47 @@ class ChildProcess(StreamedOutput):
         finally:
             self.process.stderr.close()
 
+    def _closed_error(self) -> ProcessClosedError:
+        return ProcessClosedError(f'{os.path.basename(self.args[0])} is no longer running')
+
     def _write_blocking(self, text: str) -> None:
+        with self._stdin_lock:
+            if self._stdin_close_requested:
+                raise self._closed_error()
+            self._stdin_writes += 1
         try:
             self.process.stdin.write(text.encode('utf-8'))
             self.process.stdin.flush()
         except (OSError, ValueError) as error:
-            raise ProcessClosedError(f'{os.path.basename(self.args[0])} is no longer running') from error
+            raise self._closed_error() from error
+        finally:
+            self._finish_stdin_write()
+
+    def _finish_stdin_write(self) -> None:
+        with self._stdin_lock:
+            self._stdin_writes -= 1
+            close_now = self._stdin_close_requested and self._stdin_writes == 0
+        if close_now:
+            self._close_stdin_pipe()
 
     async def write(self, text: str) -> None:
         await asyncio.to_thread(self._write_blocking, text)
 
     def close_stdin(self) -> None:
+        """Close stdin now, or as soon as the writes in progress finish.
+
+        A write keeps the pipe's buffer locked until the CLI reads the data,
+        and cancelling ``write()`` does not stop its thread. Closing then would
+        block the event loop, so the last write closes the pipe instead. kill()
+        makes a pending write fail at once.
+        """
+        with self._stdin_lock:
+            self._stdin_close_requested = True
+            if self._stdin_writes > 0:
+                return
+        self._close_stdin_pipe()
+
+    def _close_stdin_pipe(self) -> None:
         try:
             self.process.stdin.close()
         except (OSError, ValueError):

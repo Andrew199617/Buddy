@@ -359,6 +359,42 @@ class ProcessContainmentTests(unittest.IsolatedAsyncioTestCase):
         await child.finish_output(5)
         self.assertEqual(child.stderr_text(), 'stderr:naïve 🌍')
 
+    async def start_cancelled_large_write(self, script: str) -> tuple:
+        """Start a CLI and cancel a write it has not read, as Stop during startup does."""
+        size = 2 * 1024 * 1024
+        child = self.start_child(script)
+        write = asyncio.create_task(child.write('x' * size))
+        await asyncio.sleep(0.3)
+        self.assertFalse(write.done(), 'The pipe accepted the whole write without a reader')
+        write.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await write
+        return child, size
+
+    def assert_close_stdin_returns_promptly(self, child) -> None:
+        started = time.monotonic()
+        child.close_stdin()
+        self.assertLess(time.monotonic() - started, 0.5)
+
+    async def test_close_stdin_after_a_cancelled_write_does_not_block(self):
+        child, size = await self.start_cancelled_large_write(
+            'import sys, time\n'
+            'time.sleep(1.5)\n'
+            'print(len(sys.stdin.buffer.read()), flush=True)\n'
+        )
+        self.assert_close_stdin_returns_promptly(child)
+        with self.assertRaises(subscription_process.ProcessClosedError):
+            await child.write('late\n')
+        # The pending write completes once the CLI reads, and then closes stdin.
+        self.assertEqual(await asyncio.wait_for(child.read_line(), 10), str(size))
+        self.assertEqual(await child.wait(5), 0)
+
+    async def test_kill_releases_a_write_the_cli_never_reads(self):
+        child, _ = await self.start_cancelled_large_write('import time\ntime.sleep(30)\n')
+        self.assert_close_stdin_returns_promptly(child)
+        await child.kill_and_wait(5)
+        await self.wait_until(lambda: child.process.stdin.closed, 'The pending write kept stdin open')
+
     async def test_merged_stderr_is_plain_stdout_text(self):
         child = self.start_child(
             'import os\n'
