@@ -48,7 +48,10 @@ if ($env:PYTHONPATH) {
 }
 $env:PYTHONIOENCODING = 'utf-8'
 
-$runnerArgs = @('-m', 'open_webui.utils.subscriptions.runner', '--port', $Port)
+# -P keeps the current folder off sys.path, so a project folder the Runner is
+# started from cannot replace a module the Runner imports. PYTHONPATH still
+# supplies backend.
+$runnerArgs = @('-P', '-m', 'open_webui.utils.subscriptions.runner', '--port', $Port)
 if ($StateDir) {
     $runnerArgs += @('--state-dir', $StateDir)
 }
