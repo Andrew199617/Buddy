@@ -25,6 +25,7 @@ from open_webui.utils.plugin import (
     get_functions_cache,
     get_function_module_from_cache,
 )
+from open_webui.utils.subscriptions.service import get_subscription_models
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
@@ -60,10 +61,13 @@ async def get_all_base_models(request: Request, user: UserModel = None):
     openai_task = fetch_openai_models(request, user) if config.get('openai.enable') else asyncio.sleep(0, result=[])
     ollama_task = fetch_ollama_models(request, user) if config.get('ollama.enable') else asyncio.sleep(0, result=[])
     function_task = get_function_models(request)
+    subscription_task = get_subscription_models()
 
-    openai_models, ollama_models, function_models = await asyncio.gather(openai_task, ollama_task, function_task)
+    openai_models, ollama_models, function_models, subscription_models = await asyncio.gather(
+        openai_task, ollama_task, function_task, subscription_task
+    )
 
-    return function_models + openai_models + ollama_models
+    return function_models + openai_models + ollama_models + subscription_models
 
 
 async def get_all_models(request, refresh: bool = False, user: UserModel = None):
