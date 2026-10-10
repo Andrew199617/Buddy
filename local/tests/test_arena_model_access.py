@@ -8,9 +8,12 @@ import ast
 import asyncio
 import copy
 import logging
+import sys
+import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi import HTTPException
 
@@ -29,11 +32,11 @@ def execute_definitions(path, names, namespace):
     exec(compile(module, str(path), 'exec'), namespace)
 
 
-def model_entry(model_id, owned_by='openai', owner='another-user'):
+def model_entry(model_id, owned_by='openai', owner='another-user', base_model_id=None):
     return {
         'id': model_id,
         'owned_by': owned_by,
-        'info': {'id': model_id, 'user_id': owner},
+        'info': {'id': model_id, 'user_id': owner, 'base_model_id': base_model_id},
     }
 
 
@@ -56,6 +59,10 @@ class ArenaModelAccessTests(unittest.IsolatedAsyncioTestCase):
         self.group_queries = []
         self.provider_calls = []
         self.choices = []
+        self.choice_priority = ['subscription']
+        self.model_rows = {}
+        self.model_reads = []
+        self.individual_access_queries = []
 
         async def get_groups(user_id, db=None):
             self.group_queries.append(user_id)
@@ -65,15 +72,47 @@ class ArenaModelAccessTests(unittest.IsolatedAsyncioTestCase):
             self.access_queries.append(kwargs)
             return self.allowed_ids.intersection(kwargs['resource_ids'])
 
+        async def get_model_by_id(model_id, db=None):
+            self.model_reads.append(model_id)
+            return self.model_rows.get(model_id)
+
+        async def has_model_access(**kwargs):
+            self.individual_access_queries.append(kwargs)
+            return kwargs['resource_id'] in self.allowed_ids
+
+        async def has_arena_access(user_id, **kwargs):
+            return True
+
+        access_grants = SimpleNamespace(get_accessible_resource_ids=get_accessible_ids,
+                                        has_access=has_model_access)
+        models = SimpleNamespace(get_model_by_id=get_model_by_id)
+        grants_module = types.ModuleType('open_webui.models.access_grants')
+        grants_module.AccessGrants = access_grants
+        models_module = types.ModuleType('open_webui.models.models')
+        models_module.Models = models
+        # The production chain helper imports these two model services locally.
+        self.model_module_patch = patch.dict(sys.modules, {
+            'open_webui.models.access_grants': grants_module,
+            'open_webui.models.models': models_module,
+        })
+        self.model_module_patch.start()
+        self.addCleanup(self.model_module_patch.stop)
+
         self.models_namespace = {
             'BYPASS_MODEL_ACCESS_CONTROL': False,
             'BYPASS_ADMIN_ACCESS_CONTROL': True,
             'SUBSCRIPTION_OWNED_BY': 'subscription',
             'HTTPException': HTTPException,
+            'SimpleNamespace': SimpleNamespace,
+            'log': logging.getLogger(__name__),
             'Groups': SimpleNamespace(get_groups_by_member_id=get_groups),
-            'AccessGrants': SimpleNamespace(get_accessible_resource_ids=get_accessible_ids),
+            'AccessGrants': access_grants,
+            'Models': models,
+            'has_access': has_arena_access,
         }
-        definitions = {'get_filtered_models'}
+        execute_definitions(UTILS / 'access_control/__init__.py', {'has_base_model_access'},
+                            self.models_namespace)
+        definitions = {'get_filtered_models', 'check_model_access'}
         parsed = ast.parse((UTILS / 'models.py').read_text(encoding='utf-8'))
         if any(getattr(node, 'name', None) == 'get_arena_model_ids' for node in parsed.body):
             definitions.add('get_arena_model_ids')
@@ -82,15 +121,10 @@ class ArenaModelAccessTests(unittest.IsolatedAsyncioTestCase):
         def choose(candidates):
             self.choices.append(list(candidates))
             # Force the original defect instead of relying on a random draw.
-            if 'subscription' in candidates:
-                return 'subscription'
+            for preferred_id in self.choice_priority:
+                if preferred_id in candidates:
+                    return preferred_id
             return candidates[0]
-
-        async def check_model_access(user, model):
-            if model.get('owned_by') == 'arena':
-                return
-            if model['id'] not in self.allowed_ids:
-                raise Exception('Model not found')
 
         async def subscription_provider(request, form_data, user, models):
             self.provider_calls.append(('subscription', form_data['model']))
@@ -107,7 +141,7 @@ class ArenaModelAccessTests(unittest.IsolatedAsyncioTestCase):
             'random': SimpleNamespace(choice=choose),
             'BYPASS_MODEL_ACCESS_CONTROL': False,
             'HTTPException': HTTPException,
-            'check_model_access': check_model_access,
+            'check_model_access': self.models_namespace['check_model_access'],
             'SUBSCRIPTION_OWNED_BY': 'subscription',
             'generate_subscription_chat_completion': subscription_provider,
             'generate_openai_chat_completion': openai_provider,
@@ -124,6 +158,10 @@ class ArenaModelAccessTests(unittest.IsolatedAsyncioTestCase):
         execute_definitions(UTILS / 'middleware.py', {'process_chat_payload'}, self.middleware_namespace)
 
     def request(self, arena, candidates):
+        for candidate in candidates:
+            info = candidate['info']
+            self.model_rows[candidate['id']] = SimpleNamespace(
+                id=candidate['id'], user_id=info['user_id'], base_model_id=info.get('base_model_id'))
         models = {model['id']: model for model in [arena, *candidates]}
         return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(MODELS=models)),
                                state=SimpleNamespace())
@@ -302,6 +340,100 @@ class ArenaModelAccessTests(unittest.IsolatedAsyncioTestCase):
             await self.fallback_selection(arena_entry(), [model_entry('public')])
         self.assertEqual(self.choices, [])
         self.assertEqual(self.provider_calls, [])
+
+    async def test_unusable_preset_chain_is_removed_before_both_random_draws(self):
+        self.choice_priority.append('preset')
+        self.allowed_ids.add('preset')
+        for preset_owner in ['alice', 'another-user']:
+            for base_exists in [True, False]:
+                with self.subTest(preset_owner=preset_owner, base_exists=base_exists):
+                    self.model_rows.clear()
+                    if base_exists:
+                        self.model_rows['private-base'] = SimpleNamespace(
+                            id='private-base', user_id='another-user', base_model_id=None)
+                    candidates = [model_entry('public'),
+                                  model_entry('preset', owner=preset_owner, base_model_id='private-base')]
+                    selected, _, _ = await self.payload_selection(arena_entry(), candidates)
+                    self.assertEqual(selected['id'], 'public')
+                    response, _ = await self.fallback_selection(arena_entry(), candidates)
+                    self.assertEqual(response['selected_model_id'], 'public')
+        self.assertEqual(self.provider_calls, [('openai', 'public')] * 4)
+
+    async def test_sole_unusable_preset_chain_fails_without_random_or_provider(self):
+        candidates = [model_entry('preset', owner='alice', base_model_id='missing-base')]
+        for select in [self.payload_selection, self.fallback_selection]:
+            with self.assertRaises(HTTPException) as captured:
+                await select(arena_entry(), candidates)
+            self.assertEqual(captured.exception.status_code, 403)
+        self.assertEqual(self.choices, [])
+        self.assertEqual(self.provider_calls, [])
+
+    async def test_accessible_multihop_chain_stays_eligible(self):
+        self.choice_priority.append('preset')
+        self.allowed_ids.update({'preset', 'granted-base'})
+        self.model_rows.update({
+            'owned-base': SimpleNamespace(id='owned-base', user_id='alice', base_model_id='granted-base'),
+            'granted-base': SimpleNamespace(id='granted-base', user_id='another-user', base_model_id=None),
+        })
+        candidates = [model_entry('public'), model_entry('preset', base_model_id='owned-base')]
+        selected, _, _ = await self.payload_selection(arena_entry(), candidates)
+        self.assertEqual(selected['id'], 'preset')
+        response, _ = await self.fallback_selection(arena_entry(), candidates)
+        self.assertEqual(response['selected_model_id'], 'preset')
+        self.assertEqual(self.provider_calls, [('openai', 'preset')])
+
+    async def test_chain_acl_bypass_and_admin_keep_existing_eligibility(self):
+        self.choice_priority.append('preset')
+        candidates = [model_entry('public'), model_entry('preset', base_model_id='missing-base'),
+                      model_entry('subscription', 'subscription')]
+        self.models_namespace['BYPASS_MODEL_ACCESS_CONTROL'] = True
+        self.chat_namespace['BYPASS_MODEL_ACCESS_CONTROL'] = True
+        selected, _, _ = await self.payload_selection(arena_entry(), candidates)
+        self.assertEqual(selected['id'], 'preset')
+        response, _ = await self.fallback_selection(arena_entry(), candidates)
+        self.assertEqual(response['selected_model_id'], 'preset')
+        self.assertEqual(self.model_reads, [])
+
+        self.models_namespace['BYPASS_MODEL_ACCESS_CONTROL'] = False
+        self.chat_namespace['BYPASS_MODEL_ACCESS_CONTROL'] = False
+        response, _ = await self.fallback_selection(arena_entry(), candidates, bypass_filter=True)
+        self.assertEqual(response['selected_model_id'], 'preset')
+        self.assertEqual(self.model_reads, [])
+
+        self.user.role = 'admin'
+        self.choice_priority = ['preset']
+        selected, _, _ = await self.payload_selection(arena_entry(), candidates)
+        self.assertEqual(selected['id'], 'preset')
+        response, _ = await self.fallback_selection(arena_entry(), candidates)
+        self.assertEqual(response['selected_model_id'], 'preset')
+        self.assertEqual(self.model_reads, [])
+
+    async def test_chained_candidates_share_group_lookup_and_keep_batched_grants(self):
+        self.model_rows['granted-base'] = SimpleNamespace(
+            id='granted-base', user_id='another-user', base_model_id=None)
+        self.allowed_ids.add('granted-base')
+        candidates = [model_entry('public'),
+                      model_entry('first-preset', owner='alice', base_model_id='granted-base'),
+                      model_entry('second-preset', owner='alice', base_model_id='granted-base')]
+        ids = await self.models_namespace['get_arena_model_ids'](candidates, arena_entry(), self.user)
+        self.assertEqual(ids, ['public', 'first-preset', 'second-preset'])
+        # One batched visibility query and one membership fetch shared by all chains.
+        self.assertEqual(len(self.access_queries), 1)
+        self.assertEqual(self.group_queries, ['alice', 'alice'])
+        self.assertEqual(len(self.individual_access_queries), 2)
+        for query in self.individual_access_queries:
+            self.assertEqual(query['user_group_ids'], {'readers'})
+            self.assertEqual(query['permission'], 'read')
+
+    async def test_denial_at_later_chain_hop_removes_the_preset(self):
+        self.model_rows.update({
+            'owned-base': SimpleNamespace(id='owned-base', user_id='alice', base_model_id='private-base'),
+            'private-base': SimpleNamespace(id='private-base', user_id='another-user', base_model_id=None),
+        })
+        candidates = [model_entry('public'), model_entry('preset', owner='alice', base_model_id='owned-base')]
+        ids = await self.models_namespace['get_arena_model_ids'](candidates, arena_entry(), self.user)
+        self.assertEqual(ids, ['public'])
+        self.assertEqual(self.model_reads, ['owned-base', 'private-base'])
 
 
 if __name__ == '__main__':

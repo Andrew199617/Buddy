@@ -2,6 +2,7 @@ import asyncio
 import copy
 import logging
 import sys
+from types import SimpleNamespace
 
 from fastapi import HTTPException, Request
 from open_webui.config import (
@@ -488,6 +489,21 @@ async def get_arena_model_ids(models, arena_model, user, bypass_filter=False):
         candidates = [model for model in candidates if model.get('owned_by') != SUBSCRIPTION_OWNED_BY]
         if not bypass_filter:
             candidates = await get_filtered_models(candidates, user)
+            if not BYPASS_MODEL_ACCESS_CONTROL and any(
+                candidate.get('info', {}).get('base_model_id') for candidate in candidates
+            ):
+                user_group_ids = {group.id for group in await Groups.get_groups_by_member_id(user.id)}
+                usable_candidates = []
+                for candidate in candidates:
+                    base_model_id = candidate.get('info', {}).get('base_model_id')
+                    if base_model_id:
+                        candidate_reference = SimpleNamespace(id=candidate['id'], base_model_id=base_model_id)
+                        if not await has_base_model_access(
+                            user.id, candidate_reference, user_role=user.role, user_group_ids=user_group_ids
+                        ):
+                            continue
+                    usable_candidates.append(candidate)
+                candidates = usable_candidates
 
     if not candidates:
         raise HTTPException(status_code=403, detail='No accessible models available for arena')
