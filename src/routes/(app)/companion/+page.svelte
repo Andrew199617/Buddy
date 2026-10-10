@@ -792,8 +792,19 @@
 		}
 	}
 
+	/** Closing, reloading or leaving the tab skips onDestroy, so the session is revoked here too. */
+	function revokeOnPageHide() {
+		if (!client) return;
+		const previous = resetConnection();
+		// The revocation request uses keepalive, so it can finish after the page unloads.
+		void previous?.disconnect().catch(() => {});
+		notice = 'This page was left, so its Runner session was revoked. Pair again to continue.';
+	}
+
 	onMount(() => {
 		void loadMachines();
+		window.addEventListener('pagehide', revokeOnPageHide);
+		return () => window.removeEventListener('pagehide', revokeOnPageHide);
 	});
 
 	onDestroy(() => {
@@ -1226,8 +1237,9 @@
 							>{terminalOutput || 'Command output will appear here.'}</code
 						></pre>
 					<p class="muted hint">
-						Output retains the latest 256 KiB. Disconnecting or leaving this page requests session
-						revocation; host expiry also stops commands.
+						Output retains the latest 256 KiB. Disconnecting, leaving, reloading or closing this
+						page requests session revocation. If the browser discards the page before it can send
+						that request, host expiry stops the commands.
 					</p>
 				{/if}
 			{:else}

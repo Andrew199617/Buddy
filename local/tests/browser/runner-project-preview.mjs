@@ -997,6 +997,18 @@ async function wrongCodeRetry(session, fixture) {
 	await checkLayout(session);
 }
 
+async function reloadRevokes(session, fixture) {
+	const { page } = session;
+	await inspectAndPair(page, fixture);
+	const authorization = sessionAuthorization(session.hostRequests);
+	// A reload or tab close skips Svelte's onDestroy; pagehide still revokes the session.
+	await page.reload({ waitUntil: 'domcontentloaded' });
+	await verifyRevoked(session, fixture, authorization);
+	await page.locator('#companion-endpoint').waitFor();
+	assert.equal(await page.locator('#companion-grant').count(), 0);
+	await checkLayout(session);
+}
+
 async function crlfSave(session, fixture) {
 	const { page } = session;
 	const scriptPath = resolve(fixture.directory, 'project/start.cmd');
@@ -1367,7 +1379,8 @@ try {
 			'transient-poll',
 			'file-conflict',
 			'crlf-save',
-			'wrong-code-retry'
+			'wrong-code-retry',
+			'reload-revokes'
 		]) {
 			let fixture = null;
 			let session = null;
@@ -1602,6 +1615,7 @@ try {
 				if (scenario === 'file-conflict') await fileConflict(session, fixture, profile);
 				if (scenario === 'crlf-save') await crlfSave(session, fixture);
 				if (scenario === 'wrong-code-retry') await wrongCodeRetry(session, fixture);
+				if (scenario === 'reload-revokes') await reloadRevokes(session, fixture);
 				results.push({
 					profile: profile.name,
 					scenario,

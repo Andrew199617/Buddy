@@ -48,6 +48,8 @@ minutes. The code is five dash-separated groups of four letters and digits
 O, I and L are read as 0, 1 and 1. Eight wrong attempts use up a code.
 Inspect the host name, current instance ID and endpoint in Buddy's
 project UI, then pair. Tokens expire after 30 minutes and stay in client memory.
+The Projects page revokes its session when it is closed, reloaded or left. A
+page the browser discards without notice stays paired until the token expires.
 The same instance ID is shown by discovery, pairing and workspace responses.
 Restart changes it and invalidates all previous tokens, grants and sessions.
 
