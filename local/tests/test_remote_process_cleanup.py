@@ -445,25 +445,50 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
                 await remote.start_process(['synthetic-fixture'], str(self.root))
         self.assertNotIsInstance(captured.exception, machines.StartupCleanupUnconfirmedError)
 
-    async def test_start_serialization_failure_closes_unknown_socket_and_reports_uncertainty(self):
-        closed = asyncio.Event()
+    async def test_start_serialization_failure_is_ordinary_and_opens_no_socket(self):
+        connections = []
 
         async def process(request):
+            connections.append(request)
             socket = web.WebSocketResponse()
             await socket.prepare(request)
             async for _ in socket:
                 pass
-            closed.set()
             return socket
 
         app = web.Application()
         app.router.add_get('/process', process)
         remote = await self.remote(app)
-        with self.assertLogs(machines.log, level='WARNING') as captured:
-            with self.assertRaises(machines.StartupCleanupUnconfirmedError):
-                await remote.start_process(['synthetic-fixture'], str(self.root), {'fixture': object()})
-        await asyncio.wait_for(closed.wait(), 1)
-        self.assertIn('cleanup unconfirmed', '\n'.join(captured.output))
+        with self.assertRaises(machines.SubscriptionError) as captured:
+            await remote.start_process(['synthetic-fixture'], str(self.root), {'fixture': object()})
+        self.assertNotIsInstance(captured.exception, machines.StartupCleanupUnconfirmedError)
+        self.assertEqual(connections, [])
+
+    async def test_runner_start_refusals_are_ordinary_errors(self):
+        remote, host = await self.real_remote()
+        with self.assertRaises(machines.SubscriptionError) as captured:
+            await remote.start_process([sys.executable, '-c', 'print(1)'], str(self.root / 'missing-folder'))
+        self.assertNotIsInstance(captured.exception, machines.StartupCleanupUnconfirmedError)
+        self.assertIn('Could not start', str(captured.exception))
+        self.assertFalse(host.processes)
+
+        original_prepare = runner.web.WebSocketResponse.prepare
+
+        async def shutdown_after_handshake(socket, request):
+            # Shutdown can begin after the handshake's own closing check.
+            result = await original_prepare(socket, request)
+            host.closing = True
+            return result
+
+        try:
+            with patch.object(runner.web.WebSocketResponse, 'prepare', shutdown_after_handshake):
+                with self.assertRaises(machines.SubscriptionError) as captured:
+                    await remote.start_process([sys.executable, '-c', 'print(1)'], str(self.root))
+        finally:
+            host.closing = False
+        self.assertNotIsInstance(captured.exception, machines.StartupCleanupUnconfirmedError)
+        self.assertIn('process limit', str(captured.exception))
+        self.assertFalse(host.processes)
 
     async def test_tracking_start_cancellation_waits_for_host_cleanup_before_releasing_operation(self):
         remote, host = await self.real_remote()
@@ -514,12 +539,32 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
         await tracked.revoke()
         await self.assert_registry_empty(host)
 
-    async def test_connected_unknown_identity_poison_is_retained_by_actual_tracking_wrapper(self):
+    async def test_runner_start_refusal_does_not_poison_actual_tracking_wrapper(self):
+        remote, host = await self.real_remote()
+        service = load_service(MemoryConfig(), self.root / 'unused-offline-state')
+        service.StartupCleanupUnconfirmedError = machines.StartupCleanupUnconfirmedError
+        tracked = service.TrackingMachine(remote)
+        missing = self.root / 'renamed-project'
+        with self.assertRaises(service.SubscriptionError) as captured:
+            await tracked.start_process([sys.executable, '-c', 'print("fixture")'], str(missing))
+        self.assertNotIsInstance(captured.exception, machines.StartupCleanupUnconfirmedError)
+        self.assertIsNone(tracked.startup_cleanup_error)
+        self.assertIsNone(tracked.cleanup_error)
+        self.assertFalse(tracked.processes)
+        # Restoring the folder is enough; the provider needs no backend restart.
+        missing.mkdir()
+        process = await tracked.start_process([sys.executable, '-c', 'print("fixture",flush=True)'], str(missing))
+        self.assertEqual(await asyncio.wait_for(process.read_line(), 10), 'fixture')
+        await process.wait(10)
+        await tracked.revoke()
+        await self.assert_registry_empty(host)
+
+    async def test_connected_start_without_a_reply_poison_is_retained_by_actual_tracking_wrapper(self):
         async def process(request):
             socket = web.WebSocketResponse()
             await socket.prepare(request)
             await socket.receive_json()
-            await socket.send_json({'type': 'error', 'message': 'synthetic identity unavailable'})
+            # No startup reply: the host may or may not have started a process.
             await socket.close()
             return socket
 

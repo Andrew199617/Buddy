@@ -52,6 +52,10 @@ class StartupCleanupUnconfirmedError(SubscriptionError):
     """A connected startup ended without proof that its host process stopped."""
 
 
+class _StartRefusedError(Exception):
+    """The Runner reported that a start created no process."""
+
+
 async def _finish_cancelled_cleanup(operation: asyncio.Task) -> None:
     """Keep ownership of cleanup when the caller is cancelled repeatedly."""
     while not operation.done():
@@ -449,6 +453,20 @@ class RemoteMachine:
         extra_env: dict[str, str] | None = None,
         temp_files: dict[str, str] | None = None,
     ) -> RemoteProcess:
+        program = os.path.basename(args[0])
+        start = {
+            'type': 'start',
+            'args': args,
+            'cwd': cwd,
+            'env': extra_env or {},
+            'temp_files': temp_files or {},
+        }
+        try:
+            # Encode before connecting, so a local encoding error starts nothing.
+            start_message = json.dumps(start)
+        except (TypeError, ValueError) as error:
+            raise SubscriptionError(f'{self.name} could not start {program}: {error}') from error
+
         try:
             websocket = await self._client().ws_connect(
                 f'{self.url}/process', heartbeat=30,
@@ -458,33 +476,42 @@ class RemoteMachine:
         except (aiohttp.ClientError, TimeoutError) as error:
             raise SubscriptionError(f'Could not reach {self.name} at {self.url}: {error}') from error
 
-        start = {
-            'type': 'start',
-            'args': args,
-            'cwd': cwd,
-            'env': extra_env or {},
-            'temp_files': temp_files or {},
-        }
         pid = None
         try:
-            await websocket.send_json(start)
+            await websocket.send_str(start_message)
             reply = await websocket.receive(timeout=60)
             event = json.loads(reply.data) if reply.type == aiohttp.WSMsgType.TEXT else {}
             if not isinstance(event, dict):
                 raise ValueError('Runner startup response must be an object')
+            if event.get('type') == 'start_failed':
+                message = event.get('message')
+                if not isinstance(message, str) or not message:
+                    message = 'The Runner did not start the process.'
+                raise _StartRefusedError(message)
             pid = event.get('pid')
             if event.get('type') != 'started':
                 raise ValueError(event.get('message') or 'Runner did not acknowledge startup')
             if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
                 raise ValueError('Runner startup response has no valid process ID')
+        except _StartRefusedError as refusal:
+            await self._close_refused_start(websocket)
+            raise SubscriptionError(f'{self.name} could not start {program}: {refusal}') from refusal
         except Exception as error:
             await self._dispose_failed_start(websocket, args, pid)
-            raise SubscriptionError(f'{self.name} could not start {os.path.basename(args[0])}: {error}') from error
+            raise SubscriptionError(f'{self.name} could not start {program}: {error}') from error
         except asyncio.CancelledError:
             cleanup = asyncio.create_task(self._dispose_failed_start(websocket, args, pid))
             await _finish_cancelled_cleanup(cleanup)
             raise
         return RemoteProcess(websocket, args, pid)
+
+    async def _close_refused_start(self, websocket) -> None:
+        # The Runner reported that nothing started, so a failed close cannot
+        # leave a process behind.
+        try:
+            await websocket.close()
+        except Exception as error:
+            log.debug('Could not close the refused %s startup connection: %s', self.name, error)
 
     async def _dispose_failed_start(self, websocket, args: list[str], pid: int | None) -> None:
         if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:

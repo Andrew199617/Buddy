@@ -56,6 +56,11 @@ def _json_error(status: int, message: str) -> web.Response:
     return web.json_response({'error': message}, status=status)
 
 
+async def _refuse_start(websocket: web.WebSocketResponse, message: str) -> None:
+    """Report a start that created no process, so Buddy keeps no cleanup debt."""
+    await websocket.send_json({'type': 'start_failed', 'message': message})
+
+
 async def _finish_owned_cleanup(task: asyncio.Task) -> None:
     try:
         await asyncio.shield(task)
@@ -251,15 +256,20 @@ class Runner:
                 or not isinstance(args, list) or not args
                 or not all(isinstance(arg, str) and '\0' not in arg for arg in args)
             ):
-                await websocket.send_json({'type': 'error', 'message': 'Expected a start message with string args.'})
+                await _refuse_start(websocket, 'Expected a start message with string args.')
                 return websocket
             if self.closing or len(self.command_requests) + len(self.processes) >= 16:
-                await websocket.send_json({'type': 'error', 'message': 'The Runner is unavailable or at its process limit.'})
+                await _refuse_start(websocket, 'The Runner is unavailable or at its process limit.')
                 return websocket
-            process = start_local_process(
-                args, str(start.get('cwd') or self.chat_dir), start.get('env') or None,
-                start.get('temp_files') or None, str(self.temp_dir),
-            )
+            try:
+                process = start_local_process(
+                    args, str(start.get('cwd') or self.chat_dir), start.get('env') or None,
+                    start.get('temp_files') or None, str(self.temp_dir),
+                )
+            except (OSError, ValueError, TypeError) as error:
+                # A missing working folder or CLI fails before anything runs.
+                await _refuse_start(websocket, f'Could not start {os.path.basename(args[0])}: {error}')
+                return websocket
             self.processes.add(process)
             log.info('Started %s (pid %s)', os.path.basename(args[0]), process.pid)
             # Startup acknowledgement is covered by the same cleanup finally.
@@ -289,8 +299,12 @@ class Runner:
             await self._report_process_failure(process, websocket, error)
         except (OSError, ValueError, TimeoutError, ConnectionResetError, RuntimeError) as error:
             if not websocket.closed:
+                reply = {'type': 'error', 'message': str(error)}
+                if process is None:
+                    # No process exists yet, so this failure started nothing.
+                    reply['type'] = 'start_failed'
                 try:
-                    await websocket.send_json({'type': 'error', 'message': str(error)})
+                    await websocket.send_json(reply)
                 except (ConnectionResetError, RuntimeError):
                     pass
         finally:

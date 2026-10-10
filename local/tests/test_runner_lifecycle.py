@@ -268,6 +268,25 @@ class RunnerBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(processes[0].returncode)
         await processes[0].close()
 
+    async def test_start_that_creates_no_process_is_refused_as_not_started(self):
+        provider = {'Authorization': f'Bearer {self.key}'}
+        cases = {
+            'missing args': {'type': 'start', 'args': []},
+            'missing working folder': {
+                'type': 'start', 'args': [sys.executable, '-c', 'print(1)'],
+                'cwd': str(self.root / 'missing-folder'),
+            },
+        }
+        for name, start in cases.items():
+            with self.subTest(name=name):
+                socket = await self.client.ws_connect(self.server.make_url('/process'), headers=provider)
+                await socket.send_json(start)
+                reply = await socket.receive_json(timeout=10)
+                self.assertEqual(reply['type'], 'start_failed')
+                self.assertTrue(reply['message'])
+                self.assertEqual(self.app['runner'].processes, set())
+                await socket.close()
+
     async def test_kill_acknowledges_only_after_native_cleanup(self):
         socket = await self.client.ws_connect(
             self.server.make_url('/process'), headers={'Authorization': f'Bearer {self.key}'}
