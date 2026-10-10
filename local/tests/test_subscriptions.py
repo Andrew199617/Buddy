@@ -131,6 +131,8 @@ class ConversationTests(unittest.TestCase):
             self.assertIsNone(reloaded.get('a'))
             self.assertEqual(reloaded.get('c'), 'session-c')
 
+
+class CommonTests(unittest.TestCase):
     def test_requested_effort_reads_chip_and_responses_format(self):
         self.assertEqual(requested_effort({'reasoning_effort': 'High'}), 'high')
         self.assertEqual(requested_effort({'reasoning': {'effort': 'low'}}), 'low')
@@ -407,22 +409,6 @@ class ClaudeStreamTests(unittest.TestCase):
 
         self.assertEqual(asyncio.run(run()), 'abc#state\n')
 
-    def test_finds_newest_desktop_bundle(self):
-        with tempfile.TemporaryDirectory() as directory:
-            appdata = Path(directory) / 'Roaming'
-            local_appdata = Path(directory) / 'Local'
-            # The MSIX app's real files live under Packages; %APPDATA% is virtualized.
-            package_bundles = local_appdata / 'Packages' / 'Claude_abc123' / 'LocalCache' / 'Roaming' / 'Claude'
-            installs = [(appdata / 'Claude', '2.1.9'), (package_bundles, '2.1.295'), (appdata / 'Claude', '2.1.30')]
-            for root, version in installs:
-                binary = root / 'claude-code' / version / 'abc' / 'claude.exe'
-                binary.parent.mkdir(parents=True)
-                binary.write_text('')
-            with patch.dict(os.environ, {'APPDATA': str(appdata), 'LOCALAPPDATA': str(local_appdata)}):
-                newest = discovery._newest_desktop_bundle()
-            self.assertIn('Claude_abc123', newest)
-            self.assertIn('2.1.295', newest)
-
 
 class CodexTests(unittest.TestCase):
     def test_turn_parser_streams_messages_activity_and_usage(self):
@@ -602,6 +588,24 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(effort('none'), 'low')
         self.assertIsNone(effort('max'))
         self.assertEqual(effort('high', is_task=True), 'low')
+
+
+class DiscoveryTests(unittest.TestCase):
+    def test_finds_newest_desktop_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            appdata = Path(directory) / 'Roaming'
+            local_appdata = Path(directory) / 'Local'
+            # The MSIX app's real files live under Packages; %APPDATA% is virtualized.
+            package_bundles = local_appdata / 'Packages' / 'Claude_abc123' / 'LocalCache' / 'Roaming' / 'Claude'
+            installs = [(appdata / 'Claude', '2.1.9'), (package_bundles, '2.1.295'), (appdata / 'Claude', '2.1.30')]
+            for root, version in installs:
+                binary = root / 'claude-code' / version / 'abc' / 'claude.exe'
+                binary.parent.mkdir(parents=True)
+                binary.write_text('')
+            with patch.dict(os.environ, {'APPDATA': str(appdata), 'LOCALAPPDATA': str(local_appdata)}):
+                newest = discovery._newest_desktop_bundle()
+            self.assertIn('Claude_abc123', newest)
+            self.assertIn('2.1.295', newest)
 
 
 class ProcessTests(unittest.TestCase):
