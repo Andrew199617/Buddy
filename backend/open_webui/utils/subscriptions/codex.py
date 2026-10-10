@@ -43,7 +43,6 @@ NOT_INSTALLED_MESSAGE = (
     'The Codex CLI was not found. Install it with "npm install -g @openai/codex" '
     'or set its path in the ChatGPT subscription settings.'
 )
-NOT_SIGNED_IN_MESSAGE = 'ChatGPT is not signed in. Sign in under Admin Settings → Connections → Subscriptions.'
 # Desktop-app features that add computer-use and browser tools to every thread,
 # and hooks, which run commands outside the read-only sandbox.
 DISABLED_FEATURES = ('plugins', 'apps', 'computer_use', 'browser_use', 'hooks')
