@@ -66,6 +66,8 @@
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
 	let pollInFlight = false;
 	$: busy = $pendingProviderActions[provider.id] > 0;
+	// The CLI signs in, and a browser sign-in returns, on the machine that runs it.
+	$: machineName = provider.machine?.name || $i18n.t('the selected machine');
 
 	const inputClass =
 		'w-full rounded-xl bg-gray-50 px-3 py-2 text-sm outline-hidden dark:bg-gray-850 placeholder:text-gray-300 dark:placeholder:text-gray-700';
@@ -293,11 +295,13 @@
 		<p class="text-xs text-gray-500 dark:text-gray-400">
 			{#if provider.id === 'claude'}
 				{$i18n.t(
-					'Use your Claude Pro or Max account. Claude Code keeps the sign-in on this computer; Buddy never sees your password or tokens.'
+					'Use your Claude Pro or Max account. Claude Code keeps the sign-in on the computer it runs on ({{machine}}); Buddy never sees your password or tokens.',
+					{ machine: machineName }
 				)}
 			{:else}
 				{$i18n.t(
-					'Use your ChatGPT Plus, Pro, or Business account. Codex keeps the sign-in on this computer; Buddy never sees your password or tokens.'
+					'Use your ChatGPT Plus, Pro, or Business account. Codex keeps the sign-in on the computer it runs on ({{machine}}); Buddy never sees your password or tokens.',
+					{ machine: machineName }
 				)}
 			{/if}
 		</p>
@@ -335,11 +339,12 @@
 							disabled={busy}
 							on:click={() => startLogin('browser')}
 						>
-							{$i18n.t('Sign in on this computer')}
+							{$i18n.t('Get sign-in link')}
 						</button>
 						<p class="text-xs text-gray-500 dark:text-gray-400">
 							{$i18n.t(
-								'The sign-in page returns to this computer, so open it in a browser on the computer running Buddy.'
+								'The sign-in page returns to the computer running Codex ({{machine}}), so open the link in a browser on that computer. From any other device, use a device code instead.',
+								{ machine: machineName }
 							)}
 						</p>
 						<button

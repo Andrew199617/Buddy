@@ -173,7 +173,8 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	}
 
 	function describeProvider(id) {
-		const provider = providerFixture(id, id === 'codex' || signedIn || mode === 'api-billing');
+		const codexSignedIn = id === 'codex' && mode !== 'codex-signed-out';
+		const provider = providerFixture(id, codexSignedIn || signedIn || mode === 'api-billing');
 		provider.settings = { ...provider.settings, ...settingsByProvider[id] };
 		const machine = machines.find((machine) => machine.id === provider.settings.machine_id);
 		provider.machine = {
@@ -1008,6 +1009,39 @@ async function serverCancelCase(browser, profile) {
 	});
 }
 
+async function codexSignInTextCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'codex-sign-in-text',
+		'codex-signed-out',
+		async ({ page }, fixtures) => {
+			await setSettings(page, 'admin:connections');
+			await providerCard(page, 'ChatGPT')
+				.getByRole('button', { name: 'Sign in', exact: true })
+				.click();
+			const dialog = page
+				.getByRole('dialog')
+				.filter({ has: page.getByRole('heading', { name: 'Sign in to ChatGPT' }) });
+			await dialog.waitFor();
+			await dialog
+				.getByText(
+					'The sign-in page returns to the computer running Codex (This server), so open the link in a browser on that computer. From any other device, use a device code instead.',
+					{ exact: true }
+				)
+				.waitFor();
+			assert.match(await dialog.innerText(), /on the computer it runs on \(This server\)/);
+			assert.equal(
+				await dialog.getByRole('button', { name: 'Use a device code instead' }).isVisible(),
+				true
+			);
+			await captureScreenshot(page, profile.name + '-codex-sign-in');
+			await dismissDialog(page, dialog, 'x');
+			assert.equal(fixtures.count('POST', '/api/v1/subscriptions/codex/login'), 0);
+		}
+	);
+}
+
 async function successCase(browser, profile) {
 	await runCase(browser, profile, 'success', 'success', async ({ page }, fixtures) => {
 		await openLogin(page);
@@ -1024,6 +1058,11 @@ async function codeLoginCase(browser, profile, remote = false) {
 	const name = remote ? 'remote-code-login' : 'code-login';
 	await runCase(browser, profile, name, name, async ({ page }, fixtures) => {
 		await openLogin(page);
+		const machineName = remote ? 'Synthetic computer A' : 'This server';
+		assert.ok(
+			(await loginDialog(page).innerText()).includes('runs on (' + machineName + ')'),
+			'The dialog names the computer that keeps the sign-in'
+		);
 		await startLogin(page);
 		await loginDialog(page).locator('#subscription-login-code').fill('synthetic-approval-code');
 		await loginDialog(page).getByRole('button', { name: 'Finish', exact: true }).click();
@@ -2191,6 +2230,7 @@ try {
 		await terminalPollCase(browser, profile, 'idle');
 		await terminalPollCase(browser, profile, 'code');
 		await serverCancelCase(browser, profile);
+		await codexSignInTextCase(browser, profile);
 		await successCase(browser, profile);
 		await codeLoginCase(browser, profile);
 		await codeLoginCase(browser, profile, true);

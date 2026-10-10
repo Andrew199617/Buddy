@@ -167,10 +167,11 @@ Set it up under **Admin Settings → Connections → Subscriptions**:
 2. Turn on **Claude** or **ChatGPT** and choose **Sign in**.
    - Claude: open the sign-in page, approve, then paste the code it shows.
      This works from a phone.
-   - ChatGPT: **Sign in on this computer** returns to the computer running
-     Buddy. **Use a device code** works from any device after you allow device
-     code sign-in in ChatGPT's security settings. If Codex is already signed in
-     on this computer, Buddy uses that sign-in.
+   - ChatGPT: **Get sign-in link** returns to the machine running Codex (the
+     computer running Buddy or the selected Runner), so open the link in a
+     browser on that machine. **Use a device code instead** works from any
+     device after you allow device code sign-in in ChatGPT's security settings.
+     If Codex is already signed in on that machine, Buddy uses that sign-in.
 3. The plan's models appear in the model picker, tagged **Claude plan** or
    **ChatGPT plan**. ChatGPT shows how much of its usage limit you have used.
 
