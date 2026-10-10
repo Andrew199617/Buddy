@@ -314,6 +314,21 @@ class ArenaModelAccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.choices, [['public', 'private'], ['public', 'private']])
         self.assertEqual(self.access_queries, [])
 
+    async def test_model_list_hides_subscription_models_from_users_despite_grants_or_bypass(self):
+        self.allowed_ids.add('subscription')
+        candidates = [model_entry('public'), model_entry('subscription', 'subscription'),
+                      model_entry('owned-subscription-preset', 'subscription', owner='alice')]
+        get_filtered_models = self.models_namespace['get_filtered_models']
+        for bypass in [False, True]:
+            with self.subTest(bypass=bypass):
+                self.models_namespace['BYPASS_MODEL_ACCESS_CONTROL'] = bypass
+                visible = await get_filtered_models(candidates, self.user)
+                self.assertEqual([model['id'] for model in visible], ['public'])
+        self.user.role = 'admin'
+        visible = await get_filtered_models(candidates, self.user)
+        self.assertEqual([model['id'] for model in visible],
+                         ['public', 'subscription', 'owned-subscription-preset'])
+
     async def test_explicit_fallback_acl_bypass_still_excludes_subscription(self):
         response, _ = await self.fallback_selection(arena_entry(), [
             model_entry('public'), model_entry('private'), model_entry('subscription', 'subscription'),

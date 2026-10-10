@@ -570,6 +570,11 @@ async def check_model_access(user, model, model_info=None, db=None):
 
 
 async def get_filtered_models(models, user, db=None):
+    if user.role != 'admin':
+        # Subscription models run on the administrator's personal plan, so
+        # neither access grants nor BYPASS_MODEL_ACCESS_CONTROL list them.
+        models = [model for model in models if model.get('owned_by') != SUBSCRIPTION_OWNED_BY]
+
     # Filter out models that the user does not have access to
     if (
         user.role == 'user' or (user.role == 'admin' and not BYPASS_ADMIN_ACCESS_CONTROL)
