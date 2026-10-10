@@ -740,6 +740,23 @@
 		}
 	};
 
+	// The desktop sidebar is not modal, so only move focus that opening or closing it
+	// would drop to the page: off a toggle that hides, or out of a sidebar turning inert.
+	// The mobile drawer's focus trap handles both directions itself.
+	const keepDesktopSidebarFocus = async (open: boolean) => {
+		if ($mobile) {
+			return;
+		}
+		const focusedElement = document.activeElement;
+		if (open && focusedElement?.id === 'sidebar-toggle-button') {
+			await tick();
+			document.getElementById('buddy-sidebar-close')?.focus();
+		} else if (!open && navElement?.contains(focusedElement)) {
+			await tick();
+			document.getElementById('sidebar-toggle-button')?.focus();
+		}
+	};
+
 	const drawerFocus = (node: HTMLElement, open: boolean) => {
 		const focusTrapOptions = {
 			allowOutsideClick: true,
@@ -874,6 +891,7 @@
 			} catch {}
 		};
 		const unsubscribeSidebar = showSidebar.subscribe(persistDesktopSidebar);
+		const unsubscribeSidebarFocus = showSidebar.subscribe(keepDesktopSidebarFocus);
 
 		const updateSidebarForViewport = (isMobile: boolean) => {
 			if (isMobile === previousMobile) {
@@ -927,6 +945,7 @@
 		return () => {
 			unsubscribeWidth();
 			unsubscribeSidebar();
+			unsubscribeSidebarFocus();
 			unsubscribeMobile();
 
 			window.removeEventListener('keydown', onKeyDown);

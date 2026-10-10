@@ -284,11 +284,11 @@ async function runHeaderScenario(options) {
 		await page.locator('#buddy-sidebar-close').click();
 		await page.locator('#sidebar-toggle-button').waitFor({ state: 'visible' });
 		await assertSidebarArrow(page, 'sidebar-toggle-button', 'right');
-		if (mobileDrawer) {
-			await page.waitForFunction(() => document.activeElement?.id === 'sidebar-toggle-button');
-		}
-		await page.locator('#sidebar-toggle-button').click();
+		// Desktop and the mobile drawer both hand focus between the toggle and the close control.
+		await page.waitForFunction(() => document.activeElement?.id === 'sidebar-toggle-button');
+		await page.keyboard.press('Enter');
 		await page.locator('#sidebar-search-button').waitFor({ state: 'visible' });
+		await page.waitForFunction(() => document.activeElement?.id === 'buddy-sidebar-close');
 		assert.equal(
 			await page.locator('#sidebar-search-input').count(),
 			0,
