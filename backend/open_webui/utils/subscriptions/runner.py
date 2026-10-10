@@ -106,6 +106,8 @@ class Runner:
         self.processes = set()
         self.stdin_workers = {}
         self.websockets = set()
+        # The connection that started each process, for shutdown acknowledgements.
+        self.process_sockets = {}
         self.command_requests = set()
         self.closing = False
         self._shutdown_task = None
@@ -272,6 +274,7 @@ class Runner:
                 await _refuse_start(websocket, f'Could not start {os.path.basename(args[0])}: {error}')
                 return websocket
             self.processes.add(process)
+            self.process_sockets[process] = websocket
             log.info('Started %s (pid %s)', os.path.basename(args[0]), process.pid)
             # Startup acknowledgement is covered by the same cleanup finally.
             await websocket.send_json({'type': 'started', 'pid': process.pid})
@@ -337,6 +340,7 @@ class Runner:
                 await process.close()
                 await self._stop_stdin_worker(process)
                 self.processes.discard(process)
+                self.process_sockets.pop(process, None)
                 log.info('Stopped process %s', process.pid)
         finally:
             if forwarder is not None and not forwarder.done():
@@ -352,6 +356,16 @@ class Runner:
             if not worker.done():
                 worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
+
+    async def _acknowledge_stopped(self, process) -> None:
+        """Confirm verified cleanup to Buddy before its connection closes."""
+        websocket = self.process_sockets.get(process)
+        if websocket is None or websocket.closed:
+            return
+        try:
+            await websocket.send_json({'type': 'stopped', 'pid': process.pid})
+        except (ConnectionResetError, RuntimeError):
+            pass
 
     async def operator_grants(self, request: web.Request) -> web.Response:
         return web.json_response({'grants': self.workspaces.list_grants()})
@@ -382,6 +396,8 @@ class Runner:
         for process, result in zip(processes, errors):
             if not isinstance(result, BaseException):
                 await self._stop_stdin_worker(process)
+                # A bare close would leave Buddy unsure the process stopped.
+                await self._acknowledge_stopped(process)
         errors.extend(await asyncio.gather(
             *(websocket.close(code=1001) for websocket in list(self.websockets)), return_exceptions=True
         ))

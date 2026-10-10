@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
@@ -584,6 +585,40 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(service.SubscriptionError):
             await tracked.revoke()
         self.assertIsNotNone(tracked.startup_cleanup_error)
+
+    async def test_runner_shutdown_acknowledges_verified_cleanup_before_closing(self):
+        remote, host = await self.real_remote()
+        service = load_service(MemoryConfig(), self.root / 'unused-offline-state')
+        service.StartupCleanupUnconfirmedError = machines.StartupCleanupUnconfirmedError
+        tracked = service.TrackingMachine(remote)
+        fixture = 'import time; print("ready",flush=True); time.sleep(30)'
+        processes = []
+        for _ in range(3):
+            process = await tracked.start_process([sys.executable, '-c', fixture], str(self.root))
+            self.assertEqual(await asyncio.wait_for(process.read_line(), 10), 'ready')
+            processes.append(process)
+        natives = list(host.processes)
+
+        async def held_finish_output(timeout):
+            # Keep each forwarder from reporting exit before the sockets close.
+            await asyncio.Event().wait()
+
+        with ExitStack() as patches:
+            for native in natives:
+                patches.enter_context(patch.object(native, 'finish_output', held_finish_output))
+            # A Runner restart, for example to load a renewed certificate.
+            await host.close(self.servers[-1].app)
+        for process in processes:
+            await asyncio.wait_for(process._receiver, 5)
+            self.assertTrue(process._confirmed_stopped.is_set())
+            self.assertTrue(process.cleanup_confirmed)
+        self.assertFalse(any(is_running(native.pid) for native in natives))
+        # The next start finds no cleanup debt; only the closing Runner refuses it.
+        with self.assertRaises(service.SubscriptionError):
+            await tracked.start_process([sys.executable, '-c', 'print(1)'], str(self.root))
+        self.assertIsNone(tracked.cleanup_error)
+        self.assertIsNone(tracked.startup_cleanup_error)
+        self.assertFalse(tracked.processes)
 
     async def test_runner_output_limit_reports_failed_exit_after_verified_cleanup_and_next_command_works(self):
         remote, host = await self.real_remote()
