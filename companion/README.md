@@ -172,7 +172,11 @@ paired `GET /v1/grants`. Choosing a provider machine clears inherited access and
 paths; removing one disables its providers instead of silently using This server.
 After deletion, explicitly select a different computer or This server. The saved
 selection remains disabled with chat-only access and empty paths; enable it in a
-separate save. An unconfirmed old-process cleanup still blocks that recovery.
+separate save. If the deleted computer's Runner had not confirmed that an old
+provider process stopped, choosing the new computer asks it again. If that
+still fails, the provider moves anyway and stays off; enabling it later retries
+the stop. An earlier startup that never reported a process still blocks the
+move; see the restart steps above.
 New registrations reserve retained selected and cleanup-owner IDs, so registering
 a different computer with a deleted computer's name cannot silently reconnect it.
 Remote mutating provider actions include the expected saved machine ID and

@@ -832,6 +832,51 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.config.values['subscriptions.claude']['machine_id'], 'runner-a')
         self.assertFalse(self.config.values['subscriptions.claude']['enable'])
 
+    async def delete_host_with_unconfirmed_process(self, stop_failures):
+        """Remove runner-b while the Runner cannot confirm that Codex's process stopped."""
+        machine = self.machines['runner-b']
+        machine.process_factory = StrictTrackedProcess
+        wrapper = self.service._tracking_machine('codex', machine)
+        process = await wrapper.start_process(['fixture-codex'], 'fixture-cwd')
+        process.stop_failures = [
+            self.service.SubscriptionError('Fixture Runner unreachable') for _ in range(stop_failures)
+        ]
+        with self.assertRaises(self.service.SubscriptionError):
+            await self.service.delete_machine('runner-b')
+        self.assertIsNotNone(wrapper.cleanup_error)
+        self.assertIn(process, wrapper.processes)
+        self.assertEqual(self.config.values['subscriptions.codex']['machine_id'], 'runner-b')
+        return wrapper, process
+
+    async def test_moving_off_a_deleted_host_retries_its_unconfirmed_process_cleanup(self):
+        wrapper, process = await self.delete_host_with_unconfirmed_process(stop_failures=1)
+        # The Runner is reachable again; choosing another machine retries cleanup.
+        moved = await self.service.save_settings('codex', {'machine_id': 'local'}, 'runner-b')
+        self.assertEqual(moved.machine_id, 'local')
+        self.assertFalse(moved.enable)
+        self.assertEqual(process.stop_count, 2)
+        self.assertTrue(process.cleanup_confirmed)
+        self.assertEqual(wrapper.processes, set())
+        self.assertNotIn('codex', self.service._tracked_machines)
+        enabled = await self.service.save_settings('codex', {'enable': True}, 'local')
+        self.assertTrue(enabled.enable)
+
+    async def test_failed_retry_after_leaving_a_deleted_host_is_retried_by_turning_the_provider_on(self):
+        wrapper, process = await self.delete_host_with_unconfirmed_process(stop_failures=2)
+        with self.assertRaises(self.service.SubscriptionError):
+            await self.service.save_settings('codex', {'machine_id': 'local'}, 'runner-b')
+        settings = self.config.values['subscriptions.codex']
+        self.assertEqual(settings['machine_id'], 'local')
+        self.assertFalse(settings['enable'])
+        self.assertIs(self.service._tracked_machines['codex'], wrapper)
+        self.assertIsNotNone(wrapper.cleanup_error)
+        # The selected machine exists now, so turning the provider on retries cleanup.
+        enabled = await self.service.save_settings('codex', {'enable': True}, 'local')
+        self.assertTrue(enabled.enable)
+        self.assertEqual(process.stop_count, 3)
+        self.assertTrue(process.cleanup_confirmed)
+        self.assertNotIn('codex', self.service._tracked_machines)
+
     async def test_remote_mutations_without_an_expected_host_fail_before_provider_calls(self):
         before = copy.deepcopy(self.config.values)
         await self.assert_conflict(self.service.start_login('claude', 'browser'))

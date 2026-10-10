@@ -188,14 +188,18 @@ class TrackingMachine:
             raise SubscriptionError('The provider machine changed; the old operation was stopped.')
 
     def _check_cleanup(self):
-        if self.startup_cleanup_error is not None:
-            raise SubscriptionError(self._startup_cleanup_message())
+        self._check_startup_cleanup()
         if self.cleanup_error is not None or (not self.valid and (self.processes or self.startups)):
             raise SubscriptionError(
                 'An old provider operation could not confirm that it stopped. Once its machine is reachable, '
                 'turn the provider off and on in subscription settings to retry cleanup. If its Runner '
                 'restarted, check that the old CLI stopped, then restart the Buddy backend.'
             )
+
+    def _check_startup_cleanup(self):
+        """Refuse while a startup may have left a process Buddy has no handle to stop."""
+        if self.startup_cleanup_error is not None:
+            raise SubscriptionError(self._startup_cleanup_message())
 
     def _startup_cleanup_message(self):
         return f'{STARTUP_CLEANUP_MESSAGE} Earlier machine: {self.name} ({self.id}).'
@@ -748,7 +752,12 @@ async def _save_settings(
             machine['id'] == previous.machine_id for machine in await _machine_configs()
         )
     if recover_missing_machine:
-        _require_provider_cleanup(provider_id)
+        # Nothing else can retry cleanup of a removed machine's old process.
+        # The move saves the provider turned off and quiesces it below, which
+        # retries that cleanup. An unknown startup process cannot be retried.
+        tracked = _tracked_machines.get(provider_id)
+        if tracked is not None:
+            tracked._check_startup_cleanup()
     else:
         await _check_expected_machine(previous, expected_machine_id, expected_machine_revision, mutation=True)
     current = asdict(previous)
