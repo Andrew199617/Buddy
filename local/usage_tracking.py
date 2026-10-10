@@ -21,6 +21,10 @@ from importlib.metadata import version as package_version
 from typing import Any
 
 log = logging.getLogger('owui_local_patches')
+SUPPORTED_VERSIONS = {'0.11.4'}
+SNAPSHOT_VERSION = 1
+REQUEST_STATE_KEY = '_owui_local_response_runs'
+ACTIVE_RUN = contextvars.ContextVar('owui_local_response_run', default=None)
 
 
 def open_webui_version() -> str:
@@ -32,10 +36,6 @@ def open_webui_version() -> str:
         from open_webui.env import VERSION
 
         return VERSION
-SUPPORTED_VERSIONS = {'0.11.4'}
-SNAPSHOT_VERSION = 1
-REQUEST_STATE_KEY = '_owui_local_response_runs'
-ACTIVE_RUN = contextvars.ContextVar('owui_local_response_run', default=None)
 
 
 def token_count(value: Any) -> int | None:

@@ -140,6 +140,7 @@ ENV = os.getenv('ENV', 'dev')
 
 FROM_INIT_PY = os.getenv('FROM_INIT_PY', 'False').lower() == 'true'
 
+
 def _load_package_data() -> dict:
     if FROM_INIT_PY:
         try:
