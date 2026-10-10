@@ -13,6 +13,11 @@ import asyncio
 import json
 import logging
 
+from open_webui.utils.subscriptions.common import (
+    ProviderModel,
+    ProviderSettings,
+    model_key,
+)
 from open_webui.utils.subscriptions.events import (
     ReasoningDelta,
     StatusUpdate,
@@ -20,10 +25,17 @@ from open_webui.utils.subscriptions.events import (
     TextDelta,
     TokenUsage,
 )
+from open_webui.utils.subscriptions.discovery import TOOL_CODEX
 from open_webui.utils.subscriptions.process import ProcessClosedError
 
 log = logging.getLogger(__name__)
 
+PROVIDER_ID = 'codex'
+NOT_INSTALLED_MESSAGE = (
+    'The Codex CLI was not found. Install it with "npm install -g @openai/codex" '
+    'or set its path in the ChatGPT subscription settings.'
+)
+NOT_SIGNED_IN_MESSAGE = 'ChatGPT is not signed in. Sign in under Admin Settings → Connections → Subscriptions.'
 # Desktop-app features that add computer-use and browser tools to every thread,
 # and hooks, which run commands outside the read-only sandbox.
 DISABLED_FEATURES = ('plugins', 'apps', 'computer_use', 'browser_use', 'hooks')
@@ -48,6 +60,41 @@ def readable_codex_error(message: str) -> str:
         if isinstance(payload, dict) and payload.get('message'):
             return str(payload['message'])
     return text
+
+
+def _window_label(minutes) -> str:
+    if not minutes:
+        return 'Usage'
+    if minutes == 10080:
+        return 'Weekly'
+    if minutes % 1440 == 0:
+        return f'{minutes // 1440}-day'
+    if minutes % 60 == 0:
+        return f'{minutes // 60}-hour'
+    return f'{minutes}-minute'
+
+
+def summarize_rate_limits(snapshot: dict | None) -> dict | None:
+    """Reduce Codex's rate-limit snapshot to what the settings page shows."""
+    if not isinstance(snapshot, dict):
+        return None
+    windows = []
+    for window_name in ('primary', 'secondary'):
+        window = snapshot.get(window_name)
+        if not isinstance(window, dict):
+            continue
+        windows.append(
+            {
+                'label': _window_label(window.get('windowDurationMins')),
+                'used_percent': window.get('usedPercent'),
+                'resets_at': window.get('resetsAt'),
+            }
+        )
+    return {
+        'plan': snapshot.get('planType'),
+        'windows': windows,
+        'limit_reached': bool(snapshot.get('rateLimitReachedType')),
+    }
 
 
 def _shorten(text, limit: int = 160) -> str:
@@ -332,3 +379,172 @@ class CodexAppServer:
             self._process.close_stdin()
             self._process.kill()
         self._process = None
+
+
+class CodexLogin:
+    def __init__(self, machine_id: str, method: str, login_id: str, url: str, user_code: str | None):
+        self.machine_id = machine_id
+        self.method = method
+        self.login_id = login_id
+        self.url = url
+        self.user_code = user_code
+        self.state = 'waiting'
+        self.message: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            'state': self.state,
+            'method': self.method,
+            'url': self.url,
+            'user_code': self.user_code,
+            'needs_code': False,
+            'message': self.message,
+        }
+
+
+class CodexProvider:
+    id = PROVIDER_ID
+    name = 'ChatGPT'
+
+    def __init__(self):
+        # One app-server per machine, keyed by machine id.
+        self._servers: dict[str, CodexAppServer] = {}
+        self._login: CodexLogin | None = None
+        self.rate_limits: dict | None = None
+
+    def _on_notification(self, message: dict) -> None:
+        method = message.get('method')
+        params = message.get('params') or {}
+        if method == 'account/rateLimits/updated':
+            self.rate_limits = summarize_rate_limits(params.get('rateLimits'))
+        elif method == 'account/login/completed':
+            login = self._login
+            if not login or (params.get('loginId') and params.get('loginId') != login.login_id):
+                return
+            if params.get('success'):
+                login.state = 'success'
+                login.message = 'Signed in to ChatGPT.'
+            else:
+                login.state = 'error'
+                login.message = params.get('error') or 'Sign-in did not finish.'
+
+    async def _server_for(self, settings: ProviderSettings, machine) -> CodexAppServer:
+        """The machine's app-server; it starts in the machine's empty chat folder."""
+        cli = await machine.find_tool(TOOL_CODEX, settings.cli_path)
+        if not cli:
+            raise SubscriptionError(f'{machine.name}: {NOT_INSTALLED_MESSAGE}')
+        server = self._servers.get(machine.id)
+        if server and (server.cli != cli or server.machine is not machine):
+            server.stop()
+            server = None
+        if not server:
+            server = CodexAppServer(machine, cli, await machine.chat_dir(), self._on_notification)
+            self._servers[machine.id] = server
+        await server.ensure_started()
+        return server
+
+    async def status(self, settings: ProviderSettings, machine) -> dict:
+        cli = await machine.find_tool(TOOL_CODEX, settings.cli_path)
+        if not cli:
+            return {'installed': False, 'signed_in': False, 'message': NOT_INSTALLED_MESSAGE}
+        try:
+            server = await self._server_for(settings, machine)
+            account_info = await server.request('account/read', {}, timeout=30)
+        except SubscriptionError as error:
+            return {'installed': True, 'cli_path': cli, 'signed_in': False, 'message': str(error)}
+
+        account = account_info.get('account') or {}
+        status = {
+            'installed': True,
+            'cli_path': cli,
+            'signed_in': bool(account),
+            'account': {
+                'email': account.get('email'),
+                'plan': account.get('planType'),
+                'auth_method': account.get('type'),
+            },
+        }
+        if account.get('type') == 'apiKey':
+            status['api_billing'] = True
+            status['message'] = (
+                'Codex is signed in with an API key, which bills API usage instead of a ChatGPT plan. '
+                'Sign out and sign in with ChatGPT.'
+            )
+        if account:
+            try:
+                rate_limits = await server.request('account/rateLimits/read', None, timeout=30)
+                self.rate_limits = summarize_rate_limits(rate_limits.get('rateLimits'))
+            except SubscriptionError as error:
+                log.info('Could not read Codex usage limits: %s', error)
+        status['usage'] = self.rate_limits
+        return status
+
+    async def list_models(self, settings: ProviderSettings, machine) -> list[ProviderModel]:
+        server = await self._server_for(settings, machine)
+        result = await server.request('model/list', {}, timeout=30)
+        models = []
+        for entry in result.get('data') or []:
+            if entry.get('hidden'):
+                continue
+            value = entry.get('id') or entry.get('model')
+            if not value:
+                continue
+            efforts = [option.get('reasoningEffort') for option in entry.get('supportedReasoningEfforts') or []]
+            efforts = [effort for effort in efforts if effort]
+            models.append(
+                ProviderModel(
+                    key=model_key(value),
+                    value=value,
+                    name=entry.get('displayName') or value,
+                    description=entry.get('description') or '',
+                    efforts=efforts,
+                    vision='image' in (entry.get('inputModalities') or ['image']),
+                )
+            )
+        return models
+
+    async def start_login(self, settings: ProviderSettings, machine, method: str) -> dict:
+        await self.cancel_login()
+        server = await self._server_for(settings, machine)
+        if method == 'device':
+            result = await server.request('account/login/start', {'type': 'chatgptDeviceCode'})
+            login = CodexLogin(
+                machine.id, 'device', result.get('loginId'), result.get('verificationUrl'), result.get('userCode')
+            )
+        else:
+            result = await server.request('account/login/start', {'type': 'chatgpt'})
+            login = CodexLogin(machine.id, 'browser', result.get('loginId'), result.get('authUrl'), None)
+        self._login = login
+        return login.to_dict()
+
+    async def submit_login_code(self, code: str) -> dict:
+        raise SubscriptionError('ChatGPT sign-in does not take a pasted code.')
+
+    def login_state(self) -> dict:
+        if not self._login:
+            return {'state': 'idle'}
+        return self._login.to_dict()
+
+    async def cancel_login(self) -> None:
+        login = self._login
+        self._login = None
+        if not login or login.state != 'waiting':
+            return
+        server = self._servers.get(login.machine_id)
+        if not server or not server.running:
+            return
+        try:
+            await server.request('account/login/cancel', {'loginId': login.login_id}, timeout=10)
+        except SubscriptionError as error:
+            log.info('Could not cancel the ChatGPT sign-in: %s', error)
+
+    async def logout(self, settings: ProviderSettings, machine) -> None:
+        await self.cancel_login()
+        server = await self._server_for(settings, machine)
+        await server.request('account/logout', None)
+        self.rate_limits = None
+
+    def stop(self) -> None:
+        for server in self._servers.values():
+            server.stop()
+        self._servers.clear()

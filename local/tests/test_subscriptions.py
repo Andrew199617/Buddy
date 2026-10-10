@@ -459,6 +459,18 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(events, [StatusUpdate('Retrying: busy')])
         self.assertIsNone(parser.error)
 
+    def test_summarize_rate_limits(self):
+        summary = codex.summarize_rate_limits(
+            {
+                'planType': 'plus',
+                'primary': {'usedPercent': 40, 'windowDurationMins': 300, 'resetsAt': 10},
+                'secondary': {'usedPercent': 85, 'windowDurationMins': 10080, 'resetsAt': 20},
+            }
+        )
+        self.assertEqual([window['label'] for window in summary['windows']], ['5-hour', 'Weekly'])
+        self.assertEqual(summary['plan'], 'plus')
+        self.assertIsNone(codex.summarize_rate_limits(None))
+
 
 class ProcessTests(unittest.TestCase):
     def test_env_drops_session_and_api_key_variables(self):
