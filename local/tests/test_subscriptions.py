@@ -45,7 +45,12 @@ from open_webui.utils.subscriptions.machines import (  # noqa: E402
     RemoteProcess,
     temp_file_arg,
 )
-from open_webui.utils.subscriptions.process import ChildProcess, ProcessClosedError, subscription_env  # noqa: E402
+from open_webui.utils.subscriptions.process import (  # noqa: E402
+    ChildProcess,
+    OutputLimitError,
+    ProcessClosedError,
+    subscription_env,
+)
 
 PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgo='
 
@@ -665,6 +670,98 @@ class CodexTests(unittest.TestCase):
     def test_hooks_are_a_disabled_feature(self):
         # Hooks run commands outside the read-only sandbox.
         self.assertIn('hooks', codex.DISABLED_FEATURES)
+
+    def run_until_app_server_ends(self, ending: str, stderr: str = ''):
+        """Run a turn and an unanswered request while the app-server's output ends after turn/start."""
+        processes = []
+
+        class FakeAppServerProcess:
+            """Answers Buddy's setup requests; after turn/start its output ends as ``ending`` says."""
+
+            def __init__(self):
+                self.returncode = None
+                self.killed = False
+                self._lines = asyncio.Queue()
+                processes.append(self)
+
+            def _reply(self, request_id, result):
+                self._lines.put_nowait(json.dumps({'id': request_id, 'result': result}))
+
+            async def write(self, text):
+                message = json.loads(text)
+                method = message.get('method')
+                if method == 'initialize':
+                    self._reply(message['id'], {})
+                elif method == 'thread/start':
+                    self._reply(message['id'], {'thread': {'id': 'thread-1'}})
+                elif method == 'turn/start':
+                    self._reply(message['id'], {'turn': {'id': 'turn-1'}})
+                    self._lines.put_nowait(ending)
+                # Other requests, such as account/read, get no answer.
+
+            async def read_line(self):
+                line = await self._lines.get()
+                if line == 'oversized':
+                    # Such as an item/started line that echoes a large image.
+                    raise OutputLimitError('A CLI output line exceeded its buffer limit')
+                if line == 'exit':
+                    return None
+                return line
+
+            def stderr_text(self):
+                return stderr
+
+            def close_stdin(self):
+                pass
+
+            def kill(self):
+                self.killed = True
+                self.returncode = 1
+
+        class FakeMachine:
+            id = 'local'
+            name = 'Fake machine'
+
+            async def find_tool(self, tool, configured_path=''):
+                return 'codex'
+
+            async def chat_dir(self):
+                return '.'
+
+            async def start_process(self, args, cwd, extra_env=None, temp_files=None):
+                return FakeAppServerProcess()
+
+        async def run():
+            provider = codex.CodexProvider()
+            machine = FakeMachine()
+            settings = ProviderSettings(enable=True, access='full')
+            conversation = parse_messages([{'role': 'user', 'content': 'Describe this photo'}])
+            turn = TurnRequest('gpt-x', conversation, settings, '.', machine=machine)
+            server = await provider._server_for(settings, machine)
+            waiting_request = asyncio.create_task(server.request('account/read', {}))
+            # Neither may wait for a reply that can no longer arrive.
+            with self.assertRaises(SubscriptionError) as turn_error:
+                await asyncio.wait_for(collect(provider.run_turn(turn)), 5)
+            with self.assertRaises(SubscriptionError) as request_error:
+                await asyncio.wait_for(waiting_request, 5)
+            return str(turn_error.exception), str(request_error.exception), server.running
+
+        turn_message, request_message, running = asyncio.run(run())
+        return turn_message, request_message, running, processes[0].killed
+
+    def test_oversized_app_server_output_ends_the_turn_and_waiting_requests(self):
+        turn_message, request_message, running, killed = self.run_until_app_server_ends('oversized')
+        self.assertEqual(turn_message, codex.OVERSIZED_OUTPUT_MESSAGE)
+        self.assertEqual(request_message, codex.OVERSIZED_OUTPUT_MESSAGE)
+        # The next request starts a new app-server instead of writing to this one.
+        self.assertFalse(running)
+        self.assertTrue(killed)
+
+    def test_app_server_exit_ends_the_turn_and_waiting_requests(self):
+        turn_message, request_message, running, _ = self.run_until_app_server_ends('exit', 'panic: out of memory')
+        self.assertEqual(turn_message, 'Codex stopped unexpectedly. panic: out of memory')
+        self.assertEqual(request_message, 'Codex stopped unexpectedly. panic: out of memory')
+        self.assertFalse(running)
 
     def test_dropped_live_threads_are_released(self):
         class FakeServer:

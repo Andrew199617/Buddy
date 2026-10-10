@@ -36,7 +36,7 @@ from open_webui.utils.subscriptions.events import (
     TurnFailed,
 )
 from open_webui.utils.subscriptions.discovery import TOOL_CODEX
-from open_webui.utils.subscriptions.process import ProcessClosedError
+from open_webui.utils.subscriptions.process import OutputLimitError, ProcessClosedError
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +44,10 @@ PROVIDER_ID = 'codex'
 NOT_INSTALLED_MESSAGE = (
     'The Codex CLI was not found. Install it with "npm install -g @openai/codex" '
     'or set its path in the ChatGPT subscription settings.'
+)
+OVERSIZED_OUTPUT_MESSAGE = (
+    'Codex sent more output at once than Buddy can read, so Buddy stopped Codex. '
+    'A large image or command output can cause this; try again with a smaller image.'
 )
 # Desktop-app features that add computer-use and browser tools to every thread,
 # and hooks, which run commands outside the read-only sandbox.
@@ -290,7 +294,10 @@ class CodexAppServer:
 
     @property
     def running(self) -> bool:
-        return self._process is not None and self._process.returncode is None
+        if self._process is None or self._process.returncode is not None:
+            return False
+        # Replies cannot arrive once the reader has ended.
+        return self._reader is not None and not self._reader.done()
 
     async def ensure_started(self) -> None:
         async with self._start_lock:
@@ -351,10 +358,27 @@ class CodexAppServer:
         self._thread_queues.pop(thread_id, None)
 
     async def _read_messages(self, process) -> None:
+        """Handle the app-server's messages until they end, for any reason."""
+        reason = None
+        try:
+            await self._handle_messages(process)
+        except OutputLimitError:
+            log.warning('Codex sent output larger than Buddy can read; stopping its app-server')
+            reason = OVERSIZED_OUTPUT_MESSAGE
+        except ProcessClosedError as error:
+            log.info('Codex app-server output ended: %s', error)
+        except Exception:
+            log.exception('Codex app-server reader failed')
+        finally:
+            if reason is None:
+                reason = f'Codex stopped unexpectedly. {_shorten(process.stderr_text(), 600)}'.strip()
+            self._end_process(process, reason)
+
+    async def _handle_messages(self, process) -> None:
         while True:
             line = await process.read_line()
             if line is None:
-                break
+                return
             line = line.strip()
             if not line.startswith('{'):
                 continue
@@ -369,12 +393,16 @@ class CodexAppServer:
             elif 'id' in message:
                 self._resolve_response(message)
 
-        ended = SubscriptionError(f'Codex stopped unexpectedly. {self.stderr_text()}'.strip())
+    def _end_process(self, process, reason: str) -> None:
+        """Stop a process whose output can no longer be read, and fail everything waiting on it."""
+        if self._process is process:
+            # It may still be running unread. The next request starts a new one.
+            process.kill()
         for future in list(self._pending.values()):
             if not future.done():
-                future.set_exception(ended)
+                future.set_exception(SubscriptionError(reason))
         for queue in list(self._thread_queues.values()):
-            queue.put_nowait(None)
+            queue.put_nowait(SubscriptionError(reason))
 
     def _resolve_response(self, message: dict) -> None:
         future = self._pending.get(message.get('id'))
@@ -771,8 +799,9 @@ class CodexProvider:
 
             while not parser.finished:
                 message = await queue.get()
-                if message is None:
-                    raise SubscriptionError(f'Codex stopped while answering. {server.stderr_text()}'.strip())
+                if isinstance(message, SubscriptionError):
+                    # The app-server ended; its reader says why.
+                    raise message
                 for event in parser.handle(message):
                     yield event
 
