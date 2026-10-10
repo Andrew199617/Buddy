@@ -36,6 +36,7 @@ MAX_TERMINALS = 8
 MAX_TERMINAL_HISTORY = 64
 MAX_SESSIONS = 64
 MAX_DIRECTORY_ENTRIES = 5000
+CLEANUP_UNCONFIRMED = 'Command cleanup could not be confirmed. Stop the Runner on the host.'
 log = logging.getLogger(__name__)
 
 
@@ -47,6 +48,19 @@ class CapabilityError(Exception):
 
 def _fail(status: int, message: str):
     raise CapabilityError(status, message)
+
+
+async def _cancel_and_wait(task: asyncio.Task) -> None:
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
+async def _run_cleanup_batch(cleanups: list, pending_message: str) -> None:
+    """Run cleanups together. A failure is logged and the next sweep retries it."""
+    results = await asyncio.gather(*cleanups, return_exceptions=True)
+    for result in results:
+        if isinstance(result, Exception):
+            log.error(pending_message)
 
 
 def _now_ms() -> float:
@@ -207,6 +221,11 @@ class _Terminal:
 
     def append(self, text: str) -> None:
         self.output = (self.output + text.encode('utf-8', 'replace'))[-OUTPUT_BYTES:]
+
+    def record_cleanup_failure(self, error: BaseException) -> None:
+        # New commands stay refused until a later stop confirms cleanup.
+        self.stopping = True
+        self.cleanup_error = str(error)
 
     def public(self) -> dict:
         return {
@@ -415,7 +434,7 @@ class WorkspaceCapabilities:
         if not terminal or terminal.owner != session.key:
             _fail(404, 'Terminal not found in this session.')
         if terminal.cleanup_error and not allow_cleanup:
-            _fail(503, 'Command cleanup could not be confirmed. Stop the Runner on the host.')
+            _fail(503, CLEANUP_UNCONFIRMED)
         if terminal.status != 'closed' and _now_ms() - terminal.last_used >= self.session_idle_ms:
             await self._stop_terminal(terminal)
             _fail(410, 'The idle terminal session expired.')
@@ -580,8 +599,7 @@ class WorkspaceCapabilities:
                 try:
                     await asyncio.wait_for(reader, 2)
                 except TimeoutError:
-                    reader.cancel()
-                    await asyncio.gather(reader, return_exceptions=True)
+                    await _cancel_and_wait(reader)
                 if terminal.exit_code is None:
                     terminal.exit_code = child.returncode
                 terminal.child = None
@@ -590,11 +608,9 @@ class WorkspaceCapabilities:
                 else:
                     terminal.status = 'exited'
             except (OSError, TimeoutError, ProcessClosedError) as error:
-                terminal.stopping = True
-                terminal.cleanup_error = str(error)
-                terminal.append('\nCommand cleanup could not be confirmed. Stop the Runner on the host.\n')
-                reader.cancel()
-                await asyncio.gather(reader, return_exceptions=True)
+                terminal.record_cleanup_failure(error)
+                terminal.append(f'\n{CLEANUP_UNCONFIRMED}\n')
+                await _cancel_and_wait(reader)
 
     async def _run_command(self, terminal: _Terminal, workspace: _Workspace, body: dict, session: _Session) -> dict:
         self._validate_command(body)
@@ -636,28 +652,27 @@ class WorkspaceCapabilities:
         child = terminal.child
         task = terminal.task
         if child:
-            try:
-                await child.close()
-            except (OSError, TimeoutError, ProcessClosedError) as error:
-                terminal.cleanup_error = str(error)
-                _fail(503, 'Command cleanup could not be confirmed. Stop the Runner on the host.')
-            terminal.cleanup_error = None
+            await self._confirm_child_closed(terminal, child)
         if task and task is not asyncio.current_task():
             await asyncio.shield(task)
         # A finishing command may have reported an earlier cleanup failure while
         # this stop was joining it. The final native disposal owns confirmation.
         if child:
-            try:
-                await child.close()
-            except (OSError, TimeoutError, ProcessClosedError) as error:
-                terminal.cleanup_error = str(error)
-                _fail(503, 'Command cleanup could not be confirmed. Stop the Runner on the host.')
-            terminal.cleanup_error = None
+            await self._confirm_child_closed(terminal, child)
         elif terminal.cleanup_error:
-            _fail(503, 'Command cleanup could not be confirmed. Stop the Runner on the host.')
+            _fail(503, CLEANUP_UNCONFIRMED)
         if terminal.child is child:
             terminal.child = None
         terminal.status = 'closed'
+
+    async def _confirm_child_closed(self, terminal: _Terminal, child: ChildProcess) -> None:
+        """Close a command's process tree, or record why cleanup is unconfirmed and fail."""
+        try:
+            await child.close()
+        except (OSError, TimeoutError, ProcessClosedError) as error:
+            terminal.record_cleanup_failure(error)
+            _fail(503, CLEANUP_UNCONFIRMED)
+        terminal.cleanup_error = None
 
     async def _revoke_session(self, session: _Session) -> None:
         self._sessions.pop(session.key, None)
@@ -823,16 +838,19 @@ class WorkspaceCapabilities:
             now = _now_ms()
             expired = [session for session in self._sessions.values() if now >= session.expires_at]
             sessions = {session.key: session for session in [*expired, *self._pending_sessions.values()]}
-            for result in await asyncio.gather(*(self._revoke_session(session) for session in sessions.values()), return_exceptions=True):
-                if isinstance(result, Exception):
-                    log.error('Workspace session cleanup is pending; host disposal will be retried.')
-            for result in await asyncio.gather(*(self.revoke_grant(grant_id) for grant_id in list(self._pending_grants)), return_exceptions=True):
-                if isinstance(result, Exception):
-                    log.error('Workspace grant cleanup is pending; host disposal will be retried.')
+            await _run_cleanup_batch(
+                [self._revoke_session(session) for session in sessions.values()],
+                'Workspace session cleanup is pending; host disposal will be retried.',
+            )
+            await _run_cleanup_batch(
+                [self.revoke_grant(grant_id) for grant_id in list(self._pending_grants)],
+                'Workspace grant cleanup is pending; host disposal will be retried.',
+            )
             idle = [terminal for terminal in self._terminals.values() if terminal.status != 'closed' and (terminal.stopping or now - terminal.last_used >= self.session_idle_ms)]
-            for result in await asyncio.gather(*(self._stop_terminal(terminal) for terminal in idle), return_exceptions=True):
-                if isinstance(result, Exception):
-                    log.error('Workspace terminal cleanup is pending; host disposal will be retried.')
+            await _run_cleanup_batch(
+                [self._stop_terminal(terminal) for terminal in idle],
+                'Workspace terminal cleanup is pending; host disposal will be retried.',
+            )
 
     async def _shutdown(self, app: web.Application) -> None:
         await self.close()
