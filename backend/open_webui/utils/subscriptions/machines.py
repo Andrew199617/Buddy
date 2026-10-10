@@ -50,6 +50,10 @@ MAX_REMOTE_STDOUT_CHUNKS = 16384
 # The Runner drops a connection whose message exceeds 32 MiB. JSON escapes a
 # character into at most 12 bytes, so this many characters stay under 12 MiB.
 MAX_STDIN_MESSAGE_CHARS = 1024 * 1024
+# How long a stop waits for the Runner's reply on the process connection
+# before it also asks over HTTP. A connection can go silent without closing,
+# and the heartbeat takes up to 45 seconds to notice.
+STOP_REPLY_WAIT_SECONDS = 2.0
 
 
 class StartupCleanupUnconfirmedError(SubscriptionError):
@@ -370,6 +374,25 @@ class RemoteProcess(StreamedOutput):
             raise failure
         self._confirmed_stopped.set()
 
+    async def _confirm_stop_without_reply(self, confirmation: asyncio.Task) -> None:
+        """Ask the Runner over HTTP, while still accepting a late reply on the connection.
+
+        The connection may have closed, or gone silent without closing. A
+        slow stop, or an older Runner without the HTTP route, can still
+        answer on the connection.
+        """
+        request = asyncio.create_task(self._confirm_stopped_with_runner())
+        try:
+            await asyncio.wait((confirmation, request), return_when=asyncio.FIRST_COMPLETED)
+            if not self._confirmed_stopped.is_set():
+                # The Runner could not confirm over HTTP; keep listening on the connection.
+                await asyncio.wait((confirmation, self._receiver), return_when=asyncio.FIRST_COMPLETED)
+            if not self._confirmed_stopped.is_set():
+                raise request.exception()
+        finally:
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+
     async def _verified_close(self, timeout: float) -> None:
         confirmation = None
         try:
@@ -377,9 +400,12 @@ class RemoteProcess(StreamedOutput):
                 if not self._confirmed_stopped.is_set():
                     await self._send_quietly({'type': 'kill'})
                     confirmation = asyncio.create_task(self._confirmed_stopped.wait())
-                    await asyncio.wait((confirmation, self._receiver), return_when=asyncio.FIRST_COMPLETED)
+                    reply_wait = min(STOP_REPLY_WAIT_SECONDS, timeout / 2)
+                    await asyncio.wait(
+                        (confirmation, self._receiver), timeout=reply_wait, return_when=asyncio.FIRST_COMPLETED
+                    )
                     if not self._confirmed_stopped.is_set():
-                        await self._confirm_stopped_with_runner()
+                        await self._confirm_stop_without_reply(confirmation)
                 # Keep the transport alive until the host has acknowledged
                 # native cleanup. A stopped acknowledgement need not include
                 # exit output, so explicitly release that open stream here.

@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from aiohttp import web
 from aiohttp.test_utils import TestServer
@@ -172,6 +173,41 @@ class RemoteLivenessTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(process._confirmed_stopped.is_set())
         self.assertEqual(process.returncode, -1)
         self.assertEqual(await process.wait(1), -1)
+
+    async def test_stop_on_a_silent_connection_is_confirmed_over_http(self):
+        received_kill = asyncio.Event()
+
+        async def exchange(socket, pid, index):
+            # The connection went silent: the kill arrives, nothing answers,
+            # and the socket stays open as it does before a heartbeat notices.
+            self.assertEqual((await socket.receive_json(timeout=2))['type'], 'kill')
+            received_kill.set()
+            async for _ in socket:
+                pass
+
+        remote = await self.remote(exchange, confirms_stop=lambda: True)
+        process = await remote.start_process(['synthetic-command'], str(self.root))
+        with patch.object(machines, 'STOP_REPLY_WAIT_SECONDS', 0.1):
+            await asyncio.wait_for(process.close(5), 2)
+        self.assertTrue(received_kill.is_set())
+        self.assertEqual(self.stop_requests, ['fixture-process-0'])
+        self.assertTrue(process.cleanup_confirmed)
+
+    async def test_a_late_stop_reply_still_confirms_when_http_cannot(self):
+        async def exchange(socket, pid, index):
+            self.assertEqual((await socket.receive_json(timeout=2))['type'], 'kill')
+            # A slow stop answers on the connection after Buddy asked over HTTP.
+            await asyncio.sleep(0.3)
+            await socket.send_json({'type': 'stopped', 'pid': pid})
+            async for _ in socket:
+                pass
+
+        remote = await self.remote(exchange, confirms_stop=lambda: False)
+        process = await remote.start_process(['synthetic-command'], str(self.root))
+        with patch.object(machines, 'STOP_REPLY_WAIT_SECONDS', 0.1):
+            await asyncio.wait_for(process.close(5), 2)
+        self.assertEqual(self.stop_requests, ['fixture-process-0'])
+        self.assertTrue(process.cleanup_confirmed)
 
     async def test_codex_eof_restarts_once_the_runner_confirms_cleanup(self):
         ready = [self.gate(), self.gate()]
