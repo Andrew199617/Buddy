@@ -22,7 +22,9 @@ beforeEach(() => {
 	fetchMock.mockResolvedValue({ ok: true, json: async () => ({ accepted: true }) });
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+	vi.unstubAllGlobals();
+});
 
 function request() {
 	const [url, options] = fetchMock.mock.calls[0];
