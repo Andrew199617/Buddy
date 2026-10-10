@@ -59,6 +59,7 @@ class MachineForm(BaseModel):
     url: str
     # Leave empty when editing to keep the saved key.
     key: Optional[str] = None
+    # Omit to keep the saved address; send null to clear it.
     browser_url: Optional[str] = None
 
 
@@ -90,7 +91,8 @@ async def get_machines(user=Depends(get_admin_user)):
 async def save_machine(form_data: MachineForm, user=Depends(get_admin_user)):
     try:
         machine = await service.save_machine(
-            form_data.id, form_data.name, form_data.url, form_data.key, form_data.browser_url
+            form_data.id, form_data.name, form_data.url, form_data.key, form_data.browser_url,
+            browser_url_supplied='browser_url' in form_data.model_fields_set
         )
     except SubscriptionError as error:
         raise _bad_request(error)

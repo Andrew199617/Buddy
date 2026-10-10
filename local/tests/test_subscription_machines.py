@@ -20,7 +20,7 @@ import unittest
 import uuid
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Optional
 from unittest.mock import AsyncMock, patch
 from urllib.parse import urlsplit
 
@@ -178,6 +178,33 @@ def machine_config(machine_id='runner-a', host_id='host-a'):
         'host': {'id': host_id, 'name': 'Fixture PC', 'platform': 'win32', 'version': '1'},
         'capabilities': {'directories': True, 'files': True, 'terminals': True}
     }
+
+
+def load_machine_router(service):
+    """Execute the actual form and save endpoint without app/auth/database imports."""
+    from pydantic import BaseModel
+
+    router_path = ROOT / 'backend' / 'open_webui' / 'routers' / 'subscriptions.py'
+    tree = ast.parse(router_path.read_text(encoding='utf-8'))
+    nodes = [node for node in tree.body if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+             and node.name in ('MachineForm', '_bad_request', 'save_machine')]
+    for node in nodes:
+        if isinstance(node, ast.AsyncFunctionDef):
+            node.decorator_list = []
+    module = types.ModuleType('subscription_machine_router_under_test')
+    module.__dict__.update({
+        'BaseModel': BaseModel,
+        'Optional': Optional,
+        'Depends': lambda dependency: None,
+        'get_admin_user': lambda: None,
+        'service': service,
+        'SubscriptionError': Exception,
+        'HTTPException': FakeHTTPException,
+        'status': types.SimpleNamespace(HTTP_400_BAD_REQUEST=400),
+    })
+    with patch.dict(sys.modules, {module.__name__: module}):
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), str(router_path), 'exec'), module.__dict__)
+    return module
 
 
 def enabled_settings(machine_id):
@@ -378,6 +405,64 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(not provider.calls for provider in self.providers.values()))
         self.assertEqual(set(self.config.commits[0]), {'subscriptions.machines'})
 
+    async def test_rename_without_browser_address_preserves_saved_address_and_revision(self):
+        original = copy.deepcopy(self.config.values['subscriptions.machines'][0])
+        before_settings = copy.deepcopy(self.config.values['subscriptions.claude'])
+        with patch.object(self.service, 'verify_machine', AsyncMock(return_value={'host': original['host']})):
+            public = await self.service.save_machine('runner-a', 'Renamed fixture PC', original['url'], '')
+        self.assertEqual(public['browser_url'], original['browser_url'])
+        self.assertEqual(public['revision'], original['revision'])
+        self.assertEqual(self.config.values['subscriptions.claude'], before_settings)
+        self.assertTrue(all(not provider.calls for provider in self.providers.values()))
+        self.assertEqual(set(self.config.commits[0]), {'subscriptions.machines'})
+
+    async def test_explicit_null_browser_address_clears_without_changing_revision_or_authority(self):
+        original = copy.deepcopy(self.config.values['subscriptions.machines'][0])
+        before_settings = copy.deepcopy(self.config.values['subscriptions.claude'])
+        with patch.object(self.service, 'verify_machine', AsyncMock(return_value={'host': original['host']})):
+            public = await self.service.save_machine(
+                'runner-a', original['name'], original['url'], None,
+                browser_url=None, browser_url_supplied=True
+            )
+        self.assertIsNone(self.config.values['subscriptions.machines'][0]['browser_url'])
+        self.assertNotIn('browser_url', public)
+        self.assertEqual(public['revision'], original['revision'])
+        self.assertEqual(self.config.values['subscriptions.claude'], before_settings)
+        self.assertTrue(all(not provider.calls for provider in self.providers.values()))
+
+    async def test_blank_browser_address_still_explicitly_clears_the_saved_address(self):
+        original = copy.deepcopy(self.config.values['subscriptions.machines'][0])
+        with patch.object(self.service, 'verify_machine', AsyncMock(return_value={'host': original['host']})):
+            public = await self.service.save_machine(
+                'runner-a', original['name'], original['url'], None, browser_url='   '
+            )
+        self.assertIsNone(self.config.values['subscriptions.machines'][0]['browser_url'])
+        self.assertNotIn('browser_url', public)
+        self.assertEqual(public['revision'], original['revision'])
+        self.assertTrue(all(not provider.calls for provider in self.providers.values()))
+
+    async def test_browser_address_omission_keeps_legacy_field_absent(self):
+        original = self.config.values['subscriptions.machines'][0]
+        original.pop('browser_url')
+        with patch.object(self.service, 'verify_machine', AsyncMock(return_value={'host': original['host']})):
+            public = await self.service.save_machine(
+                'runner-a', 'Renamed fixture PC', original['url'], None,
+                browser_url=None, browser_url_supplied=False
+            )
+        self.assertNotIn('browser_url', self.config.values['subscriptions.machines'][0])
+        self.assertNotIn('browser_url', public)
+        self.assertEqual(public['revision'], original['revision'])
+
+    async def test_new_machine_without_browser_address_registers_without_one(self):
+        info = {'host': {'id': 'fixture-new-host'}}
+        with patch.object(self.service, 'verify_machine', AsyncMock(return_value=info)):
+            public = await self.service.save_machine(
+                None, 'New fixture PC', 'https://new-runner.example.invalid:8083', 'new-fixture-key'
+            )
+        self.assertNotIn('browser_url', public)
+        self.assertTrue(public['revision'])
+        self.assertTrue(all(not provider.calls for provider in self.providers.values()))
+
     async def test_first_observed_metadata_does_not_reset_an_unchanged_backend(self):
         original = self.config.values['subscriptions.machines'][0]
         original.pop('host')
@@ -521,6 +606,35 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(value=value):
                 with self.assertRaises(self.service.SubscriptionError):
                     self.service.validate_browser_url(value)
+
+
+class SubscriptionMachineRouterTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.service = types.SimpleNamespace(
+            save_machine=AsyncMock(return_value={'id': 'runner-a'}),
+            describe_machines=AsyncMock(return_value=[]),
+        )
+        self.router = load_machine_router(self.service)
+
+    async def assert_browser_field_forwarding(self, fields, supplied):
+        form = self.router.MachineForm.model_validate({
+            'id': 'runner-a', 'name': 'Renamed fixture PC', 'url': 'https://runner.example.invalid:8083',
+            **fields,
+        })
+        await self.router.save_machine(form, user=object())
+        self.service.save_machine.assert_awaited_once_with(
+            'runner-a', 'Renamed fixture PC', 'https://runner.example.invalid:8083', None,
+            fields.get('browser_url'), browser_url_supplied=supplied,
+        )
+
+    async def test_old_form_omission_is_forwarded_as_unsupplied(self):
+        await self.assert_browser_field_forwarding({}, False)
+
+    async def test_explicit_null_is_forwarded_as_supplied(self):
+        await self.assert_browser_field_forwarding({'browser_url': None}, True)
+
+    async def test_explicit_browser_address_is_forwarded_as_supplied(self):
+        await self.assert_browser_field_forwarding({'browser_url': 'https://browser.example.invalid'}, True)
 
 
 if __name__ == '__main__':
