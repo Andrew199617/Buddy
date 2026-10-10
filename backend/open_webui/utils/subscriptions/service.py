@@ -149,6 +149,9 @@ async def save_machine(machine_id: str | None, name: str, url: str, key: str | N
 
 
 async def delete_machine(machine_id: str) -> None:
+    if machine_id == LOCAL_MACHINE_ID:
+        raise SubscriptionError('This server cannot be removed.')
+
     # Providers that used the machine move back to this server first. Their
     # working folder and CLI path were paths on the removed machine, so they
     # are cleared instead of being checked here.

@@ -774,6 +774,15 @@ class DeleteMachineTests(unittest.TestCase):
         self.assertEqual(self.config.values['subscriptions.machines'], [])
         self.assertTrue(runner_connection.closed)
 
+    def test_this_server_cannot_be_removed(self):
+        workspace = str(self.data_dir)
+        self.config.values['subscriptions.claude'] = {'workspace': workspace, 'machine_id': 'local'}
+
+        with self.assertRaises(SubscriptionError):
+            asyncio.run(self.service.delete_machine('local'))
+
+        self.assertEqual(self.config.values['subscriptions.claude']['workspace'], workspace)
+
 
 if __name__ == '__main__':
     unittest.main()
