@@ -4,7 +4,9 @@
 #
 # Settings come from docker/buddy/.env (copy example.env). Claude Code and
 # Codex run on machines added in Admin Settings → Connections → Subscriptions,
-# such as a Buddy Runner on the Docker host (http://host.docker.internal:8765).
+# such as a TLS-enabled Runner at https://host.docker.internal:8765.
+# Use the optional runner TLS overlay for application-scoped public CA trust;
+# see companion/TLS_SETUP.md. Never mount the Runner private key here.
 name: buddy
 
 services:

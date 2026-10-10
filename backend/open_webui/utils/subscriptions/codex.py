@@ -619,7 +619,7 @@ class CodexProvider:
         self.rate_limits = None
 
     def _effort(self, turn: TurnRequest) -> str | None:
-        supported = self._model_efforts.get(turn.model) or []
+        supported = turn.efforts
         if turn.is_task or turn.effort in ('none', 'minimal'):
             if supported:
                 return supported[0]
@@ -631,14 +631,13 @@ class CodexProvider:
     async def _ensure_effort_models(self, server: CodexAppServer, turn: TurnRequest) -> None:
         if not turn.effort and not turn.is_task:
             return
-        if (
+        if not (
             self._model_efforts_server is server
             and self._model_efforts_generation == server.generation
         ):
-            return
-        # The shared registry may survive a Buddy restart. Resolve effort
-        # against the executing app-server's current supported levels.
-        await self._load_models(server)
+            # Carried registry metadata may describe an earlier host or server.
+            await self._load_models(server)
+        turn.efforts = list(self._model_efforts.get(turn.model, []))
 
     def _developer_instructions(self, turn: TurnRequest) -> str | None:
         system = turn.conversation.system

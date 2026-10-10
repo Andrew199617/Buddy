@@ -53,6 +53,9 @@ class TurnRequest:
     is_task: bool = False
     # LocalMachine or RemoteMachine from subscriptions.machines.
     machine: Any = None
+    # Model-entry reasoning levels travel with the request. Providers verify
+    # them against the executing app-server before resolving the user's effort.
+    efforts: list[str] = field(default_factory=list)
 
     @property
     def access(self) -> str:

@@ -124,15 +124,20 @@ while old ownership remains unconfirmed.
 ## Browser, phone, Docker and other computers
 
 A registered machine's `url` is reached by Buddy's backend, for example
-`http://host.docker.internal:8765` from Docker Desktop. Its optional `browser_url`
+`https://host.docker.internal:8765` from Docker Desktop with verified Runner TLS.
+Every non-loopback address requires HTTPS; Docker and Tailscale names or IPs
+do not waive certificate verification. [The HTTPS setup](TLS_SETUP.md) describes
+operator-supplied certificates and application-scoped public trust. Its optional `browser_url`
 is a separately configured HTTPS origin or loopback HTTP origin. It is never
 inferred from the backend address. Registry metadata contains no key or grants.
 
 A phone's 127.0.0.1 addresses the phone itself. Remote PC/cloud access needs an
 approved private HTTPS transport to the execution host's loopback listener,
-rewriting its upstream Host header and preserving the browser Origin. No TLS,
-VPN, firewall, public listener, persistent service or Docker change is performed
-by this implementation. Future desktop clients can use the same versioned API.
+rewriting its upstream Host header and preserving the browser Origin when using
+a proxy. Runner TLS can serve backend provider requests directly on loopback.
+No certificates, trust stores, VPN, firewall, public listener, persistent service
+or live Docker configuration are changed automatically. Future desktop clients
+can use the same versioned API.
 
 Discovery is `GET /v1/capabilities`; it advertises API support and observed host
 identity, not permission. Actual file/write/execute authority comes only from
@@ -175,5 +180,6 @@ providers, read account credentials or approve live directories:
 
 See [validation evidence](VALIDATION.md). Native Windows coverage does not imply
 POSIX runtime coverage. PR #3 includes the five subscription client files needed
-to carry selected-machine proof through provider actions. Project UI, styling,
+to carry selected-machine proof through provider actions and the machine dialog's
+verified HTTPS default. Project UI, styling,
 unread features and their combined desktop/mobile fixtures remain in PR #4.

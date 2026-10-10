@@ -231,7 +231,10 @@ Windows PC while Buddy runs in Docker, start the Buddy Runner there and add it:
    `~/.buddy-runner/key` on first start.
 2. In Buddy, choose **Add machine** and enter a name, the runner address, and
    the key, then **Verify**. From Buddy in Docker Desktop, the Docker host is
-   `http://host.docker.internal:8765`.
+   `https://host.docker.internal:8765`, after configuring Runner TLS and the
+   backend's application-specific certificate trust. Every non-loopback
+   connection requires verified HTTPS, including Docker and Tailscale names
+   and addresses. See [the HTTPS setup](companion/TLS_SETUP.md).
 3. Open a provider's gear button and set **Runs on** to that machine. Sign in
    from there; the sign-in lives on that machine.
 
