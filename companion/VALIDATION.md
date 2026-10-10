@@ -6,12 +6,13 @@ validation. Backend PR #3 preserves its original history by merging that base;
 it changes no `src` files relative to the base. PR #4 owns the combined browser
 UI and browser/mobile validation. Neither checkout writes Claude's shared ref.
 
-## Current validation
+## Consolidation validation at cb26b4add
 
-The final Python **3.11.16** aggregate ran seven isolated suites against unchanged
-production and test sources: **222 tests, 218 passed, 4 POSIX-only skips, zero
+The original consolidation Python **3.11.16** aggregate ran seven isolated suites
+against unchanged production and test sources: **222 tests, 218 passed, 4 POSIX-only skips, zero
 failures**, exit 0. Before/after SHA256 hashes matched for every production Python
-module and fixture. No code changed after this run.
+module and fixture within that run. The review follow-up below changes source;
+this 222-test record does not validate those subsequent corrections.
 
 | Check | Result |
 | --- | --- |
@@ -102,3 +103,53 @@ do not validate the current Runner implementation or a later combined build.
 
 See [the guide](README.md) for reproducible isolated test commands and the
 operator-only pairing refresh that preserves running provider processes.
+
+## Review follow-up
+
+The fresh PR review identified two process lifecycle defects: bounded-output
+failure could close the stream without confirming verified native cleanup, and
+pending asynchronous remote disposal could be ignored before admitting new
+commands. Independent review also reproduced stale workspace reselection after
+directory replacement, delayed cleanup retries after natural command exit,
+deleted selected host IDs being reused by same-name registrations, and stop
+requests blocked behind a non-reading child's stdin write. Repeated handler
+cancellation also stopped the native child while interrupting Runner registry
+and stdin-worker cleanup, retaining capacity until shutdown.
+
+These corrections remain in PR #3's subscription/Runner scope. PR #4 owns the
+unread endpoint and frontend corrections. All reproduction fixtures use fake
+providers or disposable Python children and temporary directories. These fixes
+retain fail-closed cleanup, independent browser credentials, observed host
+identity and explicit host grants. Failed execution reports its nonzero exit and
+reason only after verified native cleanup. Pending stdin is bounded and ordered;
+kill and disconnect remain responsive while the active write is blocked. A
+delayed-acknowledgement regression verifies normal EOF cannot hide the failure.
+
+The final Python **3.11.16** aggregate passed against unchanged production and
+test sources: **238 tests, 234 passed, 4 POSIX-only skips, zero failures**, exit 0.
+Before/after raw SHA256 hashes match for all 23 Python production/test files.
+
+| Suite | Final result |
+| --- | --- |
+| Offline subscriptions and CLI discovery | 41 passed, 3.596s |
+| Machine permissions and metadata | 20 passed, 1.226s |
+| Provider host transitions and recovery | 66 passed, 5.551s |
+| Native containment and temporary-file ownership | 29 run: 27 passed, 2 POSIX skips; 31.566s |
+| Remote cleanup and tracked startup integration | 25 passed, 17.063s |
+| Workspace pairing, grants, files and terminal races | 45 run: 43 passed, 2 POSIX skips; 30.421s |
+| Runner API boundaries and shutdown lifecycle | 12 passed, 5.578s |
+
+Task-local evidence is `runner-review-fixes-validation.json` and the seven
+`runner-review-fixes-test_*.log` files. The first aggregate's historical expiry
+fixture required native setup within a 70 ms token lifetime and failed when the
+session expired during workspace creation. That run is preserved under
+`runner-review-fixes-failed-first-*`. The final fixture creates its workspace
+before expiring the test session, then verifies immediate rejection and bounded
+real sweeper cleanup. Runtime code did not change for that fixture correction.
+
+Independent source review found no remaining confirmed blocker in the process,
+host-selection and workspace corrections. PR #4 owns the unread endpoint and
+frontend fixes, and is running changed-runtime browser validation separately.
+The earlier 88-provider/30-Runner browser record above belongs to `cb26b4add`;
+it does not validate this follow-up. No new frontend build or typecheck pass is
+claimed for the backend-only corrections.

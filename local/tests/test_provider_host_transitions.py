@@ -139,6 +139,34 @@ class StrictTrackedProcess(TrackedProcess):
         self.cleanup_confirmed = True
 
 
+class ScheduledDisposalProcess(StrictTrackedProcess):
+    """Model remote kill scheduling cleanup before the leader exits."""
+
+    def __init__(self):
+        super().__init__()
+        self.disposal_started = False
+        self._close_task = None
+
+    def kill(self):
+        if self._close_task is None:
+            self.disposal_started = True
+            self._close_task = asyncio.create_task(self._finish_disposal())
+
+    async def _finish_disposal(self):
+        self.stop_count += 1
+        self.stop_entered.set()
+        await self.stop_release.wait()
+        if self.stop_failures:
+            raise self.stop_failures.pop(0)
+        TrackedProcess.kill(self)
+        await self.wait()
+        self.cleanup_confirmed = True
+
+    async def kill_and_wait(self):
+        self.kill()
+        await self._close_task
+
+
 class ProcessMachine(FakeRemoteMachine):
     def __init__(self, config):
         super().__init__(config['id'], config['name'], config['url'], config['key'])
@@ -560,6 +588,66 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(enabled.cli_path, '')
         self.assertEqual(self.machines['runner-a'].closed, 1)
         self.assertTrue(all(not machine.processes for machine in self.machines.values()))
+
+    async def test_new_registration_cannot_reuse_a_deleted_selected_host_id(self):
+        self.config.values['subscriptions.machines'][0]['name'] = 'Runner A'
+        await self.service.delete_machine('runner-a')
+        info = {'host': {'id': 'replacement-host', 'name': 'Different PC'}}
+        with patch.object(self.service, 'verify_machine', AsyncMock(return_value=info)):
+            saved = await self.service.save_machine(
+                None, 'Runner A', 'https://replacement.example.invalid:8083', 'fixture-replacement-key'
+            )
+        self.assertEqual(saved['id'], 'runner-a-2')
+        self.assertEqual(self.config.values['subscriptions.claude']['machine_id'], 'runner-a')
+        self.assertFalse(self.config.values['subscriptions.claude']['enable'])
+        self.providers['claude'].calls.clear()
+        with patch.object(self.service, 'get_machine', AsyncMock()) as machine_get:
+            status = await self.service._load_status('claude')
+            self.assertFalse(status['signed_in'])
+            self.assertEqual(await self.service._load_models('claude'), [])
+            self.assertEqual(await self.service._provider_models('claude'), [])
+            description = await self.service.describe_provider('claude', fresh=True)
+        machine_get.assert_not_awaited()
+        self.assertEqual(self.providers['claude'].calls, [])
+        self.assertEqual(description['machine']['id'], 'runner-a')
+        await self.service.save_settings('claude', enabled_settings(saved['id']), 'runner-a')
+        current = self.config.values['subscriptions.claude']
+        self.assertEqual(current['machine_id'], saved['id'])
+        self.assertFalse(current['enable'])
+        self.assertEqual((current['access'], current['workspace'], current['cli_path']), ('chat', '', ''))
+        await self.assert_conflict(self.service.save_settings('claude', {'enable': True}, 'runner-a'))
+        await self.service.save_settings('claude', {'enable': True}, saved['id'], saved['revision'])
+        self.providers['claude'].calls.clear()
+        status = await self.service._load_status('claude')
+        self.assertTrue(status['signed_in'])
+        self.assertIn(('status', saved['id'], saved['id']), self.providers['claude'].calls)
+
+    async def test_new_registration_still_avoids_current_registry_id_collisions(self):
+        before = copy.deepcopy(self.config.values['subscriptions.machines'])
+        info = {'host': {'id': 'additional-host', 'name': 'Additional PC'}}
+        with patch.object(self.service, 'verify_machine', AsyncMock(return_value=info)):
+            saved = await self.service.save_machine(
+                None, 'Runner B', 'https://additional.example.invalid:8083', 'fixture-additional-key'
+            )
+        self.assertEqual(saved['id'], 'runner-b-2')
+        self.assertEqual(self.config.values['subscriptions.machines'][:2], before)
+
+    async def test_new_registration_reserves_retained_cleanup_owner_host_ids(self):
+        old_machine = self.machines['runner-a']
+        wrapper = self.service._tracking_machine('claude', old_machine)
+        wrapper.valid = False
+        wrapper.startup_cleanup_error = self.service.StartupCleanupUnconfirmedError('Fixture retained old startup')
+        self.config.values['subscriptions.claude'] = enabled_settings('runner-b')
+        self.config.values['subscriptions.machines'] = [machine_config('runner-b', 'host-b')]
+        info = {'host': {'id': 'additional-host', 'name': 'Additional PC'}}
+        with patch.object(self.service, 'verify_machine', AsyncMock(return_value=info)):
+            saved = await self.service.save_machine(
+                None, 'Runner A', 'https://additional.example.invalid:8083', 'fixture-additional-key'
+            )
+        self.assertEqual(saved['id'], 'runner-a-2')
+        self.assertIs(self.service._tracked_machines['claude'], wrapper)
+        self.assertEqual(wrapper.id, 'runner-a')
+        self.assertIsNotNone(wrapper.startup_cleanup_error)
 
     async def test_deleted_host_can_be_explicitly_replaced_with_local_without_restoring_old_authority(self):
         await self.service.delete_machine('runner-a')
@@ -1249,6 +1337,68 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         await wrapper.revoke()
         self.assertEqual(second.stop_count, 1)
         self.assertTrue(second.cleanup_confirmed)
+
+    async def test_pending_disposal_with_running_leader_delays_next_command_until_confirmed(self):
+        machine = self.machines['runner-a']
+        first = ScheduledDisposalProcess()
+        first.stop_release = self.gate()
+        machine.process_factory = lambda: first
+        wrapper = self.service._tracking_machine('claude', machine)
+        await wrapper.start_process(['fixture-first'], 'fixture-cwd')
+        machine.process_factory = StrictTrackedProcess
+        first.kill()
+        self.pending.append(first._close_task)
+        await asyncio.wait_for(first.stop_entered.wait(), 1)
+        self.assertIsNone(first.returncode)
+        next_command = self.launch(wrapper.start_process(['fixture-next'], 'fixture-cwd'))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        self.assertFalse(next_command.done())
+        self.assertEqual(len(machine.processes), 1)
+        self.assertIn(first, wrapper.processes)
+        first.stop_release.set()
+        second = await asyncio.wait_for(next_command, 1)
+        self.assertTrue(first.cleanup_confirmed)
+        self.assertNotIn(first, wrapper.processes)
+        self.assertIn(second, wrapper.processes)
+        self.assertEqual(len(machine.processes), 2)
+        await wrapper.revoke()
+
+    async def test_failed_disposal_with_running_leader_blocks_next_command_and_keeps_debt(self):
+        machine = self.machines['runner-a']
+        first = ScheduledDisposalProcess()
+        first.stop_failures = [self.service.SubscriptionError('Fixture pending cleanup failed')]
+        machine.process_factory = lambda: first
+        wrapper = self.service._tracking_machine('claude', machine)
+        await wrapper.start_process(['fixture-first'], 'fixture-cwd')
+        machine.process_factory = StrictTrackedProcess
+        first.kill()
+        self.pending.append(first._close_task)
+        await asyncio.wait_for(first.stop_entered.wait(), 1)
+        self.assertIsNone(first.returncode)
+        with self.assertRaises(self.service.SubscriptionError):
+            await wrapper.start_process(['fixture-next'], 'fixture-cwd')
+        self.assertEqual(len(machine.processes), 1)
+        self.assertIn(first, wrapper.processes)
+        self.assertIsNotNone(wrapper.cleanup_error)
+        self.assertFalse(first.cleanup_confirmed)
+        with self.assertRaises(self.service.SubscriptionError):
+            await wrapper.start_process(['fixture-blocked'], 'fixture-cwd')
+        self.assertEqual(len(machine.processes), 1)
+
+    async def test_active_process_without_disposal_allows_another_concurrent_command(self):
+        machine = self.machines['runner-a']
+        machine.process_factory = ScheduledDisposalProcess
+        wrapper = self.service._tracking_machine('claude', machine)
+        first = await wrapper.start_process(['fixture-first'], 'fixture-cwd')
+        second = await asyncio.wait_for(wrapper.start_process(['fixture-concurrent'], 'fixture-cwd'), 1)
+        self.assertIsNone(first.returncode)
+        self.assertFalse(first.disposal_started)
+        self.assertEqual(first.stop_count, 0)
+        self.assertEqual(len(machine.processes), 2)
+        self.assertIn(first, wrapper.processes)
+        self.assertIn(second, wrapper.processes)
+        await wrapper.revoke()
 
     async def test_tracked_command_capture_stops_its_process_when_quiesced(self):
         wrapper = self.service._tracking_machine('claude', self.machines['runner-a'])

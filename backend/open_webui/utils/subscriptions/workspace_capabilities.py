@@ -554,6 +554,7 @@ class WorkspaceCapabilities:
                 else:
                     terminal.status = 'exited'
             except (OSError, TimeoutError, ProcessClosedError) as error:
+                terminal.stopping = True
                 terminal.cleanup_error = str(error)
                 terminal.append('\nCommand cleanup could not be confirmed. Stop the Runner on the host.\n')
                 reader.cancel()
@@ -696,7 +697,8 @@ class WorkspaceCapabilities:
                 _fail(400, 'A workspace must be a real directory.')
             self._active(session, grant)
             for workspace in self._workspaces.values():
-                if workspace.owner == session.key and workspace.grant_id == grant.id and workspace.relative == relative:
+                if (workspace.owner == session.key and workspace.grant_id == grant.id
+                        and workspace.relative == relative and workspace.identity == _identity(value)):
                     return {'workspace': workspace.public()}
             if len(self._workspaces) >= MAX_WORKSPACES:
                 _fail(429, 'The workspace limit was reached.')

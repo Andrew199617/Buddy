@@ -634,12 +634,17 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status, 413)
 
     async def test_expiry_and_disconnect_revoke_owned_workspaces(self):
-        await self.start(token_ttl_ms=70)
+        await self.start()
         await self.pair()
         await self.workspace()
-        await asyncio.sleep(0.15)
+        # Expire only after setup; native path checks need not finish within a
+        # tiny token lifetime on a busy host. Exercise the real expiry/sweeper.
+        self.host._sessions[_digest(self.token)].expires_at = 0
         status, _, _ = await self.request('GET', '/v1/grants')
         self.assertEqual(status, 401)
+        deadline = time.monotonic() + 2
+        while (self.host._sessions or self.host._workspaces) and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
         self.assertEqual(self.host._sessions, {})
         self.assertEqual(self.host._workspaces, {})
         await self.start()
@@ -711,6 +716,41 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
         (self.project / 'nested').mkdir()
         status, _, _ = await self.request('POST', f'/v1/terminals/{replacement_terminal["id"]}/commands', json={'executable': sys.executable, 'args': ['-c', 'print(1)']})
         self.assertEqual(status, 403)
+
+    async def test_reselect_replaced_directory_creates_new_workspace_without_rebinding_old_terminal(self):
+        await self.start(roots=[{'path': str(self.project), 'execute': True}])
+        await self.pair()
+        old_workspace = await self.workspace('nested')
+        old_record = self.host._workspaces[old_workspace['id']]
+        old_identity = old_record.identity
+        status, body, _ = await self.request('POST', '/v1/terminals', json={'workspaceId': old_workspace['id']})
+        self.assertEqual(status, 200, body)
+        old_terminal = body['terminal']
+        (self.project / 'nested').rename(self.project / 'old-nested')
+        replacement = self.project / 'nested'
+        replacement.mkdir()
+        (replacement / 'marker.txt').write_text('replacement directory', encoding='utf-8')
+
+        async def reject_old_command():
+            status, _, _ = await self.request('POST', f'/v1/terminals/{old_terminal["id"]}/commands', json={'executable': sys.executable, 'args': ['-c', 'print("must not run")']})
+            self.assertEqual(status, 403)
+            self.assertIsNone(self.host._terminals[old_terminal['id']].child)
+
+        await reject_old_command()
+        fresh_workspace = await self.workspace('nested')
+        self.assertNotEqual(fresh_workspace['id'], old_workspace['id'])
+        self.assertEqual(fresh_workspace, await self.workspace('nested'))
+        self.assertEqual(self.host._workspaces[old_workspace['id']].identity, old_identity)
+        self.assertNotEqual(self.host._workspaces[fresh_workspace['id']].identity, old_identity)
+        self.assertEqual(self.host._terminals[old_terminal['id']].workspace_id, old_workspace['id'])
+        await reject_old_command()
+        status, body, _ = await self.request('POST', '/v1/terminals', json={'workspaceId': fresh_workspace['id']})
+        self.assertEqual(status, 200, body)
+        fresh_terminal = body['terminal']
+        await self.command(fresh_terminal, 'from pathlib import Path; print(Path("marker.txt").read_text(encoding="utf-8"))')
+        finished = await self.wait_terminal(fresh_terminal)
+        self.assertEqual(finished['exitCode'], 0)
+        self.assertIn('replacement directory', finished['output'])
 
     async def test_timeout_idle_limit_and_active_session_count(self):
         await self.start(roots=[{'path': str(self.project), 'execute': True}], command_timeout_ms=100, session_idle_ms=5000)
@@ -786,6 +826,48 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.status, 'closed')
         self.assertIsNone(record.child)
         self.assertIsNone(record.cleanup_error)
+
+    async def test_natural_completion_cleanup_failure_is_retried_before_idle_expiry(self):
+        await self.start(roots=[{'path': str(self.project), 'execute': True}], session_idle_ms=30000)
+        await self.pair()
+        terminal = await self.terminal()
+        record = self.host._terminals[terminal['id']]
+
+        class NaturalExitCleanup:
+            attempts = 0
+            returncode = 0
+
+            async def wait(self, timeout):
+                return 0
+
+            async def read_text(self):
+                return None
+
+            async def close(self):
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise TimeoutError('synthetic natural-exit disposal failure')
+
+        child = NaturalExitCleanup()
+        record.child = child
+        record.status = 'running'
+        record.task = asyncio.create_task(self.host._finish_command(record, child))
+        await asyncio.wait_for(asyncio.shield(record.task), 2)
+        self.assertEqual(record.status, 'running')
+        self.assertIs(record.child, child)
+        self.assertIsNotNone(record.cleanup_error)
+        status, _, _ = await self.request('POST', f'/v1/terminals/{terminal["id"]}/commands', json={'executable': sys.executable, 'args': ['-c', 'print("must not spawn")']})
+        self.assertEqual(status, 503)
+        self.assertTrue(record.stopping)
+        deadline = time.monotonic() + 2.5
+        while record.status != 'closed' and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        self.assertEqual(record.status, 'closed')
+        self.assertIsNone(record.child)
+        self.assertIsNone(record.cleanup_error)
+        self.assertGreaterEqual(child.attempts, 2)
+        self.assertLess(time.time() * 1000 - record.last_used, self.host.session_idle_ms)
+        self.assertFalse(self.host._sweeper.done())
 
     async def test_stop_final_confirmation_supersedes_a_late_finish_error(self):
         await self.start(roots=[{'path': str(self.project), 'execute': True}])

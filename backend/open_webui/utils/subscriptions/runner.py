@@ -33,7 +33,7 @@ from aiohttp import WSMsgType, web
 
 from open_webui.utils.subscriptions.discovery import find_tool
 from open_webui.utils.subscriptions.machines import start_local_process
-from open_webui.utils.subscriptions.process import ProcessClosedError, run_command, subscription_env
+from open_webui.utils.subscriptions.process import OutputLimitError, ProcessClosedError, run_command, subscription_env
 from open_webui.utils.subscriptions.workspace_capabilities import WorkspaceCapabilities
 
 log = logging.getLogger('buddy_runner')
@@ -41,10 +41,29 @@ log = logging.getLogger('buddy_runner')
 RUNNER_VERSION = 1
 DEFAULT_PORT = 8765
 DEFAULT_STATE_DIR = Path.home() / '.buddy-runner'
+MAX_PENDING_STDIN_BYTES = 32 * 1024 * 1024
+MAX_PENDING_STDIN_ITEMS = 128
 
 
 def _json_error(status: int, message: str) -> web.Response:
     return web.json_response({'error': message}, status=status)
+
+
+async def _finish_owned_cleanup(task: asyncio.Task) -> None:
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # Keep disposal ownership even if a disconnected handler is cancelled
+        # repeatedly. Propagate cancellation only after cleanup has finished.
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        task.result()
+        raise
 
 
 def _auth_middleware(key: str):
@@ -72,6 +91,7 @@ class Runner:
         self.temp_dir = state_dir / 'tmp'
         self.workspaces = workspaces
         self.processes = set()
+        self.stdin_workers = {}
         self.websockets = set()
         self.command_requests = set()
         self.closing = False
@@ -153,8 +173,42 @@ class Runner:
         self.websockets.add(websocket)
         process = None
         forwarder = None
+        stdin_queue = asyncio.Queue()
+        pending_stdin_bytes = 0
+        pending_stdin_items = 0
+        stdin_closed = False
+        failure_reporting = False
+
+        def queue_stdin(text: str | None) -> None:
+            nonlocal pending_stdin_bytes, pending_stdin_items
+            size = len(text.encode('utf-8')) if text is not None else 0
+            if (
+                pending_stdin_bytes + size > MAX_PENDING_STDIN_BYTES
+                or pending_stdin_items >= MAX_PENDING_STDIN_ITEMS
+            ):
+                raise OutputLimitError('The Runner stdin buffer limit was reached')
+            pending_stdin_bytes += size
+            pending_stdin_items += 1
+            stdin_queue.put_nowait((text, size))
+
+        async def write_stdin():
+            nonlocal pending_stdin_bytes, pending_stdin_items, stdin_closed
+            while True:
+                text, size = await stdin_queue.get()
+                try:
+                    if text is None:
+                        await asyncio.to_thread(process.close_stdin)
+                        return
+                    await process.write(text)
+                except ProcessClosedError:
+                    stdin_closed = True
+                    return
+                finally:
+                    pending_stdin_bytes -= size
+                    pending_stdin_items -= 1
 
         async def forward_output():
+            nonlocal failure_reporting
             try:
                 while True:
                     text = await process.read_text()
@@ -164,9 +218,19 @@ class Runner:
                 await process.finish_output(30)
                 # The process is done; remove its temporary files before reporting.
                 await process.close()
+                if failure_reporting:
+                    # The input handler owns the failed exit acknowledgement.
+                    # Native cleanup can produce EOF before it reports the error.
+                    return
                 exit_event = {'type': 'exit', 'code': process.returncode, 'stderr': process.stderr_text()}
                 await websocket.send_json(exit_event)
-            except (OSError, ConnectionResetError, RuntimeError, ProcessClosedError, TimeoutError):
+            except ProcessClosedError as error:
+                failure_reporting = True
+                try:
+                    await self._report_process_failure(process, websocket, error)
+                except (OSError, RuntimeError, TimeoutError) as cleanup_error:
+                    log.warning('Could not confirm failed process cleanup: %s', cleanup_error)
+            except (OSError, ConnectionResetError, RuntimeError, TimeoutError):
                 # Closing wakes the handler and its process-cleanup finally.
                 await websocket.close()
             else:
@@ -194,24 +258,28 @@ class Runner:
             # Startup acknowledgement is covered by the same cleanup finally.
             await websocket.send_json({'type': 'started', 'pid': process.pid})
             forwarder = asyncio.create_task(forward_output())
+            self.stdin_workers[process] = asyncio.create_task(write_stdin())
             async for message in websocket:
                 if message.type != WSMsgType.TEXT:
                     continue
                 command = json.loads(message.data)
                 kind = command.get('type')
                 if kind == 'stdin':
-                    try:
-                        await process.write(str(command.get('data') or ''))
-                    except ProcessClosedError:
-                        pass
+                    if not stdin_closed:
+                        queue_stdin(str(command.get('data') or ''))
                 elif kind == 'close_stdin':
-                    process.close_stdin()
+                    if not stdin_closed:
+                        queue_stdin(None)
+                        stdin_closed = True
                 elif kind == 'kill':
                     await process.close()
                     # Closing the socket is not proof of native process cleanup.
                     # Acknowledge only after the whole owned process tree stops.
                     if not websocket.closed:
                         await websocket.send_json({'type': 'stopped', 'pid': process.pid})
+        except ProcessClosedError as error:
+            failure_reporting = True
+            await self._report_process_failure(process, websocket, error)
         except (OSError, ValueError, TimeoutError, ConnectionResetError, RuntimeError) as error:
             if not websocket.closed:
                 try:
@@ -220,19 +288,32 @@ class Runner:
                     pass
         finally:
             cleanup = asyncio.create_task(self._dispose_connection(process, forwarder, websocket))
-            try:
-                await asyncio.shield(cleanup)
-            except asyncio.CancelledError:
-                # aiohttp cancels request handlers on a lost connection. Native
-                # disposal and registry cleanup must still finish before exit.
-                await cleanup
-                raise
+            await _finish_owned_cleanup(cleanup)
         return websocket
+
+    async def _report_process_failure(self, process, websocket, error: ProcessClosedError) -> None:
+        """Report failed execution only after its native cleanup is verified."""
+        try:
+            await process.close()
+            if not websocket.closed:
+                code = process.returncode
+                if not isinstance(code, int) or code == 0:
+                    code = 1
+                stderr = process.stderr_text()
+                detail = f'{type(error).__name__}: {error}'
+                if stderr:
+                    detail = f'{stderr}\n{detail}'
+                await websocket.send_json({'type': 'exit', 'code': code, 'stderr': detail})
+        finally:
+            # An unverified cleanup releases the failed transport, without an
+            # exit acknowledgement that could falsely authorize fresh work.
+            await websocket.close()
 
     async def _dispose_connection(self, process, forwarder, websocket) -> None:
         try:
             if process is not None:
                 await process.close()
+                await self._stop_stdin_worker(process)
                 self.processes.discard(process)
                 log.info('Stopped process %s', process.pid)
         finally:
@@ -242,6 +323,13 @@ class Runner:
                 await asyncio.gather(forwarder, return_exceptions=True)
             self.websockets.discard(websocket)
             await websocket.close()
+
+    async def _stop_stdin_worker(self, process) -> None:
+        worker = self.stdin_workers.pop(process, None)
+        if worker is not None:
+            if not worker.done():
+                worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
 
     async def operator_grants(self, request: web.Request) -> web.Response:
         return web.json_response({'grants': self.workspaces.list_grants()})
@@ -262,25 +350,16 @@ class Runner:
         )
         if self._shutdown_task is None or retry_failed_shutdown:
             self._shutdown_task = asyncio.create_task(self._shutdown())
-        try:
-            await asyncio.shield(self._shutdown_task)
-        except asyncio.CancelledError:
-            while not self._shutdown_task.done():
-                try:
-                    await asyncio.shield(self._shutdown_task)
-                except asyncio.CancelledError:
-                    continue
-                except BaseException:
-                    break
-            self._shutdown_task.result()
-            raise
+        await _finish_owned_cleanup(self._shutdown_task)
 
     async def _shutdown(self) -> None:
         # A failed process must not skip cleanup of other owned transports and
         # finite commands. Keep the failure visible after every cleanup attempt.
-        errors = await asyncio.gather(
-            *(process.close() for process in list(self.processes)), return_exceptions=True
-        )
+        processes = list(self.processes)
+        errors = await asyncio.gather(*(process.close() for process in processes), return_exceptions=True)
+        for process, result in zip(processes, errors):
+            if not isinstance(result, BaseException):
+                await self._stop_stdin_worker(process)
         errors.extend(await asyncio.gather(
             *(websocket.close(code=1001) for websocket in list(self.websockets)), return_exceptions=True
         ))

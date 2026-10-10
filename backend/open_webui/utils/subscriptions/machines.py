@@ -175,6 +175,7 @@ class RemoteProcess(StreamedOutput):
         self._queued_chunks = 0
         self._eof_posted = False
         self._close_task: asyncio.Task | None = None
+        self._disposal_started = False
         self._receiver = asyncio.create_task(self._receive())
 
     @property
@@ -183,6 +184,10 @@ class RemoteProcess(StreamedOutput):
             self._confirmed_stopped.is_set() and self._receiver.done()
             and self._websocket.closed
         )
+
+    @property
+    def disposal_started(self) -> bool:
+        return self._disposal_started or self._exited.is_set()
 
     def _consume_chunk(self, chunk: str | None) -> None:
         if chunk is not None:
@@ -296,6 +301,7 @@ class RemoteProcess(StreamedOutput):
             log.warning('Runner process %s cleanup could not be confirmed: %s', self.pid, error)
 
     def _ensure_close_task(self, timeout: float) -> asyncio.Task:
+        self._disposal_started = True
         if self._close_task is None:
             self._close_task = asyncio.create_task(self._verified_close(timeout))
         return self._close_task
@@ -329,6 +335,7 @@ class RemoteProcess(StreamedOutput):
                 await self._websocket.close()
 
     async def kill_and_wait(self, timeout: float = 5.0) -> None:
+        self._disposal_started = True
         operation = self._ensure_close_task(timeout)
         try:
             await asyncio.shield(operation)
@@ -337,6 +344,7 @@ class RemoteProcess(StreamedOutput):
             raise
 
     async def close(self, timeout: float = 5.0) -> None:
+        self._disposal_started = True
         await self.kill_and_wait(timeout)
 
 
