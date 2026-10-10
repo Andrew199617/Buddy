@@ -2,10 +2,12 @@
 # and Codex on this computer. It listens on 127.0.0.1 only; Docker Desktop
 # containers use verified HTTPS at host.docker.internal:<Port>. Supply the TLS
 # certificate and private key from the host operator; only its public CA goes
-# into Docker. Local loopback HTTP remains available. The Runner key is created
-# in %USERPROFILE%\.buddy-runner\key on first start; paste it into Buddy under
-# Admin Settings → Connections → Subscriptions → Machines. Where PowerShell
-# scripts are disabled, run start-buddy-runner.cmd with the same parameters.
+# into Docker. With -TlsCertificate the Runner answers only HTTPS, on loopback
+# too; see companion\TLS_SETUP.md for the Projects page. The Runner key is
+# created in %USERPROFILE%\.buddy-runner\key on first start; paste it into Buddy
+# under Admin Settings → Connections → Subscriptions → Machines. Where
+# PowerShell scripts are disabled, run start-buddy-runner.cmd with the same
+# parameters.
 param(
     [ValidateRange(1, 65535)]
     [int]$Port = 8765,
