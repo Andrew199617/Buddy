@@ -137,7 +137,10 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	const waiting = {
 		state: 'waiting',
 		method: 'browser',
-		url: 'https://example.invalid/synthetic-sign-in',
+		url:
+			mode === 'unsafe-link'
+				? 'javascript:document.title="synthetic-unsafe-link"'
+				: 'https://example.invalid/synthetic-sign-in',
 		message: 'Synthetic pending sign-in; no CLI was started.',
 		needs_code:
 			mode === 'code-login' ||
@@ -1006,6 +1009,25 @@ async function serverCancelCase(browser, profile) {
 		assert.equal(fixtures.count('GET'), polls, 'A sign-in stopped on the server stops polling');
 		await dismiss(page, 'x');
 		assert.equal(fixtures.count('DELETE'), 0, 'An idle dialog has nothing to cancel');
+	});
+}
+
+async function unsafeLinkCase(browser, profile) {
+	await runCase(browser, profile, 'unsafe-link', 'unsafe-link', async ({ page }, fixtures) => {
+		await openLogin(page);
+		await startLogin(page);
+		const dialog = loginDialog(page);
+		await dialog
+			.getByText(
+				'Buddy did not open this sign-in address because it is not HTTPS. Check the CLI on This server.',
+				{ exact: false }
+			)
+			.waitFor();
+		assert.equal(await dialog.getByText('Open Claude sign-in').count(), 0);
+		assert.equal(await dialog.locator('a[href^="javascript:" i]').count(), 0);
+		assert.match(await dialog.innerText(), /javascript:document\.title/);
+		await dismiss(page, 'x');
+		await waitUntil(() => fixtures.count('DELETE') === 1, 'Dismissal still cancels the login');
 	});
 }
 
@@ -2230,6 +2252,7 @@ try {
 		await terminalPollCase(browser, profile, 'idle');
 		await terminalPollCase(browser, profile, 'code');
 		await serverCancelCase(browser, profile);
+		await unsafeLinkCase(browser, profile);
 		await codexSignInTextCase(browser, profile);
 		await successCase(browser, profile);
 		await codeLoginCase(browser, profile);

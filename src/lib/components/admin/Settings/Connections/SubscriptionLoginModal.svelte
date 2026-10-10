@@ -41,6 +41,7 @@
 	import Modal from '$lib/components/common/Modal.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import XMark from '$lib/components/icons/XMark.svelte';
+	import { getHttpsSignInUrl } from './signInLink';
 
 	const i18n: any = getContext('i18n');
 
@@ -68,6 +69,7 @@
 	$: busy = $pendingProviderActions[provider.id] > 0;
 	// The CLI signs in, and a browser sign-in returns, on the machine that runs it.
 	$: machineName = provider.machine?.name || $i18n.t('the selected machine');
+	$: signInUrl = getHttpsSignInUrl(login.url);
 
 	const inputClass =
 		'w-full rounded-xl bg-gray-50 px-3 py-2 text-sm outline-hidden dark:bg-gray-850 placeholder:text-gray-300 dark:placeholder:text-gray-700';
@@ -366,14 +368,26 @@
 				{#if login.url}
 					<div class="flex flex-col gap-1">
 						<div class="text-xs text-gray-500">{$i18n.t('1. Open the sign-in page')}</div>
-						<a
-							class="{primaryButtonClass} self-start"
-							href={login.url}
-							target="_blank"
-							rel="noopener noreferrer"
-						>
-							{$i18n.t('Open {{name}} sign-in', { name: provider.name })}
-						</a>
+						{#if signInUrl}
+							<a
+								class="{primaryButtonClass} self-start"
+								href={signInUrl}
+								target="_blank"
+								rel="noopener noreferrer"
+							>
+								{$i18n.t('Open {{name}} sign-in', { name: provider.name })}
+							</a>
+						{:else}
+							<div
+								class="rounded-xl bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/40 dark:text-red-300"
+							>
+								{$i18n.t(
+									'Buddy did not open this sign-in address because it is not HTTPS. Check the CLI on {{machine}}.',
+									{ machine: machineName }
+								)}
+								<span class="mt-1 block break-all font-mono">{login.url}</span>
+							</div>
+						{/if}
 					</div>
 				{/if}
 
