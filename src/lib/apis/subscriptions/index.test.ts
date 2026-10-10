@@ -103,6 +103,24 @@ describe('subscription selected-computer proof', () => {
 		expectGuardedQuery('GET', '/api/v1/subscriptions/claude/login');
 	});
 
+	it('keeps query guards on browsers without URLSearchParams.size', async () => {
+		const size = Object.getOwnPropertyDescriptor(URLSearchParams.prototype, 'size');
+		// Safari 16 and Chrome 112 have no size property.
+		delete (URLSearchParams.prototype as { size?: number }).size;
+		try {
+			await logoutSubscription('fixture-token', 'claude', machineId, revision);
+		} finally {
+			if (size) Object.defineProperty(URLSearchParams.prototype, 'size', size);
+		}
+		expectGuardedQuery('POST', '/api/v1/subscriptions/claude/logout');
+	});
+
+	it('sends no query string when there is nothing to guard', async () => {
+		await getSubscriptionLogin('fixture-token', 'claude');
+		const [url] = fetchMock.mock.calls[0];
+		expect(url).toBe('/api/v1/subscriptions/claude/login');
+	});
+
 	it('preserves local legacy calls without inventing a remote revision', async () => {
 		await updateSubscriptionConfig('fixture-token', 'claude', { enable: false });
 		expect(JSON.parse(request().options.body)).toEqual({ enable: false });

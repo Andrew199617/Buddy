@@ -119,8 +119,10 @@ const withExpectedMachine = (path: string, machineId?: string, machineRevision?:
 	const guards = new URLSearchParams();
 	if (machineId !== undefined) guards.set('expected_machine_id', machineId);
 	if (machineRevision !== undefined) guards.set('expected_machine_revision', machineRevision);
-	if (!guards.size) return path;
-	return `${path}${path.includes('?') ? '&' : '?'}${guards}`;
+	// URLSearchParams.size is missing before Safari 17 and Chrome 113; the string is not.
+	const query = guards.toString();
+	if (!query) return path;
+	return `${path}${path.includes('?') ? '&' : '?'}${query}`;
 };
 
 export const getSubscriptions = async (
