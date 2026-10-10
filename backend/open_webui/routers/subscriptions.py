@@ -4,7 +4,7 @@ Routes:
   GET    /                         — both providers plus the machine list
   GET    /machines                 — machines (runner keys are never returned)
   POST   /machines                 — add or update a Buddy Runner machine
-  POST   /machines/verify          — check a runner address and key
+  POST   /machines/verify          — check a runner address and key (and a browser address)
   DELETE /machines/{machine}       — remove a machine
   GET    /{provider}               — one provider (?refresh=true checks again)
   POST   /{provider}/config        — save enable, access, workspace, CLI path, machine
@@ -66,6 +66,8 @@ class MachineForm(BaseModel):
 class MachineVerifyForm(BaseModel):
     url: str
     key: str
+    # Optional; checked the same way Save checks it, so Verify cannot pass an address Save rejects.
+    browser_url: Optional[str] = None
 
 
 def _bad_request(error: Exception) -> HTTPException:
@@ -102,7 +104,7 @@ async def save_machine(form_data: MachineForm, user=Depends(get_admin_user)):
 @router.post('/machines/verify')
 async def verify_machine(form_data: MachineVerifyForm, user=Depends(get_admin_user)):
     try:
-        return await service.verify_machine(form_data.url, form_data.key)
+        return await service.verify_machine(form_data.url, form_data.key, form_data.browser_url)
     except SubscriptionError as error:
         raise _bad_request(error)
 

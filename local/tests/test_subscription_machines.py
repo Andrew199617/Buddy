@@ -194,7 +194,7 @@ def load_machine_router(service):
     router_path = ROOT / 'backend' / 'open_webui' / 'routers' / 'subscriptions.py'
     tree = ast.parse(router_path.read_text(encoding='utf-8'))
     nodes = [node for node in tree.body if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
-             and node.name in ('MachineForm', '_bad_request', 'save_machine')]
+             and node.name in ('MachineForm', 'MachineVerifyForm', '_bad_request', 'save_machine', 'verify_machine')]
     for node in nodes:
         if isinstance(node, ast.AsyncFunctionDef):
             node.decorator_list = []
@@ -576,6 +576,22 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         factory.assert_not_called()
         self.assertEqual(self.config.commits, [])
 
+    async def test_verification_rejects_a_browser_address_that_save_would_reject(self):
+        with patch.object(self.service, 'RemoteMachine') as factory:
+            with self.assertRaises(self.service.SubscriptionError):
+                await self.service.verify_machine(
+                    'https://probe.example.invalid', 'fixture-key', 'http://192.0.2.10:8083'
+                )
+        factory.assert_not_called()
+        probe = FakeRemoteMachine('verify', 'Fixture probe', 'https://probe.example.invalid', 'fixture-key')
+        probe.info = AsyncMock(return_value={'host': {'id': 'fixture-probe'}})
+        with patch.object(self.service, 'RemoteMachine', return_value=probe):
+            await self.service.verify_machine(
+                'https://probe.example.invalid', 'fixture-key', 'http://127.0.0.1:8083'
+            )
+        probe.info.assert_awaited_once()
+        self.assertEqual(self.config.commits, [])
+
     async def test_verification_closes_the_temporary_machine_after_a_successful_probe(self):
         info = {'host': {'id': 'fixture-verified-host'}, 'capabilities': {'files': True}}
         probe = FakeRemoteMachine('verify', 'Fixture probe', 'https://probe.example.invalid', 'fixture-probe-key')
@@ -710,6 +726,7 @@ class SubscriptionMachineRouterTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.service = types.SimpleNamespace(
             save_machine=AsyncMock(return_value={'id': 'runner-a'}),
+            verify_machine=AsyncMock(return_value={'host': {'id': 'fixture-host'}}),
             describe_machines=AsyncMock(return_value=[]),
         )
         self.router = load_machine_router(self.service)
@@ -733,6 +750,25 @@ class SubscriptionMachineRouterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_explicit_browser_address_is_forwarded_as_supplied(self):
         await self.assert_browser_field_forwarding({'browser_url': 'https://browser.example.invalid'}, True)
+
+    async def test_verify_forwards_the_browser_address_for_validation(self):
+        form = self.router.MachineVerifyForm.model_validate({
+            'url': 'https://runner.example.invalid:8083', 'key': 'fixture-key',
+            'browser_url': 'http://127.0.0.1:8083',
+        })
+        await self.router.verify_machine(form, user=object())
+        self.service.verify_machine.assert_awaited_once_with(
+            'https://runner.example.invalid:8083', 'fixture-key', 'http://127.0.0.1:8083'
+        )
+
+    async def test_verify_without_a_browser_address_still_checks_the_runner(self):
+        form = self.router.MachineVerifyForm.model_validate({
+            'url': 'https://runner.example.invalid:8083', 'key': 'fixture-key',
+        })
+        await self.router.verify_machine(form, user=object())
+        self.service.verify_machine.assert_awaited_once_with(
+            'https://runner.example.invalid:8083', 'fixture-key', None
+        )
 
 
 if __name__ == '__main__':

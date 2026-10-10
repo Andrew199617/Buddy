@@ -501,7 +501,9 @@ def _machine_id_from_name(name: str, taken: set[str]) -> str:
     return machine_id
 
 
-async def verify_machine(url: str, key: str) -> dict:
+async def verify_machine(url: str, key: str, browser_url: str | None = None) -> dict:
+    """Check that the runner answers with the key. A browser address is validated as on save."""
+    validate_browser_url(browser_url)
     url = normalize_runner_url(url)
     probe = RemoteMachine('verify', 'The runner', url, key)
     try:
