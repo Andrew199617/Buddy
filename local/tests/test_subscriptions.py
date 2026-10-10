@@ -970,6 +970,79 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(server.requests, [('thread/unsubscribe', {'threadId': 'on-local'})])
         self.assertEqual(list(provider._live_threads), ['chat-2'])
 
+    def test_sign_in_links_must_go_to_openai_over_https(self):
+        allowed = [
+            'https://auth.openai.com/oauth/authorize?client_id=app&state=abc',
+            'https://auth.openai.com/codex/device',
+            'https://chatgpt.com/auth/login',
+        ]
+        refused = [
+            None,
+            '',
+            'http://auth.openai.com/oauth/authorize',
+            'javascript:alert(1)',
+            'ms-officecmd:open',
+            'https://auth.openai.com.example.invalid/oauth/authorize',
+            'https://example.invalid/?next=https://auth.openai.com',
+            'https://notopenai.com/',
+            'https://auth.openai.com@example.invalid/',
+            # Browsers treat the backslash as a path separator, so this opens example.invalid.
+            'https://example.invalid\\@auth.openai.com/',
+            'https://auth.openai.com/\nlogin',
+        ]
+        for url in allowed:
+            with self.subTest(url=url):
+                self.assertTrue(codex.is_chatgpt_sign_in_url(url))
+        for url in refused:
+            with self.subTest(url=url):
+                self.assertFalse(codex.is_chatgpt_sign_in_url(url))
+
+    def test_a_sign_in_link_outside_openai_is_refused_and_cancelled(self):
+        class FakeServer:
+            running = True
+
+            def __init__(self, auth_url):
+                self.auth_url = auth_url
+                self.requests = []
+
+            async def request(self, method, params=None, timeout=None):
+                self.requests.append((method, params))
+                if method == 'account/login/start':
+                    return {'loginId': 'login-1', 'authUrl': self.auth_url}
+                return {}
+
+        class FakeMachine:
+            id = 'office-pc'
+            name = 'Office PC'
+
+        async def start_login(auth_url):
+            provider = codex.CodexProvider()
+            server = FakeServer(auth_url)
+            provider._servers['office-pc'] = server
+
+            async def server_for(settings, machine):
+                return server
+
+            provider._server_for = server_for
+            try:
+                result = await provider.start_login(ProviderSettings(enable=True), FakeMachine(), 'browser')
+            except SubscriptionError as error:
+                result = error
+            return result, server.requests, provider.login_state()
+
+        phishing_url = 'https://chatgpt-login.example.invalid/'
+        phishing, phishing_requests, phishing_state = asyncio.run(start_login(phishing_url))
+        self.assertIsInstance(phishing, SubscriptionError)
+        self.assertEqual(str(phishing), codex.UNEXPECTED_SIGN_IN_URL_MESSAGE)
+        self.assertIn(('account/login/cancel', {'loginId': 'login-1'}), phishing_requests)
+        self.assertEqual(phishing_state, {'state': 'idle'})
+
+        real_url = 'https://auth.openai.com/oauth/authorize?state=abc'
+        real, real_requests, real_state = asyncio.run(start_login(real_url))
+        self.assertEqual(real['url'], real_url)
+        self.assertEqual(real_state['state'], 'waiting')
+        self.assertNotIn('account/login/cancel', [method for method, _ in real_requests])
+
     def test_summarize_rate_limits(self):
         summary = codex.summarize_rate_limits(
             {

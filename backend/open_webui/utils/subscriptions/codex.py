@@ -16,6 +16,7 @@ import json
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from open_webui.utils.subscriptions.common import (
     ACCESS_CHAT,
@@ -54,6 +55,12 @@ OVERSIZED_OUTPUT_MESSAGE = (
 DISABLED_FEATURES = ('plugins', 'apps', 'computer_use', 'browser_use', 'hooks')
 LIVE_THREAD_LIMIT = 24
 REQUEST_TIMEOUT = 60
+# ChatGPT sign-in links go to these hosts or their subdomains.
+SIGN_IN_HOSTS = ('openai.com', 'chatgpt.com')
+UNEXPECTED_SIGN_IN_URL_MESSAGE = (
+    'Codex gave a sign-in link that does not go to OpenAI, so Buddy did not show it. '
+    'Check the Codex CLI on the selected computer.'
+)
 
 
 class CodexRpcError(SubscriptionError):
@@ -109,6 +116,31 @@ def summarize_rate_limits(snapshot: dict | None) -> dict | None:
         'windows': windows,
         'limit_reached': bool(snapshot.get('rateLimitReachedType')),
     }
+
+
+def is_chatgpt_sign_in_url(url) -> bool:
+    """Whether ``url`` is an https link to an OpenAI or ChatGPT host.
+
+    The app-server may run on a Buddy Runner, which Buddy trusts less than
+    itself, and the admin's browser opens this link.
+    """
+    if not isinstance(url, str):
+        return False
+    # Browsers read backslashes, spaces, and control characters in a URL
+    # differently than urlsplit does, so a link with any of them is refused.
+    if '\\' in url or ' ' in url or not url.isprintable():
+        return False
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ''
+    except ValueError:
+        return False
+    if parts.scheme != 'https' or '@' in parts.netloc:
+        return False
+    for allowed_host in SIGN_IN_HOSTS:
+        if host == allowed_host or host.endswith('.' + allowed_host):
+            return True
+    return False
 
 
 def history_items(history: list[ChatTurn]) -> list[dict]:
@@ -616,6 +648,11 @@ class CodexProvider:
             result = await server.request('account/login/start', {'type': 'chatgpt'})
             login = CodexLogin(machine.id, 'browser', result.get('loginId'), result.get('authUrl'), None)
         self._login = login
+        if not is_chatgpt_sign_in_url(login.url):
+            log.warning('Refused a ChatGPT sign-in link from %s that is not an https OpenAI address', machine.name)
+            # Stop the sign-in the app-server started, since its link is not shown.
+            await self.cancel_login()
+            raise SubscriptionError(UNEXPECTED_SIGN_IN_URL_MESSAGE)
         return login.to_dict()
 
     async def submit_login_code(self, code: str) -> dict:
