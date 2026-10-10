@@ -45,7 +45,7 @@ from open_webui.utils.subscriptions.machines import (  # noqa: E402
     RemoteProcess,
     temp_file_arg,
 )
-from open_webui.utils.subscriptions.process import ChildProcess, subscription_env  # noqa: E402
+from open_webui.utils.subscriptions.process import ChildProcess, ProcessClosedError, subscription_env  # noqa: E402
 
 PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgo='
 
@@ -142,6 +142,17 @@ class CommonTests(unittest.TestCase):
         self.assertEqual(requested_effort({'reasoning_effort': 'High'}), 'high')
         self.assertEqual(requested_effort({'reasoning': {'effort': 'low'}}), 'low')
         self.assertIsNone(requested_effort({'reasoning_effort': ''}))
+
+    def test_key_tracks_image_order_and_url_identity(self):
+        other_image = 'data:image/png;base64,b3RoZXI='
+        original = [ChatTurn('user', 'Compare these', [PNG_DATA_URL, other_image])]
+        same = [ChatTurn('user', 'Compare these', [PNG_DATA_URL, other_image])]
+        reordered = [ChatTurn('user', 'Compare these', [other_image, PNG_DATA_URL])]
+        self.assertEqual(conversation_key(original), conversation_key(same))
+        self.assertNotEqual(conversation_key(original), conversation_key(reordered))
+        first_url = [ChatTurn('user', 'Look', ['https://example.invalid/first.png'])]
+        edited_url = [ChatTurn('user', 'Look', ['https://example.invalid/edited.png'])]
+        self.assertNotEqual(conversation_key(first_url), conversation_key(edited_url))
 
 
 class ClaudeStreamTests(unittest.TestCase):
@@ -360,9 +371,21 @@ class ClaudeStreamTests(unittest.TestCase):
                 provider = claude_code.ClaudeCodeProvider(Path(directory))
                 conversation = parse_messages(
                     [
-                        {'role': 'user', 'content': 'My name is Ada'},
+                        {
+                            'role': 'user',
+                            'content': [
+                                {'type': 'text', 'text': 'My name is Ada'},
+                                {'type': 'image_url', 'image_url': {'url': PNG_DATA_URL}},
+                            ],
+                        },
                         {'role': 'assistant', 'content': 'Hi Ada'},
-                        {'role': 'user', 'content': 'Who am I?'},
+                        {
+                            'role': 'user',
+                            'content': [
+                                {'type': 'text', 'text': 'Who am I?'},
+                                {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/new.png'}},
+                            ],
+                        },
                     ]
                 )
                 turn = TurnRequest(
@@ -378,6 +401,10 @@ class ClaudeStreamTests(unittest.TestCase):
         self.assertIn('--resume', started[0].args)
         self.assertNotIn('--resume', started[1].args)
         self.assertIn('My name is Ada', started[1].written)
+        fresh_content = json.loads(started[1].written)['message']['content']
+        fresh_images = [block['source'] for block in fresh_content if block['type'] == 'image']
+        self.assertEqual(fresh_images[0]['data'], 'iVBORw0KGgo=')
+        self.assertEqual(fresh_images[1]['url'], 'https://example.invalid/new.png')
         self.assertEqual(stored_session, 'fresh-session')
 
     def test_rate_limit_events_become_usage_windows(self):
@@ -413,6 +440,147 @@ class ClaudeStreamTests(unittest.TestCase):
 
         self.assertEqual(asyncio.run(run()), 'abc#state\n')
 
+    def test_edited_history_image_starts_fresh_while_matching_history_resumes(self):
+        started = []
+
+        class FakeProcess:
+            def __init__(self, args):
+                started.append(self)
+                self.args = args
+                self.written = ''
+                self._lines = [
+                    json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'Compared.'}]}}),
+                    json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'session_id': 'fresh-id'}),
+                ]
+
+            async def write(self, text):
+                self.written += text
+
+            async def read_line(self):
+                if self._lines:
+                    return self._lines.pop(0)
+                return None
+
+            async def finish_output(self, timeout):
+                return None
+
+            def stderr_text(self):
+                return ''
+
+            def close_stdin(self):
+                pass
+
+            def kill(self):
+                pass
+
+        class FakeMachine:
+            id = 'fake'
+            name = 'Fake machine'
+
+            async def find_tool(self, tool, configured_path=''):
+                return 'claude'
+
+            async def start_process(self, args, cwd, extra_env=None, temp_files=None):
+                return FakeProcess(args)
+
+        async def run():
+            with tempfile.TemporaryDirectory() as directory:
+                provider = claude_code.ClaudeCodeProvider(Path(directory))
+
+                def image_conversation(image):
+                    return parse_messages(
+                        [
+                            {
+                                'role': 'user',
+                                'content': [
+                                    {'type': 'text', 'text': 'Describe it'},
+                                    {'type': 'image_url', 'image_url': {'url': image}},
+                                ],
+                            },
+                            {'role': 'assistant', 'content': 'A tree.'},
+                            {
+                                'role': 'user',
+                                'content': [
+                                    {'type': 'text', 'text': 'Compare this'},
+                                    {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/new.png'}},
+                                ],
+                            },
+                        ]
+                    )
+
+                original = image_conversation(PNG_DATA_URL)
+                edited = image_conversation('data:image/png;base64,b3RoZXI=')
+                machine = FakeMachine()
+                original_turn = TurnRequest('opus', original, ProviderSettings(enable=True), directory, machine=machine)
+                edited_turn = TurnRequest('opus', edited, ProviderSettings(enable=True), directory, machine=machine)
+                provider._sessions.put(provider._session_key(original_turn, original.history), 'original-session')
+                self.assertEqual(await collect(provider.run_turn(edited_turn)), [TextDelta('Compared.')])
+                self.assertEqual(await collect(provider.run_turn(original_turn)), [TextDelta('Compared.')])
+
+        asyncio.run(run())
+        self.assertNotIn('--resume', started[0].args)
+        fresh_content = json.loads(started[0].written)['message']['content']
+        fresh_images = [block['source'] for block in fresh_content if block['type'] == 'image']
+        self.assertEqual(fresh_images[0]['data'], 'b3RoZXI=')
+        self.assertEqual(fresh_images[1]['url'], 'https://example.invalid/new.png')
+        self.assertEqual(started[1].args[started[1].args.index('--resume') + 1], 'original-session')
+        resumed_content = json.loads(started[1].written)['message']['content']
+        self.assertEqual(resumed_content[0]['text'], 'Compare this')
+        self.assertEqual(len(resumed_content), 2)
+        self.assertEqual(resumed_content[1]['source']['url'], 'https://example.invalid/new.png')
+
+    def test_finds_store_bundle_without_regular_appdata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bundle_root = (
+                Path(directory) / 'Packages' / 'Claude_test' / 'LocalCache' / 'Roaming' / 'Claude' / 'claude-code'
+            )
+            for version in ('2.1.9', '2.1.295', '2.1.30'):
+                binary = bundle_root / version / 'bundle-id' / 'claude.exe'
+                binary.parent.mkdir(parents=True)
+                binary.write_text('')
+            with (
+                patch.dict(os.environ, {'LOCALAPPDATA': directory}, clear=True),
+                patch.object(discovery.sys, 'platform', 'win32'),
+                patch.object(discovery.Path, 'home', return_value=Path(directory) / 'empty-home'),
+            ):
+                newest = discovery._newest_desktop_bundle()
+            self.assertEqual(newest, str(bundle_root / '2.1.295' / 'bundle-id' / 'claude.exe'))
+
+    def test_selects_newest_bundle_across_regular_and_store_installs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            regular_root = Path(directory) / 'regular'
+            local_root = Path(directory) / 'local'
+            regular_binary = regular_root / 'Claude' / 'claude-code' / '2.1.300' / 'bundle-id' / 'claude.exe'
+            store_root = local_root / 'Packages' / 'Claude_test' / 'LocalCache' / 'Roaming' / 'Claude' / 'claude-code'
+            store_binary = store_root / '2.1.295' / 'bundle-id' / 'claude.exe'
+            for binary in (regular_binary, store_binary):
+                binary.parent.mkdir(parents=True)
+                binary.write_text('')
+            # A matching directory is not an installed executable.
+            (store_root / '9.0.0' / 'bundle-id' / 'claude.exe').mkdir(parents=True)
+            with (
+                patch.dict(os.environ, {'APPDATA': str(regular_root), 'LOCALAPPDATA': str(local_root)}, clear=True),
+                patch.object(discovery.sys, 'platform', 'win32'),
+                patch.object(discovery.Path, 'home', return_value=Path(directory) / 'empty-home'),
+            ):
+                newest = discovery._newest_desktop_bundle()
+            self.assertEqual(newest, str(regular_binary))
+
+    def test_cli_discovery_preserves_explicit_and_native_precedence(self):
+        with (
+            patch.object(discovery.os.path, 'isfile', return_value=True),
+            patch.object(discovery, '_newest_desktop_bundle', return_value='store/claude.exe') as bundled,
+            patch.object(discovery.shutil, 'which', return_value='path/claude.exe'),
+        ):
+            self.assertEqual(discovery.find_claude_cli('configured/claude.exe'), 'configured/claude.exe')
+            self.assertEqual(discovery.find_claude_cli(), 'path/claude.exe')
+            bundled.assert_not_called()
+        with (
+            patch.object(discovery.shutil, 'which', return_value='npm/claude.cmd'),
+            patch.object(discovery.Path, 'is_file', return_value=False),
+            patch.object(discovery, '_newest_desktop_bundle', return_value='store/claude.exe'),
+        ):
+            self.assertEqual(discovery.find_claude_cli(), 'store/claude.exe')
 
 class CodexTests(unittest.TestCase):
     def test_turn_parser_streams_messages_activity_and_usage(self):
@@ -589,7 +757,8 @@ class CodexTests(unittest.TestCase):
         self.assertIsNone(codex.summarize_rate_limits(None))
 
     def test_effort_uses_model_levels(self):
-        # A fresh provider, as on a worker that never listed the models itself.
+        # The resolver uses levels carried by the model entry. Turn execution
+        # separately verifies them against the current app-server.
         provider = codex.CodexProvider()
         conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
         model_efforts = ['low', 'medium', 'high']
@@ -611,6 +780,44 @@ class CodexTests(unittest.TestCase):
         self.assertIsNone(effort('max'))
         self.assertEqual(effort('high', is_task=True), 'low')
 
+    def test_edited_history_image_does_not_reuse_a_live_thread(self):
+        class FakeMachine:
+            id = 'fake'
+
+        provider = codex.CodexProvider()
+        machine = FakeMachine()
+        conversation = parse_messages([{'role': 'user', 'content': 'Compare this'}])
+        turn = TurnRequest('gpt-x', conversation, ProviderSettings(), '.', machine=machine)
+        original_history = [ChatTurn('user', 'Describe it', [PNG_DATA_URL]), ChatTurn('assistant', 'A tree.')]
+        edited_history = [
+            ChatTurn('user', 'Describe it', ['data:image/png;base64,b3RoZXI=']),
+            ChatTurn('assistant', 'A tree.'),
+        ]
+        live = codex.LiveThread(
+            'original-thread', machine_id=machine.id, generation=1, access='chat', cwd='.', usage_total=None
+        )
+        original_key = f'{machine.id}|{conversation_key(original_history, conversation.system)}'
+        edited_key = f'{machine.id}|{conversation_key(edited_history, conversation.system)}'
+        provider._keep_live_thread(original_key, live)
+        self.assertIsNone(provider._take_live_thread(edited_key, turn, generation=1))
+        self.assertIs(provider._take_live_thread(original_key, turn, generation=1), live)
+
+    def test_npm_vendor_discovery_ignores_matching_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bin_dir = Path(directory)
+            package_dir = bin_dir / 'node_modules' / '@openai' / 'codex'
+            invalid_binary = (
+                package_dir / 'node_modules' / '@openai' / 'codex-a' / 'vendor' / 'target' / 'bin' / 'codex.exe'
+            )
+            invalid_binary.mkdir(parents=True)
+            valid_binary = package_dir / 'vendor' / 'target' / 'codex' / 'codex.exe'
+            valid_binary.parent.mkdir(parents=True)
+            valid_binary.write_text('')
+            with patch.object(discovery.sys, 'platform', 'win32'):
+                self.assertEqual(discovery._npm_vendor_binary(bin_dir), str(valid_binary))
+                valid_binary.unlink()
+                self.assertIsNone(discovery._npm_vendor_binary(bin_dir))
+
 
 class DiscoveryTests(unittest.TestCase):
     def test_finds_newest_desktop_bundle(self):
@@ -624,7 +831,10 @@ class DiscoveryTests(unittest.TestCase):
                 binary = root / 'claude-code' / version / 'abc' / 'claude.exe'
                 binary.parent.mkdir(parents=True)
                 binary.write_text('')
-            with patch.dict(os.environ, {'APPDATA': str(appdata), 'LOCALAPPDATA': str(local_appdata)}):
+            with (
+                patch.dict(os.environ, {'APPDATA': str(appdata), 'LOCALAPPDATA': str(local_appdata)}, clear=True),
+                patch.object(discovery.Path, 'home', return_value=Path(directory) / 'empty-home'),
+            ):
                 newest = discovery._newest_desktop_bundle()
             self.assertIn('Claude_abc123', newest)
             self.assertIn('2.1.295', newest)
@@ -669,17 +879,21 @@ class ProcessTests(unittest.TestCase):
 
 
 class MachineTests(unittest.TestCase):
-    def test_runner_key_is_only_sent_over_private_routes(self):
+    def test_runner_key_requires_https_outside_loopback(self):
         allowed = [
             'http://127.0.0.1:8765',
             'http://localhost:8765',
-            'http://host.docker.internal:8765',
-            'http://100.122.80.32:8765',
-            'http://office-pc.tail83dea0.ts.net:8765',
+            'http://[::1]:8765',
+            'https://host.docker.internal:8765',
+            'https://100.122.80.32:8765',
+            'https://office-pc.tail83dea0.ts.net:8765',
             'https://runner.example.com',
         ]
         refused = [
             'http://192.168.1.20:8765',
+            'http://host.docker.internal:8765',
+            'http://100.122.80.32:8765',
+            'http://office-pc.tail83dea0.ts.net:8765',
             'http://runner.example.com:8765',
             'ftp://runner.example.com',
         ]
@@ -691,7 +905,7 @@ class MachineTests(unittest.TestCase):
                 with self.assertRaises(SubscriptionError):
                     RemoteMachine('pc', 'PC', url, 'test-key')
 
-    def test_lost_runner_connection_counts_as_exited(self):
+    def test_lost_runner_connection_is_inactive_but_cleanup_remains_unconfirmed(self):
         import aiohttp
 
         class DroppedConnection:
@@ -710,13 +924,20 @@ class MachineTests(unittest.TestCase):
                 self.closed = True
 
         async def run():
-            process = RemoteProcess(DroppedConnection(), ['codex', 'app-server'], 7)
-            returncode = await process.wait(5)
-            return returncode, process.stderr_text()
+            connection = DroppedConnection()
+            process = RemoteProcess(connection, ['codex', 'app-server'], 7)
+            with self.assertRaisesRegex(ProcessClosedError, 'Runner connection ended'):
+                await process.wait(5)
+            self.assertEqual(process.returncode, -1)
+            self.assertTrue(process.disposal_started)
+            self.assertFalse(process.cleanup_confirmed)
+            with self.assertRaises(ProcessClosedError):
+                await process.write('another request\n')
+            with self.assertRaisesRegex(ProcessClosedError, 'Runner connection ended'):
+                await process.close()
+            self.assertTrue(connection.closed)
 
-        returncode, stderr = asyncio.run(run())
-        self.assertEqual(returncode, -1)
-        self.assertIn('Buddy Runner', stderr)
+        asyncio.run(run())
 
     def test_local_machine_substitutes_temp_files(self):
         async def run():
@@ -835,8 +1056,11 @@ class RunnerKeyTests(unittest.TestCase):
                 self.assertEqual(key_file.parent.stat().st_mode & 0o777, 0o700)
 
                 key_file.chmod(0o644)
-                runner.load_or_create_key(key_file)
-                self.assertEqual(key_file.stat().st_mode & 0o777, 0o600)
+                original = key_file.read_bytes()
+                with self.assertRaises(ValueError):
+                    runner.load_or_create_key(key_file)
+                self.assertEqual(key_file.read_bytes(), original)
+                self.assertEqual(key_file.stat().st_mode & 0o777, 0o644)
         finally:
             os.umask(old_umask)
 
@@ -900,10 +1124,20 @@ class StandInRunnerConnection:
         self.closed = True
 
 
+class StandInProvider:
+    """Provider cleanup without CLI discovery, accounts, or native processes."""
+
+    def __init__(self):
+        self.cancel_calls = 0
+
+    async def cancel_login(self) -> None:
+        self.cancel_calls += 1
+
+
 def load_subscription_service(data_dir: Path, config: StandInConfig):
     """Load service.py with stand-ins for the Open WebUI modules that reach the database."""
     stand_ins = {
-        'open_webui.env': types.SimpleNamespace(DATA_DIR=str(data_dir)),
+        'open_webui.env': types.SimpleNamespace(DATA_DIR=str(data_dir), UVICORN_WORKERS=1),
         'open_webui.models.config': types.SimpleNamespace(Config=config),
         'open_webui.models.models': types.SimpleNamespace(Models=None),
         'open_webui.utils.payload': types.SimpleNamespace(
@@ -926,8 +1160,9 @@ class DeleteMachineTests(unittest.TestCase):
         self.data_dir = Path(directory.name)
         self.config = StandInConfig()
         self.service = load_subscription_service(self.data_dir, self.config)
+        self.service.PROVIDERS = {provider: StandInProvider() for provider in ('claude', 'codex')}
 
-    def test_providers_move_to_this_server_and_forget_the_machines_paths(self):
+    def test_providers_retain_the_removed_machine_and_forget_its_permissions_and_paths(self):
         # Paths that exist only on the machine being removed.
         workspace = str(self.data_dir / 'office-pc-projects')
         cli_path = str(self.data_dir / 'office-pc-claude.exe')
@@ -938,11 +1173,13 @@ class DeleteMachineTests(unittest.TestCase):
             'workspace': workspace,
             'cli_path': cli_path,
             'machine_id': 'office-pc',
+            'access': 'full',
         }
         self.config.values['subscriptions.codex'] = {
             'enable': True,
             'workspace': workspace,
             'machine_id': 'office-pc',
+            'access': 'read',
         }
         runner_connection = StandInRunnerConnection()
         self.service._remote_machines['office-pc'] = runner_connection
@@ -951,17 +1188,23 @@ class DeleteMachineTests(unittest.TestCase):
 
         for provider_id in ('claude', 'codex'):
             settings = self.config.values[f'subscriptions.{provider_id}']
-            self.assertEqual(settings['machine_id'], 'local')
+            self.assertEqual(settings['machine_id'], 'office-pc')
+            self.assertEqual(settings['access'], 'chat')
             self.assertEqual(settings['workspace'], '')
             self.assertEqual(settings['cli_path'], '')
-            self.assertTrue(settings['enable'])
+            self.assertFalse(settings['enable'])
         self.assertEqual(self.config.values['subscriptions.machines'], [])
         self.assertTrue(runner_connection.closed)
+        self.assertTrue(all(provider.cancel_calls == 1 for provider in self.service.PROVIDERS.values()))
 
-    def test_a_failed_move_keeps_the_machine(self):
+    def test_a_failed_atomic_reset_keeps_the_machine_and_provider_settings(self):
         office_pc = {'id': 'office-pc', 'name': 'Office PC', 'url': 'http://office-pc:8765', 'key': 'test-key'}
         self.config.values['subscriptions.machines'] = [office_pc]
+        self.config.values['subscriptions.claude'] = {
+            'enable': True, 'access': 'full', 'workspace': 'remote-only', 'machine_id': 'office-pc',
+        }
         self.config.values['subscriptions.codex'] = {'enable': True, 'machine_id': 'office-pc'}
+        original = json.loads(json.dumps(self.config.values))
         self.config.failing_key = 'subscriptions.codex'
         runner_connection = StandInRunnerConnection()
         self.service._remote_machines['office-pc'] = runner_connection
@@ -969,9 +1212,9 @@ class DeleteMachineTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             asyncio.run(self.service.delete_machine('office-pc'))
 
-        self.assertEqual(self.config.values['subscriptions.machines'], [office_pc])
-        self.assertEqual(self.config.values['subscriptions.codex']['machine_id'], 'office-pc')
+        self.assertEqual(self.config.values, original)
         self.assertFalse(runner_connection.closed)
+        self.assertTrue(all(provider.cancel_calls == 0 for provider in self.service.PROVIDERS.values()))
 
     def test_this_server_cannot_be_removed(self):
         workspace = str(self.data_dir)

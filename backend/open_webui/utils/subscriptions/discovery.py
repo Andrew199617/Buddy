@@ -42,6 +42,7 @@ def _newest_desktop_bundle() -> str | None:
     bundles = []
     for directory in _desktop_bundle_dirs():
         bundles.extend(directory.glob('*/*/claude.exe'))
+    bundles = [binary for binary in bundles if binary.is_file()]
     if not bundles:
         return None
     bundles.sort(key=_desktop_bundle_version)
@@ -80,7 +81,7 @@ def _npm_vendor_binary(bin_dir: Path) -> str | None:
         f'vendor/*/codex/{executable_name}',
     ]
     for pattern in patterns:
-        matches = sorted(package_dir.glob(pattern))
+        matches = sorted(binary for binary in package_dir.glob(pattern) if binary.is_file())
         if matches:
             return str(matches[0])
     return None

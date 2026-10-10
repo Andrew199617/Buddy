@@ -1,0 +1,13 @@
+# Optional overlay for compose.yaml: mount only the public Runner CA into Buddy.
+# The Runner's TLS private key stays on its host. No certificates are generated.
+services:
+  buddy:
+    environment:
+      BUDDY_RUNNER_CA_FILE: /etc/buddy/runner-ca.pem
+    volumes:
+      - type: bind
+        source: "${BUDDY_RUNNER_CA_HOST_FILE:?Set BUDDY_RUNNER_CA_HOST_FILE to your public Runner CA PEM file}"
+        target: /etc/buddy/runner-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false

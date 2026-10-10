@@ -456,6 +456,9 @@ class CodexProvider:
         self._servers: dict[str, CodexAppServer] = {}
         self._live_threads: OrderedDict[str, LiveThread] = OrderedDict()
         self._login: CodexLogin | None = None
+        self._model_efforts: dict[str, list[str]] = {}
+        self._model_efforts_server: CodexAppServer | None = None
+        self._model_efforts_generation: int | None = None
         self.rate_limits: dict | None = None
 
     def _on_notification(self, message: dict) -> None:
@@ -540,8 +543,15 @@ class CodexProvider:
 
     async def list_models(self, settings: ProviderSettings, machine) -> list[ProviderModel]:
         server = await self._server_for(settings, machine)
+        return await self._load_models(server)
+
+    async def _load_models(self, server: CodexAppServer) -> list[ProviderModel]:
+        generation = server.generation
         result = await server.request('model/list', {}, timeout=30)
+        if server.generation != generation:
+            raise SubscriptionError('Codex restarted while loading model metadata. Try again.')
         models = []
+        model_efforts = {}
         for entry in result.get('data') or []:
             if entry.get('hidden'):
                 continue
@@ -550,6 +560,7 @@ class CodexProvider:
                 continue
             efforts = [option.get('reasoningEffort') for option in entry.get('supportedReasoningEfforts') or []]
             efforts = [effort for effort in efforts if effort]
+            model_efforts[value] = efforts
             models.append(
                 ProviderModel(
                     key=model_key(value),
@@ -560,6 +571,9 @@ class CodexProvider:
                     vision='image' in (entry.get('inputModalities') or ['image']),
                 )
             )
+        self._model_efforts = model_efforts
+        self._model_efforts_server = server
+        self._model_efforts_generation = generation
         return models
 
     async def start_login(self, settings: ProviderSettings, machine, method: str) -> dict:
@@ -613,6 +627,17 @@ class CodexProvider:
         if turn.effort in supported:
             return turn.effort
         return None
+
+    async def _ensure_effort_models(self, server: CodexAppServer, turn: TurnRequest) -> None:
+        if not turn.effort and not turn.is_task:
+            return
+        if not (
+            self._model_efforts_server is server
+            and self._model_efforts_generation == server.generation
+        ):
+            # Carried registry metadata may describe an earlier host or server.
+            await self._load_models(server)
+        turn.efforts = list(self._model_efforts.get(turn.model, []))
 
     def _developer_instructions(self, turn: TurnRequest) -> str | None:
         system = turn.conversation.system
@@ -717,6 +742,7 @@ class CodexProvider:
         """Run one chat turn and yield its events."""
         machine = turn.machine
         server = await self._server_for(turn.settings, machine)
+        await self._ensure_effort_models(server, turn)
         conversation = turn.conversation
         history_key = f'{machine.id}|{conversation_key(conversation.history, conversation.system)}'
 
@@ -734,6 +760,8 @@ class CodexProvider:
         parser = None
         completed = False
         try:
+            # Thread setup also sends RPCs and may restart the app-server.
+            await self._ensure_effort_models(server, turn)
             params = {'threadId': thread_id, 'input': user_input(conversation.prompt), 'model': turn.model}
             effort = self._effort(turn)
             if effort:
@@ -774,3 +802,6 @@ class CodexProvider:
             server.stop()
         self._servers.clear()
         self._live_threads.clear()
+        self._model_efforts.clear()
+        self._model_efforts_server = None
+        self._model_efforts_generation = None

@@ -22,7 +22,6 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from open_webui.env import UVICORN_WORKERS
 from open_webui.utils.auth import get_admin_user
 from open_webui.utils.subscriptions import service
 from open_webui.utils.subscriptions.events import SubscriptionError
@@ -38,14 +37,20 @@ class SubscriptionConfigForm(BaseModel):
     workspace: Optional[str] = None
     cli_path: Optional[str] = None
     machine_id: Optional[str] = None
+    expected_machine_id: Optional[str] = None
+    expected_machine_revision: Optional[str] = None
 
 
 class LoginForm(BaseModel):
     method: Literal['browser', 'device'] = 'browser'
+    expected_machine_id: Optional[str] = None
+    expected_machine_revision: Optional[str] = None
 
 
 class LoginCodeForm(BaseModel):
     code: str
+    expected_machine_id: Optional[str] = None
+    expected_machine_revision: Optional[str] = None
 
 
 class MachineForm(BaseModel):
@@ -54,6 +59,8 @@ class MachineForm(BaseModel):
     url: str
     # Leave empty when editing to keep the saved key.
     key: Optional[str] = None
+    # Omit to keep the saved address; send null to clear it.
+    browser_url: Optional[str] = None
 
 
 class MachineVerifyForm(BaseModel):
@@ -83,7 +90,10 @@ async def get_machines(user=Depends(get_admin_user)):
 @router.post('/machines')
 async def save_machine(form_data: MachineForm, user=Depends(get_admin_user)):
     try:
-        machine = await service.save_machine(form_data.id, form_data.name, form_data.url, form_data.key)
+        machine = await service.save_machine(
+            form_data.id, form_data.name, form_data.url, form_data.key, form_data.browser_url,
+            browser_url_supplied='browser_url' in form_data.model_fields_set
+        )
     except SubscriptionError as error:
         raise _bad_request(error)
     return {'machine': machine, 'machines': await service.describe_machines()}
@@ -107,8 +117,14 @@ async def delete_machine(machine_id: str, user=Depends(get_admin_user)):
 
 
 @router.get('/{provider_id}')
-async def get_subscription(provider_id: str, refresh: bool = False, user=Depends(get_admin_user)):
-    return await service.describe_provider(provider_id, fresh=refresh)
+async def get_subscription(
+    provider_id: str, refresh: bool = False, expected_machine_id: Optional[str] = None,
+    expected_machine_revision: Optional[str] = None, user=Depends(get_admin_user)
+):
+    return await service.describe_provider(
+        provider_id, fresh=refresh, expected_machine_id=expected_machine_id,
+        expected_machine_revision=expected_machine_revision
+    )
 
 
 @router.post('/{provider_id}/config')
@@ -126,33 +142,20 @@ async def update_subscription_config(
 
 @router.post('/{provider_id}/login')
 async def start_subscription_login(provider_id: str, form_data: LoginForm, user=Depends(get_admin_user)):
-    provider = service.get_provider(provider_id)
-    settings = await service.get_settings(provider_id)
-    if UVICORN_WORKERS > 1:
-        # The sign-in process belongs to one worker, but the follow-up requests
-        # (progress, pasted code, cancel) can reach another. The CLIs keep the
-        # credentials on disk, so signing in from a terminal works for all workers.
-        command = 'claude auth login' if provider_id == 'claude' else 'codex login'
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f'Buddy is running {UVICORN_WORKERS} workers, so sign in from a terminal on the machine '
-                f'that runs the CLI with "{command}", then refresh this page.'
-            ),
-        )
     try:
-        machine = await service.get_machine(settings.machine_id)
-        return await provider.start_login(settings, machine, form_data.method)
+        return await service.start_login(
+            provider_id, form_data.method, form_data.expected_machine_id, form_data.expected_machine_revision
+        )
     except (SubscriptionError, OSError) as error:
         raise _bad_request(error)
 
 
 @router.get('/{provider_id}/login')
-async def get_subscription_login(provider_id: str, user=Depends(get_admin_user)):
-    login = service.get_provider(provider_id).login_state()
-    if login.get('state') == 'success':
-        service.invalidate(provider_id)
-    return login
+async def get_subscription_login(
+    provider_id: str, expected_machine_id: Optional[str] = None,
+    expected_machine_revision: Optional[str] = None, user=Depends(get_admin_user)
+):
+    return await service.login_state(provider_id, expected_machine_id, expected_machine_revision)
 
 
 @router.post('/{provider_id}/login/code')
@@ -161,31 +164,35 @@ async def submit_subscription_login_code(
     form_data: LoginCodeForm,
     user=Depends(get_admin_user),
 ):
-    provider = service.get_provider(provider_id)
     try:
-        login = await provider.submit_login_code(form_data.code)
+        return await service.submit_login_code(
+            provider_id, form_data.code, form_data.expected_machine_id, form_data.expected_machine_revision
+        )
     except (SubscriptionError, OSError) as error:
         raise _bad_request(error)
-    if login.get('state') == 'success':
-        service.invalidate(provider_id)
-    return login
 
 
 @router.delete('/{provider_id}/login')
-async def cancel_subscription_login(provider_id: str, user=Depends(get_admin_user)):
-    await service.get_provider(provider_id).cancel_login()
-    return {'state': 'idle'}
+async def cancel_subscription_login(
+    provider_id: str, expected_machine_id: Optional[str] = None,
+    expected_machine_revision: Optional[str] = None, user=Depends(get_admin_user)
+):
+    try:
+        return await service.cancel_login(provider_id, expected_machine_id, expected_machine_revision)
+    except (SubscriptionError, OSError) as error:
+        raise _bad_request(error)
 
 
 @router.post('/{provider_id}/logout')
-async def logout_subscription(provider_id: str, user=Depends(get_admin_user)):
-    provider = service.get_provider(provider_id)
-    settings = await service.get_settings(provider_id)
+async def logout_subscription(
+    provider_id: str, expected_machine_id: Optional[str] = None,
+    expected_machine_revision: Optional[str] = None, user=Depends(get_admin_user)
+):
     try:
-        machine = await service.get_machine(settings.machine_id)
-        await provider.logout(settings, machine)
+        await service.logout(provider_id, expected_machine_id, expected_machine_revision)
     except (SubscriptionError, OSError) as error:
         raise _bad_request(error)
-    finally:
-        service.invalidate(provider_id)
-    return await service.describe_provider(provider_id, fresh=True)
+    return await service.describe_provider(
+        provider_id, fresh=True, expected_machine_id=expected_machine_id,
+        expected_machine_revision=expected_machine_revision
+    )

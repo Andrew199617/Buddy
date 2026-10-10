@@ -1,3 +1,28 @@
+<script context="module" lang="ts">
+	import { get, writable } from 'svelte/store';
+	import type { SubscriptionProviderId as BusyProviderId } from '$lib/apis/subscriptions';
+
+	// A pending start can outlive this dialog. Keep a reopened instance from
+	// starting another login before the old request has been cancelled.
+	const pendingProviderActions = writable({ claude: 0, codex: 0 });
+
+	const providerIsBusy = (providerId: BusyProviderId) =>
+		get(pendingProviderActions)[providerId] > 0;
+
+	const beginProviderAction = (providerId: BusyProviderId) => {
+		pendingProviderActions.update((actions) => ({
+			...actions,
+			[providerId]: actions[providerId] + 1
+		}));
+		return () => {
+			pendingProviderActions.update((actions) => ({
+				...actions,
+				[providerId]: actions[providerId] - 1
+			}));
+		};
+	};
+</script>
+
 <script lang="ts">
 	import { getContext, onDestroy } from 'svelte';
 	import { toast } from 'svelte-sonner';
@@ -7,6 +32,7 @@
 		getSubscriptionLogin,
 		startSubscriptionLogin,
 		submitSubscriptionLoginCode,
+		type SubscriptionProviderId,
 		type SubscriptionLogin,
 		type SubscriptionProvider
 	} from '$lib/apis/subscriptions';
@@ -27,7 +53,16 @@
 	let login: SubscriptionLogin = { state: 'idle' };
 	let code = '';
 	let busy = false;
+	let loginGeneration = 0;
+	let loginOwner: {
+		providerId: SubscriptionProviderId;
+		machineId: string;
+		machineRevision?: string;
+	} | null = null;
+	let disposed = false;
+	let cancellation: Promise<void> | null = null;
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
+	$: busy = $pendingProviderActions[provider.id] > 0;
 
 	const inputClass =
 		'w-full rounded-xl bg-gray-50 px-3 py-2 text-sm outline-hidden dark:bg-gray-850 placeholder:text-gray-300 dark:placeholder:text-gray-700';
@@ -43,24 +78,90 @@
 		}
 	};
 
-	const handleLoginUpdate = (update: SubscriptionLogin) => {
+	const cancelWaitingLogin = (owner = loginOwner): Promise<void> => {
+		if (!owner) return Promise.resolve();
+		if (cancellation) {
+			return cancellation;
+		}
+		const finishAction = beginProviderAction(owner.providerId);
+		cancellation = cancelSubscriptionLogin(
+			localStorage.token,
+			owner.providerId,
+			owner.machineId,
+			owner.machineRevision
+		)
+			.then(() => {})
+			.catch(() => {})
+			.finally(() => {
+				finishAction();
+				cancellation = null;
+			});
+		return cancellation;
+	};
+
+	const dismissLogin = () => {
+		loginGeneration += 1;
+		stopPolling();
+		const waiting = login.state === 'waiting';
+		const owner = loginOwner;
+		loginOwner = null;
+		login = { state: 'idle' };
+		code = '';
+		if (waiting) {
+			void cancelWaitingLogin(owner);
+		}
+	};
+
+	const handleLoginUpdate = (update: SubscriptionLogin, generation: number) => {
+		if (
+			disposed ||
+			generation !== loginGeneration ||
+			!show ||
+			!loginOwner ||
+			loginOwner.machineId !== provider.settings.machine_id ||
+			loginOwner.machineRevision !== provider.machine?.revision
+		) {
+			return;
+		}
 		login = update;
-		if (login.state === 'success') {
+		if (login.state !== 'waiting') {
+			// Any other response still in flight belongs to the completed polling flow.
+			loginGeneration += 1;
 			stopPolling();
+		}
+		if (login.state === 'success') {
 			toast.success($i18n.t('Signed in to {{name}}', { name: provider.name }));
 			onSignedIn();
 			show = false;
-		} else if (login.state === 'error') {
-			stopPolling();
 		}
 	};
 
 	const pollLogin = async () => {
+		const generation = loginGeneration;
+		const owner = loginOwner;
+		if (disposed || !owner || !show || login.state !== 'waiting') return;
 		try {
-			handleLoginUpdate(await getSubscriptionLogin(localStorage.token, provider.id));
+			handleLoginUpdate(
+				await getSubscriptionLogin(
+					localStorage.token,
+					owner.providerId,
+					owner.machineId,
+					owner.machineRevision
+				),
+				generation
+			);
 		} catch (error) {
-			stopPolling();
-			toast.error(`${error}`);
+			if (
+				!disposed &&
+				generation === loginGeneration &&
+				show &&
+				owner.machineId === provider.settings.machine_id &&
+				owner.machineRevision === provider.machine?.revision
+			) {
+				loginGeneration += 1;
+				stopPolling();
+				toast.error(`${error}`);
+			}
 		}
 	};
 
@@ -70,38 +171,95 @@
 	};
 
 	const startLogin = async (method: 'browser' | 'device') => {
-		busy = true;
+		if (disposed || !show || providerIsBusy(provider.id)) {
+			return;
+		}
+		const generation = ++loginGeneration;
+		const owner = {
+			providerId: provider.id,
+			machineId: provider.settings.machine_id,
+			machineRevision: provider.machine?.revision
+		};
+		loginOwner = owner;
+		const finishAction = beginProviderAction(provider.id);
 		code = '';
 		try {
-			login = await startSubscriptionLogin(localStorage.token, provider.id, method);
+			const update = await startSubscriptionLogin(
+				localStorage.token,
+				owner.providerId,
+				method,
+				owner.machineId,
+				owner.machineRevision
+			);
+			if (
+				disposed ||
+				generation !== loginGeneration ||
+				!show ||
+				owner.machineId !== provider.settings.machine_id ||
+				owner.machineRevision !== provider.machine?.revision
+			) {
+				if (update.state === 'waiting') {
+					await cancelWaitingLogin(owner);
+				}
+				return;
+			}
+			login = update;
 			if (login.state === 'waiting') {
 				startPolling();
 			}
 		} catch (error) {
-			toast.error(`${error}`);
+			if (
+				!disposed &&
+				generation === loginGeneration &&
+				show &&
+				owner.machineId === provider.settings.machine_id &&
+				owner.machineRevision === provider.machine?.revision
+			) {
+				toast.error(`${error}`);
+			}
 		} finally {
-			busy = false;
+			finishAction();
 		}
 	};
 
 	const submitCode = async () => {
-		busy = true;
+		const owner = loginOwner;
+		if (
+			disposed ||
+			!show ||
+			!owner ||
+			owner.machineId !== provider.settings.machine_id ||
+			owner.machineRevision !== provider.machine?.revision ||
+			providerIsBusy(provider.id)
+		) {
+			return;
+		}
+		const generation = loginGeneration;
+		const finishAction = beginProviderAction(provider.id);
 		try {
-			handleLoginUpdate(await submitSubscriptionLoginCode(localStorage.token, provider.id, code));
+			handleLoginUpdate(
+				await submitSubscriptionLoginCode(
+					localStorage.token,
+					owner.providerId,
+					code,
+					owner.machineId,
+					owner.machineRevision
+				),
+				generation
+			);
 		} catch (error) {
-			toast.error(`${error}`);
+			if (
+				!disposed &&
+				generation === loginGeneration &&
+				show &&
+				owner.machineId === provider.settings.machine_id &&
+				owner.machineRevision === provider.machine?.revision
+			) {
+				toast.error(`${error}`);
+			}
 		} finally {
-			busy = false;
+			finishAction();
 		}
-	};
-
-	// Runs however the dialog closes: the X button, Escape, or the backdrop.
-	const cancelPendingLogin = () => {
-		stopPolling();
-		if (login.state === 'waiting') {
-			cancelSubscriptionLogin(localStorage.token, provider.id).catch(() => {});
-		}
-		login = { state: 'idle' };
 	};
 
 	const close = () => {
@@ -115,10 +273,21 @@
 	};
 
 	$: if (!show) {
-		cancelPendingLogin();
+		dismissLogin();
+	}
+	$: if (
+		loginOwner &&
+		(loginOwner.machineId !== provider.settings.machine_id ||
+			loginOwner.machineRevision !== provider.machine?.revision)
+	) {
+		show = false;
+		dismissLogin();
 	}
 
-	onDestroy(cancelPendingLogin);
+	onDestroy(() => {
+		disposed = true;
+		dismissLogin();
+	});
 </script>
 
 <Modal size="sm" bind:show>

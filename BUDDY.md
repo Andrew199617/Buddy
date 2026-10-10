@@ -128,6 +128,21 @@ and saved tokens stay intact; Buddy registers a separate dynamic client when a
 new callback address is needed. For static OAuth credentials, the provider must
 also allow that exact callback URI.
 
+## Projects on an execution host
+
+Buddy Runner now provides both backend provider execution and the separately
+paired Companion workspace API. The configurable default is **127.0.0.1:8765**,
+matching the existing Machines runner; a second Node host on 8083 is no longer
+required. Its host operator explicitly approves project roots and read/write/
+command capabilities. Browser paths, chat folders, provider working directories,
+and provider sign-in never approve a filesystem grant.
+
+See [the Companion guide](companion/README.md) for startup, pairing, operator
+revocation and the browser/mobile transport boundary. Provider commands run on
+the selected subscription machine. Choosing a Companion project does not move
+those commands or change their permissions. Direct file API access stays inside
+approved projects; provider read access and opt-in commands can be broader.
+
 ## Claude and ChatGPT subscriptions
 
 Buddy can chat with Claude and OpenAI models on your Claude Pro/Max and ChatGPT
@@ -216,9 +231,10 @@ Windows PC while Buddy runs in Docker, start the Buddy Runner there and add it:
    `~/.buddy-runner/key` on first start.
 2. In Buddy, choose **Add machine** and enter a name, the runner address, and
    the key, then **Verify**. From Buddy in Docker Desktop, the Docker host is
-   `http://host.docker.internal:8765`. A runner on another computer needs an
-   `https://` address or a Tailscale address (`100.x.y.z` or a `*.ts.net`
-   name), so the key is never sent in plain text.
+   `https://host.docker.internal:8765`, after configuring Runner TLS and the
+   backend's application-specific certificate trust. Every non-loopback
+   connection requires verified HTTPS, including Docker and Tailscale names
+   and addresses. See [the HTTPS setup](companion/TLS_SETUP.md).
 3. Open a provider's gear button and set **Runs on** to that machine. Sign in
    from there; the sign-in lives on that machine.
 
@@ -227,6 +243,11 @@ a process stops when Buddy's connection to it closes. Anyone holding the
 runner key can run any command as the user running the runner, so it listens
 only on the local loopback by default and Buddy never sends the key to the
 browser.
+
+Changing a provider's machine clears its paths and access and disables it until
+you explicitly configure that machine. Removing a machine disables affected
+providers and preserves the missing selection; it never switches execution to
+This server. Editing a registered target also invalidates its old provider work.
 
 ## Buddy in Docker
 
