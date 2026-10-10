@@ -5,6 +5,7 @@ Run with the repository virtualenv:
 """
 
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -15,6 +16,7 @@ from unittest.mock import patch
 ROOT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT_DIR / 'backend'))
 
+from open_webui.utils.subscriptions import runner  # noqa: E402
 from open_webui.utils.subscriptions.conversation import (  # noqa: E402
     CONTINUE_PROMPT,
     ChatTurn,
@@ -23,6 +25,7 @@ from open_webui.utils.subscriptions.conversation import (  # noqa: E402
     parse_messages,
 )
 from open_webui.utils.subscriptions.events import SubscriptionError  # noqa: E402
+from open_webui.utils.subscriptions.machines import LocalMachine, RemoteMachine, temp_file_arg  # noqa: E402
 from open_webui.utils.subscriptions.process import ChildProcess, subscription_env  # noqa: E402
 
 PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgo='
@@ -143,6 +146,103 @@ class ProcessTests(unittest.TestCase):
             return first, second, end
 
         self.assertEqual(asyncio.run(run()), ('echo:first', 'echo:second', None))
+
+
+class RunnerTests(unittest.TestCase):
+    """A real runner served in-process, driven through RemoteMachine."""
+
+    def run_with_runner(self, scenario, key='test-key', client_key=None):
+        from aiohttp.test_utils import TestServer
+
+        async def run():
+            with tempfile.TemporaryDirectory() as directory:
+                server = TestServer(runner.build_app(key, Path(directory)))
+                await server.start_server()
+                machine = RemoteMachine('pc', 'Test PC', str(server.make_url('')), client_key or key)
+                try:
+                    return await scenario(machine, Path(directory))
+                finally:
+                    await machine.close()
+                    await server.close()
+
+        return asyncio.run(run())
+
+    def test_health_and_short_commands(self):
+        async def scenario(machine, state_dir):
+            info = await machine.info()
+            returncode, stdout, _ = await machine.run(
+                [sys.executable, '-c', 'print("hello from runner")'], await machine.chat_dir(), 30
+            )
+            exists = await machine.path_exists(str(state_dir), 'dir')
+            missing = await machine.path_exists(str(state_dir / 'nope.txt'), 'file')
+            return info, returncode, stdout, exists, missing
+
+        info, returncode, stdout, exists, missing = self.run_with_runner(scenario)
+        self.assertTrue(info['ok'])
+        self.assertTrue(info['chat_dir'].endswith('chat'))
+        self.assertEqual((returncode, stdout.strip()), (0, 'hello from runner'))
+        self.assertTrue(exists)
+        self.assertFalse(missing)
+
+    def test_streams_a_process_over_pipes(self):
+        script = (
+            'import sys\n'
+            'print("instructions:" + open(sys.argv[1], encoding="utf-8").read(), flush=True)\n'
+            'for line in sys.stdin:\n'
+            '    print("echo:" + line.strip(), flush=True)\n'
+        )
+
+        async def scenario(machine, state_dir):
+            process = await machine.start_process(
+                [sys.executable, '-c', script, temp_file_arg('instructions')],
+                await machine.chat_dir(),
+                temp_files={'instructions': 'be brief'},
+            )
+            first = await asyncio.wait_for(process.read_line(), 20)
+            # JSON with escapes and a long line must pass through unchanged.
+            payload = json.dumps({'text': 'quote " slash \\ newline \\n', 'pad': 'x' * 10000})
+            await process.write(payload + '\n')
+            second = await asyncio.wait_for(process.read_line(), 20)
+            process.close_stdin()
+            end = await asyncio.wait_for(process.read_line(), 20)
+            code = await process.wait(20)
+            leftover_temp_files = list((state_dir / 'tmp').iterdir())
+            return first, second, payload, end, code, leftover_temp_files
+
+        first, second, payload, end, code, leftover = self.run_with_runner(scenario)
+        self.assertEqual(first, 'instructions:be brief')
+        self.assertEqual(second, 'echo:' + payload)
+        self.assertIsNone(end)
+        self.assertEqual(code, 0)
+        self.assertEqual(leftover, [])
+
+    def test_wrong_key_is_rejected(self):
+        async def scenario(machine, state_dir):
+            with self.assertRaises(SubscriptionError) as raised:
+                await machine.info()
+            return str(raised.exception)
+
+        message = self.run_with_runner(scenario, client_key='wrong-key')
+        self.assertIn('runner key', message)
+
+    def test_local_machine_substitutes_temp_files(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as directory:
+                machine = LocalMachine(Path(directory))
+                process = await machine.start_process(
+                    [sys.executable, '-c', 'import sys; print(open(sys.argv[1]).read())', temp_file_arg('notes')],
+                    await machine.chat_dir(),
+                    temp_files={'notes': 'hi'},
+                )
+                line = await asyncio.wait_for(process.read_line(), 20)
+                await process.wait(20)
+                temp_path = process.args[-1]
+                process.kill()
+                return line, os.path.exists(temp_path)
+
+        line, still_there = asyncio.run(run())
+        self.assertEqual(line, 'hi')
+        self.assertFalse(still_there)
 
 
 if __name__ == '__main__':

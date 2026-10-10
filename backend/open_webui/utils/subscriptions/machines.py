@@ -7,18 +7,28 @@ code works in both places. Sign-ins, repositories, and terminal commands all
 live on the machine.
 """
 
+import asyncio
+import json
+import logging
 import os
 import socket
 import sys
 import tempfile
 from pathlib import Path
 
+import aiohttp
+
 from open_webui.utils.subscriptions.discovery import find_tool
+from open_webui.utils.subscriptions.events import SubscriptionError
 from open_webui.utils.subscriptions.process import (
     ChildProcess,
+    ProcessClosedError,
+    StreamedOutput,
     run_command,
     subscription_env,
 )
+
+log = logging.getLogger(__name__)
 
 LOCAL_MACHINE_ID = 'local'
 TEMP_FILE_TOKEN = '{temp:%s}'
@@ -127,3 +137,173 @@ class LocalMachine:
 
     async def close(self) -> None:
         pass
+
+
+class RemoteProcess(StreamedOutput):
+    """A process on a Buddy Runner, with the same methods as ChildProcess."""
+
+    def __init__(self, websocket: aiohttp.ClientWebSocketResponse, args: list[str], pid: int):
+        super().__init__()
+        self.args = args
+        self.pid = pid
+        self.returncode: int | None = None
+        self._websocket = websocket
+        self._stderr = ''
+        self._exited = asyncio.Event()
+        self._receiver = asyncio.create_task(self._receive())
+
+    async def _receive(self) -> None:
+        try:
+            async for message in self._websocket:
+                if message.type != aiohttp.WSMsgType.TEXT:
+                    continue
+                event = json.loads(message.data)
+                if event.get('type') == 'stdout':
+                    self._chunks.put_nowait(event.get('data', ''))
+                elif event.get('type') == 'exit':
+                    self.returncode = event.get('code')
+                    self._stderr = event.get('stderr') or ''
+                    break
+        except (aiohttp.ClientError, ValueError) as error:
+            log.debug('Runner process %s stream ended: %s', self.pid, error)
+        finally:
+            self._chunks.put_nowait(None)
+            self._exited.set()
+            await self._websocket.close()
+
+    def stderr_text(self) -> str:
+        return self._stderr
+
+    async def write(self, text: str) -> None:
+        if self._websocket.closed or self._exited.is_set():
+            raise ProcessClosedError(f'{os.path.basename(self.args[0])} is no longer running')
+        try:
+            await self._websocket.send_json({'type': 'stdin', 'data': text})
+        except (aiohttp.ClientError, ConnectionResetError) as error:
+            raise ProcessClosedError(f'{os.path.basename(self.args[0])} is no longer running') from error
+
+    async def _send_quietly(self, message: dict, then_close: bool = False) -> None:
+        try:
+            if not self._websocket.closed:
+                await self._websocket.send_json(message)
+        except (aiohttp.ClientError, ConnectionResetError, RuntimeError):
+            pass
+        if then_close:
+            await self._websocket.close()
+
+    def close_stdin(self) -> None:
+        asyncio.get_running_loop().create_task(self._send_quietly({'type': 'close_stdin'}))
+
+    async def finish_output(self, timeout: float) -> None:
+        try:
+            await asyncio.wait_for(self._exited.wait(), timeout)
+        except TimeoutError:
+            pass
+
+    async def wait(self, timeout: float | None = None) -> int:
+        await asyncio.wait_for(self._exited.wait(), timeout)
+        return self.returncode
+
+    def kill(self) -> None:
+        """Stop the process on the runner; closing the connection also stops it."""
+        if self._websocket.closed:
+            return
+        asyncio.get_running_loop().create_task(self._send_quietly({'type': 'kill'}, then_close=True))
+
+
+class RemoteMachine:
+    """A Buddy Runner on another computer or in a container."""
+
+    def __init__(self, machine_id: str, name: str, url: str, key: str):
+        self.id = machine_id
+        self.name = name
+        self.url = url.rstrip('/')
+        self._key = key
+        self._session: aiohttp.ClientSession | None = None
+        self._info: dict | None = None
+
+    def _headers(self) -> dict:
+        return {'Authorization': f'Bearer {self._key}'}
+
+    def _client(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(headers=self._headers())
+        return self._session
+
+    async def _request(self, method: str, path: str, payload: dict | None = None, timeout: float = 30) -> dict:
+        try:
+            async with self._client().request(
+                method,
+                f'{self.url}{path}',
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as response:
+                body = await response.json(content_type=None)
+                if response.status != 200:
+                    detail = (body or {}).get('error') if isinstance(body, dict) else None
+                    raise SubscriptionError(f'{self.name}: {detail or f"runner returned HTTP {response.status}"}')
+                return body or {}
+        except (aiohttp.ClientError, TimeoutError, ValueError) as error:
+            raise SubscriptionError(f'Could not reach {self.name} at {self.url}: {error}') from error
+
+    async def info(self) -> dict:
+        info = await self._request('GET', '/health')
+        self._info = info
+        return info
+
+    async def _cached_info(self) -> dict:
+        if self._info is None:
+            return await self.info()
+        return self._info
+
+    async def chat_dir(self) -> str:
+        return (await self._cached_info())['chat_dir']
+
+    async def default_workspace(self) -> str:
+        return (await self._cached_info())['default_workspace']
+
+    async def find_tool(self, tool: str, configured_path: str = '') -> str | None:
+        result = await self._request('POST', '/tools/find', {'tool': tool, 'configured_path': configured_path})
+        return result.get('path')
+
+    async def path_exists(self, path: str, kind: str) -> bool:
+        result = await self._request('POST', '/paths/check', {'path': path, 'kind': kind})
+        return bool(result.get('exists'))
+
+    async def run(self, args: list[str], cwd: str, timeout: float, extra_env: dict | None = None):
+        payload = {'args': args, 'cwd': cwd, 'timeout': timeout, 'env': extra_env or {}}
+        result = await self._request('POST', '/run', payload, timeout=timeout + 15)
+        if result.get('timed_out'):
+            raise TimeoutError(f'{os.path.basename(args[0])} did not finish within {timeout:.0f} seconds')
+        return result.get('returncode'), result.get('stdout', ''), result.get('stderr', '')
+
+    async def start_process(
+        self,
+        args: list[str],
+        cwd: str,
+        extra_env: dict[str, str] | None = None,
+        temp_files: dict[str, str] | None = None,
+    ) -> RemoteProcess:
+        try:
+            websocket = await self._client().ws_connect(f'{self.url}/process', heartbeat=30, max_msg_size=0)
+        except (aiohttp.ClientError, TimeoutError) as error:
+            raise SubscriptionError(f'Could not reach {self.name} at {self.url}: {error}') from error
+
+        start = {
+            'type': 'start',
+            'args': args,
+            'cwd': cwd,
+            'env': extra_env or {},
+            'temp_files': temp_files or {},
+        }
+        await websocket.send_json(start)
+        reply = await websocket.receive(timeout=60)
+        event = json.loads(reply.data) if reply.type == aiohttp.WSMsgType.TEXT else {}
+        if event.get('type') != 'started':
+            await websocket.close()
+            raise SubscriptionError(f'{self.name} could not start {os.path.basename(args[0])}: {event.get("message")}')
+        return RemoteProcess(websocket, args, event.get('pid'))
+
+    async def close(self) -> None:
+        if self._session and not self._session.closed:
+            await self._session.close()
