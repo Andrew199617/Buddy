@@ -7,6 +7,10 @@
 		CompanionClient,
 		CompanionError,
 		DEFAULT_COMPANION_ENDPOINT,
+		detectLineEnding,
+		toEditorText,
+		toFileText,
+		type LineEnding,
 		type CompanionHost,
 		type CompanionGrant,
 		type CompanionDirectoryEntry,
@@ -35,6 +39,7 @@
 	let fileContent = '';
 	let savedFileContent = '';
 	let fileVersion = '';
+	let fileLineEnding: LineEnding = '\n';
 	let fileConflict = false;
 	let fileWriteAccepted = false;
 	let terminal: CompanionTerminal | null = null;
@@ -111,6 +116,7 @@
 		fileContent = '';
 		savedFileContent = '';
 		fileVersion = '';
+		fileLineEnding = '\n';
 		fileConflict = false;
 		fileWriteAccepted = false;
 		fileBusy = false;
@@ -463,8 +469,10 @@
 			const file = await candidate.getFile(activeGrantId, path);
 			if (!isCurrent(candidate, generation) || requestGeneration !== fileGeneration) return;
 			filePath = file.path;
-			fileContent = file.content;
-			savedFileContent = file.content;
+			// The editor holds LF text; saving restores the file's own line ending.
+			fileLineEnding = detectLineEnding(file.content);
+			fileContent = toEditorText(file.content);
+			savedFileContent = fileContent;
 			fileVersion = file.version;
 		} catch (cause) {
 			if (requestGeneration === fileGeneration) reportError(cause, generation);
@@ -486,7 +494,13 @@
 		fileBusy = true;
 		error = '';
 		try {
-			const saved = await candidate.putFile(activeGrantId, path, content, fileVersion, overwrite);
+			const saved = await candidate.putFile(
+				activeGrantId,
+				path,
+				toFileText(content, fileLineEnding),
+				fileVersion,
+				overwrite
+			);
 			if (!isCurrent(candidate, generation) || requestGeneration !== fileGeneration) return;
 			savedFileContent = content;
 			fileVersion = saved.version;
@@ -1076,6 +1090,7 @@
 				{/if}
 				<p class="muted hint">
 					Opening another file, browsing another directory, or disconnecting discards unsaved edits.
+					Saving keeps the file’s main line ending (CRLF or LF) on every line.
 				</p>
 			{:else}
 				<p class="empty-state">

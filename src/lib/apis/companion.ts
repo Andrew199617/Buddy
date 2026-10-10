@@ -48,6 +48,29 @@ export type CompanionFile = {
 	version: string;
 };
 
+export type LineEnding = '\n' | '\r\n' | '\r';
+
+/** The line ending most lines of this text use. Text without line breaks counts as LF. */
+export function detectLineEnding(text: string): LineEnding {
+	const crlf = text.split('\r\n').length - 1;
+	const lf = text.split('\n').length - 1 - crlf;
+	const cr = text.split('\r').length - 1 - crlf;
+	if (crlf > 0 && crlf >= lf && crlf >= cr) return '\r\n';
+	if (cr > lf) return '\r';
+	return '\n';
+}
+
+/** A textarea reports every line break as LF, so the editor works with LF text. */
+export function toEditorText(text: string): string {
+	return text.replace(/\r\n?/g, '\n');
+}
+
+/** Puts the file's own line ending back before saving editor text. */
+export function toFileText(editorText: string, lineEnding: LineEnding): string {
+	if (lineEnding === '\n') return editorText;
+	return editorText.replace(/\n/g, lineEnding);
+}
+
 export type CompanionWorkspace = {
 	id: string;
 	name: string;

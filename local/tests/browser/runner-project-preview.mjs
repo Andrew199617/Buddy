@@ -968,6 +968,29 @@ async function fileConflict(session, fixture, profile) {
 	await checkLayout(session);
 }
 
+async function crlfSave(session, fixture) {
+	const { page } = session;
+	const scriptPath = resolve(fixture.directory, 'project/start.cmd');
+	writeFileSync(scriptPath, '@echo off\r\ngoto end\r\n:end\r\n');
+	await inspectAndPair(page, fixture);
+	await page.locator('#companion-grant').selectOption({ label: 'Editable' });
+	await page.getByRole('button', { name: 'File start.cmd', exact: true }).click();
+	await page
+		.getByLabel('Allow editing this file on Disposable Runner PC.', { exact: true })
+		.check();
+	const editor = page.locator('#companion-file-content');
+	await editor.fill((await editor.inputValue()).replace('goto end', 'goto done'));
+	await page.getByRole('button', { name: 'Save to execution host', exact: true }).click();
+	await waitUntil(
+		() => readFileSync(scriptPath, 'utf8') === '@echo off\r\ngoto done\r\n:end\r\n',
+		'Saving keeps the file’s CRLF line endings'
+	);
+	const authorization = sessionAuthorization(session.hostRequests);
+	await page.getByRole('button', { name: 'Disconnect and revoke', exact: true }).click();
+	await verifyRevoked(session, fixture, authorization);
+	await checkLayout(session);
+}
+
 async function transientPoll(session, fixture) {
 	const { page } = session;
 	const authorization = await prepareRunningCommand(session, fixture);
@@ -1313,7 +1336,8 @@ try {
 			'delayed-command-admission-exited',
 			'delayed-command-admission-fast',
 			'transient-poll',
-			'file-conflict'
+			'file-conflict',
+			'crlf-save'
 		]) {
 			let fixture = null;
 			let session = null;
@@ -1546,6 +1570,7 @@ try {
 					await delayedCommandAdmission(session, fixture, admission, profile, scenario);
 				if (scenario === 'transient-poll') await transientPoll(session, fixture);
 				if (scenario === 'file-conflict') await fileConflict(session, fixture, profile);
+				if (scenario === 'crlf-save') await crlfSave(session, fixture);
 				results.push({
 					profile: profile.name,
 					scenario,
