@@ -1,5 +1,6 @@
 <script lang="ts">
 	import CodeBracket from '$lib/components/icons/CodeBracket.svelte';
+	import ArchiveBox from '$lib/components/icons/ArchiveBox.svelte';
 	import BarsArrowUp from '$lib/components/icons/BarsArrowUp.svelte';
 	import Computer from '$lib/components/icons/Computer.svelte';
 	import Database from '$lib/components/icons/Database.svelte';
@@ -87,4 +88,6 @@
 	<QueueList {className} {strokeWidth} />
 {:else if id === 'db'}
 	<Database {className} {strokeWidth} />
+{:else if id === 'backups'}
+	<ArchiveBox {className} {strokeWidth} />
 {/if}
