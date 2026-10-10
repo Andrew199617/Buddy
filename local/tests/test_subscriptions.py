@@ -17,6 +17,10 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT_DIR / 'backend'))
 
 from open_webui.utils.subscriptions import claude_code, discovery, runner, streaming  # noqa: E402
+from open_webui.utils.subscriptions.common import (  # noqa: E402
+    ProviderSettings,
+    TurnRequest,
+)
 from open_webui.utils.subscriptions.conversation import (  # noqa: E402
     CONTINUE_PROMPT,
     ChatTurn,
@@ -213,6 +217,154 @@ class ClaudeStreamTests(unittest.TestCase):
         self.assertEqual(models[0].description, 'Best for everyday, complex tasks')
         self.assertEqual(models[0].efforts, ['low', 'high'])
         self.assertEqual(models[1].value, 'claude-fable-5-1[1m]')
+
+    def test_turn_arguments_follow_access_level(self):
+        with tempfile.TemporaryDirectory() as directory:
+            provider = claude_code.ClaudeCodeProvider(Path(directory))
+            conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
+
+            def turn_args(access, **turn_options):
+                turn = TurnRequest(
+                    model='opus',
+                    conversation=conversation,
+                    settings=ProviderSettings(enable=True, access=access),
+                    cwd=directory,
+                    **turn_options,
+                )
+                return provider._turn_args('claude', turn, turn_options.get('resume'), 'instructions.md')
+
+            chat_args = turn_args('chat', effort='none')
+            self.assertIn('--system-prompt-file', chat_args)
+            self.assertEqual(chat_args[chat_args.index('--tools') + 1], '')
+            self.assertEqual(chat_args[chat_args.index('--effort') + 1], 'low')
+            self.assertNotIn('--dangerously-skip-permissions', chat_args)
+
+            read_args = turn_args('read')
+            self.assertEqual(read_args[read_args.index('--tools') + 1], claude_code.READ_ONLY_TOOLS)
+            self.assertIn('--append-system-prompt-file', read_args)
+            # A repository's hooks, MCP servers, and skills must not load in read mode.
+            self.assertIn('--restricted', read_args)
+            self.assertIn('--strict-mcp-config', read_args)
+            self.assertEqual(read_args[read_args.index('--setting-sources') + 1], '')
+
+            full_args = turn_args('full', effort='max')
+            self.assertIn('--dangerously-skip-permissions', full_args)
+            self.assertNotIn('--tools', full_args)
+
+            task_args = turn_args('full', is_task=True)
+            self.assertIn('--no-session-persistence', task_args)
+            self.assertEqual(task_args[task_args.index('--tools') + 1], '')
+
+        resume_turn = TurnRequest('opus', conversation, ProviderSettings(), '.')
+        resume_args = provider._turn_args('claude', resume_turn, 'session-1', 'instructions.md')
+        resume_index = resume_args.index('--resume')
+        self.assertEqual(resume_args[resume_index + 1 : resume_index + 3], ['session-1', '--fork-session'])
+
+    def test_rebuilt_session_resends_earlier_images(self):
+        history = [ChatTurn('user', 'Remember this chart', [PNG_DATA_URL]), ChatTurn('assistant', 'Got it.')]
+        message = claude_code.transcript_message(history, ChatTurn('user', 'What did the chart show?'))
+        content = message['message']['content']
+        texts = [block['text'] for block in content if block['type'] == 'text']
+        images = [block for block in content if block['type'] == 'image']
+        self.assertIn('<user>\nRemember this chart', texts)
+        self.assertEqual(len(images), 1)
+        self.assertIn('My latest message:\nWhat did the chart show?', texts[-1])
+        # The image sits inside the turn it was attached to.
+        self.assertEqual(content[content.index(images[0]) + 1], {'type': 'text', 'text': '</user>'})
+        first_turn_only = claude_code.transcript_message([], ChatTurn('user', 'Hi'))
+        self.assertEqual(first_turn_only['message']['content'], [{'type': 'text', 'text': 'Hi'}])
+
+    def test_user_message_embeds_images(self):
+        message = claude_code.user_message('Look', [PNG_DATA_URL, 'https://example.invalid/a.png', 'blob:x'])
+        content = message['message']['content']
+        self.assertEqual(content[0], {'type': 'text', 'text': 'Look'})
+        self.assertEqual(content[1]['source'], {'type': 'base64', 'media_type': 'image/png', 'data': 'iVBORw0KGgo='})
+        self.assertEqual(content[2]['source']['type'], 'url')
+        self.assertEqual(len(content), 3)
+
+    def test_missing_session_falls_back_to_chat_text(self):
+        """A resumed session that no longer exists is retried as a fresh session."""
+        missing_session_result = {
+            'type': 'result',
+            'subtype': 'error_during_execution',
+            'is_error': True,
+            'session_id': 'unused',
+            'usage': {},
+        }
+        fresh_run = [
+            {'type': 'system', 'subtype': 'init', 'session_id': 'fresh-session'},
+            {'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'You are Ada.'}]}},
+            {'type': 'result', 'subtype': 'success', 'is_error': False, 'session_id': 'fresh-session', 'usage': {}},
+        ]
+        scripted_runs = [
+            ([missing_session_result], 'No conversation found with session ID: old-session'),
+            (fresh_run, ''),
+        ]
+        started = []
+
+        class FakeProcess:
+            def __init__(self, args):
+                messages, stderr = scripted_runs[len(started)]
+                started.append(self)
+                self.args = args
+                self.written = ''
+                self._lines = [json.dumps(message) for message in messages]
+                self._stderr = stderr
+
+            async def write(self, text):
+                self.written += text
+
+            async def read_line(self):
+                if self._lines:
+                    return self._lines.pop(0)
+                return None
+
+            async def finish_output(self, timeout):
+                return None
+
+            def stderr_text(self):
+                return self._stderr
+
+            def close_stdin(self):
+                pass
+
+            def kill(self):
+                pass
+
+        class FakeMachine:
+            id = 'fake'
+            name = 'Fake machine'
+
+            async def find_tool(self, tool, configured_path=''):
+                return 'claude'
+
+            async def start_process(self, args, cwd, extra_env=None, temp_files=None):
+                return FakeProcess(args)
+
+        async def run():
+            with tempfile.TemporaryDirectory() as directory:
+                provider = claude_code.ClaudeCodeProvider(Path(directory))
+                conversation = parse_messages(
+                    [
+                        {'role': 'user', 'content': 'My name is Ada'},
+                        {'role': 'assistant', 'content': 'Hi Ada'},
+                        {'role': 'user', 'content': 'Who am I?'},
+                    ]
+                )
+                turn = TurnRequest(
+                    'opus', conversation, ProviderSettings(enable=True), directory, machine=FakeMachine()
+                )
+                provider._sessions.put(provider._session_key(turn, conversation.history), 'old-session')
+                events = await collect(provider.run_turn(turn))
+                answered = conversation.history + [conversation.prompt, ChatTurn('assistant', 'You are Ada.')]
+                return events, provider._sessions.get(provider._session_key(turn, answered))
+
+        events, stored_session = asyncio.run(run())
+        self.assertEqual(events, [TextDelta('You are Ada.')])
+        self.assertIn('--resume', started[0].args)
+        self.assertNotIn('--resume', started[1].args)
+        self.assertIn('My name is Ada', started[1].written)
+        self.assertEqual(stored_session, 'fresh-session')
 
     def test_rate_limit_events_become_usage_windows(self):
         with tempfile.TemporaryDirectory() as directory:

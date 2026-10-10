@@ -13,9 +13,18 @@ import re
 from pathlib import Path
 
 from open_webui.utils.subscriptions.common import (
+    ACCESS_CHAT,
+    ACCESS_READ,
+    CHAT_INSTRUCTIONS,
     ProviderModel,
     ProviderSettings,
+    TurnRequest,
     model_key,
+)
+from open_webui.utils.subscriptions.conversation import (
+    ChatTurn,
+    SessionStore,
+    conversation_key,
 )
 from open_webui.utils.subscriptions.events import (
     ReasoningDelta,
@@ -23,8 +32,10 @@ from open_webui.utils.subscriptions.events import (
     SubscriptionError,
     TextDelta,
     TokenUsage,
+    TurnFailed,
 )
 from open_webui.utils.subscriptions.discovery import TOOL_CLAUDE
+from open_webui.utils.subscriptions.machines import temp_file_arg
 from open_webui.utils.subscriptions.process import ProcessClosedError
 
 log = logging.getLogger(__name__)
@@ -35,12 +46,77 @@ NOT_INSTALLED_MESSAGE = (
     'or set its path in the Claude subscription settings.'
 )
 NOT_SIGNED_IN_MESSAGE = 'Claude is not signed in. Sign in under Admin Settings → Connections → Subscriptions.'
+EFFORT_LEVELS = ('low', 'medium', 'high', 'xhigh', 'max')
+READ_ONLY_TOOLS = 'Read,Grep,Glob,WebSearch,WebFetch'
+TRANSCRIPT_INTRO = 'Here is our conversation so far. Continue it by replying to my latest message.'
+INSTRUCTIONS_FILE = 'instructions'
 LOGIN_URL = re.compile(r'https://\S+/oauth/authorize\?\S+')
 FALLBACK_MODELS = [
     ProviderModel(key='opus', value='opus', name='Claude Opus'),
     ProviderModel(key='sonnet', value='sonnet', name='Claude Sonnet'),
     ProviderModel(key='haiku', value='haiku', name='Claude Haiku'),
 ]
+
+
+def claude_effort(effort: str | None) -> str | None:
+    if effort in ('none', 'minimal'):
+        return 'low'
+    if effort in EFFORT_LEVELS:
+        return effort
+    return None
+
+
+def _image_block(url: str) -> dict | None:
+    if url.startswith(('http://', 'https://')):
+        return {'type': 'image', 'source': {'type': 'url', 'url': url}}
+    match = re.match(r'data:(image/[\w.+-]+);base64,(.*)', url, re.DOTALL)
+    if not match:
+        return None
+    return {
+        'type': 'image',
+        'source': {'type': 'base64', 'media_type': match.group(1), 'data': match.group(2)},
+    }
+
+
+def _text_block(text: str) -> dict:
+    return {'type': 'text', 'text': text}
+
+
+def _image_blocks(urls: list[str]) -> list[dict]:
+    blocks = []
+    for url in urls:
+        block = _image_block(url)
+        if block:
+            blocks.append(block)
+    return blocks
+
+
+def _stream_user_message(content: list[dict]) -> dict:
+    return {
+        'type': 'user',
+        'message': {'role': 'user', 'content': content},
+        'parent_tool_use_id': None,
+        'session_id': '',
+    }
+
+
+def user_message(text: str, images: list[str]) -> dict:
+    return _stream_user_message([_text_block(text), *_image_blocks(images)])
+
+
+def transcript_message(history: list[ChatTurn], prompt: ChatTurn) -> dict:
+    """First message of a fresh session: the chat so far, its images, and the new prompt."""
+    if not history:
+        return user_message(prompt.text, prompt.images)
+
+    content = [_text_block(f'{TRANSCRIPT_INTRO}\n\n<conversation>')]
+    for turn in history:
+        content.append(_text_block(f'<{turn.role}>\n{turn.text.strip()}'))
+        content.extend(_image_blocks(turn.images))
+        content.append(_text_block(f'</{turn.role}>'))
+    content.append(_text_block(f'</conversation>\n\nMy latest message:\n{prompt.text}'))
+    content.extend(_image_blocks(prompt.images))
+    return _stream_user_message(content)
 
 
 def _shorten(text, limit: int = 160) -> str:
@@ -263,6 +339,7 @@ class ClaudeCodeProvider:
     name = 'Claude'
 
     def __init__(self, state_dir: Path):
+        self._sessions = SessionStore(state_dir / 'claude-sessions.json')
         self._login: ClaudeLogin | None = None
         self._usage_windows: dict[str, dict] = {}
         self._limit_reached = False
@@ -471,8 +548,166 @@ class ClaudeCodeProvider:
         cli = await self._require_cli(settings, machine)
         await self.cancel_login()
         returncode, _, error_output = await machine.run([cli, 'auth', 'logout'], await machine.chat_dir(), 60)
+        self._sessions.clear()
         if returncode != 0:
             raise SubscriptionError(_shorten(error_output, 400) or 'Claude Code could not sign out.')
+
+    def _turn_args(self, cli: str, turn: TurnRequest, resume_id: str | None, instructions_path: str) -> list[str]:
+        args = [
+            cli,
+            '-p',
+            '--input-format',
+            'stream-json',
+            '--output-format',
+            'stream-json',
+            '--verbose',
+            '--include-partial-messages',
+            '--permission-prompts',
+            'none',
+            '--system-prompt-snapshot',
+            'off',
+            '--model',
+            turn.model,
+        ]
+
+        effort = claude_effort(turn.effort)
+        if turn.is_task:
+            effort = 'low'
+        if effort:
+            args.extend(['--effort', effort])
+
+        if turn.is_task:
+            args.append('--no-session-persistence')
+        if resume_id:
+            args.extend(['--resume', resume_id, '--fork-session'])
+
+        if turn.access == ACCESS_CHAT:
+            args.extend(['--system-prompt-file', instructions_path])
+            args.extend(['--strict-mcp-config', '--disable-slash-commands'])
+            args.extend(['--setting-sources', ''])
+            args.extend(['--tools', ''])
+        elif turn.access == ACCESS_READ:
+            # The working folder may be someone else's repository. Its
+            # .claude/settings.json hooks and .mcp.json servers would run as
+            # this user, so read mode loads no settings files, MCP servers, or
+            # skills, and --restricted keeps file tools inside the folder.
+            args.extend(['--append-system-prompt-file', instructions_path])
+            args.append('--restricted')
+            args.extend(['--strict-mcp-config', '--disable-slash-commands'])
+            args.extend(['--setting-sources', ''])
+            args.extend(['--tools', READ_ONLY_TOOLS])
+            args.extend(['--allowedTools', 'WebSearch,WebFetch'])
+        else:
+            args.extend(['--append-system-prompt-file', instructions_path])
+            args.append('--dangerously-skip-permissions')
+        return args
+
+    def _instructions(self, turn: TurnRequest) -> str:
+        system = turn.conversation.system
+        if turn.access == ACCESS_CHAT:
+            return f'{CHAT_INSTRUCTIONS}\n\n{system}'.strip()
+        return system or 'The user is chatting with you from Buddy, their personal chat app.'
+
+    def _session_key(self, turn: TurnRequest, turns: list[ChatTurn]) -> str:
+        # Claude Code keeps sessions per machine and working folder, so a
+        # session can only be resumed where it was created.
+        return f'{turn.machine.id}|{turn.cwd}|{conversation_key(turns)}'
+
+    async def _run_attempt(
+        self,
+        cli: str,
+        turn: TurnRequest,
+        resume_id: str | None,
+        message: dict,
+        attempt: 'ClaudeAttempt',
+    ):
+        """Run ``claude -p`` once, yielding events and recording the outcome in ``attempt``."""
+        parser = attempt.parser
+        process = await turn.machine.start_process(
+            self._turn_args(cli, turn, resume_id, temp_file_arg(INSTRUCTIONS_FILE)),
+            turn.cwd,
+            temp_files={INSTRUCTIONS_FILE: self._instructions(turn)},
+        )
+        try:
+            await process.write(json.dumps(message) + '\n')
+            while not parser.finished:
+                line = await process.read_line()
+                if line is None:
+                    break
+                for event in parser.handle(_parse_json_line(line)):
+                    yield event
+                if parser.rate_limit:
+                    self._record_rate_limit(parser.rate_limit)
+                    parser.rate_limit = None
+        except ProcessClosedError:
+            attempt.exited_early = True
+        finally:
+            process.close_stdin()
+            if parser.error or not parser.finished:
+                # The CLI is exiting with an error; it explains why on stderr.
+                await process.finish_output(5)
+            process.kill()
+            attempt.stderr = process.stderr_text()
+
+    async def run_turn(self, turn: TurnRequest):
+        """Run one chat turn and yield its events."""
+        cli = await self._require_cli(turn.settings, turn.machine)
+        conversation = turn.conversation
+        resume_id = None
+        if not turn.is_task:
+            resume_id = self._sessions.get(self._session_key(turn, conversation.history))
+
+        attempt = ClaudeAttempt()
+        if resume_id:
+            message = user_message(conversation.prompt.text, conversation.prompt.images)
+            async for event in self._run_attempt(cli, turn, resume_id, message, attempt):
+                yield event
+            if attempt.session_missing():
+                log.info('Claude session %s no longer exists; starting from the chat text', resume_id)
+                resume_id = None
+                attempt = ClaudeAttempt()
+
+        if not resume_id:
+            message = transcript_message(conversation.history, conversation.prompt)
+            async for event in self._run_attempt(cli, turn, None, message, attempt):
+                yield event
+
+        failure = attempt.failure()
+        if failure:
+            yield TurnFailed(failure)
+        elif attempt.parser.session_id and not turn.is_task:
+            reply = ChatTurn('assistant', attempt.parser.reply_text)
+            answered = conversation.history + [conversation.prompt, reply]
+            self._sessions.put(self._session_key(turn, answered), attempt.parser.session_id)
+
+
+class ClaudeAttempt:
+    """What one ``claude -p`` run produced."""
+
+    def __init__(self):
+        self.parser = ClaudeStreamParser()
+        self.stderr = ''
+        self.exited_early = False
+
+    def session_missing(self) -> bool:
+        """The resumed session was deleted or belongs to another folder."""
+        if self.parser.reply_text:
+            return False
+        output = f'{self.stderr} {self.parser.error or ""}'.lower()
+        return 'no conversation found' in output
+
+    def failure(self) -> str | None:
+        details = _shorten(self.stderr, 600)
+        if self.parser.error:
+            # Results such as "error_during_execution" explain themselves on stderr.
+            if self.parser.error.startswith('error_') and details:
+                return details
+            return self.parser.error
+        if self.exited_early:
+            return f'Claude Code exited unexpectedly. {details}'.strip()
+        if not self.parser.finished:
+            return f'Claude Code stopped before finishing the reply. {details}'.strip()
+        return None
 
 
 def models_from_initialize(entries: list) -> list[ProviderModel]:

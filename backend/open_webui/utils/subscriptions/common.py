@@ -2,6 +2,7 @@
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 from open_webui.utils.subscriptions.conversation import Conversation
 
@@ -48,6 +49,8 @@ class TurnRequest:
     cwd: str
     effort: str | None = None
     is_task: bool = False
+    # LocalMachine or RemoteMachine from subscriptions.machines.
+    machine: Any = None
 
     @property
     def access(self) -> str:
