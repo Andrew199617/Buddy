@@ -177,9 +177,9 @@ In **Read files**, Claude Code's file tools stay inside the working folder,
 and it ignores the folder's settings, hooks, MCP servers, and skills. Codex's
 read-only sandbox blocks writes but cannot limit reads to one folder (custom
 read rules need Codex's elevated Windows sandbox), so a Codex model can read
-any file your account can. Buddy turns off Codex hooks and MCP servers outside
-Full access. Instruction files in the folder (`CLAUDE.md`, `AGENTS.md`) can
-still steer the model.
+any file your account can. Buddy turns off Codex hooks in every setting and
+Codex MCP servers outside Full access. Instruction files in the folder
+(`CLAUDE.md`, `AGENTS.md`) can still steer the model.
 
 **Full access** lets the model edit files and run terminal commands on the
 machine as you, in the working folder you choose (`subscriptions/workspace` in
