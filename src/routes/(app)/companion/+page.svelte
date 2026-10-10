@@ -1000,9 +1000,16 @@
 							<span>{activeGrant.capabilities.read ? 'Read allowed' : 'Read disabled'}</span>
 							<span>{activeGrant.capabilities.write ? 'Write allowed' : 'Write disabled'}</span>
 							<span
-								>{activeGrant.capabilities.execute ? 'Execute allowed' : 'Execute disabled'}</span
+								>{activeGrant.capabilities.execute ? 'Commands allowed' : 'Commands disabled'}</span
 							>
 						</div>
+						{#if activeGrant.capabilities.write}
+							<p class="execution-warning">
+								Write access can lead to code execution as the Runner’s OS account, even with
+								commands disabled. Git, editors and build tools run commands named in project files
+								such as .git/config, .vscode/tasks.json and package.json scripts.
+							</p>
+						{/if}
 						<div class="directory-toolbar">
 							<button
 								on:click={parentDirectory}

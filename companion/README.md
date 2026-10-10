@@ -111,6 +111,15 @@ project. Their working directory is not a sandbox.** Provider read access can
 also be broader: Codex read-only mode blocks writes but permits reads elsewhere
 on disk. Those permissions are independent of project file API grants.
 
+**Write access can also lead to code execution, so `-WriteFiles` (`--write`) is
+not contained by leaving out `-AllowHostExecution`.** Git, editors, package
+managers and build tools run commands named in project files, for example
+`core.fsmonitor` or hooks in `.git/config`, `.vscode/tasks.json` tasks that run
+when a folder opens, and `package.json` scripts. A paired page that can edit
+those files can get commands run as whichever account next uses the project,
+often the Runner's own account. Approve writes only for folders and browsers
+you would also trust to run commands.
+
 Command sessions accept an executable plus a JSON string-array of arguments,
 without an implicit shell. They use pipes, not a PTY or persistent shell state.
 Limits include the newest 256 KiB of retained output (a command that prints more

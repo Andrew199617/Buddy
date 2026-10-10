@@ -300,6 +300,9 @@ async function lifecycle(session, fixture, profile) {
 		true
 	);
 	assert.equal(await page.getByText('Read-only text file', { exact: true }).count(), 1);
+	const writeWarning = page.getByText('Write access can lead to code execution', { exact: false });
+	assert.equal(await writeWarning.count(), 0);
+	assert.equal(await page.getByText('Commands disabled', { exact: true }).count(), 1);
 	const readGrant = await page.locator('#companion-grant').inputValue();
 	const authorization = sessionAuthorization(session.hostRequests);
 	assert.ok(authorization);
@@ -314,6 +317,8 @@ async function lifecycle(session, fixture, profile) {
 		'Original disposable project text\n'
 	);
 	await page.locator('#companion-grant').selectOption({ label: 'Editable' });
+	// Write access is not presented as contained when commands are disabled.
+	await writeWarning.waitFor();
 	await page.getByRole('button', { name: 'Use this directory as project', exact: true }).click();
 	await page.getByText('Selected project: project', { exact: true }).waitFor();
 	await page.getByRole('button', { name: 'File notes.txt', exact: true }).click();

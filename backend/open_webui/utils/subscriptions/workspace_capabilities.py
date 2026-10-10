@@ -3,6 +3,8 @@
 This API never accepts the privileged Runner key or provider credentials. Grants
 are supplied by the host operator at startup; a browser path grants nothing.
 Command execution is a separate opt-in and uses the host account, not a sandbox.
+Write access is not contained either: git, editors and build tools run commands
+named in project files, so a write grant can lead to execution on the host.
 """
 
 import asyncio
