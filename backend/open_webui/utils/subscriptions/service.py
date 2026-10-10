@@ -8,9 +8,13 @@ its CLI is signed in on that machine. Only administrators can use them: they
 run on the administrator's personal plan and, with tool access, on that machine.
 """
 
+import asyncio
+import logging
 import re
-from dataclasses import asdict, fields
+import time
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
+from typing import Any, Awaitable, Callable
 
 from fastapi import HTTPException, status
 
@@ -21,18 +25,28 @@ from open_webui.utils.subscriptions.codex import CodexProvider
 from open_webui.utils.subscriptions.common import (
     ACCESS_CHAT,
     ACCESS_LEVELS,
+    SUBSCRIPTION_OWNED_BY,
+    ProviderModel,
     ProviderSettings,
 )
 from open_webui.utils.subscriptions.events import SubscriptionError
 from open_webui.utils.subscriptions.machines import LOCAL_MACHINE_ID, LocalMachine, RemoteMachine
 
+log = logging.getLogger(__name__)
+
 STATE_DIR = Path(DATA_DIR) / 'subscriptions'
+STATUS_TTL_SECONDS = 60
+MODELS_TTL_SECONDS = 600
+FIRST_LOAD_WAIT_SECONDS = 20
 MACHINES_CONFIG_KEY = 'subscriptions.machines'
 
 PROVIDERS = {
     'claude': ClaudeCodeProvider(STATE_DIR),
     'codex': CodexProvider(),
 }
+PROVIDER_LABELS = {'claude': 'Claude', 'codex': 'ChatGPT'}
+MODEL_ID_PREFIXES = {'claude': 'claude-code', 'codex': 'codex'}
+MODEL_TAGS = {'claude': 'Claude plan', 'codex': 'ChatGPT plan'}
 
 LOCAL_MACHINE = LocalMachine(STATE_DIR)
 # RemoteMachine objects keep an HTTP session, so they are reused until their
@@ -114,6 +128,8 @@ async def save_machine(machine_id: str | None, name: str, url: str, key: str | N
         saved['key'] = key
         configs.append(saved)
     await Config.upsert({MACHINES_CONFIG_KEY: configs})
+    for provider_id in PROVIDERS:
+        invalidate(provider_id)
     return {'id': saved['id'], 'name': saved['name'], 'url': saved['url']}
 
 
@@ -176,4 +192,146 @@ async def save_settings(provider_id: str, updates: dict) -> ProviderSettings:
         await provider.cancel_login()
     if not settings.enable and isinstance(provider, CodexProvider):
         provider.stop()
+    invalidate(provider_id)
     return settings
+
+
+# Cached status and model lists
+
+
+@dataclass
+class _CacheEntry:
+    value: Any
+    expires_at: float
+
+
+class CachedLoader:
+    """Caches one value per provider and serves the old value while refreshing.
+
+    Model lists are requested on most page loads, and the CLIs take a few
+    seconds to answer, so only the first load waits for them.
+    """
+
+    def __init__(self, ttl_seconds: float, load: Callable[[str], Awaitable[Any]]):
+        self._ttl_seconds = ttl_seconds
+        self._load = load
+        self._entries: dict[str, _CacheEntry] = {}
+        self._refreshes: dict[str, asyncio.Task] = {}
+        # Bumped on invalidate so a refresh started earlier cannot store old results.
+        self._generations: dict[str, int] = {}
+
+    def invalidate(self, provider_id: str) -> None:
+        self._entries.pop(provider_id, None)
+        self._refreshes.pop(provider_id, None)
+        self._generations[provider_id] = self._generations.get(provider_id, 0) + 1
+
+    async def _refresh(self, provider_id: str) -> Any:
+        generation = self._generations.get(provider_id, 0)
+        value = await self._load(provider_id)
+        if self._generations.get(provider_id, 0) == generation:
+            self._entries[provider_id] = _CacheEntry(value, time.monotonic() + self._ttl_seconds)
+        return value
+
+    def _start_refresh(self, provider_id: str) -> asyncio.Task:
+        task = self._refreshes.get(provider_id)
+        if task is None or task.done():
+            task = asyncio.create_task(self._refresh(provider_id))
+            task.add_done_callback(_log_refresh_failure)
+            self._refreshes[provider_id] = task
+        return task
+
+    async def get(self, provider_id: str, fresh: bool = False) -> Any:
+        entry = self._entries.get(provider_id)
+        if entry and not fresh and entry.expires_at > time.monotonic():
+            return entry.value
+
+        task = self._start_refresh(provider_id)
+        if entry and not fresh:
+            return entry.value
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), FIRST_LOAD_WAIT_SECONDS)
+        except TimeoutError:
+            log.warning('Subscription provider %s is slow to answer; continuing without it', provider_id)
+            return None
+
+
+def _log_refresh_failure(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error:
+        log.warning('Could not refresh subscription details: %s', error)
+
+
+async def _load_status(provider_id: str) -> dict:
+    settings = await get_settings(provider_id)
+    try:
+        machine = await get_machine(settings.machine_id)
+        return await get_provider(provider_id).status(settings, machine)
+    except (SubscriptionError, OSError) as error:
+        return {'installed': True, 'signed_in': False, 'message': str(error)}
+
+
+async def _load_models(provider_id: str) -> list[ProviderModel]:
+    settings = await get_settings(provider_id)
+    try:
+        machine = await get_machine(settings.machine_id)
+        return await get_provider(provider_id).list_models(settings, machine)
+    except (SubscriptionError, OSError) as error:
+        log.warning('Could not list %s models: %s', PROVIDER_LABELS[provider_id], error)
+        return []
+
+
+status_cache = CachedLoader(STATUS_TTL_SECONDS, _load_status)
+models_cache = CachedLoader(MODELS_TTL_SECONDS, _load_models)
+
+
+def uses_plan(provider_status: dict) -> bool:
+    """Signed in with a Claude or ChatGPT plan, not an account that bills the API."""
+    return bool(provider_status.get('signed_in')) and not provider_status.get('api_billing')
+
+
+def invalidate(provider_id: str) -> None:
+    status_cache.invalidate(provider_id)
+    models_cache.invalidate(provider_id)
+
+
+# Models and chat
+
+
+def _model_id(provider_id: str, model: ProviderModel) -> str:
+    return f'{MODEL_ID_PREFIXES[provider_id]}.{model.key}'
+
+
+def _model_entry(provider_id: str, model: ProviderModel) -> dict:
+    return {
+        'id': _model_id(provider_id, model),
+        'name': model.name,
+        'object': 'model',
+        'created': 0,
+        'owned_by': SUBSCRIPTION_OWNED_BY,
+        'connection_type': 'external',
+        'tags': [{'name': MODEL_TAGS[provider_id]}],
+        'subscription': {
+            'provider': provider_id,
+            'model': model.value,
+            'description': model.description,
+            'efforts': model.efforts,
+        },
+    }
+
+
+async def _provider_models(provider_id: str) -> list[dict]:
+    settings = await get_settings(provider_id)
+    if not settings.enable:
+        return []
+    provider_status = await status_cache.get(provider_id) or {}
+    if not uses_plan(provider_status):
+        return []
+    models = await models_cache.get(provider_id) or []
+    return [_model_entry(provider_id, model) for model in models]
+
+
+async def get_subscription_models() -> list[dict]:
+    claude_models, codex_models = await asyncio.gather(_provider_models('claude'), _provider_models('codex'))
+    return claude_models + codex_models
