@@ -60,6 +60,7 @@
 	import AdminImages from '$lib/components/admin/Settings/Images.svelte';
 	import AdminPipelines from '$lib/components/admin/Settings/Pipelines.svelte';
 	import AdminDatabase from '$lib/components/admin/Settings/Database.svelte';
+	import AdminBackups from '$lib/components/admin/Settings/Backups.svelte';
 
 	const i18n: Writable<any> = getContext('i18n');
 
@@ -170,7 +171,8 @@
 		'admin:interface': $i18n.t('Experience'),
 		'admin:audio': $i18n.t('Experience'),
 		'admin:images': $i18n.t('Experience'),
-		'admin:db': $i18n.t('Data')
+		'admin:db': $i18n.t('Data'),
+		'admin:backups': $i18n.t('Data')
 	};
 	const settingGroupTitle = (tabId: string) =>
 		(isAdminTab(tabId) ? adminSettingGroups[tabId] : personalSettingGroups[tabId]) ??
@@ -360,6 +362,12 @@
 			titleKey: 'settings.admin.db.title',
 			title: $i18n.t('settings.admin.db.title'),
 			searchPrefixes: ['settings.admin.db.']
+		},
+		{
+			id: 'admin:backups',
+			titleKey: 'settings.admin.backups.title',
+			title: $i18n.t('settings.admin.backups.title'),
+			searchPrefixes: ['settings.admin.backups.']
 		}
 	];
 	let availableSettings: SettingsTab[] = [];
@@ -900,6 +908,8 @@
 						toast.success($i18n.t('Settings saved successfully!'));
 					}}
 				/>
+			{:else if selectedTab === 'admin:backups'}
+				<AdminBackups />
 			{:else if selectedTab === 'admin:pipelines'}
 				<AdminPipelines
 					saveHandler={() => {
