@@ -36,9 +36,11 @@ function deferred<T>() {
 	return { promise, resolve, reject };
 }
 
-async function flushUnreadRefresh() {
-	await Promise.resolve();
-	await refreshUnreadChats('token');
+// Lets every queued microtask run, so a refresh that an event scheduled
+// finishes. It never starts a refresh itself, so request counts show
+// whether the event scheduled one.
+async function settleScheduledRefresh() {
+	await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 beforeEach(() => {
@@ -87,8 +89,9 @@ describe('aggregate chat unread state', () => {
 		await refreshChatList('token');
 		getChatUnreadSummary.mockResolvedValue(soleUnread);
 		setChatActive('unread', false);
-		await flushUnreadRefresh();
+		await settleScheduledRefresh();
 
+		expect(getChatUnreadSummary).toHaveBeenCalledTimes(2);
 		expect(get(hasUnreadChats)).toBe(false);
 		const requests = getChatUnreadSummary.mock.calls.length;
 		chatId.set('another-chat');
@@ -110,8 +113,23 @@ describe('aggregate chat unread state', () => {
 
 		getChatUnreadSummary.mockResolvedValue(soleUnread);
 		setChatReadAt('other-chat', 100);
-		await flushUnreadRefresh();
+		await settleScheduledRefresh();
+		expect(getChatUnreadSummary).toHaveBeenCalledTimes(2);
 		expect(get(hasUnreadChats)).toBe(false);
+	});
+
+	it('refreshes once with the cached token when an idle chat finishes in the background', async () => {
+		await refreshUnreadChats('token');
+		expect(getChatUnreadSummary).toHaveBeenCalledTimes(1);
+		getChatUnreadSummary.mockResolvedValue(soleUnread);
+
+		setChatActive('unread', false);
+		expect(getChatUnreadSummary).toHaveBeenCalledTimes(1);
+		await settleScheduledRefresh();
+
+		expect(getChatUnreadSummary).toHaveBeenCalledTimes(2);
+		expect(getChatUnreadSummary).toHaveBeenLastCalledWith('token');
+		expect(get(hasUnreadChats)).toBe(true);
 	});
 
 	it('refreshes after read and active events outside the loaded page', async () => {
@@ -119,15 +137,18 @@ describe('aggregate chat unread state', () => {
 		await refreshUnreadChats('token');
 		getChatUnreadSummary.mockResolvedValue(soleUnread);
 		expect(setChatReadAt('old-page-chat', 100)).toBe(false);
-		await flushUnreadRefresh();
+		await settleScheduledRefresh();
+		expect(getChatUnreadSummary).toHaveBeenCalledTimes(2);
 		expect(get(hasUnreadChats)).toBe(true);
 		getChatUnreadSummary.mockResolvedValue(emptySummary);
 		expect(setChatActive('unread', true)).toBe(false);
-		await flushUnreadRefresh();
+		await settleScheduledRefresh();
+		expect(getChatUnreadSummary).toHaveBeenCalledTimes(3);
 		expect(get(hasUnreadChats)).toBe(false);
 		getChatUnreadSummary.mockResolvedValue(soleUnread);
 		setChatActive('unread', false);
-		await flushUnreadRefresh();
+		await settleScheduledRefresh();
+		expect(getChatUnreadSummary).toHaveBeenCalledTimes(4);
 		expect(get(hasUnreadChats)).toBe(true);
 		expect(getChatList).not.toHaveBeenCalled();
 	});
@@ -139,7 +160,7 @@ describe('aggregate chat unread state', () => {
 		setChatActive('pinned', true);
 		setChatActive('folder', false);
 		expect(getChatUnreadSummary).toHaveBeenCalledTimes(1);
-		await flushUnreadRefresh();
+		await settleScheduledRefresh();
 		expect(getChatUnreadSummary).toHaveBeenCalledTimes(2);
 		expect(get(hasUnreadChats)).toBe(true);
 	});
@@ -231,7 +252,7 @@ describe('aggregate chat unread state', () => {
 		snapshot.resolve(soleUnread);
 		expect(await refresh).toBe(false);
 		setChatActive('unread', false);
-		await Promise.resolve();
+		await settleScheduledRefresh();
 		expect(getChatUnreadSummary).toHaveBeenCalledTimes(1);
 		expect(get(hasUnreadChats)).toBe(false);
 
@@ -239,7 +260,7 @@ describe('aggregate chat unread state', () => {
 		await refreshUnreadChats('token');
 		setChatReadAt('unread', 100);
 		resetChatListState();
-		await Promise.resolve();
+		await settleScheduledRefresh();
 		expect(getChatUnreadSummary).toHaveBeenCalledTimes(2);
 	});
 
@@ -253,15 +274,15 @@ describe('aggregate chat unread state', () => {
 		expect(await oldRefresh).toBe(false);
 		expect(get(unreadSummary)).toEqual(soleUnread);
 		setChatActive('unread', false);
-		await Promise.resolve();
-		await refreshUnreadChats('new-token');
+		await settleScheduledRefresh();
+		expect(getChatUnreadSummary).toHaveBeenCalledTimes(3);
 		expect(getChatUnreadSummary).toHaveBeenLastCalledWith('new-token');
 	});
 
 	it('does not request a summary before a token has been provided', async () => {
 		setChatReadAt('unread', 0);
 		setChatActive('unread', false);
-		await Promise.resolve();
+		await settleScheduledRefresh();
 		expect(getChatUnreadSummary).not.toHaveBeenCalled();
 	});
 
