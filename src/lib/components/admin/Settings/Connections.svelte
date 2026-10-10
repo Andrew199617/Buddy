@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
-	import { createEventDispatcher, onMount, getContext } from 'svelte';
+	import { createEventDispatcher, onMount, onDestroy, getContext } from 'svelte';
 
 	const dispatch = createEventDispatcher();
 
@@ -8,6 +8,11 @@
 	import { getOpenAIConfig, updateOpenAIConfig, getOpenAIModels } from '$lib/apis/openai';
 	import { getModels as _getModels, getBackendConfig } from '$lib/apis';
 	import { getConnectionsConfig, setConnectionsConfig } from '$lib/apis/configs';
+	import {
+		getSubscriptions,
+		type SubscriptionMachine,
+		type SubscriptionProvider
+	} from '$lib/apis/subscriptions';
 
 	import { config, models, settings, user } from '$lib/stores';
 
@@ -16,10 +21,13 @@
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import ArrowPath from '$lib/components/icons/ArrowPath.svelte';
 	import Plus from '$lib/components/icons/Plus.svelte';
+	import Cog6 from '$lib/components/icons/Cog6.svelte';
 
 	import OpenAIConnection from './Connections/OpenAIConnection.svelte';
 	import AddConnectionModal from '$lib/components/AddConnectionModal.svelte';
 	import OllamaConnection from './Connections/OllamaConnection.svelte';
+	import SubscriptionConnection from './Connections/SubscriptionConnection.svelte';
+	import SubscriptionMachineModal from './Connections/SubscriptionMachineModal.svelte';
 	import AdminSettingRow from './AdminSettingRow.svelte';
 	import AdminSettingSection from './AdminSettingSection.svelte';
 
@@ -47,6 +55,22 @@
 	let ENABLE_OLLAMA_API: null | boolean = null;
 
 	let connectionsConfig: any = null;
+
+	// Loaded separately: the first check starts the Claude Code and Codex CLIs.
+	let subscriptionProviders: SubscriptionProvider[] | null = null;
+	let subscriptionMachines: SubscriptionMachine[] = [];
+	let subscriptionsError = '';
+	let showMachineModal = false;
+	let editedMachine: SubscriptionMachine | null = null;
+	let disposed = false;
+	let subscriptionsGeneration = 0;
+	let modelsGeneration = 0;
+
+	onDestroy(() => {
+		disposed = true;
+		subscriptionsGeneration += 1;
+		modelsGeneration += 1;
+	});
 
 	let pipelineUrls: Record<string, boolean> = {};
 	let showAddOpenAIConnectionModal = false;
@@ -122,6 +146,51 @@
 		}
 	};
 
+	const loadSubscriptions = async () => {
+		if (disposed) return false;
+		const generation = ++subscriptionsGeneration;
+		modelsGeneration += 1;
+		try {
+			const result = await getSubscriptions(localStorage.token);
+			if (disposed || generation !== subscriptionsGeneration) return false;
+			subscriptionProviders = result.providers;
+			subscriptionMachines = result.machines;
+			subscriptionsError = '';
+			return true;
+		} catch (error) {
+			if (disposed || generation !== subscriptionsGeneration) return false;
+			subscriptionsError = `${error}`;
+			return false;
+		}
+	};
+
+	const openMachineModal = (machine: SubscriptionMachine | null) => {
+		editedMachine = machine;
+		showMachineModal = true;
+	};
+
+	// Machine changes disable affected providers; reload their selected host and access.
+	const handleMachinesChanged = async (machines: SubscriptionMachine[]) => {
+		if (disposed) return;
+		subscriptionMachines = machines;
+		if (await loadSubscriptions()) await refreshModels();
+	};
+
+	const handleSubscriptionSettingsChanged = async () => {
+		if (await loadSubscriptions()) await refreshModels();
+	};
+
+	const refreshModels = async () => {
+		if (disposed) return;
+		const generation = ++modelsGeneration;
+		try {
+			const nextModels = await getModels();
+			if (!disposed && generation === modelsGeneration) models.set(nextModels);
+		} catch (error) {
+			if (!disposed && generation === modelsGeneration) toast.error(`${error}`);
+		}
+	};
+
 	const refreshModelListHandler = async () => {
 		modelListRefreshing = true;
 
@@ -157,6 +226,8 @@
 		if ($user?.role === 'admin') {
 			let ollamaConfig: any = {};
 			let openaiConfig: any = {};
+
+			loadSubscriptions();
 
 			await Promise.all([
 				(async () => {
@@ -220,6 +291,12 @@
 		await config.set(await getBackendConfig());
 	};
 </script>
+
+<SubscriptionMachineModal
+	bind:show={showMachineModal}
+	machine={editedMachine}
+	onChanged={handleMachinesChanged}
+/>
 
 <AddConnectionModal
 	bind:show={showAddOpenAIConnectionModal}
@@ -362,6 +439,77 @@
 								{$i18n.t('Click here for help.')}
 							</a>
 						</div>
+					</div>
+				{/if}
+			</AdminSettingSection>
+
+			<AdminSettingSection title={$i18n.t('Subscriptions')}>
+				<p class="-mt-1 text-[0.6875rem] text-gray-400 dark:text-gray-600">
+					{$i18n.t(
+						'Chat with your Claude and ChatGPT plans through the official Claude Code and Codex apps. Usage counts against your plan limits, not API billing. Only administrators can use these models.'
+					)}
+				</p>
+
+				{#if subscriptionsError}
+					<p role="alert" class="text-xs text-red-600 dark:text-red-400">{subscriptionsError}</p>
+				{/if}
+				{#if subscriptionProviders}
+					<div>
+						<div class="mb-1.5 flex items-center justify-between gap-4">
+							<div class="text-xs text-gray-600 dark:text-gray-400">
+								{$i18n.t('Machines')}
+							</div>
+							<Tooltip content={$i18n.t('Add machine')}>
+								<button
+									class="flex size-6 items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-black/5 hover:text-gray-700 dark:text-gray-600 dark:hover:bg-white/5 dark:hover:text-gray-300"
+									type="button"
+									aria-label={$i18n.t('Add machine')}
+									on:click={() => openMachineModal(null)}
+								>
+									<Plus />
+								</button>
+							</Tooltip>
+						</div>
+						<div class="flex flex-col gap-1">
+							{#each subscriptionMachines as machine (machine.id)}
+								<div class="flex items-center justify-between gap-2">
+									<div class="min-w-0">
+										<span class="text-sm">{machine.name}</span>
+										<span class="ml-1.5 break-all text-xs text-gray-400 dark:text-gray-600">
+											{machine.url ?? $i18n.t('Runs the CLIs inside the Buddy server')}
+										</span>
+									</div>
+									{#if machine.url}
+										<Tooltip content={$i18n.t('Configure')}>
+											<button
+												class="p-1 rounded-lg transition hover:bg-gray-100 dark:hover:bg-gray-850"
+												type="button"
+												aria-label={$i18n.t('Configure {{name}}', { name: machine.name })}
+												on:click={() => openMachineModal(machine)}
+											>
+												<Cog6 />
+											</button>
+										</Tooltip>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					</div>
+
+					<div class="flex flex-col gap-3">
+						{#each subscriptionProviders as provider (provider.id)}
+							<SubscriptionConnection
+								{provider}
+								machines={subscriptionMachines}
+								onModelsChanged={refreshModels}
+								onSettingsChanged={handleSubscriptionSettingsChanged}
+							/>
+						{/each}
+					</div>
+				{:else if !subscriptionsError}
+					<div class="flex items-center gap-2 text-xs text-gray-400">
+						<Spinner className="size-3.5" />
+						{$i18n.t('Checking Claude Code and Codex…')}
 					</div>
 				{/if}
 			</AdminSettingSection>

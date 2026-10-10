@@ -1,5 +1,6 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
 import { getTimeRange } from '$lib/utils';
+import type { ChatUnreadSummary } from '$lib/stores/chatUnread';
 
 const getErrorDetail = (err: any) => {
 	if (Array.isArray(err?.detail)) {
@@ -197,6 +198,34 @@ export const importChats = async (token: string, chats: object[]) => {
 	}
 
 	return res;
+};
+
+export const getChatUnreadSummary = async (token: string = ''): Promise<ChatUnreadSummary> => {
+	const response = await fetch(`${WEBUI_API_BASE_URL}/chats/unread`, {
+		method: 'GET',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			...(token && { authorization: `Bearer ${token}` })
+		}
+	});
+
+	if (!response.ok) {
+		throw getErrorDetail(await response.json());
+	}
+
+	const summary = await response.json();
+	if (
+		!Number.isSafeInteger(summary?.count) ||
+		summary.count < 0 ||
+		(summary.count === 1 &&
+			(typeof summary.only_chat_id !== 'string' || summary.only_chat_id.length === 0)) ||
+		(summary.count !== 1 && summary.only_chat_id !== null)
+	) {
+		throw new Error('Invalid chat unread summary');
+	}
+
+	return { count: summary.count, only_chat_id: summary.only_chat_id };
 };
 
 export const getChatList = async (

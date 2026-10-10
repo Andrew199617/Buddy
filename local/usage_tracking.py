@@ -16,6 +16,7 @@ import math
 import time
 import uuid
 from dataclasses import dataclass, field
+from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from typing import Any
 
@@ -24,6 +25,17 @@ SUPPORTED_VERSIONS = {'0.11.4'}
 SNAPSHOT_VERSION = 1
 REQUEST_STATE_KEY = '_owui_local_response_runs'
 ACTIVE_RUN = contextvars.ContextVar('owui_local_response_run', default=None)
+
+
+def open_webui_version() -> str:
+    """The running Open WebUI version, from the installed package or this checkout."""
+    try:
+        return package_version('open-webui')
+    except PackageNotFoundError:
+        # Buddy's Docker image runs the checkout's backend without the package.
+        from open_webui.env import VERSION
+
+        return VERSION
 
 
 def token_count(value: Any) -> int | None:
@@ -581,7 +593,7 @@ def apply() -> bool:
         chats = importlib.import_module('open_webui.models.chats').Chats
         if getattr(main.process_chat_response, '__local_usage_tracking__', False):
             return True
-        installed_version = package_version('open-webui')
+        installed_version = open_webui_version()
         if installed_version not in SUPPORTED_VERSIONS or not lifecycle_is_supported(main, middleware, chats):
             log.warning('Skipping local run tracking: Open WebUI %s lifecycle has not been verified', installed_version)
             return False

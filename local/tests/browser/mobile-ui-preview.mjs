@@ -5,7 +5,7 @@ import { chromium, webkit } from 'playwright';
 
 export const outputDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '../.qa');
 const workspace = resolve(outputDirectory, '../../..');
-const origin = 'http://localhost:8080';
+const origin = process.env.BUDDY_UI_TEST_ORIGIN ?? 'http://localhost:8080';
 const now = Math.floor(Date.now() / 1000);
 const avatar = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" rx="16" fill="#f59e0b"/><text x="16" y="21" text-anchor="middle" fill="white" font-family="Arial" font-size="12">PU</text></svg>';
 
@@ -115,9 +115,15 @@ function getApiResponse(url, textScale, options = {}) {
   if (path === '/api/v1/auths') return user;
   if (path === '/api/models' || path === '/api/models/base') return { object: 'list', data: models };
   if (path === '/api/v1/users/user/settings') {
-    return { ui: { textScale, models: [models[0].id], pinnedModels: [], showChatMenu: false }, keybindings: {} };
+    return { ui: { textScale, models: [models[0].id], pinnedModels: [], showChatMenu: false, ...(options.pinnedMenuItems ? { pinnedMenuItems: options.pinnedMenuItems } : {}) }, keybindings: {} };
   }
   if (path === '/api/v1/chats') return Number(url.searchParams.get('page') ?? '1') > 1 ? [] : chats;
+  if (path === '/api/v1/chats/unread') {
+    const unread = chats.filter((chat) =>
+      !chat.active && (chat.last_read_at == null || chat.updated_at > chat.last_read_at)
+    );
+    return { count: unread.length, only_chat_id: unread.length === 1 ? unread[0].id : null };
+  }
   if (path === '/api/v1/chats/config') return {};
   if (path === '/api/v1/chats/archived/count') return { count: 0 };
   if (path.startsWith('/api/v1/chats/mobile-preview-chat-') && !path.endsWith('/tags')) return mockChat(path.split('/')[4], options);
@@ -143,13 +149,17 @@ export async function createMockedPage(options = {}) {
   const requests = [];
   const errors = [];
   const blockedMutations = [];
-  await context.addInitScript(() => {
+  await context.addInitScript(({ theme, previewOrigin }) => {
+    if (location.origin !== previewOrigin) return;
     localStorage.setItem('token', 'mobile-preview-fake-token');
     localStorage.setItem('locale', 'en-US');
-    localStorage.setItem('theme', 'light');
+    localStorage.setItem('theme', theme);
     localStorage.setItem('sidebar', 'false');
     localStorage.setItem('sidebarWidth', '245');
     localStorage.setItem('changelog', '0.11.4');
+  }, {
+    theme: options.colorScheme === 'dark' ? 'dark' : 'light',
+    previewOrigin: origin
   });
   await context.route('**/*', async (route) => {
     const request = route.request();
@@ -164,6 +174,16 @@ export async function createMockedPage(options = {}) {
     }
     if (url.pathname.startsWith('/ollama/')) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ version: '0.0.0', models: [] }) });
+      return;
+    }
+    if (url.pathname === '/static/loader.js' && ['GET', 'HEAD'].includes(request.method())) {
+      const buildDirectory = process.env.BUDDY_UI_TEST_BUILD || resolve(workspace, 'build');
+      const loader = readFileSync(resolve(buildDirectory, 'static/loader.js'));
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/javascript; charset=utf-8',
+        body: request.method() === 'HEAD' ? '' : loader
+      });
       return;
     }
     if (!url.pathname.startsWith('/api/')) {
@@ -199,7 +219,7 @@ export async function createMockedPage(options = {}) {
   await page.goto(`${origin}${options.urlPath ?? '/'}`, { waitUntil: 'domcontentloaded' });
   try {
     await page.locator('#chat-input').waitFor({ state: 'visible', timeout: 30000 });
-    await page.locator('#model-selector-model-button').waitFor({ state: 'visible', timeout: 10000 });
+    await page.locator('#model-selector-model-button').waitFor({ state: options.modelSelectorVisible === false ? 'attached' : 'visible', timeout: 10000 });
     await page.evaluate(() => document.fonts.ready);
     await page.waitForTimeout(250);
   } catch (error) {

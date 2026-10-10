@@ -2384,10 +2384,12 @@
 							</div>
 
 							<div
-								class="buddy-composer-tools flex justify-between mt-0.5 mb-2 mx-0.5 max-w-full"
+								class="buddy-composer-tools flex justify-between mt-0.5 mb-2 mx-0.5 max-w-full max-[360px]:flex-wrap"
 								dir="ltr"
 							>
-								<div class="buddy-composer-left ml-1 self-end flex items-center flex-1 min-w-0">
+								<div
+									class="buddy-composer-left ml-1 self-end flex items-center flex-1 min-w-0 max-[360px]:basis-full"
+								>
 									<InputMenu
 										bind:files
 										selectedModels={selectedModelIds}
@@ -2750,7 +2752,7 @@
 								</div>
 
 								<div
-									class="buddy-composer-actions self-end flex items-center space-x-1 mr-1 min-w-0 gap-[0.03125rem]"
+									class="buddy-composer-actions self-end flex items-center space-x-1 mr-1 min-w-0 gap-[0.03125rem] max-[360px]:ms-auto"
 								>
 									<div
 										class="buddy-composer-model flex min-w-0 max-w-[10rem] items-center sm:max-w-[13rem]"

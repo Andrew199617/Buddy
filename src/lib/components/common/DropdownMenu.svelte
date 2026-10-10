@@ -9,3 +9,34 @@
 >
 	<slot />
 </div>
+
+<style>
+	.app-dropdown-menu :global(.chat-menu-delete) {
+		color: #b91c1c;
+	}
+
+	.app-dropdown-menu :global(.chat-menu-delete:hover),
+	.app-dropdown-menu :global(.chat-menu-delete:focus-visible) {
+		color: #991b1b;
+		background-color: #fef2f2;
+	}
+
+	.app-dropdown-menu :global(.chat-menu-delete:focus-visible) {
+		outline: 2px solid #b91c1c;
+		outline-offset: -2px;
+	}
+
+	:global(.dark) .app-dropdown-menu :global(.chat-menu-delete) {
+		color: #fca5a5;
+	}
+
+	:global(.dark) .app-dropdown-menu :global(.chat-menu-delete:hover),
+	:global(.dark) .app-dropdown-menu :global(.chat-menu-delete:focus-visible) {
+		color: #fecaca;
+		background-color: #450a0a;
+	}
+
+	:global(.dark) .app-dropdown-menu :global(.chat-menu-delete:focus-visible) {
+		outline-color: #fca5a5;
+	}
+</style>

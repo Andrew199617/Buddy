@@ -2,8 +2,9 @@ import asyncio
 import copy
 import logging
 import sys
+from types import SimpleNamespace
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from open_webui.config import (
     BYPASS_ADMIN_ACCESS_CONTROL,
     DEFAULT_ARENA_MODEL,
@@ -25,6 +26,8 @@ from open_webui.utils.plugin import (
     get_functions_cache,
     get_function_module_from_cache,
 )
+from open_webui.utils.subscriptions.common import SUBSCRIPTION_OWNED_BY
+from open_webui.utils.subscriptions.service import get_subscription_models
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
@@ -60,10 +63,13 @@ async def get_all_base_models(request: Request, user: UserModel = None):
     openai_task = fetch_openai_models(request, user) if config.get('openai.enable') else asyncio.sleep(0, result=[])
     ollama_task = fetch_ollama_models(request, user) if config.get('ollama.enable') else asyncio.sleep(0, result=[])
     function_task = get_function_models(request)
+    subscription_task = get_subscription_models()
 
-    openai_models, ollama_models, function_models = await asyncio.gather(openai_task, ollama_task, function_task)
+    openai_models, ollama_models, function_models, subscription_models = await asyncio.gather(
+        openai_task, ollama_task, function_task, subscription_task
+    )
 
-    return function_models + openai_models + ollama_models
+    return function_models + openai_models + ollama_models + subscription_models
 
 
 async def get_all_models(request, refresh: bool = False, user: UserModel = None):
@@ -460,6 +466,48 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
         request.app.state.MODELS = models_dict
 
     return models
+
+
+async def get_arena_model_ids(models, arena_model, user, bypass_filter=False):
+    """Apply the arena filter to models the caller can actually use."""
+    candidates = [model for model in models if model.get('owned_by') != 'arena']
+    meta = arena_model.get('info', {}).get('meta', {})
+    configured_ids = meta.get('model_ids')
+    if isinstance(configured_ids, list) and configured_ids:
+        if meta.get('filter_mode') == 'exclude':
+            candidates = [model for model in candidates if model['id'] not in configured_ids]
+        else:
+            available_models = {model['id']: model for model in candidates}
+            candidates = [
+                available_models[model_id]
+                for model_id in configured_ids
+                if isinstance(model_id, str) and model_id in available_models
+            ]
+
+    if user.role != 'admin':
+        # Subscription providers enforce this independently of ordinary model ACLs.
+        candidates = [model for model in candidates if model.get('owned_by') != SUBSCRIPTION_OWNED_BY]
+        if not bypass_filter:
+            candidates = await get_filtered_models(candidates, user)
+            if not BYPASS_MODEL_ACCESS_CONTROL and any(
+                candidate.get('info', {}).get('base_model_id') for candidate in candidates
+            ):
+                user_group_ids = {group.id for group in await Groups.get_groups_by_member_id(user.id)}
+                usable_candidates = []
+                for candidate in candidates:
+                    base_model_id = candidate.get('info', {}).get('base_model_id')
+                    if base_model_id:
+                        candidate_reference = SimpleNamespace(id=candidate['id'], base_model_id=base_model_id)
+                        if not await has_base_model_access(
+                            user.id, candidate_reference, user_role=user.role, user_group_ids=user_group_ids
+                        ):
+                            continue
+                    usable_candidates.append(candidate)
+                candidates = usable_candidates
+
+    if not candidates:
+        raise HTTPException(status_code=403, detail='No accessible models available for arena')
+    return [model['id'] for model in candidates]
 
 
 async def check_model_access(user, model, model_info=None, db=None):

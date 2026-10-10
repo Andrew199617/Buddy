@@ -33,7 +33,7 @@ from open_webui.models.folders import Folders
 from open_webui.models.shared_chats import SharedChatResponse, SharedChats
 from open_webui.models.tags import TagModel, Tags
 from open_webui.socket.main import get_event_emitter
-from open_webui.tasks import get_response_streams_by_chat_id, has_active_tasks, stop_item_tasks
+from open_webui.tasks import get_active_task_item_ids, get_response_streams_by_chat_id, has_active_tasks, stop_item_tasks
 from open_webui.utils.access_control import filter_allowed_access_grants, has_permission
 from open_webui.utils.access_control.folders import has_folder_write_access
 from open_webui.utils.auth import bearer_security, get_admin_user, get_current_user, get_verified_user
@@ -171,6 +171,11 @@ class CompactChatForm(BaseModel):
     model: str | None = None
 
 
+class ChatUnreadSummaryResponse(BaseModel):
+    count: int
+    only_chat_id: str | None
+
+
 def chat_search_content_text(text: str) -> str:
     return chat_search_content_query(text)
 
@@ -285,6 +290,20 @@ async def get_session_user_chat_list(
     except Exception as e:
         log.exception(e)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.DEFAULT())
+
+
+@router.get('/unread', response_model=ChatUnreadSummaryResponse)
+async def get_session_user_unread_chat_summary(
+    request: Request,
+    user=Depends(get_verified_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    try:
+        active_chat_ids = await get_active_task_item_ids(request.app.state.redis)
+        return await Chats.get_unread_summary(user.id, active_chat_ids, db=db)
+    except Exception:
+        log.exception('Unable to load unread chat summary')
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=ERROR_MESSAGES.DEFAULT())
 
 
 @router.post('/read')
