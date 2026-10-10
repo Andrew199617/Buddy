@@ -655,6 +655,14 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
                 )
                 native = next(iter(host.processes))
                 self.assertEqual(await asyncio.wait_for(process.read_line(), 10), 'ready')
+                if sys.platform != 'win32':
+                    # The first frame must stay in flight so the extra frames
+                    # trip the pending limit. A POSIX pipe holds 64 KiB by
+                    # default (the Windows default is 4 KiB), so shrink it
+                    # below the frame size or the write drains instantly.
+                    import fcntl
+
+                    fcntl.fcntl(native.process.stdin.fileno(), fcntl.F_SETPIPE_SZ, 4096)
                 entered = threading.Event()
                 original_write = native._write_blocking
 
