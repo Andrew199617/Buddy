@@ -412,8 +412,51 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
         (self.project / 'hello.txt').write_text('replacement', encoding='utf-8')
         status, _, _ = await self.request('GET', '/v1/files', params={'grantId': grant['id'], 'path': 'hello.txt'})
         self.assertEqual(status, 403)
-        status, _, _ = await self.request('GET', '/v1/grants')
-        self.assertEqual(status, 403)
+        status, body, _ = await self.request('GET', '/v1/grants')
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body['grants'][0]['id'], grant['id'])
+        self.assertFalse(body['grants'][0]['available'])
+        self.assertIn('replaced', body['grants'][0]['unavailableReason'])
+
+    async def test_one_missing_root_leaves_other_grants_listed_and_revocable(self):
+        import shutil
+        from open_webui.utils.subscriptions import runner
+
+        second = self.base / 'second'
+        second.mkdir()
+        (second / 'kept.txt').write_text('kept', encoding='utf-8')
+        provider_key = secrets.token_urlsafe(32)
+        app = runner.build_app(
+            provider_key, self.base / 'runner-state', origins=[ORIGIN],
+            roots=[{'path': str(self.project), 'name': 'Removed'}, {'path': str(second), 'name': 'Kept'}],
+        )
+        self.host = app['workspace_capabilities']
+        self.client = TestClient(TestServer(app, host='127.0.0.1'))
+        await self.client.start_server()
+        self.clients.append(self.client)
+        self.hosts.append(self.host)
+        await self.pair()
+        status, body, _ = await self.request('GET', '/v1/grants')
+        self.assertEqual(status, 200, body)
+        self.assertEqual([grant['available'] for grant in body['grants']], [True, True])
+        self.assertEqual([grant['unavailableReason'] for grant in body['grants']], [None, None])
+        shutil.rmtree(self.project)
+        status, body, _ = await self.request('GET', '/v1/grants')
+        self.assertEqual(status, 200, body)
+        grants = {grant['name']: grant for grant in body['grants']}
+        self.assertFalse(grants['Removed']['available'])
+        self.assertEqual(grants['Removed']['unavailableReason'], 'The granted directory no longer exists.')
+        self.assertTrue(grants['Kept']['available'])
+        status, body, _ = await self.request('GET', '/v1/files', params={'grantId': grants['Kept']['id'], 'path': 'kept.txt'})
+        self.assertEqual((status, body['content']), (200, 'kept'))
+        # The operator listing still names the broken grant, so it can be revoked without a restart.
+        status, body, _ = await self.request('GET', '/workspace-grants', origin=None, token=provider_key)
+        self.assertEqual(status, 200, body)
+        self.assertEqual({grant['id'] for grant in body['grants']}, {grants['Removed']['id'], grants['Kept']['id']})
+        status, body, _ = await self.request('DELETE', f'/workspace-grants/{grants["Removed"]["id"]}', origin=None, token=provider_key)
+        self.assertEqual((status, body), (200, {'revoked': True}))
+        status, body, _ = await self.request('GET', '/v1/grants')
+        self.assertEqual([grant['name'] for grant in body['grants']], ['Kept'])
 
     @unittest.skipUnless(sys.platform == 'win32', 'Windows native handle sharing fixture')
     async def test_windows_ancestor_swap_is_blocked_during_read_and_write(self):

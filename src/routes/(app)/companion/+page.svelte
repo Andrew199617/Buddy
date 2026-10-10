@@ -25,6 +25,8 @@
 	let host: CompanionHost | null = null;
 	let expiresAt: number | null = null;
 	let grants: CompanionGrant[] = [];
+	let grantsLoaded = false;
+	let grantsBusy = false;
 	let activeGrantId = '';
 	let directoryPath = '';
 	let entries: CompanionDirectoryEntry[] = [];
@@ -136,6 +138,8 @@
 		hostEndpoint = '';
 		expiresAt = null;
 		grants = [];
+		grantsLoaded = false;
+		grantsBusy = false;
 		activeGrantId = '';
 		directoryPath = '';
 		entries = [];
@@ -295,15 +299,8 @@
 			expiresAt = paired.expiresAt;
 			scheduleSessionExpiry(candidate, generation, paired.expiresAt);
 			pairCode = '';
-			const approvedGrants = await candidate.getGrants();
-			if (!isCurrent(candidate, generation)) return;
-			grants = approvedGrants;
-			const firstGrant = approvedGrants.find((grant) => grant.capabilities.read);
-			if (firstGrant) {
-				activeGrantId = firstGrant.id;
-				await browseDirectory('');
-			}
-			if (!isCurrent(candidate, generation)) return;
+			// The session is paired now. A failed folder listing keeps it, so the listing can be retried.
+			if (!(await loadGrants(candidate, generation))) return;
 			notice = 'Paired for this page session. Closing or disconnecting clears the credential.';
 		} catch (cause) {
 			reportError(cause, generation);
@@ -315,6 +312,45 @@
 			}
 			if (!disposed && generation === connectionGeneration) connectionBusy = false;
 		}
+	}
+
+	function isUsableGrant(grant: CompanionGrant): boolean {
+		return grant.capabilities.read && grant.available !== false;
+	}
+
+	function grantOptionLabel(grant: CompanionGrant): string {
+		if (grant.available === false) return `${grant.name} (unavailable)`;
+		if (!grant.capabilities.read) return `${grant.name} (read disabled)`;
+		return grant.name;
+	}
+
+	/** Returns false when the listing failed or the connection changed while loading. */
+	async function loadGrants(candidate: CompanionClient, generation: number): Promise<boolean> {
+		grantsBusy = true;
+		try {
+			const approvedGrants = await candidate.getGrants();
+			if (!isCurrent(candidate, generation)) return false;
+			grants = approvedGrants;
+			grantsLoaded = true;
+			const firstGrant = approvedGrants.find(isUsableGrant);
+			if (firstGrant) {
+				activeGrantId = firstGrant.id;
+				await browseDirectory('');
+			}
+			return isCurrent(candidate, generation);
+		} catch (cause) {
+			reportError(cause, generation);
+			return false;
+		} finally {
+			if (isCurrent(candidate, generation)) grantsBusy = false;
+		}
+	}
+
+	function reloadGrants() {
+		const candidate = client;
+		if (!candidate || grantsBusy) return;
+		error = '';
+		void loadGrants(candidate, connectionGeneration);
 	}
 
 	async function disconnectHost() {
@@ -855,11 +891,18 @@
 				<div class="host-context">
 					<strong>{host.name}</strong><code>{host.id} · {hostEndpoint}</code>
 				</div>
-				{#if grants.length === 0}
+				{#if grants.length === 0 && grantsLoaded}
 					<p class="empty-state">
 						This host has no approved directory grants. Configure a grant on the execution computer,
 						then pair again.
 					</p>
+				{:else if grants.length === 0}
+					<p class="empty-state">
+						{grantsBusy
+							? 'Loading approved folders…'
+							: 'The approved folders could not be loaded. This browser is still paired.'}
+					</p>
+					<button on:click={reloadGrants} disabled={grantsBusy}>Reload approved folders</button>
 				{:else}
 					<label for="companion-grant">Host-approved folder</label>
 					<select
@@ -870,11 +913,16 @@
 					>
 						<option value="" disabled>Select a grant</option>
 						{#each grants as grant (grant.id)}
-							<option value={grant.id} disabled={!grant.capabilities.read}
-								>{grant.name}{grant.capabilities.read ? '' : ' (read disabled)'}</option
+							<option value={grant.id} disabled={!isUsableGrant(grant)}
+								>{grantOptionLabel(grant)}</option
 							>
 						{/each}
 					</select>
+					{#each grants as grant (grant.id)}
+						{#if grant.available === false}
+							<p class="muted hint">{grant.name} is unavailable. {grant.unavailableReason ?? ''}</p>
+						{/if}
+					{/each}
 					{#if activeGrant}
 						<p class="path-label">Grant root <code>{activeGrant.path}</code></p>
 						<div class="capabilities">

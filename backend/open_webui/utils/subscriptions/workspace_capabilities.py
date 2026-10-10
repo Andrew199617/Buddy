@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 
 from aiohttp import web
 
-from open_webui.utils.subscriptions.pinned_paths import PinnedPath
+from open_webui.utils.subscriptions.pinned_paths import PinnedPath, PinnedPathError
 from open_webui.utils.subscriptions.process import ChildProcess, ProcessClosedError, subscription_env
 
 FILE_BYTES = 1024 * 1024
@@ -260,9 +260,17 @@ class WorkspaceCapabilities:
             execute=specification.get('execute') is True,
         )
 
-    def _check_root(self, grant: _Grant) -> None:
-        with PinnedPath(grant.requested_path, expected_root=grant.identity):
-            pass
+    def _root_problem(self, grant: _Grant) -> str | None:
+        """Why this grant's root cannot be opened now, or None when it can."""
+        try:
+            with PinnedPath(grant.requested_path, expected_root=grant.identity):
+                return None
+        except PinnedPathError:
+            return 'The granted directory was replaced or is no longer a real directory. Grant it again on the host.'
+        except (FileNotFoundError, NotADirectoryError):
+            return 'The granted directory no longer exists.'
+        except OSError:
+            return 'The host account cannot open the granted directory.'
 
     def _pin(self, grant: _Grant, input_path, *, file: bool = False, writable: bool = False):
         relative = _relative_path(input_path)
@@ -652,10 +660,20 @@ class WorkspaceCapabilities:
         return True
 
     def list_grants(self) -> list[dict]:
-        """Public metadata for the separately authenticated host-operator control."""
+        """Public metadata for the separately authenticated host-operator control.
+
+        Each root is checked on its own. A missing or replaced root marks only
+        its grant unavailable, so the other grants stay usable and the operator
+        can still see the broken grant's id to revoke it.
+        """
+        listed = []
         for grant in self._grants.values():
-            self._check_root(grant)
-        return [grant.public() for grant in self._grants.values()]
+            problem = self._root_problem(grant)
+            metadata = grant.public()
+            metadata['available'] = problem is None
+            metadata['unavailableReason'] = problem
+            listed.append(metadata)
+        return listed
 
     async def _dispatch(self, request: web.Request, origin: str | None) -> dict:
         path = request.path

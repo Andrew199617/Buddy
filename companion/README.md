@@ -58,7 +58,10 @@ paired sessions and provider processes. The browser must never perform this
 operator request or receive that key. The code can then be entered on another
 device. At most 64 paired sessions are retained.
 
-`GET /workspace-grants` lists the operator's current grant IDs.
+`GET /workspace-grants` lists the operator's current grant IDs. Each root is
+checked on its own: a missing or replaced root is listed with `available: false`
+and an `unavailableReason`, while the other grants keep working, so its ID can
+still be revoked. Paired browsers see the same fields from `GET /v1/grants`.
 `DELETE /workspace-grants/{grant_id}` revokes one grant and stops its command
 sessions. These are key-authenticated operator routes that reject browser Origin
 requests. Revocation cannot approve or add a new root. Restart with explicit
@@ -86,7 +89,8 @@ not establish a new private ACL or claim POSIX mode enforcement.
 The directory picker browses approved roots and selects a real project folder.
 Direct file reads and edits use opaque grants and forward-slash relative paths.
 Volume roots, traversal, drive/UNC paths, symlinks, junctions, reparse points and
-multiply linked files are refused. Replacing an approved root invalidates access.
+multiply linked files are refused. Replacing an approved root invalidates access
+to that grant only.
 Only existing UTF-8 text files up to 1 MiB are supported; editing additionally
 requires the host's explicit write approval.
 

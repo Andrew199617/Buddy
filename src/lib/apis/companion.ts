@@ -30,6 +30,9 @@ export type CompanionGrant = {
 	name: string;
 	path: string;
 	capabilities: { read: boolean; write: boolean; execute: boolean };
+	/** False when the granted directory is missing or was replaced on the host. */
+	available: boolean;
+	unavailableReason: string | null;
 };
 
 export type CompanionDirectoryEntry = {
