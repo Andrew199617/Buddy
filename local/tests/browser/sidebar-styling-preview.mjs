@@ -249,8 +249,35 @@ async function runHeaderScenario(options) {
 		);
 		const searchGeometry = await assertHeaderFits(page);
 		await page.screenshot({ path: resolve(directory, `${options.name}-search.png`) });
-		await page.locator('#sidebar-search-results button').click();
-		await page.waitForFunction(() => !document.querySelector('#sidebar-search-results button'));
+		// Touch users reach the full search (filters, preview, chat actions) from the results.
+		const advancedSearch = page.locator('#sidebar-search-advanced');
+		assert.ok((await advancedSearch.boundingBox()).height >= (mobileDrawer ? 44 : 36));
+		await advancedSearch.click();
+		const fullSearch = page.locator('.modal').filter({ has: page.locator('#search-input') });
+		await fullSearch.waitFor({ state: 'visible' });
+		assert.equal(await fullSearch.locator('#search-input').inputValue(), 'project');
+		await page.screenshot({ path: resolve(directory, `${options.name}-full-search.png`) });
+		// The desktop sidebar stays open behind the full search with the inline results. On
+		// phones the full search replaces the drawer, as Settings does.
+		const sidebarState = mobileDrawer ? 'false' : 'true';
+		assert.equal(await page.locator('#sidebar').getAttribute('data-state'), sidebarState);
+		// Pressing on the backdrop closes the full search.
+		await page.mouse.click(4, 4);
+		await fullSearch.waitFor({ state: 'detached' });
+		assert.equal(await page.locator('#sidebar').getAttribute('data-state'), sidebarState);
+		if (mobileDrawer) {
+			// The phone returns to the chat, so search again from a reopened drawer.
+			await page.locator('#sidebar-toggle-button').click();
+			await page.locator('#sidebar-search-button').click();
+			await page.locator('#sidebar-search-input').fill('project');
+			await page.locator('#sidebar-search-results a').first().waitFor({ state: 'visible' });
+		}
+		assert.equal(await page.locator('#sidebar-search-input').inputValue(), 'project');
+		const loadMore = page.locator('#sidebar-search-results').getByRole('button', {
+			name: 'Load more'
+		});
+		await loadMore.click();
+		await loadMore.waitFor({ state: 'detached' });
 		assert.ok(
 			searches.some((search) => search.searchPage === 2),
 			'Search supports pagination'

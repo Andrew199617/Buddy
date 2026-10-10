@@ -116,6 +116,7 @@
 	let sidebarSearchExhausted = false;
 	let sidebarSearchTimer: ReturnType<typeof setTimeout> | undefined;
 	let sidebarSearchVersion = 0;
+	let fullSearchQuery = '';
 
 	$: navigationFallbacks = getNavigationFallbacks(
 		$user,
@@ -207,6 +208,13 @@
 		sidebarSearchLoading = true;
 		sidebarSearchError = false;
 		void fetchSidebarSearch(sidebarSearchVersion, sidebarSearchQuery.trim(), sidebarSearchPage + 1);
+	};
+
+	// The full search adds filter suggestions, a chat preview and per-chat actions. Its
+	// only other opener is a keyboard shortcut, so touch users reach it from here.
+	const openFullSearch = () => {
+		fullSearchQuery = sidebarSearchQuery.trim();
+		showSearch.set(true);
 	};
 
 	let navElement: HTMLDivElement;
@@ -1121,7 +1129,7 @@
 		></button>
 	{/if}
 
-	<SearchModal bind:show={$showSearch} onClose={closeMobileSidebar} />
+	<SearchModal bind:show={$showSearch} bind:query={fullSearchQuery} onClose={closeMobileSidebar} />
 
 	<button
 		id="sidebar-new-chat-button"
@@ -1303,6 +1311,15 @@
 								{$i18n.t('Load more')}
 							</button>
 						{/if}
+						<button
+							id="sidebar-search-advanced"
+							type="button"
+							class="buddy-sidebar-link flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-900"
+							on:click={openFullSearch}
+						>
+							<SearchIcon strokeWidth="1.5" className="size-4 shrink-0" />
+							<span class="buddy-sidebar-label">{$i18n.t('Advanced search')}</span>
+						</button>
 					</div>
 				{:else}
 					{#if $mobile}
