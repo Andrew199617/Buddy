@@ -38,6 +38,7 @@ from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
+from open_webui.utils.subscriptions import windows_key_acl
 from open_webui.utils.subscriptions.discovery import find_tool
 from open_webui.utils.subscriptions.machines import start_local_process
 from open_webui.utils.subscriptions.pinned_paths import PinnedPath, PinnedPathError
@@ -478,7 +479,8 @@ def _validate_key_directory(info, *, owner_id=None, private=False) -> None:
     if not stat.S_ISDIR(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
         raise ValueError('Runner key directories must be real directories, without symbolic links or junctions.')
     if owner_id is None:
-        # Windows access is controlled by its DACL, not POSIX mode bits.
+        # Windows access is controlled by its owner and DACL, which
+        # windows_key_acl checks instead of POSIX mode bits.
         return
     if private:
         if info.st_uid != owner_id:
@@ -546,7 +548,7 @@ def _open_posix_key_directory(path: Path, *, owner_id: int, private: bool):
 
 
 @contextmanager
-def _pin_windows_key_directory(path: Path):
+def _pin_windows_key_directory(path: Path, *, private: bool):
     missing = []
     existing = path
     while True:
@@ -563,13 +565,19 @@ def _pin_windows_key_directory(path: Path):
         for name in reversed(missing):
             existing = existing / name
             try:
-                existing.mkdir(mode=0o700)
+                # Owner-only from the start, whatever the parent allows.
+                windows_key_acl.create_private_directory(existing)
             except FileExistsError:
                 pass
             # Keep the existing ancestors pinned while each child is created
             # and opened. Windows pins refuse reparse points and path swaps.
             pinned = resources.enter_context(PinnedPath(existing))
         _validate_key_directory(pinned.stat)
+        # The pin keeps this folder in place while its access is read.
+        if private:
+            windows_key_acl.check_private(path, 'state folder', directory=True)
+        else:
+            windows_key_acl.check_key_folder(path)
         yield pinned
 
 
@@ -627,19 +635,21 @@ def load_or_create_key(key_file: Path, *, state_dir: Path | None = None) -> str:
                         return _write_new_key(descriptor, owner_id=owner_id)
                 resources.callback(os.close, descriptor)
                 return _read_key_descriptor(descriptor, owner_id=owner_id)
-            resources.enter_context(_pin_windows_key_directory(state_dir))
+            resources.enter_context(_pin_windows_key_directory(state_dir, private=True))
             if key_file.parent != state_dir:
-                resources.enter_context(_pin_windows_key_directory(key_file.parent))
+                resources.enter_context(_pin_windows_key_directory(key_file.parent, private=False))
             try:
                 pinned = resources.enter_context(PinnedPath(key_file.parent, key_file.name, file=True))
             except FileNotFoundError:
                 try:
-                    descriptor = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0), 0o600)
+                    descriptor = windows_key_acl.create_private_file(key_file)
                 except FileExistsError:
                     pinned = resources.enter_context(PinnedPath(key_file.parent, key_file.name, file=True))
                 else:
                     resources.callback(os.close, descriptor)
+                    windows_key_acl.check_private(key_file, 'key', directory=False, descriptor=descriptor)
                     return _write_new_key(descriptor)
+            windows_key_acl.check_private(key_file, 'key', directory=False, descriptor=pinned.descriptor)
             return _read_key_descriptor(pinned.descriptor)
     except PinnedPathError as error:
         raise ValueError(f'The Runner key path is unsafe: {error}') from error

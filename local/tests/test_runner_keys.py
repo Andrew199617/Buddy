@@ -1,8 +1,9 @@
 """Runner credential storage tests using disposable files and synthetic metadata.
 
-POSIX metadata validation runs on every host. Native POSIX permission and
-descriptor traversal tests skip on Windows; native Windows tests still exercise
-key creation, reuse, links, types, and competing creation.
+POSIX metadata and Windows DACL policy validation run on every host. Native
+POSIX permission and descriptor traversal tests skip on Windows; native Windows
+tests exercise key creation, reuse, links, types, competing creation, and
+owner-only DACLs on disposable folders.
 """
 
 import errno
@@ -18,10 +19,18 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'backend'))
 from open_webui.utils.subscriptions import runner
+from open_webui.utils.subscriptions import windows_key_acl as acl
 
 
 OWNER_ID = 1000
 FIXTURE_KEY = 'disposable-test-provider-key'
+# Synthetic account SIDs, and two well-known groups that are never trusted.
+USER_SID = 'S-1-5-21-1000-1000-1000-1001'
+OTHER_SID = 'S-1-5-21-1000-1000-1000-1002'
+USERS = 'S-1-5-32-545'
+AUTHENTICATED_USERS = 'S-1-5-11'
+READ_ONLY = 0x120089
+MODIFY = 0x1301bf
 
 
 def metadata(mode, *, owner=OWNER_ID, links=1, attributes=0):
@@ -35,6 +44,15 @@ def write_fixture(path, text=FIXTURE_KEY, *, mode=0o600):
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
     with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
         handle.write(text)
+
+
+def allowed(sid, mask=acl.GENERIC_ALL):
+    return acl.AccessEntry(sid, allowed=True, mask=mask)
+
+
+def grant_access(path, entry):
+    """Add one access entry to a disposable Windows fixture, such as *S-1-5-32-545:R."""
+    subprocess.run(['icacls', str(path), '/grant', entry], check=True, capture_output=True)
 
 
 class RunnerKeyMetadataTests(unittest.TestCase):
@@ -100,6 +118,54 @@ class RunnerKeyMetadataTests(unittest.TestCase):
         for name, information in cases.items():
             with self.subTest(name=name), self.assertRaises(ValueError):
                 runner._validate_key_file(information, owner_id=OWNER_ID)
+
+
+class WindowsKeyAccessPolicyTests(unittest.TestCase):
+    """Synthetic Windows owner and DACL cases also run on POSIX."""
+
+    def test_synthetic_owner_only_entries_are_private(self):
+        security = acl.Security(USER_SID, [
+            allowed(USER_SID), allowed(acl.SYSTEM), allowed(acl.ADMINISTRATORS),
+            allowed(acl.OWNER_RIGHTS), allowed(acl.CREATOR_OWNER),
+            acl.AccessEntry(OTHER_SID, allowed=False, mask=acl.GENERIC_ALL),
+        ])
+        self.assertTrue(acl.owner_is_trusted(security, USER_SID))
+        self.assertEqual(acl.other_accounts(security, USER_SID, private=True), [])
+
+    def test_synthetic_private_objects_refuse_any_other_account(self):
+        cases = {
+            'read-only group': (acl.Security(USER_SID, [allowed(USER_SID), allowed(USERS, READ_ONLY)]), [USERS]),
+            'another account': (acl.Security(USER_SID, [allowed(OTHER_SID), allowed(OTHER_SID, READ_ONLY)]), [OTHER_SID]),
+            'no DACL': (acl.Security(USER_SID, None), [acl.EVERYONE]),
+            'unreadable entry type': (acl.Security(USER_SID, [allowed('')]), ['']),
+        }
+        for name, (security, expected) in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(acl.other_accounts(security, USER_SID, private=True), expected)
+
+    def test_synthetic_key_folder_may_be_readable_but_not_changeable_by_others(self):
+        readable = acl.Security(USER_SID, [allowed(USER_SID), allowed(USERS, READ_ONLY)])
+        self.assertEqual(acl.other_accounts(readable, USER_SID, private=False), [])
+        for mask in (acl.FILE_ADD_FILE, acl.FILE_DELETE_CHILD, acl.DELETE, acl.WRITE_DAC, acl.GENERIC_WRITE, MODIFY):
+            with self.subTest(mask=hex(mask)):
+                changeable = acl.Security(USER_SID, [allowed(USER_SID), allowed(AUTHENTICATED_USERS, mask)])
+                self.assertEqual(acl.other_accounts(changeable, USER_SID, private=False), [AUTHENTICATED_USERS])
+
+    def test_synthetic_owner_must_be_the_user_system_or_administrators(self):
+        for owner in (USER_SID, acl.SYSTEM, acl.ADMINISTRATORS):
+            with self.subTest(owner=owner):
+                self.assertTrue(acl.owner_is_trusted(acl.Security(owner, []), USER_SID))
+        for owner in (OTHER_SID, USERS, acl.OWNER_RIGHTS):
+            with self.subTest(owner=owner):
+                self.assertFalse(acl.owner_is_trusted(acl.Security(owner, []), USER_SID))
+
+    def test_synthetic_messages_name_the_command_that_fixes_access(self):
+        folder = acl.access_message(Path('C:/Runner'), 'state folder', [USERS], USER_SID, directory=True, private=True)
+        self.assertIn(f'/inheritance:r /grant:r "*{USER_SID}:(OI)(CI)F" /remove:g *{USERS}', folder)
+        key = acl.access_message(Path('C:/Runner/key'), 'key', [USERS], USER_SID, directory=False, private=True)
+        self.assertIn(f'/inheritance:r /grant:r "*{USER_SID}:F" /remove:g *{USERS}', key)
+        owner = acl.owner_message(Path('C:/Runner'), 'state folder', USERS, USER_SID)
+        self.assertIn(f'/setowner *{USER_SID}', owner)
 
 
 class TemporaryKeyTests(unittest.TestCase):
@@ -200,6 +266,7 @@ class RunnerKeyFileTests(TemporaryKeyTests):
     def test_native_competing_exclusive_creation_reuses_valid_winner(self):
         self.prepare_state()
         original_open = os.open
+        original_create = getattr(runner.windows_key_acl, 'create_private_file', None)
         competed = False
 
         def competing_open(path, flags, mode=0o777, **options):
@@ -212,7 +279,20 @@ class RunnerKeyFileTests(TemporaryKeyTests):
                 raise FileExistsError(errno.EEXIST, 'Disposable competing key creation', str(path))
             return original_open(path, flags, mode, **options)
 
-        with patch.object(runner.os, 'open', side_effect=competing_open):
+        def competing_create(path):
+            # Windows creates a new key through its owner-only DACL helper.
+            nonlocal competed
+            if not competed and Path(path).name == self.key_file.name:
+                competed = True
+                write_fixture(path)
+                raise FileExistsError(errno.EEXIST, 'Disposable competing key creation', str(path))
+            return original_create(path)
+
+        if os.name == 'nt':
+            competition = patch.object(runner.windows_key_acl, 'create_private_file', side_effect=competing_create)
+        else:
+            competition = patch.object(runner.os, 'open', side_effect=competing_open)
+        with competition:
             self.assertEqual(runner.load_or_create_key(self.key_file), FIXTURE_KEY)
         self.assertTrue(competed)
         self.assertEqual(self.key_file.read_text(encoding='utf-8'), FIXTURE_KEY)
@@ -248,14 +328,14 @@ class RunnerKeyFileTests(TemporaryKeyTests):
     @unittest.skipUnless(os.name == 'nt', 'Windows no-delete sharing semantics are unavailable on POSIX')
     def test_windows_pins_prevent_parent_and_ancestor_rename_during_key_creation(self):
         self.prepare_state()
-        original_open = os.open
+        original_create = runner.windows_key_acl.create_private_file
         attempted = False
         moved_state = self.base / 'moved-state'
         moved_base = self.base.with_name(self.base.name + '-moved')
 
-        def pinned_open(path, flags, mode=0o777, **options):
+        def pinned_create(path):
             nonlocal attempted
-            if not attempted and flags & os.O_EXCL and Path(path).name == self.key_file.name:
+            if not attempted and Path(path).name == self.key_file.name:
                 attempted = True
                 for source, destination in ((self.state, moved_state), (self.base, moved_base)):
                     with self.subTest(source=source.name), self.assertRaises(PermissionError):
@@ -264,14 +344,79 @@ class RunnerKeyFileTests(TemporaryKeyTests):
                         finally:
                             if destination.exists() and not source.exists():
                                 destination.rename(source)
-            return original_open(path, flags, mode, **options)
+            return original_create(path)
 
-        with patch.object(runner.os, 'open', side_effect=pinned_open):
+        with patch.object(runner.windows_key_acl, 'create_private_file', side_effect=pinned_create):
             created = runner.load_or_create_key(self.key_file)
         self.assertTrue(attempted)
         self.assertEqual(self.key_file.read_text(encoding='utf-8'), created)
         self.assertFalse(moved_state.exists())
         self.assertFalse(moved_base.exists())
+
+
+@unittest.skipUnless(os.name == 'nt', 'Native Windows owner and DACL semantics are unavailable on POSIX')
+class WindowsRunnerKeyAccessTests(TemporaryKeyTests):
+    def entry_sids(self, path):
+        return {entry.sid for entry in acl.read_security(path).entries}
+
+    def run_suggested_fix(self, message):
+        command = message.split('Make it private to your account with: ')[1].split(' Then check')[0]
+        # The command is written for a Command Prompt or PowerShell; run it as typed.
+        subprocess.run(command, check=True, capture_output=True)
+
+    def test_windows_new_state_and_key_are_private_under_a_shared_parent(self):
+        shared = self.base / 'shared'
+        shared.mkdir()
+        grant_access(shared, f'*{AUTHENTICATED_USERS}:(OI)(CI)M')
+        key_file = shared / 'new-parent' / 'state' / 'key'
+        created = runner.load_or_create_key(key_file)
+        self.assertEqual(runner.load_or_create_key(key_file), created)
+        for path in (key_file.parent.parent, key_file.parent, key_file):
+            with self.subTest(path=path.name):
+                self.assertNotIn(AUTHENTICATED_USERS, self.entry_sids(path))
+
+    def test_windows_shared_state_is_refused_unchanged_before_the_key_is_read(self):
+        self.prepare_state()
+        write_fixture(self.key_file)
+        grant_access(self.state, f'*{USERS}:(OI)(CI)R')
+        with patch.object(runner.os, 'fdopen', side_effect=AssertionError('A shared key must not be read')):
+            with self.assertRaises(ValueError) as refused:
+                runner.load_or_create_key(self.key_file)
+        message = str(refused.exception)
+        self.assertIn(f'state folder {self.state}', message)
+        self.assertIn(USERS, self.entry_sids(self.state))
+        self.assertEqual(self.key_file.read_text(encoding='utf-8'), FIXTURE_KEY)
+        # The command in the message is enough to make the folder usable.
+        self.run_suggested_fix(message)
+        self.assertNotIn(USERS, self.entry_sids(self.state))
+        self.assertEqual(runner.load_or_create_key(self.key_file), FIXTURE_KEY)
+
+    def test_windows_key_shared_with_another_account_is_refused_before_read(self):
+        self.prepare_state()
+        write_fixture(self.key_file)
+        grant_access(self.key_file, f'*{USERS}:R')
+        with patch.object(runner.os, 'fdopen', side_effect=AssertionError('A shared key must not be read')):
+            with self.assertRaises(ValueError) as refused:
+                runner.load_or_create_key(self.key_file)
+        message = str(refused.exception)
+        self.assertIn(f'key {self.key_file}', message)
+        self.assertNotIn('(OI)(CI)', message)
+        self.assertIn(USERS, self.entry_sids(self.key_file))
+        self.run_suggested_fix(message)
+        self.assertEqual(runner.load_or_create_key(self.key_file), FIXTURE_KEY)
+
+    def test_windows_key_folder_may_be_readable_but_not_changeable_by_others(self):
+        custom = self.base / 'custom'
+        custom.mkdir()
+        grant_access(custom, f'*{USERS}:R')
+        key_file = custom / 'provider-key'
+        write_fixture(key_file)
+        self.assertEqual(runner.load_or_create_key(key_file, state_dir=self.state), FIXTURE_KEY)
+        grant_access(custom, f'*{AUTHENTICATED_USERS}:M')
+        with self.assertRaises(ValueError) as refused:
+            runner.load_or_create_key(key_file, state_dir=self.state)
+        self.assertIn(f'key folder {custom} can be changed', str(refused.exception))
+        self.assertEqual(key_file.read_text(encoding='utf-8'), FIXTURE_KEY)
 
 
 @unittest.skipUnless(os.name == 'posix', 'Native POSIX ownership and mode semantics are unavailable on Windows')
