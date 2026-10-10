@@ -37,8 +37,9 @@
 
 	const primaryButtonClass =
 		'px-3.5 py-1.5 text-sm font-normal bg-black hover:bg-gray-900 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2';
+	// Phones get a 40 px tall tap area (rows are padded to match); desktop keeps the compact link.
 	const linkButtonClass =
-		'-mx-1.5 -my-1 px-1.5 py-1 text-xs text-gray-500 transition-colors hover:text-gray-900 dark:text-gray-500 dark:hover:text-white';
+		'-mx-2 -my-3 px-2 py-3 md:-mx-1.5 md:-my-1 md:px-1.5 md:py-1 text-xs text-gray-500 transition-colors hover:text-gray-900 dark:text-gray-500 dark:hover:text-white';
 
 	const clearRefreshTimer = () => {
 		if (refreshTimer) {
@@ -340,7 +341,7 @@
 					{:else}
 						<ul class="flex flex-col divide-y divide-gray-100 dark:divide-gray-850">
 							{#each overview.runs as run (run.id)}
-								<li class="py-2 first:pt-0">
+								<li class="py-3.5 md:py-2 first:pt-0">
 									<div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
 										<span class="size-1.5 shrink-0 rounded-full {statusDotClass(run.status)}" aria-hidden="true"
 										></span>
