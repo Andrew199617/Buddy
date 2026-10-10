@@ -247,6 +247,10 @@ class RemoteProcess(StreamedOutput):
         except (aiohttp.ClientError, ValueError, ConnectionResetError) as error:
             log.debug('Runner process %s stream ended: %s', self.pid, error)
         finally:
+            if self.returncode is None:
+                # The stream ended without an exit status. Mark it inactive,
+                # while requiring the separate host acknowledgement for cleanup.
+                self.returncode = -1
             if not self._confirmed_stopped.is_set():
                 self._connection_error = ProcessClosedError(
                     f'Runner connection ended without confirming cleanup of process {self.pid}'
