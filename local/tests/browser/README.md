@@ -70,6 +70,32 @@ For an additional native baseline capture, `mobile-ui-preview.mjs`,
 `mobile-settings-preview.mjs`, and `model-edit-preview.mjs` accept `--baseline`.
 The launcher can still inject other local extensions during those captures.
 
+## Sidebar styling regressions
+
+Build and serve the matching frontend, then point the synthetic browser checks
+at its local origin:
+
+```powershell
+$env:BUDDY_UI_TEST_ORIGIN = 'http://127.0.0.1:8094'
+node local/tests/browser/sidebar-styling-preview.mjs
+node local/tests/browser/styling-feedback-preview.mjs
+node local/tests/browser/available-tools-preview.mjs
+```
+
+These checks cover inline header search, dismissal and reopening, sidebar
+controls, New Chat, responsive bottom-navigation fallbacks, reactive aggregate
+unread state, and destructive menu colors and keyboard focus in both themes.
+They also check the secondary-wrench Available Tools panel with synthetic tools,
+expanded function details, bounded scrolling, and dismissal/reopening on desktop,
+narrow phones, and a short landscape viewport.
+They intercept all account writes and never click Delete. Results and PNGs are
+saved under `local/tests/.qa/`. The feedback suite resolves actual store exports
+from the matching production source maps; set `BUDDY_UI_TEST_BUILD` when that
+build is outside the repository's `build/` directory.
+On a styling-only build with the existing narrow composer/model-label overlap,
+set `BUDDY_UI_TOOL_TRIGGER_KEYBOARD=1` to inspect the tools panel through keyboard
+activation. Results record that mode; the normal tools suite taps the wrench.
+
 ## Production lazy features
 
 After building the frontend and starting that matching production build, run:

@@ -16,6 +16,7 @@ from open_webui.models.automations import AutomationRun
 from open_webui.models.chat_messages import ChatMessage, ChatMessages
 from open_webui.models.folders import Folders
 from open_webui.models.tags import Tag, TagModel, Tags
+from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.misc import get_output_text, sanitize_data_for_db, sanitize_text_for_db
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import (
@@ -29,6 +30,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     and_,
+    cast,
     delete,
     exists,
     func,
@@ -1840,6 +1842,48 @@ class ChatTable:
                 .group_by(Chat.folder_id)
             )
             return {folder_id: count for folder_id, count in result.all() if folder_id}
+
+    async def get_unread_summary(
+        self,
+        user_id: str,
+        active_chat_ids: set[str],
+        db: AsyncSession | None = None,
+    ) -> dict:
+        """Count owned unread chats without loading history or chat metadata."""
+        async with get_async_db_context(db) as session:
+            conditions = [
+                Chat.user_id == user_id,
+                Chat.archived.is_(False),
+                Chat.meta['internal'].as_boolean().is_not(True),
+                or_(Chat.last_read_at.is_(None), Chat.updated_at > Chat.last_read_at),
+            ]
+            if active_chat_ids:
+                # One JSON bind avoids database parameter limits even with many
+                # active tasks. Both supported dialects expand it inside SQL.
+                active_ids = bindparam('active_chat_ids', JSONCodec.dumps(sorted(active_chat_ids)))
+                connection = await session.connection()
+                dialect_name = connection.dialect.name
+                if dialect_name == 'sqlite':
+                    active_rows = func.json_each(active_ids).table_valued('value')
+                    active_query = select(active_rows.c.value)
+                elif dialect_name == 'postgresql':
+                    active_value = func.json_array_elements_text(cast(active_ids, JSON)).column_valued('value')
+                    active_query = select(active_value)
+                else:
+                    raise NotImplementedError(f'Unsupported dialect: {dialect_name}')
+
+                unfinished_assistant = (
+                    select(ChatMessage.id)
+                    .where(ChatMessage.chat_id == Chat.id)
+                    .where(ChatMessage.role == 'assistant')
+                    .where(ChatMessage.done.is_(False))
+                    .exists()
+                )
+                conditions.append(~and_(Chat.id.in_(active_query), unfinished_assistant))
+
+            result = await session.execute(select(func.count(Chat.id), func.min(Chat.id)).where(*conditions))
+            count, first_chat_id = result.one()
+            return {'count': count, 'only_chat_id': first_chat_id if count == 1 else None}
 
     async def get_chats(self, skip: int = 0, limit: int = 50, db: AsyncSession | None = None) -> list[ChatModel]:
         async with get_async_db_context(db) as session:

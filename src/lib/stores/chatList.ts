@@ -1,5 +1,7 @@
-import { get, readonly, writable } from 'svelte/store';
-import { getChatList, getPinnedChatList } from '$lib/apis/chats';
+import { derived, get, readonly, writable } from 'svelte/store';
+import { getChatList, getChatUnreadSummary, getPinnedChatList } from '$lib/apis/chats';
+import { chatId } from './chatSelection';
+import { hasUnreadChatsOutsideSelection, type ChatUnreadSummary } from './chatUnread';
 
 type ChatListItem = {
 	id: string;
@@ -8,9 +10,116 @@ type ChatListItem = {
 
 const chatsStore = writable<ChatListItem[] | null>(null);
 const pinnedChatsStore = writable<ChatListItem[]>([]);
+const unreadSummaryStore = writable<ChatUnreadSummary>({ count: 0, only_chat_id: null });
 
 export const chats = readonly(chatsStore);
 export const pinnedChats = readonly(pinnedChatsStore);
+export const unreadSummary = readonly(unreadSummaryStore);
+export const hasUnreadChats = derived([unreadSummaryStore, chatId], ([$summary, $chatId]) =>
+	hasUnreadChatsOutsideSelection($summary, $chatId)
+);
+
+let unreadRequestGeneration = 0;
+let unreadMutationVersion = 0;
+let unreadRefreshToken: string | null = null;
+let unreadRefreshPromise: Promise<boolean> | null = null;
+let unreadRefreshStarted = false;
+let unreadRefreshRequested = false;
+let unreadRefreshScheduled = false;
+
+const scheduleUnreadRefresh = () => {
+	if (unreadRefreshToken === null || unreadRefreshPromise || unreadRefreshScheduled) {
+		return;
+	}
+
+	unreadRefreshScheduled = true;
+	const generation = unreadRequestGeneration;
+	queueMicrotask(() => {
+		if (generation !== unreadRequestGeneration || unreadRefreshToken === null) {
+			return;
+		}
+		unreadRefreshScheduled = false;
+		void refreshUnreadChats(unreadRefreshToken);
+	});
+};
+
+const invalidateUnreadSummary = () => {
+	unreadMutationVersion += 1;
+	unreadRefreshRequested = true;
+	scheduleUnreadRefresh();
+};
+
+const loadUnreadSummary = async (generation: number, token: string): Promise<boolean> => {
+	let accepted = false;
+	do {
+		unreadRefreshRequested = false;
+		const mutationVersion = unreadMutationVersion;
+		try {
+			const nextSummary = await getChatUnreadSummary(token);
+			if (generation !== unreadRequestGeneration) {
+				return false;
+			}
+			if (mutationVersion === unreadMutationVersion) {
+				unreadSummaryStore.set(nextSummary);
+				accepted = true;
+			} else {
+				// Events changed server state while this snapshot was being fetched.
+				unreadRefreshRequested = true;
+			}
+		} catch {
+			if (generation !== unreadRequestGeneration) {
+				return false;
+			}
+			// Preserve the last accepted summary when the background request fails.
+		}
+	} while (unreadRefreshRequested);
+
+	return accepted;
+};
+
+export const refreshUnreadChats = (token: string = ''): Promise<boolean> => {
+	if (token !== unreadRefreshToken) {
+		unreadRequestGeneration += 1;
+		unreadRefreshToken = token;
+		unreadRefreshPromise = null;
+		unreadRefreshStarted = false;
+		unreadRefreshRequested = false;
+		unreadRefreshScheduled = false;
+		// A different account must not retain the previous account's accepted summary.
+		unreadSummaryStore.set({ count: 0, only_chat_id: null });
+	}
+	if (unreadRefreshPromise) {
+		if (unreadRefreshStarted) {
+			// A later refresh can reflect a delete/import without a read or active event.
+			unreadMutationVersion += 1;
+			unreadRefreshRequested = true;
+		}
+		return unreadRefreshPromise;
+	}
+
+	const generation = ++unreadRequestGeneration;
+	unreadRefreshScheduled = false;
+	const startUnreadRefresh = () => {
+		if (generation !== unreadRequestGeneration) {
+			return false;
+		}
+		unreadRefreshStarted = true;
+		return loadUnreadSummary(generation, token);
+	};
+	// Requests made in the same turn share one fetch; later requests get fresh state.
+	const request = Promise.resolve().then(startUnreadRefresh);
+	unreadRefreshPromise = request;
+	void request.finally(() => {
+		if (generation === unreadRequestGeneration) {
+			unreadRefreshPromise = null;
+			unreadRefreshStarted = false;
+			if (unreadRefreshRequested) {
+				scheduleUnreadRefresh();
+			}
+		}
+	});
+	return request;
+};
 
 let currentPage = 1;
 let paginationReady = false;
@@ -36,6 +145,7 @@ export const refreshChatList = async (
 	paginationReady = false;
 	loadingNextPage = false;
 
+	void refreshUnreadChats(token);
 	const [nextChats, nextPinnedChats] = await Promise.all([
 		getChatList(token, 1) as Promise<ChatListItem[]>,
 		options.refreshPinned && !options.clearPinned
@@ -128,7 +238,9 @@ export const setChatActive = (chatId: string, active: boolean): boolean => {
 
 	chatsStore.update((items) => (items ? items.map(updateChat) : items));
 	pinnedChatsStore.update((items) => items.map(updateChat));
-	return found;
+	const foundInChatList = found;
+	invalidateUnreadSummary();
+	return foundInChatList;
 };
 
 export const setChatReadAt = (chatId: string, lastReadAt: number): boolean => {
@@ -143,7 +255,9 @@ export const setChatReadAt = (chatId: string, lastReadAt: number): boolean => {
 
 	chatsStore.update((items) => (items ? items.map(updateChat) : items));
 	pinnedChatsStore.update((items) => items.map(updateChat));
-	return found;
+	const foundInChatList = found;
+	invalidateUnreadSummary();
+	return foundInChatList;
 };
 
 export const setAllChatsRead = () => {
@@ -151,6 +265,8 @@ export const setAllChatsRead = () => {
 
 	chatsStore.update((items) => (items ? items.map(updateChat) : items));
 	pinnedChatsStore.update((items) => items.map(updateChat));
+	unreadSummaryStore.set({ count: 0, only_chat_id: null });
+	invalidateUnreadSummary();
 };
 
 export const resetChatListState = () => {
@@ -161,4 +277,12 @@ export const resetChatListState = () => {
 	loadingNextPage = false;
 	chatsStore.set(null);
 	pinnedChatsStore.set([]);
+	unreadRequestGeneration += 1;
+	unreadMutationVersion = 0;
+	unreadSummaryStore.set({ count: 0, only_chat_id: null });
+	unreadRefreshToken = null;
+	unreadRefreshPromise = null;
+	unreadRefreshStarted = false;
+	unreadRefreshRequested = false;
+	unreadRefreshScheduled = false;
 };
