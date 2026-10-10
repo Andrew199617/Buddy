@@ -295,6 +295,7 @@
 <SubscriptionMachineModal
 	bind:show={showMachineModal}
 	machine={editedMachine}
+	providers={subscriptionProviders ?? []}
 	onChanged={handleMachinesChanged}
 />
 

@@ -804,6 +804,22 @@ async function openMachine(page, name = null) {
 	await machineDialog(page).waitFor();
 }
 
+// Remove asks before deleting the machine; this returns that confirmation.
+async function askToRemoveMachine(page, machineName) {
+	await machineDialog(page).getByRole('button', { name: 'Remove', exact: true }).click();
+	const confirmation = page.getByRole('dialog', {
+		name: 'Remove ' + machineName + '?',
+		exact: true
+	});
+	await confirmation.waitFor();
+	return confirmation;
+}
+
+async function confirmMachineRemoval(confirmation) {
+	await confirmation.getByRole('button', { name: 'Remove', exact: true }).click();
+	await confirmation.waitFor({ state: 'hidden' });
+}
+
 const machinesPath = '/api/v1/subscriptions/machines';
 const configPath = '/api/v1/subscriptions/claude/config';
 const statusPath = '/api/v1/subscriptions/claude';
@@ -1502,7 +1518,26 @@ async function machineCrudCase(browser, profile) {
 		);
 		assert.equal(updates[1].body.key, undefined, 'Blank edit preserves existing server key');
 		await openMachine(page, 'Synthetic new computer');
-		await machineDialog(page).getByRole('button', { name: 'Remove', exact: true }).click();
+		const confirmation = await askToRemoveMachine(page, 'Synthetic new computer');
+		await confirmation.getByText(/forget this machine and its Runner key/).waitFor();
+		assert.equal(
+			await confirmation.getByText(/These subscriptions run on it/).count(),
+			0,
+			'No subscription is named when none runs on the machine'
+		);
+		await page.keyboard.press('Escape');
+		await confirmation.waitFor({ state: 'hidden' });
+		assert.equal(
+			await machineDialog(page).isVisible(),
+			true,
+			'Escape cancels only the confirmation'
+		);
+		assert.equal(
+			fixtures.count('DELETE', machinesPath + '/runner-new'),
+			0,
+			'Remove deletes nothing until it is confirmed'
+		);
+		await confirmMachineRemoval(await askToRemoveMachine(page, 'Synthetic new computer'));
 		await machineDialog(page).waitFor({ state: 'hidden' });
 		await page
 			.getByRole('button', { name: 'Configure Synthetic new computer', exact: true })
@@ -1522,12 +1557,13 @@ async function delayedMachineCase(browser, profile, action, method, errorRespons
 			await dialog.locator('#machine-name').fill('Synthetic renamed computer A');
 			await dialog.locator('#machine-browser-url').fill('https://fixture-a.example.invalid');
 		}
-		await dialog
-			.getByRole('button', {
-				name: action === 'remove' ? 'Remove' : action === 'save' ? 'Save' : 'Verify',
-				exact: true
-			})
-			.click();
+		if (action === 'remove') {
+			await confirmMachineRemoval(await askToRemoveMachine(page, 'Synthetic computer A'));
+		} else {
+			await dialog
+				.getByRole('button', { name: action === 'save' ? 'Save' : 'Verify', exact: true })
+				.click();
+		}
 		await waitUntil(fixtures.hasHeldMachineAction, 'Synthetic machine action must be pending');
 		assert.equal(
 			await dialog.locator('#machine-url').isDisabled(),
@@ -1897,7 +1933,17 @@ async function removedMachineCase(browser, profile, replacement = 'runner-b') {
 		'machine-remove',
 		async ({ page }, fixtures) => {
 			await openMachine(page, 'Synthetic computer A');
-			await machineDialog(page).getByRole('button', { name: 'Remove', exact: true }).click();
+			const confirmation = await askToRemoveMachine(page, 'Synthetic computer A');
+			await confirmation.getByText(/These subscriptions run on it/).waitFor();
+			assert.deepEqual(
+				await confirmation.getByRole('listitem').allInnerTexts(),
+				['Claude'],
+				'The confirmation names the subscriptions that removal turns off'
+			);
+			if (replacement !== 'local') {
+				await captureScreenshot(page, profile.name + '-machine-remove-confirm');
+			}
+			await confirmMachineRemoval(confirmation);
 			await machineDialog(page).waitFor({ state: 'hidden' });
 			await providerCard(page, 'Claude')
 				.getByText('Selected machine is unavailable.', { exact: true })

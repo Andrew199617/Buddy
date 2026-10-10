@@ -16,9 +16,11 @@
 		saveSubscriptionMachine,
 		verifySubscriptionMachine,
 		type SubscriptionMachine,
-		type SubscriptionMachineInfo
+		type SubscriptionMachineInfo,
+		type SubscriptionProvider
 	} from '$lib/apis/subscriptions';
 
+	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import XMark from '$lib/components/icons/XMark.svelte';
@@ -28,6 +30,8 @@
 	export let show = false;
 	// The machine being edited, or null to add one.
 	export let machine: SubscriptionMachine | null = null;
+	// Used to name the subscriptions that removing this machine turns off.
+	export let providers: SubscriptionProvider[] = [];
 	export let onChanged: (machines: SubscriptionMachine[]) => void | Promise<void> = () => {};
 
 	const DEFAULT_URL = 'https://host.docker.internal:8765';
@@ -41,6 +45,7 @@
 	let wasOpen = false;
 	let disposed = false;
 	let formGeneration = 0;
+	let showRemoveConfirm = false;
 	$: busy = actionPending || $pendingMutations > 0;
 
 	const inputClass =
@@ -67,6 +72,19 @@
 		return $i18n.t('Leave empty to keep the saved key');
 	};
 
+	// Removing a machine turns off the subscriptions that run on it and clears their settings.
+	const getProvidersOn = (
+		selected: SubscriptionMachine | null,
+		allProviders: SubscriptionProvider[]
+	) => {
+		if (!selected) {
+			return [];
+		}
+		return allProviders.filter((provider) => provider.settings.machine_id === selected.id);
+	};
+
+	$: providersOnMachine = getProvidersOn(machine, providers);
+
 	const loadForm = () => {
 		name = machine?.name ?? '';
 		url = machine?.url ?? DEFAULT_URL;
@@ -84,6 +102,7 @@
 		formGeneration += 1;
 		key = '';
 		info = null;
+		showRemoveConfirm = false;
 	}
 
 	// The saved key only ever goes to the saved address, so a new address needs its own key.
@@ -162,6 +181,14 @@
 				show = false;
 			}
 		}, true);
+	};
+
+	// Removing forgets the saved key and turns subscriptions off; undoing it needs that computer.
+	const confirmRemove = () => {
+		if (disposed || !show || busy || !machine) {
+			return;
+		}
+		showRemoveConfirm = true;
 	};
 
 	const remove = () =>
@@ -298,7 +325,7 @@
 							class="px-1 py-1.5 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:underline transition"
 							type="button"
 							disabled={busy}
-							on:click={remove}
+							on:click={confirmRemove}
 						>
 							{$i18n.t('Remove')}
 						</button>
@@ -328,3 +355,30 @@
 		</form>
 	</div>
 </Modal>
+
+<ConfirmDialog
+	bind:show={showRemoveConfirm}
+	title={$i18n.t('Remove {{name}}?', { name: machine?.name ?? '' })}
+	confirmLabel={$i18n.t('Remove')}
+	onConfirm={remove}
+>
+	<div class="flex flex-1 flex-col gap-2 text-sm text-gray-500">
+		<p>
+			{$i18n.t(
+				'Buddy will forget this machine and its Runner key. To add it again, you need the key from ~/.buddy-runner/key on that computer.'
+			)}
+		</p>
+		{#if providersOnMachine.length}
+			<p>
+				{$i18n.t(
+					'These subscriptions run on it. Removing it turns them off, clears their access, working folder, and CLI path, and stops replies in progress:'
+				)}
+			</p>
+			<ul class="list-disc pl-5">
+				{#each providersOnMachine as provider (provider.id)}
+					<li>{provider.name}</li>
+				{/each}
+			</ul>
+		{/if}
+	</div>
+</ConfirmDialog>
