@@ -21,6 +21,9 @@ from open_webui.utils.subscriptions.windows_job import spawn_in_job
 log = logging.getLogger(__name__)
 
 MAX_CAPTURE_BYTES = 1024 * 1024
+# Protocol lines can echo attachments: a Claude Read tool result carries an
+# image or PDF twice in base64, and Codex items carry attached images.
+MAX_LINE_BYTES = 64 * 1024 * 1024
 MAX_STDERR_BYTES = 256 * 1024
 MAX_PENDING_CHUNKS = 128
 READ_BYTES = 65536
@@ -121,6 +124,9 @@ class StreamedOutput:
         self._output_limit_bytes = MAX_CAPTURE_BYTES
         self._queued_bytes = 0
         self._queued_chunks = 0
+        self._line_limit_bytes = MAX_LINE_BYTES
+        self._line_parts: list[str] = []
+        self._line_bytes = 0
 
     def _queue_has_room(self, size: int) -> bool:
         """Whether ``size`` more bytes of unread stdout fit the queue budget."""
@@ -158,29 +164,52 @@ class StreamedOutput:
             self._stdout_closed = True
         return chunk
 
-    async def read_line(self) -> str | None:
-        """Return the next stdout line without its newline, or None at the end."""
-        self._raise_output_error()
-        while '\n' not in self._pending_text:
-            if self._stdout_closed:
-                break
-            chunk = await self._next_chunk()
-            if chunk is None:
-                self._stdout_closed = True
-                break
-            self._pending_text += chunk
-            if len(self._pending_text.encode('utf-8')) > self._output_limit_bytes:
-                error = OutputLimitError('A CLI output line exceeded its buffer limit')
-                self._set_output_error(error)
-                raise error
+    def _add_line_text(self, text: str) -> None:
+        """Add text to the current line, dropping the line once it is too long."""
+        self._line_bytes += len(text.encode('utf-8'))
+        if self._line_bytes > self._line_limit_bytes:
+            self._line_parts.clear()
+        else:
+            self._line_parts.append(text)
 
-        if '\n' in self._pending_text:
-            line, _, self._pending_text = self._pending_text.partition('\n')
-            return line.rstrip('\r')
-        if self._pending_text:
-            line, self._pending_text = self._pending_text, ''
-            return line
-        return None
+    def _take_line(self) -> str | None:
+        """Return the current line and start the next one; None if it was dropped."""
+        line = ''.join(self._line_parts)
+        line_bytes = self._line_bytes
+        self._line_parts = []
+        self._line_bytes = 0
+        if line_bytes > self._line_limit_bytes:
+            log.warning(
+                'Skipped a %d-byte CLI output line over the %d-byte line limit',
+                line_bytes, self._line_limit_bytes,
+            )
+            return None
+        return line
+
+    async def read_line(self) -> str | None:
+        """Return the next stdout line without its newline, or None at the end.
+
+        A line over MAX_LINE_BYTES is skipped with a warning rather than
+        stopping the CLI, which would end every turn the CLI is serving.
+        """
+        self._raise_output_error()
+        while True:
+            if not self._pending_text:
+                if self._stdout_closed:
+                    if self._line_bytes == 0:
+                        return None
+                    return self._take_line()
+                chunk = await self._next_chunk()
+                if chunk is None:
+                    self._stdout_closed = True
+                    continue
+                self._pending_text = chunk
+            text, newline, self._pending_text = self._pending_text.partition('\n')
+            self._add_line_text(text)
+            if newline:
+                line = self._take_line()
+                if line is not None:
+                    return line.rstrip('\r')
 
 
 class ChildProcess(StreamedOutput):

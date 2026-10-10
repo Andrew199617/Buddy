@@ -688,15 +688,40 @@ class ProcessContainmentTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(await child.read_line())
         self.assertEqual(await child.wait(5), 0)
 
-    async def test_streamed_stdout_overflow_reaches_line_reader(self):
-        child = self.start_tree(output_stream='stdout')
-        descendant = await self.track_descendant()
-        (self.root / 'emit.ready').write_text('emit', encoding='ascii')
-        with self.assertRaises(subscription_process.OutputLimitError):
-            while await asyncio.wait_for(child.read_line(), 5) is not None:
-                pass
-        await child.wait(5)
-        await self.assert_stopped(descendant)
+    async def test_stdout_line_with_an_attachment_echo_is_read_whole(self):
+        # Larger than the stdout queue, like a tool result echoing an image.
+        size = 16 * subscription_process.MAX_CAPTURE_BYTES
+        child = self.start_child(
+            'import json\n'
+            f'print(json.dumps({{"type": "user", "data": "x" * {size}}}), flush=True)\n'
+            'print("next", flush=True)\n'
+        )
+        async with asyncio.timeout(20):
+            message = json.loads(await child.read_line())
+            self.assertEqual(await child.read_line(), 'next')
+            self.assertIsNone(await child.read_line())
+        self.assertEqual(message, {'type': 'user', 'data': 'x' * size})
+        self.assertEqual(await child.wait(5), 0)
+
+    async def test_oversized_stdout_line_is_skipped_without_stopping_the_cli(self):
+        child = self.start_child(
+            'import sys\n'
+            'print("x" * 5000, flush=True)\n'
+            'print("after", flush=True)\n'
+            'sys.stdin.readline()\n'
+            'sys.stdout.write("y" * 5000)\n'
+        )
+        child._line_limit_bytes = 4096
+        with self.assertLogs(subscription_process.log, 'WARNING') as logs:
+            self.assertEqual(await asyncio.wait_for(child.read_line(), 5), 'after')
+        self.assertIn('4096-byte line limit', logs.output[0])
+        self.assertIsNone(child._output_error)
+        self.assertIsNone(child.returncode)
+        await child.write('continue\n')
+        # An oversized last line without a newline is skipped as well.
+        with self.assertLogs(subscription_process.log, 'WARNING'):
+            self.assertIsNone(await asyncio.wait_for(child.read_line(), 5))
+        self.assertEqual(await child.wait(5), 0)
 
     async def test_streamed_stderr_without_newline_has_bounded_tail(self):
         self.assertEqual(subscription_process.MAX_STDERR_BYTES, 256 * 1024)
