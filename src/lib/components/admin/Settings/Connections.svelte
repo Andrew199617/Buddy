@@ -8,6 +8,11 @@
 	import { getOpenAIConfig, updateOpenAIConfig, getOpenAIModels } from '$lib/apis/openai';
 	import { getModels as _getModels, getBackendConfig } from '$lib/apis';
 	import { getConnectionsConfig, setConnectionsConfig } from '$lib/apis/configs';
+	import {
+		getSubscriptions,
+		type SubscriptionMachine,
+		type SubscriptionProvider
+	} from '$lib/apis/subscriptions';
 
 	import { config, models, settings, user } from '$lib/stores';
 
@@ -20,6 +25,7 @@
 	import OpenAIConnection from './Connections/OpenAIConnection.svelte';
 	import AddConnectionModal from '$lib/components/AddConnectionModal.svelte';
 	import OllamaConnection from './Connections/OllamaConnection.svelte';
+	import SubscriptionConnection from './Connections/SubscriptionConnection.svelte';
 	import AdminSettingRow from './AdminSettingRow.svelte';
 	import AdminSettingSection from './AdminSettingSection.svelte';
 
@@ -47,6 +53,11 @@
 	let ENABLE_OLLAMA_API: null | boolean = null;
 
 	let connectionsConfig: any = null;
+
+	// Loaded separately: the first check starts the Claude Code and Codex CLIs.
+	let subscriptionProviders: SubscriptionProvider[] | null = null;
+	let subscriptionMachines: SubscriptionMachine[] = [];
+	let subscriptionsError = '';
 
 	let pipelineUrls: Record<string, boolean> = {};
 	let showAddOpenAIConnectionModal = false;
@@ -122,6 +133,20 @@
 		}
 	};
 
+	const loadSubscriptions = async () => {
+		try {
+			const result = await getSubscriptions(localStorage.token);
+			subscriptionProviders = result.providers;
+			subscriptionMachines = result.machines;
+		} catch (error) {
+			subscriptionsError = `${error}`;
+		}
+	};
+
+	const refreshModels = async () => {
+		await models.set(await getModels());
+	};
+
 	const refreshModelListHandler = async () => {
 		modelListRefreshing = true;
 
@@ -157,6 +182,8 @@
 		if ($user?.role === 'admin') {
 			let ollamaConfig: any = {};
 			let openaiConfig: any = {};
+
+			loadSubscriptions();
 
 			await Promise.all([
 				(async () => {
@@ -362,6 +389,33 @@
 								{$i18n.t('Click here for help.')}
 							</a>
 						</div>
+					</div>
+				{/if}
+			</AdminSettingSection>
+
+			<AdminSettingSection title={$i18n.t('Subscriptions')}>
+				<p class="-mt-1 text-[0.6875rem] text-gray-400 dark:text-gray-600">
+					{$i18n.t(
+						'Chat with your Claude and ChatGPT plans through the official Claude Code and Codex apps. Usage counts against your plan limits, not API billing. Only administrators can use these models.'
+					)}
+				</p>
+
+				{#if subscriptionProviders}
+					<div class="flex flex-col gap-3">
+						{#each subscriptionProviders as provider (provider.id)}
+							<SubscriptionConnection
+								{provider}
+								machines={subscriptionMachines}
+								onModelsChanged={refreshModels}
+							/>
+						{/each}
+					</div>
+				{:else if subscriptionsError}
+					<p class="text-xs text-red-600 dark:text-red-400">{subscriptionsError}</p>
+				{:else}
+					<div class="flex items-center gap-2 text-xs text-gray-400">
+						<Spinner className="size-3.5" />
+						{$i18n.t('Checking Claude Code and Codex…')}
 					</div>
 				{/if}
 			</AdminSettingSection>
