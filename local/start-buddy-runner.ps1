@@ -4,7 +4,8 @@
 # certificate and private key from the host operator; only its public CA goes
 # into Docker. Local loopback HTTP remains available. The Runner key is created
 # in %USERPROFILE%\.buddy-runner\key on first start; paste it into Buddy under
-# Admin Settings → Connections → Subscriptions → Machines.
+# Admin Settings → Connections → Subscriptions → Machines. Where PowerShell
+# scripts are disabled, run start-buddy-runner.cmd with the same parameters.
 param(
     [ValidateRange(1, 65535)]
     [int]$Port = 8765,
@@ -40,6 +41,10 @@ if (-not (Test-Path -LiteralPath $PythonPath)) {
     throw "Python was not found at $PythonPath. Pass -PythonPath to an environment with Buddy's dependencies."
 }
 
+# These settings apply only while the Runner runs; the finally block below
+# restores them so a PowerShell window that started it keeps its own values.
+$previousPythonPath = $env:PYTHONPATH
+$previousPythonEncoding = $env:PYTHONIOENCODING
 $backendPath = Join-Path $repoRoot 'backend'
 if ($env:PYTHONPATH) {
     $env:PYTHONPATH = $backendPath + [IO.Path]::PathSeparator + $env:PYTHONPATH
@@ -68,5 +73,11 @@ if ($Name) { $runnerArgs += @('--name', $Name) }
 if ($WriteFiles) { $runnerArgs += '--write' }
 if ($AllowHostExecution) { $runnerArgs += '--allow-host-execution' }
 if ($AllowNoOrigin) { $runnerArgs += '--allow-no-origin' }
-& $PythonPath @runnerArgs
-exit $LASTEXITCODE
+try {
+    & $PythonPath @runnerArgs
+    $runnerExitCode = $LASTEXITCODE
+} finally {
+    $env:PYTHONPATH = $previousPythonPath
+    $env:PYTHONIOENCODING = $previousPythonEncoding
+}
+exit $runnerExitCode

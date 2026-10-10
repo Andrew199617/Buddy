@@ -226,9 +226,12 @@ A machine is where Claude Code and Codex run, sign in, and work on files. The
 computer or container running Buddy. To use another computer, such as your
 Windows PC while Buddy runs in Docker, start the Buddy Runner there and add it:
 
-1. On that computer, run `local\start-buddy-runner.ps1` from this checkout
-   (or `python -P -m open_webui.utils.subscriptions.runner` with `backend` on
-   `PYTHONPATH`; `-P` stops modules in the current folder from loading). It listens on `127.0.0.1:8765` and creates its key in
+1. On that computer, run `local\start-buddy-runner.ps1` from this checkout in
+   PowerShell. From Command Prompt, or where PowerShell scripts are disabled,
+   run `local\start-buddy-runner.cmd` with the same parameters. (Without the
+   launchers, run `python -P -m open_webui.utils.subscriptions.runner` with
+   `backend` on `PYTHONPATH`; `-P` stops modules in the current folder from
+   loading.) It listens on `127.0.0.1:8765` and creates its key in
    `~/.buddy-runner/key` on first start.
 2. In Buddy, choose **Add machine** and enter a name, the runner address, and
    the key, then **Verify**. From Buddy in Docker Desktop, the Docker host is
