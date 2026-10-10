@@ -49,5 +49,50 @@ services:
       - '${BUDDY_PORT:-8082}:8082'
     restart: unless-stopped
 
+  # Nightly Perforce backup of this instance (backup/buddy_backup.py): one changelist with webui.db, data.tar.gz and
+  # this .env, filetype binary+S7. Only the release instance opts in, with COMPOSE_PROFILES=backup in .env; see
+  # AGENTS.md "Backups (release only)". Data and secrets are mounted read-only; missing files fail the start
+  # instead of turning into empty directories.
+  backup:
+    build:
+      context: ./backup
+    image: buddy-backup:local
+    profiles: [backup]
+    environment:
+      TZ: ${BUDDY_BACKUP_TZ:-America/Los_Angeles}
+      BACKUP_TIME: ${BUDDY_BACKUP_TIME:-03:00}
+      BACKUP_DEPOT_PATH: ${BUDDY_BACKUP_DEPOT_PATH:-//Backups/Buddy}
+      BACKUP_P4CLIENT: ${BUDDY_BACKUP_P4CLIENT:-buddy-backup}
+      BACKUP_P4PORT: ${BUDDY_BACKUP_P4PORT:-}
+      BACKUP_P4USER: ${BUDDY_BACKUP_P4USER:-}
+    volumes:
+      - type: volume
+        source: buddy-data
+        target: /backup/data
+        read_only: true
+      - type: volume
+        source: backup-status
+        target: /status
+      - type: bind
+        source: ${BUDDY_ENV_FILE:-./.env}
+        target: /backup/buddy.env
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${BUDDY_P4_TICKETS:-${USERPROFILE}/p4tickets.txt}
+        target: /p4host/p4tickets.txt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${BUDDY_P4_TRUST:-${USERPROFILE}/p4trust.txt}
+        target: /p4host/p4trust.txt
+        read_only: true
+        bind:
+          create_host_path: false
+    restart: unless-stopped
+
 volumes:
   buddy-data:
+  backup-status:
