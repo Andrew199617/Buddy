@@ -1097,8 +1097,14 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
                 elif action == 'shutdown':
                     await self.host.close()
                 else:
-                    await asyncio.sleep(0.7)
+                    # The sweeper runs once per token lifetime, so an expired
+                    # session is revoked up to one interval after it expires.
+                    deadline = time.monotonic() + 3
+                    while self.host._sessions and time.monotonic() < deadline:
+                        await asyncio.sleep(0.05)
                     self.assertEqual(self.host._sessions, {})
+                    while record.status != 'closed' and time.monotonic() < deadline:
+                        await asyncio.sleep(0.05)
                 self.assertIsNotNone(child.returncode)
                 self.assertEqual(record.status, 'closed')
 
