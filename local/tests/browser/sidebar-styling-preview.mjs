@@ -97,6 +97,41 @@ async function assertSidebarArrow(page, controlId, expectedDirection) {
 	);
 }
 
+async function isFocusInSidebar(page) {
+	return page.locator('#sidebar').evaluate((sidebar) => sidebar.contains(document.activeElement));
+}
+
+// Escape pressed outside the sidebar is not the sidebar's to handle: the open search keeps
+// its query and the sidebar does not take focus. (The composer's hidden voice recorder
+// moves focus to the composer on any Escape, so focus is not expected to stay put.)
+async function assertEscapeOutsideSidebarKeepsSearch(page, place, focusOutsideSidebar) {
+	await page.locator('#sidebar-search-button').click();
+	await page.locator('#sidebar-search-input').fill('nothing');
+	await focusOutsideSidebar();
+	assert.equal(
+		await isFocusInSidebar(page),
+		false,
+		`Focus is on the ${place}, outside the sidebar`
+	);
+
+	await page.keyboard.press('Escape');
+	await page.waitForTimeout(100);
+	assert.equal(
+		await page.locator('#sidebar-search-input').count(),
+		1,
+		`Escape on the ${place} keeps the search open`
+	);
+	assert.equal(await page.locator('#sidebar-search-input').inputValue(), 'nothing');
+	assert.equal(
+		await isFocusInSidebar(page),
+		false,
+		`Escape on the ${place} leaves focus outside the sidebar`
+	);
+
+	await page.locator('#sidebar-search-dismiss').click();
+	await page.locator('#sidebar-webui-name').waitFor({ state: 'visible' });
+}
+
 async function assertProfileNavigation(page, expected, screenshotName) {
 	await page.locator('#sidebar button[aria-label="User menu"]').click();
 	const popup = page.locator('.app-dropdown-menu:visible');
@@ -189,6 +224,20 @@ async function runHeaderScenario(options) {
 			else await page.locator('#sidebar-search-dismiss').click();
 			await page.locator('#sidebar-webui-name').waitFor({ state: 'visible' });
 			assert.equal(await page.locator('#sidebar').getAttribute('data-state'), 'true');
+		}
+
+		if (!mobileDrawer) {
+			// Escape on a header button or the page body reaches the sidebar unhandled. The
+			// composer already marks Escape as handled, so it is only an extra case.
+			await assertEscapeOutsideSidebarKeepsSearch(page, 'header New Chat button', () =>
+				newChat.focus()
+			);
+			await assertEscapeOutsideSidebarKeepsSearch(page, 'page body', () =>
+				page.evaluate(() => document.activeElement.blur())
+			);
+			await assertEscapeOutsideSidebarKeepsSearch(page, 'composer', () =>
+				page.locator('#chat-input').click()
+			);
 		}
 
 		await page.locator('#sidebar-search-button').click();

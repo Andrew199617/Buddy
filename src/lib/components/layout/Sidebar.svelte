@@ -694,7 +694,14 @@
 		if (e.key === 'Shift') {
 			shiftKey = true;
 		}
-		if (e.key === 'Escape' && sidebarSearchOpen && !e.defaultPrevented) {
+		// Only dismiss the search when Escape was pressed inside the sidebar. Escape on a
+		// header button, the page, or a menu or dialog that closes on Escape leaves it open.
+		if (
+			e.key === 'Escape' &&
+			sidebarSearchOpen &&
+			!e.defaultPrevented &&
+			navElement?.contains(e.target as Node)
+		) {
 			e.preventDefault();
 			void dismissSidebarSearch();
 			return;
