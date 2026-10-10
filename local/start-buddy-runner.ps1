@@ -7,7 +7,13 @@ param(
     [ValidateRange(1, 65535)]
     [int]$Port = 8765,
     [string]$PythonPath = '',
-    [string]$StateDir = ''
+    [string]$StateDir = '',
+    [string[]]$Root = @(),
+    [string[]]$Origin = @(),
+    [string]$Name = '',
+    [switch]$WriteFiles,
+    [switch]$AllowHostExecution,
+    [switch]$AllowNoOrigin
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,5 +38,15 @@ $runnerArgs = @('-m', 'open_webui.utils.subscriptions.runner', '--port', $Port)
 if ($StateDir) {
     $runnerArgs += @('--state-dir', $StateDir)
 }
+foreach ($directory in $Root) {
+    $runnerArgs += @('--root', $directory)
+}
+foreach ($browserOrigin in $Origin) {
+    $runnerArgs += @('--origin', $browserOrigin)
+}
+if ($Name) { $runnerArgs += @('--name', $Name) }
+if ($WriteFiles) { $runnerArgs += '--write' }
+if ($AllowHostExecution) { $runnerArgs += '--allow-host-execution' }
+if ($AllowNoOrigin) { $runnerArgs += '--allow-no-origin' }
 & $PythonPath @runnerArgs
 exit $LASTEXITCODE
