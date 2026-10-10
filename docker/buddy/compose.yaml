@@ -34,19 +34,9 @@ services:
       context: ../..
       target: web
     image: buddy-web:local
-    command:
-      - node
-      - local/serve-frontend.mjs
-      - --host
-      - 0.0.0.0
-      - --port
-      - '8082'
-      - --backend
-      - http://buddy:8080
-      - --frontend-dir
-      - build
-      - --allowed-host
-      - ${BUDDY_TAILNET_HOST:-localhost}
+    environment:
+      # Host names the frontend server answers to, besides IPs and localhost.
+      MCP_OAUTH_ALLOWED_REDIRECT_HOSTS: ${BUDDY_ALLOWED_HOSTS:-}
     depends_on:
       - buddy
     ports:

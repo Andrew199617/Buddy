@@ -237,8 +237,9 @@ Copy-Item docker\buddy\example.env docker\buddy\.env   # then fill in WEBUI_SECR
 docker compose -f docker/buddy/compose.yaml up -d --build
 ```
 
-Open `http://localhost:8082` (or the Tailscale address on port 8082). The
-backend is also published on 8081. `docker compose -f docker/buddy/compose.yaml
+Open `http://localhost:8082` (or the Tailscale address on port 8082). Add a
+Tailscale host name to `BUDDY_ALLOWED_HOSTS` in `docker/buddy/.env`, and the
+Tailscale IP as well if MCP sign-ins go through it. The backend is also published on 8081. `docker compose -f docker/buddy/compose.yaml
 ps` shows what is running, and `logs -f buddy` follows the server log.
 
 To move existing data in, stop the Windows instance using it, create the
