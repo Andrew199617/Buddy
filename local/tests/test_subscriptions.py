@@ -459,6 +459,38 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(events, [StatusUpdate('Retrying: busy')])
         self.assertIsNone(parser.error)
 
+    def test_history_items_and_input(self):
+        items = codex.history_items([ChatTurn('user', 'Hi', [PNG_DATA_URL]), ChatTurn('assistant', 'Hello')])
+        self.assertEqual(items[0]['content'][1], {'type': 'input_image', 'image_url': PNG_DATA_URL})
+        assistant_content = [{'type': 'output_text', 'text': 'Hello'}]
+        self.assertEqual(items[1], {'type': 'message', 'role': 'assistant', 'content': assistant_content})
+        inputs = codex.user_input(ChatTurn('user', 'See', [PNG_DATA_URL]))
+        self.assertEqual(inputs[1], {'type': 'image', 'url': PNG_DATA_URL})
+
+    def test_thread_config_limits_chat_and_read_threads(self):
+        class FakeServer:
+            async def request(self, method, params=None, timeout=None):
+                self.method = method
+                return {'config': {'mcp_servers': {'node_repl': {'command': 'node'}}}}
+
+        provider = codex.CodexProvider()
+        conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
+
+        def thread_config(access):
+            turn = TurnRequest('gpt-x', conversation, ProviderSettings(access=access), '.')
+            return asyncio.run(provider._thread_config(FakeServer(), turn))
+
+        chat_config = thread_config('chat')
+        self.assertEqual(chat_config['mcp_servers'], {'node_repl': {'enabled': False}})
+        self.assertFalse(chat_config['features.shell_tool'])
+        self.assertFalse(chat_config['features.unified_exec'])
+
+        read_config = thread_config('read')
+        self.assertEqual(read_config, {'mcp_servers': {'node_repl': {'enabled': False}}})
+
+        self.assertIsNone(thread_config('full'))
+        self.assertIn('hooks', codex.DISABLED_FEATURES)
+
     def test_summarize_rate_limits(self):
         summary = codex.summarize_rate_limits(
             {
@@ -470,6 +502,20 @@ class CodexTests(unittest.TestCase):
         self.assertEqual([window['label'] for window in summary['windows']], ['5-hour', 'Weekly'])
         self.assertEqual(summary['plan'], 'plus')
         self.assertIsNone(codex.summarize_rate_limits(None))
+
+    def test_effort_uses_model_levels(self):
+        provider = codex.CodexProvider()
+        provider._model_efforts['gpt-x'] = ['low', 'medium', 'high']
+        conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
+
+        def effort(requested, is_task=False):
+            turn = TurnRequest('gpt-x', conversation, ProviderSettings(), '.', effort=requested, is_task=is_task)
+            return provider._effort(turn)
+
+        self.assertEqual(effort('high'), 'high')
+        self.assertEqual(effort('none'), 'low')
+        self.assertIsNone(effort('max'))
+        self.assertEqual(effort('high', is_task=True), 'low')
 
 
 class ProcessTests(unittest.TestCase):

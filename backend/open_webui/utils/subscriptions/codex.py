@@ -12,18 +12,26 @@ messages into a new thread.
 import asyncio
 import json
 import logging
+from collections import OrderedDict
+from dataclasses import dataclass
 
 from open_webui.utils.subscriptions.common import (
+    ACCESS_CHAT,
+    ACCESS_FULL,
+    CHAT_INSTRUCTIONS,
     ProviderModel,
     ProviderSettings,
+    TurnRequest,
     model_key,
 )
+from open_webui.utils.subscriptions.conversation import ChatTurn, conversation_key
 from open_webui.utils.subscriptions.events import (
     ReasoningDelta,
     StatusUpdate,
     SubscriptionError,
     TextDelta,
     TokenUsage,
+    TurnFailed,
 )
 from open_webui.utils.subscriptions.discovery import TOOL_CODEX
 from open_webui.utils.subscriptions.process import ProcessClosedError
@@ -39,6 +47,7 @@ NOT_SIGNED_IN_MESSAGE = 'ChatGPT is not signed in. Sign in under Admin Settings 
 # Desktop-app features that add computer-use and browser tools to every thread,
 # and hooks, which run commands outside the read-only sandbox.
 DISABLED_FEATURES = ('plugins', 'apps', 'computer_use', 'browser_use', 'hooks')
+LIVE_THREAD_LIMIT = 24
 REQUEST_TIMEOUT = 60
 
 
@@ -95,6 +104,29 @@ def summarize_rate_limits(snapshot: dict | None) -> dict | None:
         'windows': windows,
         'limit_reached': bool(snapshot.get('rateLimitReachedType')),
     }
+
+
+def history_items(history: list[ChatTurn]) -> list[dict]:
+    """Earlier chat messages as Responses API items for thread/inject_items."""
+    items = []
+    for turn in history:
+        if turn.role == 'user':
+            content = [{'type': 'input_text', 'text': turn.text}]
+            for url in turn.images:
+                if url.startswith(('data:', 'http://', 'https://')):
+                    content.append({'type': 'input_image', 'image_url': url})
+        else:
+            content = [{'type': 'output_text', 'text': turn.text}]
+        items.append({'type': 'message', 'role': turn.role, 'content': content})
+    return items
+
+
+def user_input(turn: ChatTurn) -> list[dict]:
+    inputs = [{'type': 'text', 'text': turn.text, 'text_elements': []}]
+    for url in turn.images:
+        if url.startswith(('data:', 'http://', 'https://')):
+            inputs.append({'type': 'image', 'url': url})
+    return inputs
 
 
 def _shorten(text, limit: int = 160) -> str:
@@ -253,6 +285,7 @@ class CodexAppServer:
         self._thread_queues: dict[str, asyncio.Queue] = {}
         self._next_id = 0
         self._start_lock = asyncio.Lock()
+        self.generation = 0
 
     @property
     def running(self) -> bool:
@@ -266,6 +299,7 @@ class CodexAppServer:
             for feature in DISABLED_FEATURES:
                 args.extend(['--disable', feature])
             self._process = await self.machine.start_process(args, self._cwd)
+            self.generation += 1
             self._reader = asyncio.create_task(self._read_messages(self._process))
             client_info = {'name': 'buddy', 'title': 'Buddy', 'version': '1.0'}
             try:
@@ -381,6 +415,16 @@ class CodexAppServer:
         self._process = None
 
 
+@dataclass
+class LiveThread:
+    thread_id: str
+    machine_id: str
+    generation: int
+    access: str
+    cwd: str
+    usage_total: dict | None
+
+
 class CodexLogin:
     def __init__(self, machine_id: str, method: str, login_id: str, url: str, user_code: str | None):
         self.machine_id = machine_id
@@ -409,7 +453,9 @@ class CodexProvider:
     def __init__(self):
         # One app-server per machine, keyed by machine id.
         self._servers: dict[str, CodexAppServer] = {}
+        self._live_threads: OrderedDict[str, LiveThread] = OrderedDict()
         self._login: CodexLogin | None = None
+        self._model_efforts: dict[str, list[str]] = {}
         self.rate_limits: dict | None = None
 
     def _on_notification(self, message: dict) -> None:
@@ -428,6 +474,11 @@ class CodexProvider:
                 login.state = 'error'
                 login.message = params.get('error') or 'Sign-in did not finish.'
 
+    def _forget_machine_threads(self, machine_id: str) -> None:
+        for key, live in list(self._live_threads.items()):
+            if live.machine_id == machine_id:
+                del self._live_threads[key]
+
     async def _server_for(self, settings: ProviderSettings, machine) -> CodexAppServer:
         """The machine's app-server; it starts in the machine's empty chat folder."""
         cli = await machine.find_tool(TOOL_CODEX, settings.cli_path)
@@ -437,6 +488,7 @@ class CodexProvider:
         if server and (server.cli != cli or server.machine is not machine):
             server.stop()
             server = None
+            self._forget_machine_threads(machine.id)
         if not server:
             server = CodexAppServer(machine, cli, await machine.chat_dir(), self._on_notification)
             self._servers[machine.id] = server
@@ -491,6 +543,7 @@ class CodexProvider:
                 continue
             efforts = [option.get('reasoningEffort') for option in entry.get('supportedReasoningEfforts') or []]
             efforts = [effort for effort in efforts if effort]
+            self._model_efforts[value] = efforts
             models.append(
                 ProviderModel(
                     key=model_key(value),
@@ -542,9 +595,165 @@ class CodexProvider:
         await self.cancel_login()
         server = await self._server_for(settings, machine)
         await server.request('account/logout', None)
+        self._forget_machine_threads(machine.id)
         self.rate_limits = None
+
+    def _effort(self, turn: TurnRequest) -> str | None:
+        supported = self._model_efforts.get(turn.model) or []
+        if turn.is_task or turn.effort in ('none', 'minimal'):
+            if supported:
+                return supported[0]
+            return 'low'
+        if turn.effort in supported:
+            return turn.effort
+        return None
+
+    def _developer_instructions(self, turn: TurnRequest) -> str | None:
+        system = turn.conversation.system
+        if turn.access == ACCESS_CHAT:
+            return f'{CHAT_INSTRUCTIONS}\n\n{system}'.strip()
+        return system or None
+
+    async def _thread_config(self, server: CodexAppServer, turn: TurnRequest) -> dict | None:
+        """Per-thread config overrides that keep chat and read threads in bounds.
+
+        The read-only sandbox blocks writes but not reads anywhere on disk, and
+        MCP servers from the user's Codex config (such as a JavaScript REPL) run
+        outside it. Chat threads therefore get no command, file, or MCP tools;
+        read threads keep read-only commands but get no MCP servers.
+        """
+        if turn.access == ACCESS_FULL:
+            return None
+
+        effective = await server.request('config/read', {'includeLayers': False, 'cwd': turn.cwd})
+        server_names = ((effective.get('config') or {}).get('mcp_servers') or {}).keys()
+        config = {'mcp_servers': {name: {'enabled': False} for name in server_names}}
+        if turn.access == ACCESS_CHAT:
+            # Dotted keys leave the app-server's other feature switches alone.
+            config['features.shell_tool'] = False
+            config['features.unified_exec'] = False
+            config['features.view_image'] = False
+        return config
+
+    async def _start_thread(self, server: CodexAppServer, turn: TurnRequest) -> str:
+        sandbox = 'read-only'
+        if turn.access == ACCESS_FULL:
+            sandbox = 'danger-full-access'
+        params = {
+            'cwd': turn.cwd,
+            'model': turn.model,
+            'ephemeral': True,
+            'sandbox': sandbox,
+            'approvalPolicy': 'never',
+            'developerInstructions': self._developer_instructions(turn),
+        }
+        config = await self._thread_config(server, turn)
+        if config:
+            params['config'] = config
+        result = await server.request('thread/start', params)
+        thread_id = result['thread']['id']
+        if turn.conversation.history:
+            items = history_items(turn.conversation.history)
+            await server.request('thread/inject_items', {'threadId': thread_id, 'items': items})
+        return thread_id
+
+    def _take_live_thread(self, key: str, turn: TurnRequest, generation: int) -> LiveThread | None:
+        live = self._live_threads.pop(key, None)
+        if not live:
+            return None
+        if live.generation != generation or live.access != turn.access or live.cwd != turn.cwd:
+            return None
+        return live
+
+    def _keep_live_thread(self, key: str, live: LiveThread) -> None:
+        self._live_threads[key] = live
+        while len(self._live_threads) > LIVE_THREAD_LIMIT:
+            _, oldest = self._live_threads.popitem(last=False)
+            self._release_thread(self._servers.get(oldest.machine_id), oldest.thread_id)
+
+    def _release_thread(self, server: CodexAppServer | None, thread_id: str) -> None:
+        if not server or not server.running:
+            return
+
+        async def unsubscribe():
+            try:
+                await server.request('thread/unsubscribe', {'threadId': thread_id}, timeout=10)
+            except SubscriptionError as error:
+                log.debug('Could not unload Codex thread %s: %s', thread_id, error)
+
+        asyncio.create_task(unsubscribe())
+
+    def _interrupt_turn(self, server: CodexAppServer, thread_id: str, turn_id: str) -> None:
+        if not server.running:
+            return
+
+        async def interrupt():
+            try:
+                await server.request('turn/interrupt', {'threadId': thread_id, 'turnId': turn_id}, timeout=10)
+            except SubscriptionError as error:
+                log.debug('Could not interrupt Codex turn %s: %s', turn_id, error)
+            self._release_thread(server, thread_id)
+
+        asyncio.create_task(interrupt())
+
+    async def run_turn(self, turn: TurnRequest):
+        """Run one chat turn and yield its events."""
+        machine = turn.machine
+        server = await self._server_for(turn.settings, machine)
+        conversation = turn.conversation
+        history_key = f'{machine.id}|{conversation_key(conversation.history, conversation.system)}'
+
+        live = None
+        if not turn.is_task:
+            live = self._take_live_thread(history_key, turn, server.generation)
+        if live:
+            thread_id = live.thread_id
+            previous_usage = live.usage_total
+        else:
+            thread_id = await self._start_thread(server, turn)
+            previous_usage = None
+
+        queue = server.subscribe(thread_id)
+        parser = None
+        completed = False
+        try:
+            params = {'threadId': thread_id, 'input': user_input(conversation.prompt), 'model': turn.model}
+            effort = self._effort(turn)
+            if effort:
+                params['effort'] = effort
+            result = await server.request('turn/start', params)
+            parser = CodexTurnParser(result['turn']['id'])
+
+            while not parser.finished:
+                message = await queue.get()
+                if message is None:
+                    raise SubscriptionError(f'Codex stopped while answering. {server.stderr_text()}'.strip())
+                for event in parser.handle(message):
+                    yield event
+
+            usage = _usage_difference(parser.usage_total, previous_usage)
+            if usage:
+                yield usage
+            if parser.error:
+                yield TurnFailed(parser.error)
+            else:
+                completed = True
+        finally:
+            server.unsubscribe(thread_id)
+            if completed and not turn.is_task:
+                answered = conversation.history + [conversation.prompt, ChatTurn('assistant', parser.reply_text)]
+                next_key = f'{machine.id}|{conversation_key(answered, conversation.system)}'
+                live = LiveThread(
+                    thread_id, machine.id, server.generation, turn.access, turn.cwd, parser.usage_total
+                )
+                self._keep_live_thread(next_key, live)
+            elif parser and not parser.finished:
+                self._interrupt_turn(server, thread_id, parser.turn_id)
+            else:
+                self._release_thread(server, thread_id)
 
     def stop(self) -> None:
         for server in self._servers.values():
             server.stop()
         self._servers.clear()
+        self._live_threads.clear()
