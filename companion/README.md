@@ -28,12 +28,18 @@ local\start-buddy-runner.ps1
 # Approve read-only access to exactly this project for this Runner instance.
 local\start-buddy-runner.ps1 -Root 'C:\Projects\Example'
 
+# Approve several projects: separate the folders with commas.
+local\start-buddy-runner.ps1 -Root 'C:\Projects\One','C:\Projects\Two'
+
 # Deliberately approve existing-file edits and whole-account commands.
 local\start-buddy-runner.ps1 -Root 'C:\Projects\Example' -WriteFiles -AllowHostExecution
 
 # A worktree can use an existing dependency environment.
 local\start-buddy-runner.ps1 -PythonPath 'C:\path\to\venv\Scripts\python.exe' -Port 8766 -Root 'C:\Projects\Example'
 ```
+
+From Command Prompt, or where PowerShell scripts are disabled, run
+`local\start-buddy-runner.cmd` with the same parameters, written the same way.
 
 The Python CLI equivalents are repeated `--root`, `--write`,
 `--allow-host-execution`, `--name`, `--port`, and `--origin`. The default allowed

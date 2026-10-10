@@ -14,13 +14,15 @@ LAUNCHER = REPOSITORY / 'local' / 'start-buddy-runner.ps1'
 CMD_WRAPPER = REPOSITORY / 'local' / 'start-buddy-runner.cmd'
 RUNNER_MODULE = 'open_webui.utils.subscriptions.runner'
 
-# Stands in for python.exe: prints its arguments and the Python environment it
-# was given, then exits with FAKE_PYTHON_EXIT_CODE.
+# Stands in for python.exe: prints its arguments and the environment it was
+# given, then exits with FAKE_PYTHON_EXIT_CODE.
 FAKE_PYTHON = '''param([Parameter(ValueFromRemainingArguments=$true)][string[]]$RunnerPassedArguments)
 ConvertTo-Json -Compress -InputObject @{
     arguments = @($RunnerPassedArguments)
     pythonPath = $env:PYTHONPATH
     encoding = $env:PYTHONIOENCODING
+    wrapperLauncher = $env:BUDDY_RUNNER_LAUNCHER
+    wrapperArguments = $env:BUDDY_RUNNER_ARGUMENTS
 }
 exit [int]$env:FAKE_PYTHON_EXIT_CODE
 '''
@@ -37,6 +39,15 @@ ConvertTo-Json -Compress -InputObject @{
     exitCode = $LASTEXITCODE
 }
 '''
+
+
+def values_after(arguments, flag):
+    """Every value that follows ``flag`` in a command line, in order."""
+    values = []
+    for index, argument in enumerate(arguments[:-1]):
+        if argument == flag:
+            values.append(arguments[index + 1])
+    return values
 
 
 @unittest.skipUnless(os.name == 'nt', 'The PowerShell Runner launcher is tested on Windows')
@@ -69,6 +80,16 @@ class RunnerLauncherTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout.strip())
+
+    def run_cmd_wrapper(self, arguments, **environment_overrides):
+        """Run the .cmd wrapper with arguments typed as in Command Prompt."""
+        command_line = f'"{CMD_WRAPPER}" {arguments}'
+        # /s keeps cmd from stripping quotes inside the wrapper's command line.
+        return subprocess.run(
+            f'cmd.exe /d /s /c "{command_line}"',
+            capture_output=True, text=True, timeout=30,
+            env=self.environment(**environment_overrides),
+        )
 
     def import_argparse_from_project(self, interpreter_options):
         return subprocess.run(
@@ -125,18 +146,45 @@ class RunnerLauncherTests(unittest.TestCase):
             self.skipTest('Group Policy sets the execution policy on this computer')
         self.assertIn('disabled', direct.stderr)
 
-        wrapper_command = subprocess.list2cmdline([
-            str(CMD_WRAPPER), '-PythonPath', str(self.stub), '-StateDir', str(self.state), '-Port', '9123',
+        wrapper_arguments = subprocess.list2cmdline([
+            '-PythonPath', str(self.stub), '-StateDir', str(self.state), '-Port', '9123',
         ])
-        # /s keeps cmd from stripping quotes inside the wrapper's command line.
-        result = subprocess.run(
-            f'cmd.exe /d /s /c "{wrapper_command}"',
-            capture_output=True, text=True, timeout=30, env=restricted,
+        result = self.run_cmd_wrapper(
+            wrapper_arguments, PSExecutionPolicyPreference='Restricted', FAKE_PYTHON_EXIT_CODE='7',
         )
         self.assertEqual(result.returncode, 7, result.stderr)
         arguments = json.loads(result.stdout.strip())['arguments']
         self.assertEqual(arguments[arguments.index('--state-dir') + 1], str(self.state))
         self.assertEqual(arguments[arguments.index('--port') + 1], '9123')
+
+    def test_cmd_wrapper_reads_quotes_and_lists_as_powershell_does(self):
+        result = self.run_cmd_wrapper(
+            f'-PythonPath "{self.stub}" -StateDir "{self.state}" '
+            r"""-Root 'C:\Projects\One',"C:\My Projects\Two" """
+            "-Origin 'http://localhost:8082','https://pc.example.ts.net:8082' "
+            '-Name "R&D PC"'
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        runner = json.loads(result.stdout.strip())
+        arguments = runner['arguments']
+        self.assertEqual(values_after(arguments, '--state-dir'), [str(self.state)])
+        self.assertEqual(values_after(arguments, '--root'), [r'C:\Projects\One', r'C:\My Projects\Two'])
+        self.assertEqual(
+            values_after(arguments, '--origin'), ['http://localhost:8082', 'https://pc.example.ts.net:8082'],
+        )
+        self.assertEqual(values_after(arguments, '--name'), ['R&D PC'])
+        # The wrapper's hand-off variables do not reach the Runner or its CLIs.
+        self.assertIsNone(runner['wrapperLauncher'])
+        self.assertIsNone(runner['wrapperArguments'])
+
+    def test_cmd_wrapper_fails_on_a_parameter_error_like_the_script(self):
+        # PowerShell takes several roots as a comma list, not a repeated -Root.
+        result = self.run_cmd_wrapper(f'-PythonPath "{self.stub}" -Root C:\\a -Root C:\\b')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        # PowerShell wraps long error lines to the console width.
+        error = ' '.join(result.stderr.split())
+        self.assertIn("parameter 'Root' is specified more than once", error)
+        self.assertEqual(result.stdout.strip(), '')
 
 
 if __name__ == '__main__':
