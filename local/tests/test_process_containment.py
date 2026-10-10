@@ -72,16 +72,31 @@ if mode == 'worker':
         count += 1
         (root / 'heartbeat.txt').write_text(str(count), encoding='ascii')
         time.sleep(0.05)
-else:
-    flags = 0
-    if sys.platform == 'win32' and detached == 'yes':
-        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+elif mode == 'launcher':
+    # Like a shell that starts a background command and exits at once.
     subprocess.Popen(
         [sys.executable, __file__, 'worker', directory, lifetime, detached, output_stream, output_size],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+else:
+    flags = 0
+    if sys.platform == 'win32' and detached == 'yes':
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    # Claude Code starts its Bash tool commands with setsid on POSIX.
+    new_session = sys.platform != 'win32' and detached == 'yes'
+    child_mode = 'worker'
+    if detached == 'orphan':
+        child_mode = 'launcher'
+    subprocess.Popen(
+        [sys.executable, __file__, child_mode, directory, lifetime, detached, output_stream, output_size],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         creationflags=flags,
+        start_new_session=new_session,
     )
     while not (root / 'worker.ready').exists():
         if time.monotonic() >= deadline:
@@ -216,22 +231,32 @@ class ProcessContainmentTests(unittest.IsolatedAsyncioTestCase):
         return child
 
     def tree_args(
-        self, lifetime: str = 'stay', detached: bool = IS_WINDOWS, output_stream: str = 'none'
+        self, lifetime: str = 'stay', detached: bool = IS_WINDOWS, output_stream: str = 'none',
+        orphaned: bool = False,
     ) -> list[str]:
+        detached_mode = 'no'
+        if orphaned:
+            # The descendant gets its own session and its parent exits.
+            detached_mode = 'orphan'
+        elif detached:
+            detached_mode = 'yes'
         return [
             sys.executable,
             str(self.fixture),
             'leader',
             str(self.root),
             lifetime,
-            'yes' if detached else 'no',
+            detached_mode,
             output_stream,
             str(getattr(subscription_process, 'MAX_CAPTURE_BYTES', 1024 * 1024) + 1),
         ]
 
-    def start_tree(self, lifetime: str = 'stay', detached: bool = IS_WINDOWS, output_stream: str = 'none'):
+    def start_tree(
+        self, lifetime: str = 'stay', detached: bool = IS_WINDOWS, output_stream: str = 'none',
+        orphaned: bool = False,
+    ):
         child = subscription_process.ChildProcess(
-            self.tree_args(lifetime, detached, output_stream), str(self.root), self.environment()
+            self.tree_args(lifetime, detached, output_stream, orphaned), str(self.root), self.environment()
         )
         self.children.append(child)
         return child
@@ -305,6 +330,46 @@ class ProcessContainmentTests(unittest.IsolatedAsyncioTestCase):
         descendant = await self.track_descendant(require_running=False)
         self.assertEqual(await child.wait(5), 0)
         await self.assert_stopped(descendant)
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux /proc parent links')
+    async def test_linux_kill_stops_descendant_in_its_own_session(self):
+        child = self.start_tree(detached=True)
+        descendant = await self.track_descendant()
+        await child.kill_and_wait(5)
+        self.assertTrue(child.cleanup_confirmed)
+        await self.assert_stopped(descendant)
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux /proc parent links')
+    async def test_linux_kill_stops_orphaned_descendant_in_its_own_session(self):
+        child = self.start_tree(orphaned=True)
+        descendant = await self.track_descendant()
+        await child.kill_and_wait(5)
+        self.assertTrue(child.cleanup_confirmed)
+        await self.assert_stopped(descendant)
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux /proc parent links')
+    async def test_linux_cleanup_is_unconfirmed_while_a_separate_session_survives(self):
+        child = self.start_tree(detached=True)
+        descendant = await self.track_descendant()
+        original_kill = os.kill
+
+        def kill_except_descendant(pid, signal_number):
+            if pid == descendant.pid and signal_number == signal.SIGKILL:
+                return
+            original_kill(pid, signal_number)
+
+        # The CLI's exit monitor retries once the leader is gone; give it time
+        # to finish while the descendant still cannot be killed.
+        with patch.object(subscription_process.os, 'kill', side_effect=kill_except_descendant):
+            with self.assertRaises(TimeoutError):
+                await child.close(8)
+        self.assertFalse(child._tree_stopped)
+        self.assertFalse(child.cleanup_confirmed)
+        self.assertTrue(descendant.is_running())
+        await child.close()
+        await self.assert_stopped(descendant)
+        self.assertTrue(child._tree_stopped)
+        self.assertTrue(child.cleanup_confirmed)
 
     async def test_run_command_timeout_stops_tree(self):
         task = asyncio.create_task(

@@ -7,6 +7,7 @@ subprocesses.
 
 import asyncio
 import codecs
+import ctypes
 import logging
 import os
 import signal
@@ -28,13 +29,92 @@ MAX_STDERR_BYTES = 256 * 1024
 MAX_PENDING_CHUNKS = 128
 READ_BYTES = 65536
 
+# Zombie and dead processes cannot execute or hold pipes.
+_FINISHED_STATES = (b'Z', b'X')
+_PR_SET_CHILD_SUBREAPER = 36
+
+
+def _has_linux_proc() -> bool:
+    return sys.platform.startswith('linux') and os.path.isdir('/proc')
+
+
+def _linux_process_status(pid: int | str) -> list[bytes]:
+    """Return the /proc/<pid>/stat fields after the command name.
+
+    Index 0 is the state, 1 the parent pid, 2 the process group and 19 the
+    start time. The command name may hold any bytes, so it is skipped.
+    """
+    with open(f'/proc/{pid}/stat', 'rb') as status:
+        return status.read().rsplit(b')', 1)[1].split()
+
+
+def _linux_descendants(leader_pid: int) -> dict[int, int]:
+    """Map each live process started under ``leader_pid`` to its start time.
+
+    Parent links are followed into any session or process group. The start
+    time lets a later check tell whether a pid still names the same process.
+    """
+    children_by_parent: dict[int, list[int]] = {}
+    start_times: dict[int, int] = {}
+    with os.scandir('/proc') as entries:
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            try:
+                fields = _linux_process_status(entry.name)
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            if fields[0] in _FINISHED_STATES:
+                continue
+            pid = int(entry.name)
+            children_by_parent.setdefault(int(fields[1]), []).append(pid)
+            start_times[pid] = int(fields[19])
+    descendants = {}
+    unvisited = [leader_pid]
+    while unvisited:
+        for child_pid in children_by_parent.get(unvisited.pop(), []):
+            if child_pid not in descendants:
+                descendants[child_pid] = start_times[child_pid]
+                unvisited.append(child_pid)
+    return descendants
+
+
+def _linux_process_is_running(pid: int, start_time: int) -> bool:
+    """Whether ``pid`` is still the live process that started at ``start_time``."""
+    try:
+        fields = _linux_process_status(pid)
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+    return fields[0] not in _FINISHED_STATES and int(fields[19]) == start_time
+
+
+def _subreaper_hook():
+    """Return a pre-exec hook that makes a new CLI a child subreaper, or None.
+
+    A command orphaned inside the CLI's tree, such as a background job whose
+    shell has exited, is then re-parented to the CLI instead of init, so the
+    parent links searched at kill time still reach it. The hook only calls
+    prctl between fork and exec.
+    """
+    if not sys.platform.startswith('linux'):
+        return None
+    try:
+        prctl = ctypes.CDLL(None, use_errno=True).prctl
+    except (OSError, AttributeError):
+        return None
+
+    def become_subreaper() -> None:
+        prctl(_PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
+
+    return become_subreaper
+
 
 def _posix_group_has_live_processes(group_id: int) -> bool:
     try:
         os.killpg(group_id, 0)
     except ProcessLookupError:
         return False
-    if not sys.platform.startswith('linux') or not os.path.isdir('/proc'):
+    if not _has_linux_proc():
         return True
     # Orphaned zombies can remain until the host init/subreaper collects them.
     # They cannot execute or retain pipes, so distinguish them from live members.
@@ -43,9 +123,8 @@ def _posix_group_has_live_processes(group_id: int) -> bool:
             if not entry.name.isdigit():
                 continue
             try:
-                with open(os.path.join(entry.path, 'stat'), encoding='ascii') as status:
-                    fields = status.read().rsplit(')', 1)[1].split()
-                if int(fields[2]) == group_id and fields[0] not in ('Z', 'X'):
+                fields = _linux_process_status(entry.name)
+                if int(fields[2]) == group_id and fields[0] not in _FINISHED_STATES:
                     return True
             except (FileNotFoundError, ProcessLookupError):
                 continue
@@ -247,6 +326,7 @@ class ChildProcess(StreamedOutput):
         self._stop_lock = threading.Lock()
         self._cleanup_lock = threading.Lock()
         self._tree_stopped = False
+        self._known_descendants: dict[int, int] = {}
         self._disposal_started = False
         self._disposal_error: BaseException | None = None
         self._cleanup_done = threading.Event()
@@ -275,7 +355,7 @@ class ChildProcess(StreamedOutput):
             self.process = subprocess.Popen(
                 args, cwd=spawn_cwd, env=env, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=stderr, start_new_session=True,
-                pass_fds=inherited_fds,
+                pass_fds=inherited_fds, preexec_fn=_subreaper_hook(),
             )
         program = os.path.basename(args[0])
         self._stdout_reader = threading.Thread(target=self._read_stdout, name=f'{program}-stdout', daemon=True)
@@ -578,9 +658,7 @@ class ChildProcess(StreamedOutput):
                 if self._job is not None:
                     self._job.close()
                 else:
-                    # Keep the original process-group ID after leader exit;
-                    # poll() alone says nothing about surviving descendants.
-                    _stop_posix_group(self.process.pid)
+                    self._stop_posix_tree()
             except ProcessLookupError:
                 self._tree_stopped = True
                 self._disposal_error = None
@@ -594,6 +672,53 @@ class ChildProcess(StreamedOutput):
             else:
                 self._tree_stopped = True
                 self._disposal_error = None
+
+    def _stop_posix_tree(self) -> None:
+        try:
+            if _has_linux_proc():
+                self._stop_linux_descendants()
+        finally:
+            # Keep the original process-group ID after leader exit;
+            # poll() alone says nothing about surviving descendants.
+            _stop_posix_group(self.process.pid)
+
+    def _stop_linux_descendants(self) -> None:
+        """SIGKILL what the CLI started outside its process group, and confirm it ended.
+
+        Claude Code starts its Bash tool commands with setsid, so killing the
+        CLI's process group misses them. While the CLI runs they are found
+        through parent links; its group is stopped first so it cannot start
+        more meanwhile. After the CLI has exited they can no longer be found,
+        but those found by an earlier attempt are still checked.
+        """
+        leader_running = self.process.returncode is None
+        if leader_running:
+            try:
+                os.killpg(self.process.pid, signal.SIGSTOP)
+            except ProcessLookupError:
+                leader_running = False
+        deadline = time.monotonic() + 2.0
+        while True:
+            if leader_running:
+                self._known_descendants.update(_linux_descendants(self.process.pid))
+            self._forget_ended_descendants()
+            if not self._known_descendants:
+                return
+            if time.monotonic() >= deadline:
+                raise TimeoutError('Commands started by the CLI did not finish terminating')
+            for pid in self._known_descendants:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            time.sleep(0.01)
+
+    def _forget_ended_descendants(self) -> None:
+        running = {}
+        for pid, start_time in self._known_descendants.items():
+            if _linux_process_is_running(pid, start_time):
+                running[pid] = start_time
+        self._known_descendants = running
 
 
 async def run_command(args: list[str], cwd: str, env: dict[str, str], timeout: float) -> tuple[int, str, str]:
