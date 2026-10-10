@@ -17,9 +17,12 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from fastapi import HTTPException, status
+from starlette.responses import StreamingResponse
 
 from open_webui.env import DATA_DIR
 from open_webui.models.config import Config
+from open_webui.models.models import Models
+from open_webui.utils.payload import apply_model_params_to_body_openai, apply_system_prompt_to_body
 from open_webui.utils.subscriptions.claude_code import ClaudeCodeProvider
 from open_webui.utils.subscriptions.codex import CodexProvider
 from open_webui.utils.subscriptions.common import (
@@ -28,9 +31,13 @@ from open_webui.utils.subscriptions.common import (
     SUBSCRIPTION_OWNED_BY,
     ProviderModel,
     ProviderSettings,
+    TurnRequest,
+    requested_effort,
 )
+from open_webui.utils.subscriptions.conversation import parse_messages
 from open_webui.utils.subscriptions.events import SubscriptionError
 from open_webui.utils.subscriptions.machines import LOCAL_MACHINE_ID, LocalMachine, RemoteMachine
+from open_webui.utils.subscriptions.streaming import collect_events, failure_events, stream_events
 
 log = logging.getLogger(__name__)
 
@@ -196,6 +203,15 @@ async def save_settings(provider_id: str, updates: dict) -> ProviderSettings:
     return settings
 
 
+async def working_directory(settings: ProviderSettings, access: str, machine) -> str:
+    """Chat-only turns run in an empty folder; tool access uses the workspace."""
+    if access == ACCESS_CHAT:
+        return await machine.chat_dir()
+    if settings.workspace:
+        return settings.workspace
+    return await machine.default_workspace()
+
+
 # Cached status and model lists
 
 
@@ -335,3 +351,73 @@ async def _provider_models(provider_id: str) -> list[dict]:
 async def get_subscription_models() -> list[dict]:
     claude_models, codex_models = await asyncio.gather(_provider_models('claude'), _provider_models('codex'))
     return claude_models + codex_models
+
+
+async def _apply_preset(request, payload: dict, metadata: dict, user) -> tuple[str, dict]:
+    """Apply a Workspace model preset's params and system prompt, like the OpenAI route."""
+    model_id = payload.get('model')
+    model_info = await Models.get_model_by_id(model_id)
+    if not model_info:
+        return model_id, payload
+
+    if model_info.base_model_id:
+        model_id = model_info.base_model_id
+    params = model_info.params.model_dump()
+    if params:
+        system = params.pop('system', None)
+        payload = apply_model_params_to_body_openai(params, payload)
+        if not getattr(request.state, 'bypass_system_prompt', False):
+            payload = await apply_system_prompt_to_body(system, payload, metadata, user)
+    return model_id, payload
+
+
+async def generate_subscription_chat_completion(request, form_data: dict, user, models):
+    if getattr(user, 'role', None) != 'admin':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Subscription models use the administrator's personal plan and are only available to them.",
+        )
+
+    payload = {**form_data}
+    metadata = payload.pop('metadata', None) or {}
+    model_id, payload = await _apply_preset(request, payload, metadata, user)
+    base_model = models.get(model_id) or {}
+    subscription = base_model.get('subscription')
+    if not subscription:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Model not found')
+
+    provider_id = subscription['provider']
+    provider = get_provider(provider_id)
+    settings = await get_settings(provider_id)
+    is_task = bool(metadata.get('task'))
+
+    try:
+        if not settings.enable:
+            raise SubscriptionError(
+                f'{PROVIDER_LABELS[provider_id]} subscription models are turned off in '
+                'Admin Settings → Connections → Subscriptions.'
+            )
+        provider_status = await status_cache.get(provider_id) or {}
+        if provider_status.get('api_billing'):
+            # Refuse rather than bill the API under a "plan" model name.
+            raise SubscriptionError(provider_status.get('message') or 'This account bills API usage, not a plan.')
+        machine = await get_machine(settings.machine_id)
+        access = ACCESS_CHAT if is_task else settings.access
+        turn = TurnRequest(
+            model=subscription['model'],
+            conversation=parse_messages(payload.get('messages')),
+            settings=settings,
+            cwd=await working_directory(settings, access, machine),
+            effort=requested_effort(payload),
+            is_task=is_task,
+            machine=machine,
+        )
+    except SubscriptionError as error:
+        events = failure_events(str(error))
+    else:
+        events = provider.run_turn(turn)
+
+    response_model_id = form_data.get('model') or model_id
+    if payload.get('stream'):
+        return StreamingResponse(stream_events(events, response_model_id), media_type='text/event-stream')
+    return await collect_events(events, response_model_id)

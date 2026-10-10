@@ -45,6 +45,11 @@ def _status_chunk(description: str, done: bool, hidden: bool = False) -> dict:
     return {'event': {'type': 'status', 'data': data}}
 
 
+async def failure_events(message: str):
+    """A turn that fails before it starts, for errors found while preparing it."""
+    yield TurnFailed(message)
+
+
 async def stream_events(events, model_id: str):
     """Yield server-sent events for a streaming chat completion."""
     completion_id = f'chatcmpl-{uuid.uuid4()}'

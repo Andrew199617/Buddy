@@ -65,3 +65,15 @@ def model_key(text: str) -> str:
     """Lowercase id fragment such as 'opus' or 'gpt-6-astra'."""
     key = re.sub(r'[^a-z0-9.]+', '-', text.lower()).strip('-.')
     return key or 'model'
+
+
+def requested_effort(payload: dict) -> str | None:
+    """Read the reasoning level from the thinking chip or Chat Controls."""
+    effort = payload.get('reasoning_effort')
+    reasoning = payload.get('reasoning')
+    if not effort and isinstance(reasoning, dict):
+        effort = reasoning.get('effort')
+    if not isinstance(effort, str):
+        return None
+    effort = effort.strip().lower()
+    return effort or None

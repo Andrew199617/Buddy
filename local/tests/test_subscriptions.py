@@ -20,6 +20,7 @@ from open_webui.utils.subscriptions import claude_code, codex, discovery, runner
 from open_webui.utils.subscriptions.common import (  # noqa: E402
     ProviderSettings,
     TurnRequest,
+    requested_effort,
 )
 from open_webui.utils.subscriptions.conversation import (  # noqa: E402
     CONTINUE_PROMPT,
@@ -127,6 +128,11 @@ class ConversationTests(unittest.TestCase):
             reloaded = SessionStore(path, limit=2)
             self.assertIsNone(reloaded.get('a'))
             self.assertEqual(reloaded.get('c'), 'session-c')
+
+    def test_requested_effort_reads_chip_and_responses_format(self):
+        self.assertEqual(requested_effort({'reasoning_effort': 'High'}), 'high')
+        self.assertEqual(requested_effort({'reasoning': {'effort': 'low'}}), 'low')
+        self.assertIsNone(requested_effort({'reasoning_effort': ''}))
 
 
 class ClaudeStreamTests(unittest.TestCase):
