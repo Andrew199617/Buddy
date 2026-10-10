@@ -1,8 +1,10 @@
 """OpenAI models through the Codex CLI, billed to the user's ChatGPT plan.
 
-Buddy runs one ``codex app-server`` process and talks JSON-RPC to it over
-stdio, the same interface the Codex IDE extensions use. Codex signs in with
-"Sign in with ChatGPT" and keeps its credentials in its own config folder.
+Buddy runs one ``codex app-server`` process per machine (this server or a
+Buddy Runner) and talks JSON-RPC to it over its stdio, which a Buddy Runner
+relays over its connection. This is the same interface the Codex IDE
+extensions use. Codex signs in with "Sign in with ChatGPT" and keeps its
+credentials in its own config folder on that machine.
 
 Chats use in-memory (ephemeral) Codex threads. A thread stays loaded while the
 chat continues; any other state is rebuilt by injecting the chat's earlier
