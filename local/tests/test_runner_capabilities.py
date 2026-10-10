@@ -5,6 +5,7 @@ Run: python -m unittest discover -s local/tests -p test_runner_capabilities.py -
 
 import asyncio
 import io
+import json
 import os
 import secrets
 import sys
@@ -592,7 +593,14 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
             (self.project / name).write_bytes(data)
             status, _, _ = await self.request('GET', '/v1/files', params={'grantId': grant['id'], 'path': name})
             self.assertEqual(status, expected)
-        status, _, _ = await self.request('PUT', '/v1/files', json={'grantId': grant['id'], 'path': 'hello.txt', 'content': 'a' * (FILE_BYTES + 1)})
+        # aiohttp warns about large raw bodies, so the oversized upload is a stream.
+        oversized = json.dumps({'grantId': grant['id'], 'path': 'hello.txt', 'content': 'a' * (FILE_BYTES + 1)})
+        status, _, _ = await self.request(
+            'PUT',
+            '/v1/files',
+            data=io.BytesIO(oversized.encode('utf-8')),
+            headers={'Content-Type': 'application/json'},
+        )
         self.assertEqual(status, 413)
 
     async def test_request_bodies_are_objects_and_bounded(self):
