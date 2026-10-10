@@ -462,6 +462,8 @@ class ClaudeCodeProvider:
         return list(FALLBACK_MODELS)
 
     async def start_login(self, settings: ProviderSettings, machine, method: str) -> dict:
+        # method is unused: Claude Code only offers the paste-the-code flow.
+        # Codex uses it to pick 'browser' or 'device', and both share this signature.
         await self.cancel_login()
         cli = await self._require_cli(settings, machine)
         # BROWSER=none keeps the CLI from opening a tab on that computer; Buddy
