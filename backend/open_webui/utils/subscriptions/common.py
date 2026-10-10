@@ -53,6 +53,9 @@ class TurnRequest:
     is_task: bool = False
     # LocalMachine or RemoteMachine from subscriptions.machines.
     machine: Any = None
+    # Reasoning levels the model offers, from its model entry, so every worker
+    # knows them without having listed the provider's models itself.
+    efforts: list[str] = field(default_factory=list)
 
     @property
     def access(self) -> str:

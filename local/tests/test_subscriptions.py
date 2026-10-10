@@ -589,12 +589,21 @@ class CodexTests(unittest.TestCase):
         self.assertIsNone(codex.summarize_rate_limits(None))
 
     def test_effort_uses_model_levels(self):
+        # A fresh provider, as on a worker that never listed the models itself.
         provider = codex.CodexProvider()
-        provider._model_efforts['gpt-x'] = ['low', 'medium', 'high']
         conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
+        model_efforts = ['low', 'medium', 'high']
 
         def effort(requested, is_task=False):
-            turn = TurnRequest('gpt-x', conversation, ProviderSettings(), '.', effort=requested, is_task=is_task)
+            turn = TurnRequest(
+                'gpt-x',
+                conversation,
+                ProviderSettings(),
+                '.',
+                effort=requested,
+                is_task=is_task,
+                efforts=model_efforts,
+            )
             return provider._effort(turn)
 
         self.assertEqual(effort('high'), 'high')

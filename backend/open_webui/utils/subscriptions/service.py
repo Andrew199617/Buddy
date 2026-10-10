@@ -459,6 +459,7 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
             effort=requested_effort(payload),
             is_task=is_task,
             machine=machine,
+            efforts=subscription.get('efforts') or [],
         )
     except SubscriptionError as error:
         events = failure_events(str(error))

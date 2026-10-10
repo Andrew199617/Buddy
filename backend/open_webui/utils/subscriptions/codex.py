@@ -456,7 +456,6 @@ class CodexProvider:
         self._servers: dict[str, CodexAppServer] = {}
         self._live_threads: OrderedDict[str, LiveThread] = OrderedDict()
         self._login: CodexLogin | None = None
-        self._model_efforts: dict[str, list[str]] = {}
         self.rate_limits: dict | None = None
 
     def _on_notification(self, message: dict) -> None:
@@ -551,7 +550,6 @@ class CodexProvider:
                 continue
             efforts = [option.get('reasoningEffort') for option in entry.get('supportedReasoningEfforts') or []]
             efforts = [effort for effort in efforts if effort]
-            self._model_efforts[value] = efforts
             models.append(
                 ProviderModel(
                     key=model_key(value),
@@ -607,7 +605,7 @@ class CodexProvider:
         self.rate_limits = None
 
     def _effort(self, turn: TurnRequest) -> str | None:
-        supported = self._model_efforts.get(turn.model) or []
+        supported = turn.efforts
         if turn.is_task or turn.effort in ('none', 'minimal'):
             if supported:
                 return supported[0]
