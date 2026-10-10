@@ -9,7 +9,7 @@ The Runner has two independent authorization boundaries:
 
 | API | Client | Authority |
 | --- | --- | --- |
-| Provider execution (`/health`, `/run`, `/process`) | Buddy backend | Privileged Runner key; OS-account execution |
+| Provider execution (`/health`, `/run`, `/process`, `/processes/{id}/stop`) | Buddy backend | Privileged Runner key; OS-account execution |
 | Workspace API (`/v1/*`) | Browser, mobile, future desktop | Temporary origin-bound pairing token; explicit project grants |
 | Operator controls | Host operator | Privileged Runner key; browser Origin requests refused |
 
@@ -171,8 +171,11 @@ keeps running), 60-second commands, eight active sessions,
 `DELETE /v1/terminals/{id}` removes one) and ten-minute idle expiry. Disconnect, token expiry, grant
 revocation, stop and shutdown dispose owned commands. Native Windows Job Objects
 contain descendants even after their leader exits; no PowerShell supervisor is
-needed. POSIX uses process groups. Deliberately detached POSIX processes require
-stronger OS isolation; no account-wide command API is a filesystem sandbox.
+needed. POSIX stops the command's process group. On Linux, stopping a command
+that is still running also stops descendants that left its group, found
+through `/proc`. A descendant that left the group outlives a command that exits
+by itself, and on macOS it is never stopped; containing it requires stronger OS
+isolation. No account-wide command API is a filesystem sandbox.
 
 Provider JSON pipes retain separate stderr and longer-lived stdin. Their pending
 output and short-command captures are bounded; timeouts and disconnects dispose
@@ -185,11 +188,21 @@ If a connected startup fails before a process identity or verified stop arrives,
 the provider retains an unconfirmed cleanup state and refuses new execution.
 The host operator must stop/restart that Runner, then restart Buddy's backend to
 clear that state. Ordinary failures to connect do not create this state. Failed
-cleanup retains the known process handle. Native cleanup can retry verification;
-an unconfirmed remote stop after transport loss needs operator recovery.
+cleanup retains the known process handle so that it can be retried.
 An ended remote stream without an exit status marks the provider disconnected.
 This liveness status does not confirm cleanup or permit a replacement process
 while old ownership remains unconfirmed.
+
+When the connection to a running provider process ends before the Runner
+confirms that the process stopped, Buddy asks that Runner to stop it through
+`POST /processes/{id}/stop`, using the process ID the Runner sent when the
+process started. If the stop cannot be confirmed, for example because the
+Runner cannot be reached, the provider refuses new work. Once the machine is
+reachable, turn the provider off and on in subscription settings to retry.
+This works only while the same Runner instance is running: a restarted Runner
+has no record of the old process. In that case, or when an older Runner sent no
+process ID, check on the host that the old CLI stopped, then restart Buddy's
+backend.
 
 ## Browser, phone, Docker and other computers
 
