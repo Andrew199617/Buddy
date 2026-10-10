@@ -252,3 +252,81 @@ Independent source reviews found no confirmed blocker in the scoped completed
 fixes. Fixtures use temporary directories, disposable Python processes and
 ephemeral loopback servers; real provider accounts, saved keys, live grants,
 Docker, services and shared Claude refs remain untouched.
+
+## Latest Claude reconciliation and verified HTTPS
+
+The final source ordinarily merges Claude `d381d7a5` and preserves concurrent
+PR #3 `982d21d8`. The two incoming arena files remain byte-for-byte Claude's
+source in PR #3; PR #4 owns its stronger arena authorization integration. The
+selected transport policy requires verified HTTPS for every non-loopback
+Runner target, including Docker and Tailscale names/IPs. Literal loopback HTTP
+remains available. The default configurable port remains **8765**, matching
+Machines and avoiding a second execution host on 8083 or the 8081/8082 app ports.
+
+Final Python **3.11.16** validation against frozen production/test source:
+**350 tests run, 335 passed, 15 skipped, zero failures**, all twelve suite exits
+zero. All 40 LF-normalized runtime/test/client/config hashes match before and
+after the run. The platform skips cover native POSIX behavior and Windows
+symlink cases requiring unavailable privileges; simulated POSIX metadata tests
+do not establish native POSIX runtime coverage.
+
+| Suite | Final result |
+| --- | --- |
+| Offline subscriptions and discovery | 51 run: 50 passed, 1 skip |
+| Machine metadata, URL policy and actual forms | 33 passed |
+| Provider host transitions and recovery | 66 passed |
+| Native containment and temporary files | 29 run: 27 passed, 2 skips |
+| Remote cleanup and tracked startup | 25 passed |
+| Workspace boundaries and terminal races | 45 run: 43 passed, 2 skips |
+| Runner API boundaries and shutdown | 12 passed |
+| Key storage | 25 run: 15 passed, 10 skips |
+| Remote EOF liveness and cleanup debt | 7 passed |
+| Codex effort metadata lifecycle | 18 passed |
+| Verified client transport and redirect refusal | 19 passed |
+| TLS server, launcher, overlay and certificate replacement | 20 passed |
+
+The actual disposable TLS fixtures exercise trusted private-CA and self-signed
+leaf connections, wrong-host/untrusted/expired rejection, HTTP and WebSocket
+redirect refusal before privileged-key forwarding, and native child cleanup.
+Certificate startup validates and loads the same public-chain snapshot; the
+replacement regression fails against the previous load-then-reread behavior.
+The operator private-key file is never copied. Temporary certificates, keys,
+processes and loopback servers are fixture-only and cleaned up.
+
+Node **22.23.3** production build passed, exit 0 (Vite 2m32s), with index SHA256
+`C6B2DA7A147EC903308CCDA6AD7D5F75D184EB2725D0EB99B696F0A847A26517`.
+The nine captured-machine API unit tests pass on the corrected final client
+bytes. Six production client files are the exact PR #4-authored delivery: the
+five guarded provider files plus the narrow HTTPS machine-default/copy patch.
+The API test-only cleanup callback also matches its supplied correction.
+
+The fresh standalone full Svelte check **fails**, exit 1, with **6,906 errors
+and 193 warnings**, equal to the exact `d381d7a5` baseline. No full-check pass
+is claimed. The initial full-message comparison preserves 33 added/removed
+errors from dependency realpaths and 78 added/removed warnings from baseline
+PowerShell/OEM-437 em-dash corruption. Supplemental evidence proves the affected
+dependency/compiler bytes identical and canonicalizes only those exact aliases
+plus the existing equivalent Response/AbortController union order. Every complete
+message and multiplicity is retained; the resulting comparison is **zero added
+or removed diagnostics** across all 7,099 messages. Original logs and the initial
+comparison remain preserved. All 865 tracked frontend check inputs are unchanged.
+
+Actual Docker Compose `config` validation also passed with an isolated dummy
+environment and public-file fixture: the original two services, storage and
+ports remain, and only the backend's read-only public CA mount/trust variable
+is added. No private-key mount, runtime action or real credential was used.
+
+Evidence: task-local `runner-https-validation.json` and twelve logs,
+`runner-https-check.alias-proof.json`, `runner-https-check.canonical-comparison.json`,
+the reproducible `compare-runner-https-environment.mjs`,
+`runner-https-compose-validation.json`, and `runner-https-final.json` with exact
+commit/patch hashes. PR #4 independently owns combined UI/browser validation;
+historical synthetic UI runs are not real TLS or provider-account proof.
+
+No live certificate export, trust installation, Docker recreation, Runner
+restart, machine setting, pairing or project grant occurred. Existing certificate
+exportability and actual Docker-to-Runner routing remain unprobed. The code
+supports operator PEMs and application-scoped verified trust; it installs no
+automatic renewal, hot reload or recurring expiry monitor. Applying a renewed
+certificate currently requires restart. See [the operator setup](TLS_SETUP.md)
+and the separate task-local `runner-https-live-plan.md` for approval and rollback.
