@@ -266,14 +266,30 @@ Tailscale host name to `BUDDY_ALLOWED_HOSTS` in `docker/buddy/.env`, and the
 Tailscale IP as well if MCP sign-ins go through it. The backend is also published on 8081. `docker compose -f docker/buddy/compose.yaml
 ps` shows what is running, and `logs -f buddy` follows the server log.
 
-To move existing data in, stop the Windows instance using it, create the
-volume, and copy the data folder over it; reuse that data's
+To move existing data in, stop the Windows instance using it (and Buddy in
+Docker if it is running: `docker compose -f docker/buddy/compose.yaml stop`),
+create the volume, and copy the data folder over it; reuse that data's
 `WEBUI_SECRET_KEY` so sign-ins and connected tools keep working:
 
 ```powershell
-docker compose -f docker/buddy/compose.yaml run --rm --no-deps buddy true
+docker compose -f docker/buddy/compose.yaml run --rm --no-deps --build buddy true
 docker run --rm -v buddy_buddy-data:/data -v "C:\path\to\data:/source:ro" alpine sh -c "cp -a /source/. /data/"
 ```
+
+Buddy stores each upload's full path, so the copied database still points at
+the Windows folder and earlier uploads will not open. Point those paths at the
+container's data folder, passing the same Windows folder you copied. Check the
+dry run first: `matching_paths` counts the uploads it will update, and
+`missing_files` should be 0. Then apply it and start Buddy:
+
+```powershell
+docker compose -f docker/buddy/compose.yaml run --rm --no-deps buddy python /app/local/update_upload_paths.py --old-data-dir "C:\path\to\data" --dry-run
+docker compose -f docker/buddy/compose.yaml run --rm --no-deps buddy python /app/local/update_upload_paths.py --old-data-dir "C:\path\to\data"
+docker compose -f docker/buddy/compose.yaml up -d
+```
+
+The Windows folder is left unchanged as a backup. Do not start the Windows
+instance on it again: it would run the same automations as Buddy in Docker.
 
 Claude Code and Codex are not installed in the image. Add a Buddy Runner on
 your PC as a machine so they run there with your sign-ins, repositories, and
