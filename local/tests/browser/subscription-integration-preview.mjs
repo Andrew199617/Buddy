@@ -138,13 +138,15 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		method: 'browser',
 		url: 'https://example.invalid/synthetic-sign-in',
 		message: 'Synthetic pending sign-in; no CLI was started.',
-		needs_code: mode === 'code-login' || mode === 'poll-terminal-code'
+		needs_code:
+			mode === 'code-login' || mode === 'remote-code-login' || mode === 'poll-terminal-code'
 	};
 	if (
 		mode.includes('machine-remove') ||
 		mode.includes('login-machine-change') ||
 		mode.includes('revision') ||
-		mode === 'checking-registry'
+		mode === 'checking-registry' ||
+		mode === 'remote-code-login'
 	) {
 		settingsByProvider.claude = {
 			...providerFixture('claude').settings,
@@ -963,8 +965,9 @@ async function successCase(browser, profile) {
 	});
 }
 
-async function codeLoginCase(browser, profile) {
-	await runCase(browser, profile, 'code-login', 'code-login', async ({ page }, fixtures) => {
+async function codeLoginCase(browser, profile, remote = false) {
+	const name = remote ? 'remote-code-login' : 'code-login';
+	await runCase(browser, profile, name, name, async ({ page }, fixtures) => {
 		await openLogin(page);
 		await startLogin(page);
 		await loginDialog(page).locator('#subscription-login-code').fill('synthetic-approval-code');
@@ -976,7 +979,17 @@ async function codeLoginCase(browser, profile) {
 		const codeRequest = fixtures.requests.find((request) =>
 			request.path.endsWith('/claude/login/code')
 		);
-		assert.equal(codeRequest.expectedMachineId, 'local');
+		assert.equal(codeRequest.expectedMachineId, remote ? 'runner-a' : 'local');
+		assert.equal(codeRequest.expectedMachineRevision, remote ? 'fixture-revision-a-1' : null);
+		assert.notEqual(codeRequest.guardRejected, true, 'The captured owner accepts this code');
+		if (remote) {
+			const startRequest = fixtures.requests.find(
+				(request) => request.method === 'POST' && request.path === statusPath + '/login'
+			);
+			assert.equal(startRequest.expectedMachineId, 'runner-a');
+			assert.equal(startRequest.expectedMachineRevision, 'fixture-revision-a-1');
+			assert.equal(fixtures.providerSettings().machine_id, 'runner-a');
+		}
 		assert.equal(fixtures.count('DELETE'), 0);
 	});
 }
@@ -2098,6 +2111,7 @@ try {
 		await terminalPollCase(browser, profile, 'code');
 		await successCase(browser, profile);
 		await codeLoginCase(browser, profile);
+		await codeLoginCase(browser, profile, true);
 		await checkingTransitionCase(browser, profile);
 		await lateCheckCase(browser, profile, false);
 		await lateCheckCase(browser, profile, true);
