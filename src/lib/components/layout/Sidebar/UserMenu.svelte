@@ -8,7 +8,11 @@
 	import { getLogoutRedirectUrl, getSessionUser, userSignOut } from '$lib/apis/auths';
 
 	import { showSettings, mobile, showSidebar, user, config, settings } from '$lib/stores';
-	import { buddyDockState, getNavigationFallbacks } from '$lib/components/buddy/navigation';
+	import {
+		buddyDockState,
+		getNavigationFallbacks,
+		getPermittedNavigation
+	} from '$lib/components/buddy/navigation';
 
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 
@@ -63,6 +67,14 @@
 		$mobile,
 		$showSidebar
 	);
+	$: permittedNavigation = getPermittedNavigation($user, $config?.features);
+	// Holding Shift reveals the pin buttons, so it also lists destinations the dock already
+	// shows: their pins still choose what the sidebar lists whenever the dock is hidden.
+	$: navigationRows = {
+		workspace: navigationFallbacks.workspace || (shiftKey && permittedNavigation.workspace),
+		notes: navigationFallbacks.notes || (shiftKey && permittedNavigation.notes),
+		automations: navigationFallbacks.automations || (shiftKey && permittedNavigation.automations)
+	};
 
 	const isPinned = (id: string) => {
 		return pinnedItems.includes(id);
@@ -246,7 +258,7 @@
 				<hr class="border-gray-50/30 dark:border-gray-800/30 my-0.5 mx-1 p-0" />
 			{/if}
 
-			{#if navigationFallbacks.workspace}
+			{#if navigationRows.workspace}
 				<div
 					class="user-menu-row flex items-center w-full rounded-xl hover:bg-gray-50/60 dark:hover:bg-gray-800/60 transition-colors"
 				>
@@ -292,7 +304,7 @@
 				</div>
 			{/if}
 
-			{#if navigationFallbacks.notes}
+			{#if navigationRows.notes}
 				<div
 					class="user-menu-row flex items-center w-full rounded-xl hover:bg-gray-50/60 dark:hover:bg-gray-800/60 transition-colors"
 				>
@@ -384,7 +396,7 @@
 				</div>
 			{/if}
 
-			{#if navigationFallbacks.automations}
+			{#if navigationRows.automations}
 				<div
 					class="user-menu-row flex items-center w-full rounded-xl hover:bg-gray-50/60 dark:hover:bg-gray-800/60 transition-colors"
 				>

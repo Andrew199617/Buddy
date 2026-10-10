@@ -492,6 +492,54 @@ async function runKeyboardScenario() {
 	}
 }
 
+async function runShiftPinScenario() {
+	configureNavigation();
+	const session = await createMockedPage({
+		viewport: { width: 1280, height: 900 },
+		isMobile: false,
+		hasTouch: false,
+		polish: false,
+		usage: false,
+		modelSelectorVisible: false,
+		pinnedMenuItems: pinnedNavigation
+	});
+	const { page } = session;
+	try {
+		await page.locator('#sidebar-toggle-button').click();
+		await page.locator('#buddy-sidebar-close').waitFor({ state: 'visible' });
+		await page.locator('#sidebar button[aria-label="User menu"]').click();
+		const popup = page.locator('.app-dropdown-menu:visible');
+		await popup.waitFor({ state: 'visible' });
+		const automationsRow = popup
+			.locator('.user-menu-row')
+			.filter({ has: page.locator('a[href="/automations"]') });
+		assert.equal(await automationsRow.count(), 0, 'The dock covers Automations');
+		// Shift reveals pin buttons, including for destinations the dock already shows,
+		// because those pins still choose what the sidebar lists when the dock is hidden.
+		await page.keyboard.down('Shift');
+		await automationsRow.waitFor({ state: 'visible' });
+		assert.equal(await popup.locator('a[href="/notes"]').count(), 1);
+		assert.equal(await popup.locator('a[href="/workspace"]').count(), 1);
+		const settingsWrite = page.waitForRequest(
+			(request) =>
+				new URL(request.url()).pathname === '/api/v1/users/user/settings/update' &&
+				request.method() === 'POST'
+		);
+		await automationsRow.locator('button').click();
+		const pinnedMenuItems = (await settingsWrite).postDataJSON().ui.pinnedMenuItems;
+		assert.deepEqual(pinnedMenuItems, ['notes', 'workspace']);
+		await page.keyboard.up('Shift');
+		await automationsRow.waitFor({ state: 'detached' });
+		assert.equal(await popup.locator('a[href="/notes"]').count(), 0);
+		await page.keyboard.press('Escape');
+		await popup.waitFor({ state: 'detached' });
+		await assertNoRuntimeErrors(session);
+		results.push({ name: 'shift-pin-dock-destinations', unpinnedWhileDocked: true });
+	} finally {
+		await session.browser.close();
+	}
+}
+
 async function runSortableAfterSearchScenario() {
 	configureNavigation();
 	user.role = 'admin';
@@ -627,6 +675,7 @@ await runHeaderScenario({
 await runPermissionScenario({ name: 'knowledge-only', knowledgeOnly: true });
 await runPermissionScenario({ name: 'hidden-workspace', hiddenWorkspace: true });
 await runKeyboardScenario();
+await runShiftPinScenario();
 await runSortableAfterSearchScenario();
 await runRtlDirectionScenario('rtl-desktop', { width: 1280, height: 900 }, false);
 await runRtlDirectionScenario('rtl-phone', { width: 390, height: 844 }, true);

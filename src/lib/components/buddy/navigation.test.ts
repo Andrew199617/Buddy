@@ -3,6 +3,7 @@ import type { SessionUser } from '$lib/stores';
 import {
 	getDockNavigation,
 	getNavigationFallbacks,
+	getPermittedNavigation,
 	getWorkspaceLandingDestination,
 	hasDockDestination,
 	isDockAvailable
@@ -130,6 +131,24 @@ describe('shared bottom navigation destinations', () => {
 				true
 			)
 		).toEqual({ notes: false, workspace: false, automations: false });
+	});
+
+	it('keeps permitted destinations pinnable while the dock deduplicates them', () => {
+		const user = sessionUser('user', { models: true });
+		const features = { enable_notes: true, enable_automations: true };
+		expect(
+			getNavigationFallbacks(user, features, { mounted: true, keyboardOpen: false }, false, true)
+		).toEqual({ notes: false, workspace: false, automations: false });
+		expect(getPermittedNavigation(user, features)).toEqual({
+			notes: true,
+			workspace: true,
+			automations: true
+		});
+		expect(getPermittedNavigation(sessionUser('user', {}, false, false), features)).toEqual({
+			notes: false,
+			workspace: false,
+			automations: false
+		});
 	});
 
 	it('keeps unauthorized destinations absent even when the entire dock is hidden', () => {
