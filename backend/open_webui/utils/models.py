@@ -3,7 +3,7 @@ import copy
 import logging
 import sys
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from open_webui.config import (
     BYPASS_ADMIN_ACCESS_CONTROL,
     DEFAULT_ARENA_MODEL,
@@ -25,6 +25,7 @@ from open_webui.utils.plugin import (
     get_functions_cache,
     get_function_module_from_cache,
 )
+from open_webui.utils.subscriptions.common import SUBSCRIPTION_OWNED_BY
 from open_webui.utils.subscriptions.service import get_subscription_models
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
@@ -464,6 +465,33 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
         request.app.state.MODELS = models_dict
 
     return models
+
+
+async def get_arena_model_ids(models, arena_model, user, bypass_filter=False):
+    """Apply the arena filter to models the caller can actually use."""
+    candidates = [model for model in models if model.get('owned_by') != 'arena']
+    meta = arena_model.get('info', {}).get('meta', {})
+    configured_ids = meta.get('model_ids')
+    if isinstance(configured_ids, list) and configured_ids:
+        if meta.get('filter_mode') == 'exclude':
+            candidates = [model for model in candidates if model['id'] not in configured_ids]
+        else:
+            available_models = {model['id']: model for model in candidates}
+            candidates = [
+                available_models[model_id]
+                for model_id in configured_ids
+                if isinstance(model_id, str) and model_id in available_models
+            ]
+
+    if user.role != 'admin':
+        # Subscription providers enforce this independently of ordinary model ACLs.
+        candidates = [model for model in candidates if model.get('owned_by') != SUBSCRIPTION_OWNED_BY]
+        if not bypass_filter:
+            candidates = await get_filtered_models(candidates, user)
+
+    if not candidates:
+        raise HTTPException(status_code=403, detail='No accessible models available for arena')
+    return [model['id'] for model in candidates]
 
 
 async def check_model_access(user, model, model_info=None, db=None):

@@ -32,7 +32,7 @@ from open_webui.utils.filter import (
     process_filter_functions,
 )
 from open_webui.utils.json_codec import JSONCodec
-from open_webui.utils.models import check_model_access, get_all_models
+from open_webui.utils.models import check_model_access, get_all_models, get_arena_model_ids
 from open_webui.utils.payload import convert_payload_openai_to_ollama
 from open_webui.utils.response import (
     convert_response_ollama_to_openai,
@@ -217,24 +217,10 @@ async def generate_chat_completion(
         # from a path that did NOT go through process_chat_payload (e.g.,
         # background tasks for title/follow-up/tags generation), resolve now.
         if not selected_model_id and model.get('owned_by') == 'arena':
-            model_ids = model.get('info', {}).get('meta', {}).get('model_ids')
-            filter_mode = model.get('info', {}).get('meta', {}).get('filter_mode')
-            if model_ids and filter_mode == 'exclude':
-                model_ids = [
-                    available_model['id']
-                    for available_model in list(request.app.state.MODELS.values())
-                    if available_model.get('owned_by') != 'arena' and available_model['id'] not in model_ids
-                ]
-
-            if isinstance(model_ids, list) and model_ids:
-                selected_model_id = random.choice(model_ids)
-            else:
-                model_ids = [
-                    available_model['id']
-                    for available_model in list(request.app.state.MODELS.values())
-                    if available_model.get('owned_by') != 'arena'
-                ]
-                selected_model_id = random.choice(model_ids)
+            model_ids = await get_arena_model_ids(
+                list(request.app.state.MODELS.values()), model, user, bypass_filter=bypass_filter
+            )
+            selected_model_id = random.choice(model_ids)
 
             form_data['model'] = selected_model_id
 
