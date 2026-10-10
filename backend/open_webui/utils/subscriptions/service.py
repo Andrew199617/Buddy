@@ -14,7 +14,7 @@ import logging
 import re
 import time
 import uuid
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit
@@ -25,6 +25,7 @@ from starlette.responses import StreamingResponse
 from open_webui.env import DATA_DIR, UVICORN_WORKERS
 from open_webui.models.config import Config
 from open_webui.models.models import Models
+from open_webui.utils.chat_id import CHANNEL_CHAT_ID_PREFIX
 from open_webui.utils.payload import apply_model_params_to_body_openai, apply_system_prompt_to_body
 from open_webui.utils.subscriptions.claude_code import ClaudeCodeProvider
 from open_webui.utils.subscriptions.codex import CodexProvider
@@ -1171,6 +1172,21 @@ async def _listed_models(provider_id: str) -> list[dict]:
         return []
 
 
+def _turn_access(settings: ProviderSettings, metadata: dict) -> str:
+    """Tasks and channel replies run chat-only, whatever access the provider allows.
+
+    A channel reply's prompt holds every member's messages and its answer is
+    posted for every member to read, so it must not run tools or read files
+    on the administrator's machine.
+    """
+    if metadata.get('task'):
+        return ACCESS_CHAT
+    chat_id = metadata.get('chat_id')
+    if isinstance(chat_id, str) and chat_id.startswith(CHANNEL_CHAT_ID_PREFIX):
+        return ACCESS_CHAT
+    return settings.access
+
+
 def _require_plan(provider_id: str, provider_status: dict | None) -> None:
     """Start a turn only when the CLI is known to use a plan, so it never bills the API."""
     label = PROVIDER_LABELS[provider_id]
@@ -1262,11 +1278,11 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
             if generation != _provider_generations.get(provider_id, 0):
                 raise SubscriptionError('The provider machine changed; refresh before starting another turn.')
             machine = _tracking_machine(provider_id, await get_machine(settings.machine_id))
-            access = ACCESS_CHAT if is_task else settings.access
+            access = _turn_access(settings, metadata)
             turn = TurnRequest(
                 model=subscription['model'],
                 conversation=parse_messages(payload.get('messages')),
-                settings=settings,
+                settings=replace(settings, access=access),
                 cwd=await working_directory(settings, access, machine),
                 effort=requested_effort(payload),
                 is_task=is_task,

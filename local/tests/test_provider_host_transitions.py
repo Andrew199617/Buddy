@@ -407,7 +407,7 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(probe.processes, [])
         self.assertEqual(self.config.commits, [])
 
-    async def fixture_chat(self, stream=False):
+    async def fixture_chat(self, stream=False, metadata=None):
         async def passthrough_preset(request, payload, metadata, user, models):
             return payload['model'], payload
 
@@ -417,12 +417,32 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.service.stream_events = fixture_stream_events
         self.service.StreamingResponse = OfflineStreamingResponse
         model_id = 'claude-code.fixture-model'
+        form = {'model': model_id, 'messages': [{'role': 'user', 'content': 'Fixture message'}], 'stream': stream}
+        if metadata is not None:
+            form['metadata'] = metadata
         return await self.service.generate_subscription_chat_completion(
             types.SimpleNamespace(state=types.SimpleNamespace()),
-            {'model': model_id, 'messages': [{'role': 'user', 'content': 'Fixture message'}], 'stream': stream},
+            form,
             types.SimpleNamespace(role='admin'),
             {model_id: {'subscription': {'provider': 'claude', 'model': 'fixture-model'}}}
         )
+
+    async def test_channel_replies_run_chat_only_whatever_access_the_provider_allows(self):
+        self.seed_old_signed_in_cache()
+        observed = []
+
+        async def record_turn(turn):
+            observed.append((turn.access, turn.settings.access, turn.cwd))
+            yield {'text': 'fixture response'}
+
+        self.providers['claude'].turn_hook = record_turn
+        await self.fixture_chat(metadata={'chat_id': 'channel:fixture-channel'})
+        await self.fixture_chat(metadata={'chat_id': 'fixture-chat'})
+        self.assertEqual(observed, [
+            ('chat', 'chat', 'fixture-empty-chat-workspace'),
+            ('full', 'full', 'C:\\fixture-project'),
+        ])
+        self.assertEqual(self.config.values['subscriptions.claude']['access'], 'full')
 
     def seed_old_signed_in_cache(self):
         self.service.status_cache._entries['claude'] = self.service._CacheEntry(

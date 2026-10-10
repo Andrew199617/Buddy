@@ -19,7 +19,7 @@ import time
 import types
 import unittest
 import uuid
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 from unittest.mock import AsyncMock, patch
@@ -122,6 +122,7 @@ def load_service(config, data_dir):
         'dataclass': dataclass,
         'field': field,
         'fields': fields,
+        'replace': replace,
         'Path': Path,
         'Any': Any,
         'Awaitable': Awaitable,
@@ -136,6 +137,7 @@ def load_service(config, data_dir):
         'UVICORN_WORKERS': 1,
         'Config': config,
         'Models': types.SimpleNamespace(),
+        'CHANNEL_CHAT_ID_PREFIX': 'channel:',
         'ClaudeCodeProvider': FakeProvider,
         'CodexProvider': FakeCodexProvider,
         'LOCAL_MACHINE_ID': 'local',
