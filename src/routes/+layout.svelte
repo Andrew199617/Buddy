@@ -38,7 +38,7 @@
 		pyodideWorker,
 		desktopEvent
 	} from '$lib/stores';
-	import { refreshChatList } from '$lib/stores/chatList';
+	import { refreshChatList, resetChatListState } from '$lib/stores/chatList';
 	import { getFileContentById } from '$lib/apis/files';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
@@ -956,6 +956,9 @@
 		}
 		user.set(null);
 		localStorage.removeItem('token');
+		// /auth signs the next account in without a reload, so forget this
+		// account's chat rows, unread summary and token before it does.
+		resetChatListState();
 		// Clear the OAuth token cookie so /auth doesn't auto-login and redirect-loop
 		document.cookie = 'token=; Max-Age=0; path=/';
 		userSignOut().catch((error) => {
