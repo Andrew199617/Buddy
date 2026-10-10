@@ -184,8 +184,7 @@
 					{/if}
 					{#if $hasUnreadChats}
 						<span id="buddy-sidebar-unread-status" class="sr-only">
-							{$i18n.t('Unread')}
-							{$i18n.t('Chats')}
+							{$i18n.t('Unread chats')}
 						</span>
 					{/if}
 					{#if $mobile && infoNotificationCount > 0}

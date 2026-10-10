@@ -51,7 +51,9 @@ async function expectUnread(page, expected) {
 			await page.locator('#sidebar-toggle-button').getAttribute('aria-describedby'),
 			/buddy-sidebar-unread-status/
 		);
-		assert.match(await page.locator('#buddy-sidebar-unread-status').innerText(), /Unread.*Chats/i);
+		// One translatable phrase, so languages can order and inflect the words.
+		const unreadStatus = await page.locator('#buddy-sidebar-unread-status').innerText();
+		assert.equal(unreadStatus.trim(), 'Unread chats');
 	}
 }
 
