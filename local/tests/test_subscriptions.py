@@ -39,7 +39,12 @@ from open_webui.utils.subscriptions.events import (  # noqa: E402
     TokenUsage,
     TurnFailed,
 )
-from open_webui.utils.subscriptions.machines import LocalMachine, RemoteMachine, temp_file_arg  # noqa: E402
+from open_webui.utils.subscriptions.machines import (  # noqa: E402
+    LocalMachine,
+    RemoteMachine,
+    RemoteProcess,
+    temp_file_arg,
+)
 from open_webui.utils.subscriptions.process import ChildProcess, subscription_env  # noqa: E402
 
 PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgo='
@@ -655,6 +660,33 @@ class ProcessTests(unittest.TestCase):
 
 
 class MachineTests(unittest.TestCase):
+    def test_lost_runner_connection_counts_as_exited(self):
+        import aiohttp
+
+        class DroppedConnection:
+            """A runner connection that sends one line, then drops without an exit event."""
+
+            closed = False
+
+            def __aiter__(self):
+                return self._messages()
+
+            async def _messages(self):
+                line = json.dumps({'type': 'stdout', 'data': 'partial\n'})
+                yield types.SimpleNamespace(type=aiohttp.WSMsgType.TEXT, data=line)
+
+            async def close(self):
+                self.closed = True
+
+        async def run():
+            process = RemoteProcess(DroppedConnection(), ['codex', 'app-server'], 7)
+            returncode = await process.wait(5)
+            return returncode, process.stderr_text()
+
+        returncode, stderr = asyncio.run(run())
+        self.assertEqual(returncode, -1)
+        self.assertIn('Buddy Runner', stderr)
+
     def test_local_machine_substitutes_temp_files(self):
         async def run():
             with tempfile.TemporaryDirectory() as directory:

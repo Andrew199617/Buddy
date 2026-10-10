@@ -167,6 +167,11 @@ class RemoteProcess(StreamedOutput):
         except (aiohttp.ClientError, ValueError) as error:
             log.debug('Runner process %s stream ended: %s', self.pid, error)
         finally:
+            if self.returncode is None:
+                # The connection ended without an exit event (runner restart,
+                # network drop, or our own kill); the process is gone either way.
+                self.returncode = -1
+                self._stderr = self._stderr or 'The connection to the Buddy Runner closed.'
             self._chunks.put_nowait(None)
             self._exited.set()
             await self._websocket.close()
