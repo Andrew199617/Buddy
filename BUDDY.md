@@ -226,6 +226,36 @@ runner key can run any command as the user running the runner, so it listens
 only on the local loopback by default and Buddy never sends the key to the
 browser.
 
+## Buddy in Docker
+
+`docker/buddy/compose.yaml` runs Buddy as two containers: the backend (with
+the `local/` patches) and the production frontend server. Data lives in the
+`buddy_buddy-data` volume.
+
+```powershell
+Copy-Item docker\buddy\example.env docker\buddy\.env   # then fill in WEBUI_SECRET_KEY
+docker compose -f docker/buddy/compose.yaml up -d --build
+```
+
+Open `http://localhost:8082` (or the Tailscale address on port 8082). The
+backend is also published on 8081. `docker compose -f docker/buddy/compose.yaml
+ps` shows what is running, and `logs -f buddy` follows the server log.
+
+To move existing data in, stop the Windows instance using it, create the
+volume, and copy the data folder over it; reuse that data's
+`WEBUI_SECRET_KEY` so sign-ins and connected tools keep working:
+
+```powershell
+docker compose -f docker/buddy/compose.yaml run --rm --no-deps buddy true
+docker run --rm -v buddy_buddy-data:/data -v "C:\path\to\data:/source:ro" alpine sh -c "cp -a /source/. /data/"
+```
+
+Claude Code and Codex are not installed in the image. Add a Buddy Runner on
+your PC as a machine so they run there with your sign-ins, repositories, and
+terminal. Inside the container, `localhost` is the container itself; use
+`http://host.docker.internal:<port>` for services on your PC, such as a
+llama.cpp server.
+
 ## Research tools
 
 Import each tool's JSON bundle through **Workspace → Tools → Import JSON**.
