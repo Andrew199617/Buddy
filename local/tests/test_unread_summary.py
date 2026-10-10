@@ -48,14 +48,17 @@ async def isolated_db_context(db):
 
 MODELS = {name: getattr(sa, name) for name in (
     'JSON', 'BigInteger', 'Boolean', 'Column', 'ForeignKey', 'Index', 'String', 'Text',
-    'and_', 'bindparam', 'cast', 'func', 'or_', 'select', 'text',
+    'and_', 'bindparam', 'case', 'cast', 'func', 'or_', 'select', 'text',
 )}
-MODELS.update(Base=declarative_base(), JSONCodec=json, AsyncSession=AsyncSession,
+MODELS.update(Base=declarative_base(), JSONCodec=json, AsyncSession=AsyncSession, BaseModel=BaseModel,
               get_async_db_context=isolated_db_context)
-execute_definitions(BACKEND / 'models/chats.py', {'Chat'}, MODELS)
+execute_definitions(BACKEND / 'models/chats.py', {
+    'Chat', 'ChatTitleIdResponse', 'unfinished_assistant_reply', 'unread_chat_condition', 'chat_list_order',
+}, MODELS)
 execute_definitions(BACKEND / 'models/chat_messages.py', {'ChatMessage'}, MODELS)
-execute_definitions(BACKEND / 'models/chats.py', {'get_unread_summary'}, MODELS, 'ChatTable')
-Chats = SimpleNamespace(get_unread_summary=MODELS['get_unread_summary'].__get__(object()))
+CHAT_TABLE_METHODS = {'get_unread_summary', 'count_unread_by_folder_ids', 'get_chats_by_folder_id_and_user_id'}
+execute_definitions(BACKEND / 'models/chats.py', CHAT_TABLE_METHODS, MODELS, 'ChatTable')
+Chats = SimpleNamespace(**{name: MODELS[name].__get__(object()) for name in CHAT_TABLE_METHODS})
 Chat = MODELS['Chat']
 ChatMessage = MODELS['ChatMessage']
 
@@ -176,6 +179,66 @@ class UnreadDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.session.execute(sa.update(ChatMessage).where(ChatMessage.id == 'a').values(done=True))
         await self.session.commit()
         self.assertEqual(await self.summary(active), {'count': 5, 'only_chat_id': None})
+
+    async def seed_folder_with_stale_reply(self):
+        await self.seed([
+            chat_row('running', folder_id='work', updated_at=300),
+            chat_row('read', folder_id='work', updated_at=200, last_read_at=200),
+            chat_row('stale-unfinished', folder_id='work', updated_at=100),
+            chat_row('finished', folder_id='work', updated_at=90),
+        ], [
+            {'id': 'a', 'chat_id': 'running', 'user_id': 'alice', 'role': 'assistant', 'done': False},
+            {'id': 'b', 'chat_id': 'stale-unfinished', 'user_id': 'alice', 'role': 'assistant', 'done': False},
+            {'id': 'c', 'chat_id': 'finished', 'user_id': 'alice', 'role': 'assistant', 'done': True},
+        ])
+
+    async def folder_order(self, active):
+        chats = await Chats.get_chats_by_folder_id_and_user_id(
+            'work', 'alice', sort_by='unread_updated_at', active_chat_ids=active, db=self.session,
+        )
+        return [chat.id for chat in chats]
+
+    async def test_folder_badge_and_unread_order_use_the_summary_rule(self):
+        # A restart can leave an assistant reply unfinished with no live task.
+        # The dot, the folder badge and the folder's unread-first order must
+        # all count that chat, and all skip the chat that is still generating.
+        await self.seed_folder_with_stale_reply()
+        active = {'running'}
+        self.assertEqual(await self.summary(active), {'count': 2, 'only_chat_id': None})
+        self.assertEqual(await Chats.count_unread_by_folder_ids('alice', ['work'], active, db=self.session),
+                         {'work': 2})
+        self.assertEqual(await self.folder_order(active), ['stale-unfinished', 'finished', 'running', 'read'])
+
+    async def test_unknown_registry_treats_every_unfinished_reply_as_generating(self):
+        await self.seed_folder_with_stale_reply()
+        self.assertEqual(await Chats.count_unread_by_folder_ids('alice', ['work'], None, db=self.session),
+                         {'work': 1})
+        self.assertEqual(await self.folder_order(None), ['finished', 'running', 'read', 'stale-unfinished'])
+
+    async def test_folder_unread_route_rolls_up_live_registry_counts(self):
+        await self.seed_folder_with_stale_reply()
+        release = asyncio.Event()
+        live = asyncio.create_task(release.wait())
+        TASKS['tasks']['task'] = live
+        TASKS['item_tasks']['running'] = ['task']
+        folders = [SimpleNamespace(id='parent', parent_id=None), SimpleNamespace(id='work', parent_id='parent')]
+
+        async def folders_by_user_id(user_id, db=None):
+            return folders if user_id == 'alice' else []
+
+        route_namespace = {
+            'Request': Request, 'AsyncSession': AsyncSession, 'Chats': Chats,
+            'Folders': SimpleNamespace(get_folders_by_user_id=folders_by_user_id),
+            'get_active_task_item_ids': TASKS['get_active_task_item_ids'],
+        }
+        execute_definitions(BACKEND / 'routers/chats.py', {'get_folder_unread_counts'}, route_namespace)
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(redis=None)))
+        try:
+            counts = await route_namespace['get_folder_unread_counts'](request, 'alice', db=self.session)
+        finally:
+            release.set()
+            await live
+        self.assertEqual(counts, {'parent': 2, 'work': 2})
 
     async def test_task_completion_before_registry_cleanup_restores_unread(self):
         await self.seed([chat_row('running')], [

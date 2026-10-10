@@ -32,7 +32,7 @@ from open_webui.utils.access_control import (
 )
 from open_webui.utils.access_control.files import can_read_all_folder_files, get_accessible_folder_files
 from open_webui.utils.auth import get_admin_user, get_verified_user
-from open_webui.tasks import has_active_tasks
+from open_webui.tasks import get_active_task_item_ids, has_active_tasks
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,11 +45,14 @@ router = APIRouter()
 from open_webui.utils.access_control.folders import has_folder_access as _has_folder_access
 
 
-async def get_folder_unread_counts(user_id: str, db: AsyncSession | None = None) -> dict[str, int]:
+async def get_folder_unread_counts(request: Request, user_id: str, db: AsyncSession | None = None) -> dict[str, int]:
     folders = await Folders.get_folders_by_user_id(user_id, db=db)
     parent_by_id = {folder.id: folder.parent_id for folder in folders}
     unread_counts = dict.fromkeys(parent_by_id.keys(), 0)
-    direct_unread_counts = await Chats.count_unread_by_folder_ids(user_id, list(parent_by_id.keys()), db=db)
+    active_chat_ids = await get_active_task_item_ids(request.app.state.redis)
+    direct_unread_counts = await Chats.count_unread_by_folder_ids(
+        user_id, list(parent_by_id.keys()), active_chat_ids, db=db
+    )
 
     for unread_folder_id, unread_count in direct_unread_counts.items():
         current_id = unread_folder_id
@@ -131,7 +134,7 @@ async def get_folders(
 
         folder_list.append(folder)
 
-    unread_counts = await get_folder_unread_counts(user.id, db=db)
+    unread_counts = await get_folder_unread_counts(request, user.id, db=db)
 
     return [
         FolderNameIdResponse(**folder.model_dump(), unread_count=unread_counts.get(folder.id, 0))
@@ -591,6 +594,7 @@ async def get_shared_folder_chats(
 
     limit = 10
     skip = (page - 1) * limit if page is not None else 0
+    active_chat_ids = await get_active_task_item_ids(request.app.state.redis)
     chats = await Chats.get_all_chats_by_folder_id(
         id,
         skip=skip,
@@ -598,6 +602,7 @@ async def get_shared_folder_chats(
         sort_by=sort_by,
         sort_dir=sort_dir,
         unread_for_user_id=user.id,
+        active_chat_ids=active_chat_ids,
         db=db,
     )
     total = await Chats.count_all_chats_by_folder_id(id, db=db) if page is not None else len(chats)
@@ -659,7 +664,7 @@ async def mark_folder_chats_read_by_id(
         'folder_id': id,
         'folder_ids': folder_ids,
         'updated_count': updated_count,
-        'folder_unread_counts': await get_folder_unread_counts(user.id, db=db),
+        'folder_unread_counts': await get_folder_unread_counts(request, user.id, db=db),
     }
 
 

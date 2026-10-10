@@ -104,20 +104,61 @@ def chat_search_message_content_match_sql(dialect_name: str, key: str) -> str:
     raise NotImplementedError(f'Unsupported dialect: {dialect_name}')
 
 
-def chat_list_order(sort_by: str = 'updated_at', sort_dir: str = 'desc', user_id: str | None = None):
-    if sort_by != 'unread_updated_at':
-        sort_column = Chat.title if sort_by == 'title' else Chat.updated_at
-        order_clause = sort_column.asc() if sort_dir == 'asc' else sort_column.desc()
-        return order_clause, Chat.id
-
-    unfinished_assistant = (
+def unfinished_assistant_reply():
+    return (
         select(ChatMessage.id)
         .where(ChatMessage.chat_id == Chat.id)
         .where(ChatMessage.role == 'assistant')
         .where(ChatMessage.done.is_(False))
         .exists()
     )
-    conditions = [Chat.updated_at > func.coalesce(Chat.last_read_at, 0), ~unfinished_assistant]
+
+
+async def unread_chat_condition(session: AsyncSession, active_chat_ids: set[str] | None):
+    """Match chats updated since they were last read.
+
+    A reply that is still being generated does not count yet. When the live
+    task ids are known, only those chats count as generating, so a reply left
+    unfinished by a restart stays unread, as the sidebar rows show it. With
+    active_chat_ids=None every unfinished reply counts as generating.
+    """
+    updated_since_read = or_(Chat.last_read_at.is_(None), Chat.updated_at > Chat.last_read_at)
+    if active_chat_ids is None:
+        return and_(updated_since_read, ~unfinished_assistant_reply())
+    if not active_chat_ids:
+        return updated_since_read
+
+    # One JSON bind avoids database parameter limits even with many
+    # active tasks. Both supported dialects expand it inside SQL.
+    active_ids = bindparam('active_chat_ids', JSONCodec.dumps(sorted(active_chat_ids)))
+    connection = await session.connection()
+    dialect_name = connection.dialect.name
+    if dialect_name == 'sqlite':
+        active_rows = func.json_each(active_ids).table_valued('value')
+        active_query = select(active_rows.c.value)
+    elif dialect_name == 'postgresql':
+        active_value = func.json_array_elements_text(cast(active_ids, JSON)).column_valued('value')
+        active_query = select(active_value)
+    else:
+        raise NotImplementedError(f'Unsupported dialect: {dialect_name}')
+
+    still_generating = and_(Chat.id.in_(active_query), unfinished_assistant_reply())
+    return and_(updated_since_read, ~still_generating)
+
+
+async def chat_list_order(
+    session: AsyncSession,
+    sort_by: str = 'updated_at',
+    sort_dir: str = 'desc',
+    active_chat_ids: set[str] | None = None,
+    user_id: str | None = None,
+):
+    if sort_by != 'unread_updated_at':
+        sort_column = Chat.title if sort_by == 'title' else Chat.updated_at
+        order_clause = sort_column.asc() if sort_dir == 'asc' else sort_column.desc()
+        return order_clause, Chat.id
+
+    conditions = [await unread_chat_condition(session, active_chat_ids)]
     if user_id is not None:
         conditions.append(Chat.user_id == user_id)
 
@@ -1569,7 +1610,7 @@ class ChatTable:
             if not include_archived:
                 stmt = stmt.filter_by(archived=False)
 
-            stmt = stmt.order_by(*chat_list_order(sort_by, sort_dir))
+            stmt = stmt.order_by(*await chat_list_order(session, sort_by, sort_dir))
 
             if skip:
                 stmt = stmt.offset(skip)
@@ -1816,18 +1857,11 @@ class ChatTable:
         self,
         user_id: str,
         folder_ids: list[str],
+        active_chat_ids: set[str] | None,
         db: AsyncSession | None = None,
     ) -> dict[str, int]:
         if not folder_ids:
             return {}
-
-        unfinished_assistant = (
-            select(ChatMessage.id)
-            .where(ChatMessage.chat_id == Chat.id)
-            .where(ChatMessage.role == 'assistant')
-            .where(ChatMessage.done.is_(False))
-            .exists()
-        )
 
         async with get_async_db_context(db) as session:
             result = await session.execute(
@@ -1836,8 +1870,7 @@ class ChatTable:
                     Chat.user_id == user_id,
                     Chat.folder_id.in_(folder_ids),
                     Chat.archived == False,
-                    Chat.updated_at > func.coalesce(Chat.last_read_at, 0),
-                    ~unfinished_assistant,
+                    await unread_chat_condition(session, active_chat_ids),
                 )
                 .group_by(Chat.folder_id)
             )
@@ -1855,31 +1888,8 @@ class ChatTable:
                 Chat.user_id == user_id,
                 Chat.archived.is_(False),
                 Chat.meta['internal'].as_boolean().is_not(True),
-                or_(Chat.last_read_at.is_(None), Chat.updated_at > Chat.last_read_at),
+                await unread_chat_condition(session, active_chat_ids),
             ]
-            if active_chat_ids:
-                # One JSON bind avoids database parameter limits even with many
-                # active tasks. Both supported dialects expand it inside SQL.
-                active_ids = bindparam('active_chat_ids', JSONCodec.dumps(sorted(active_chat_ids)))
-                connection = await session.connection()
-                dialect_name = connection.dialect.name
-                if dialect_name == 'sqlite':
-                    active_rows = func.json_each(active_ids).table_valued('value')
-                    active_query = select(active_rows.c.value)
-                elif dialect_name == 'postgresql':
-                    active_value = func.json_array_elements_text(cast(active_ids, JSON)).column_valued('value')
-                    active_query = select(active_value)
-                else:
-                    raise NotImplementedError(f'Unsupported dialect: {dialect_name}')
-
-                unfinished_assistant = (
-                    select(ChatMessage.id)
-                    .where(ChatMessage.chat_id == Chat.id)
-                    .where(ChatMessage.role == 'assistant')
-                    .where(ChatMessage.done.is_(False))
-                    .exists()
-                )
-                conditions.append(~and_(Chat.id.in_(active_query), unfinished_assistant))
 
             result = await session.execute(select(func.count(Chat.id), func.min(Chat.id)).where(*conditions))
             count, first_chat_id = result.one()
@@ -2202,6 +2212,7 @@ class ChatTable:
         limit: int = 60,
         sort_by: str = 'updated_at',
         sort_dir: str = 'desc',
+        active_chat_ids: set[str] | None = None,
         db: AsyncSession | None = None,
     ) -> list[ChatTitleIdResponse]:
         async with get_async_db_context(db) as session:
@@ -2212,7 +2223,7 @@ class ChatTable:
                 .filter_by(archived=False)
                 .where(Chat.meta['internal'].as_boolean().is_not(True))
             )
-            stmt = stmt.order_by(*chat_list_order(sort_by, sort_dir))
+            stmt = stmt.order_by(*await chat_list_order(session, sort_by, sort_dir, active_chat_ids))
 
             if skip:
                 stmt = stmt.offset(skip)
@@ -2242,6 +2253,7 @@ class ChatTable:
         sort_by: str = 'updated_at',
         sort_dir: str = 'desc',
         unread_for_user_id: str | None = None,
+        active_chat_ids: set[str] | None = None,
         db: AsyncSession | None = None,
     ) -> list[dict]:
         """Get chats in a folder across ALL users. Returns dicts with user_id."""
@@ -2253,7 +2265,9 @@ class ChatTable:
                 .filter_by(archived=False)
                 .where(Chat.meta['internal'].as_boolean().is_not(True))
             )
-            stmt = stmt.order_by(*chat_list_order(sort_by, sort_dir, unread_for_user_id))
+            stmt = stmt.order_by(
+                *await chat_list_order(session, sort_by, sort_dir, active_chat_ids, user_id=unread_for_user_id)
+            )
 
             if skip:
                 stmt = stmt.offset(skip)

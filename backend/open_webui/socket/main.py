@@ -43,6 +43,7 @@ from open_webui.tasks import (
     REDIS_PUBSUB_MAX_RECONNECT_INTERVAL,
     REDIS_PUBSUB_RECONNECT_INTERVAL,
     create_task,
+    get_active_task_item_ids,
     stop_item_tasks,
 )
 from open_webui.utils.access_control import has_permission
@@ -52,6 +53,7 @@ from open_webui.utils.json_codec import SOCKETIO_JSON, JSONCodec, dumps_bytes
 from open_webui.utils.misc import get_output_text
 from open_webui.utils.redis import (
     build_sentinel_url,
+    get_redis_client,
     get_redis_connection,
     get_sentinels_from_env,
 )
@@ -586,7 +588,10 @@ async def get_folder_unread_counts(user_id: str) -> dict[str, int]:
     parent_by_id = {folder.id: folder.parent_id for folder in folder_list}
     unread_counts = dict.fromkeys(parent_by_id.keys(), 0)
 
-    direct_unread_counts = await Chats.count_unread_by_folder_ids(user_id, list(parent_by_id.keys()))
+    # Chat tasks register in the app's task Redis (the same cached client as
+    # app.state.redis), not the websocket Redis above.
+    active_chat_ids = await get_active_task_item_ids(get_redis_client(async_mode=True))
+    direct_unread_counts = await Chats.count_unread_by_folder_ids(user_id, list(parent_by_id.keys()), active_chat_ids)
     for unread_folder_id, unread_count in direct_unread_counts.items():
         current_id = unread_folder_id
         seen = set()
