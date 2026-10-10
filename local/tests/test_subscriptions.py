@@ -16,7 +16,7 @@ from unittest.mock import patch
 ROOT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT_DIR / 'backend'))
 
-from open_webui.utils.subscriptions import runner, streaming  # noqa: E402
+from open_webui.utils.subscriptions import claude_code, discovery, runner, streaming  # noqa: E402
 from open_webui.utils.subscriptions.conversation import (  # noqa: E402
     CONTINUE_PROMPT,
     ChatTurn,
@@ -36,6 +36,10 @@ from open_webui.utils.subscriptions.machines import LocalMachine, RemoteMachine,
 from open_webui.utils.subscriptions.process import ChildProcess, subscription_env  # noqa: E402
 
 PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgo='
+
+
+def stream_event(event: dict, parent: str | None = None) -> dict:
+    return {'type': 'stream_event', 'event': event, 'parent_tool_use_id': parent}
 
 
 async def collect(async_iterable) -> list:
@@ -119,6 +123,112 @@ class ConversationTests(unittest.TestCase):
             reloaded = SessionStore(path, limit=2)
             self.assertIsNone(reloaded.get('a'))
             self.assertEqual(reloaded.get('c'), 'session-c')
+
+
+class ClaudeStreamTests(unittest.TestCase):
+    def test_streams_text_thinking_and_tool_activity(self):
+        parser = claude_code.ClaudeStreamParser()
+        messages = [
+            {'type': 'system', 'subtype': 'init', 'session_id': 'first-id'},
+            stream_event({'type': 'message_start'}),
+            stream_event({'type': 'content_block_start', 'content_block': {'type': 'thinking'}}),
+            stream_event({'type': 'content_block_delta', 'delta': {'type': 'thinking_delta', 'thinking': 'Plan'}}),
+            stream_event({'type': 'content_block_start', 'content_block': {'type': 'text'}}),
+            stream_event({'type': 'content_block_delta', 'delta': {'type': 'text_delta', 'text': 'Checking.'}}),
+            {
+                'type': 'assistant',
+                'message': {
+                    'content': [
+                        {'type': 'text', 'text': 'Checking.'},
+                        {'type': 'tool_use', 'name': 'Bash', 'input': {'command': 'git status'}},
+                    ]
+                },
+            },
+            stream_event({'type': 'content_block_delta', 'delta': {'type': 'text_delta', 'text': 'sub'}}, 'tool-1'),
+            stream_event({'type': 'message_start'}),
+            stream_event({'type': 'content_block_start', 'content_block': {'type': 'text'}}),
+            stream_event({'type': 'content_block_delta', 'delta': {'type': 'text_delta', 'text': 'Clean tree.'}}),
+            {'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'Clean tree.'}]}},
+            {
+                'type': 'result',
+                'subtype': 'success',
+                'is_error': False,
+                'session_id': 'forked-id',
+                'usage': {
+                    'input_tokens': 10,
+                    'cache_read_input_tokens': 90,
+                    'cache_creation_input_tokens': 5,
+                    'output_tokens': 7,
+                },
+            },
+        ]
+        events = []
+        for message in messages:
+            events.extend(parser.handle(message))
+
+        text = ''.join(event.text for event in events if isinstance(event, TextDelta))
+        self.assertEqual(text, 'Checking.\n\nClean tree.')
+        self.assertEqual(parser.reply_text, text)
+        self.assertIn(StatusUpdate('Running `git status`'), events)
+        self.assertTrue(any(isinstance(event, ReasoningDelta) and 'Plan' in event.text for event in events))
+        self.assertEqual(parser.session_id, 'forked-id')
+        self.assertTrue(parser.finished)
+        self.assertIsNone(parser.error)
+        self.assertIn(TokenUsage(input_tokens=105, output_tokens=7, cached_input_tokens=90), events)
+
+    def test_uses_full_text_when_partial_messages_are_missing(self):
+        parser = claude_code.ClaudeStreamParser()
+        events = parser.handle({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'Hello'}]}})
+        self.assertEqual(events, [TextDelta('Hello')])
+
+    def test_not_signed_in_becomes_a_clear_error(self):
+        parser = claude_code.ClaudeStreamParser()
+        parser.handle(
+            {
+                'type': 'assistant',
+                'error': 'authentication_failed',
+                'message': {'content': [{'type': 'text', 'text': 'Not logged in · Please run /login'}]},
+            }
+        )
+        events = parser.handle(
+            {'type': 'result', 'subtype': 'success', 'is_error': True, 'result': 'Not logged in', 'usage': {}}
+        )
+        self.assertEqual(events, [])
+        self.assertEqual(parser.error, claude_code.NOT_SIGNED_IN_MESSAGE)
+
+    def test_models_from_initialize(self):
+        entries = [
+            {'value': 'default', 'displayName': 'Default', 'description': 'Use the default'},
+            {
+                'value': 'opus',
+                'displayName': 'Opus',
+                'description': 'Opus 5.5 · Best for everyday, complex tasks · $4/$20 per Mtok',
+                'supportedEffortLevels': ['low', 'high'],
+            },
+            {'value': 'claude-fable-5-1[1m]', 'displayName': 'Fable', 'description': 'Fable 5.1 · Hardest tasks'},
+        ]
+        models = claude_code.models_from_initialize(entries)
+        self.assertEqual([model.key for model in models], ['opus', 'fable'])
+        self.assertEqual(models[0].name, 'Claude Opus 5.5')
+        self.assertEqual(models[0].description, 'Best for everyday, complex tasks')
+        self.assertEqual(models[0].efforts, ['low', 'high'])
+        self.assertEqual(models[1].value, 'claude-fable-5-1[1m]')
+
+    def test_finds_newest_desktop_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            appdata = Path(directory) / 'Roaming'
+            local_appdata = Path(directory) / 'Local'
+            # The MSIX app's real files live under Packages; %APPDATA% is virtualized.
+            package_bundles = local_appdata / 'Packages' / 'Claude_abc123' / 'LocalCache' / 'Roaming' / 'Claude'
+            installs = [(appdata / 'Claude', '2.1.9'), (package_bundles, '2.1.295'), (appdata / 'Claude', '2.1.30')]
+            for root, version in installs:
+                binary = root / 'claude-code' / version / 'abc' / 'claude.exe'
+                binary.parent.mkdir(parents=True)
+                binary.write_text('')
+            with patch.dict(os.environ, {'APPDATA': str(appdata), 'LOCALAPPDATA': str(local_appdata)}):
+                newest = discovery._newest_desktop_bundle()
+            self.assertIn('Claude_abc123', newest)
+            self.assertIn('2.1.295', newest)
 
 
 class ProcessTests(unittest.TestCase):
