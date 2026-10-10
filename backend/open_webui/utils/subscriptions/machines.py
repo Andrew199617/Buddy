@@ -55,9 +55,10 @@ def start_local_process(
     cwd: str,
     extra_env: dict[str, str] | None = None,
     temp_files: dict[str, str] | None = None,
+    temp_dir: str | None = None,
 ) -> ChildProcess:
-    """Start a CLI on this computer."""
-    paths = _write_temp_files(temp_files)
+    """Start a CLI on this computer; shared by LocalMachine and the runner."""
+    paths = _write_temp_files(temp_files, temp_dir)
     try:
         return ChildProcess(
             _substitute_temp_files(args, paths),
