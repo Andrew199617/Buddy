@@ -295,6 +295,16 @@ async def get_session_user_chat_list(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.DEFAULT())
 
 
+async def can_see_folders(user, db: AsyncSession) -> bool:
+    """Apply the rule the sidebar uses to decide whether it shows the Folders section."""
+    config = await Config.get_many('folders.enable', 'user.permissions')
+    if not config.get('folders.enable'):
+        return False
+    if user.role == 'admin':
+        return True
+    return await has_permission(user.id, 'features.folders', config.get('user.permissions'), db=db)
+
+
 @router.get('/unread', response_model=ChatUnreadSummaryResponse)
 async def get_session_user_unread_chat_summary(
     request: Request,
@@ -303,7 +313,8 @@ async def get_session_user_unread_chat_summary(
 ):
     try:
         active_chat_ids = await get_active_task_item_ids(request.app.state.redis)
-        return await Chats.get_unread_summary(user.id, active_chat_ids, db=db)
+        include_folders = await can_see_folders(user, db)
+        return await Chats.get_unread_summary(user.id, active_chat_ids, include_folders=include_folders, db=db)
     except Exception:
         log.exception('Unable to load unread chat summary')
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=ERROR_MESSAGES.DEFAULT())

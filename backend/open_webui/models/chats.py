@@ -1880,9 +1880,15 @@ class ChatTable:
         self,
         user_id: str,
         active_chat_ids: set[str],
+        include_folders: bool = True,
         db: AsyncSession | None = None,
     ) -> dict:
-        """Count owned unread chats without loading history or chat metadata."""
+        """Count owned unread chats without loading history or chat metadata.
+
+        Pass include_folders=False when the sidebar hides its Folders section,
+        so only chats it can still show are counted: those outside folders and
+        pinned ones, which the Pinned section lists wherever they are filed.
+        """
         async with get_async_db_context(db) as session:
             conditions = [
                 Chat.user_id == user_id,
@@ -1890,6 +1896,8 @@ class ChatTable:
                 Chat.meta['internal'].as_boolean().is_not(True),
                 await unread_chat_condition(session, active_chat_ids),
             ]
+            if not include_folders:
+                conditions.append(or_(Chat.folder_id.is_(None), Chat.pinned.is_(True)))
 
             result = await session.execute(select(func.count(Chat.id), func.min(Chat.id)).where(*conditions))
             count, first_chat_id = result.one()

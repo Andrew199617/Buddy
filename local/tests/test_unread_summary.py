@@ -306,30 +306,75 @@ class UnreadDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(compiled.params['active_chat_ids']), ['active', 'x"; SELECT secret'])
         self.assertLess(len(compiled.params), 10)
 
-    async def test_asgi_requires_auth_scopes_owner_and_reports_lookup_failure(self):
-        await self.seed([chat_row('alice-unread'), chat_row('bob-unread', user_id='bob')])
+    def unread_route_app(self, config=None):
+        """Serve the production unread route with synthetic auth, config and folder permissions."""
+        users = {
+            'Bearer synthetic-alice': SimpleNamespace(id='alice', role='user'),
+            'Bearer synthetic-admin': SimpleNamespace(id='alice', role='admin'),
+        }
+        if config is None:
+            config = {'folders.enable': True, 'user.permissions': {'features': {'folders': True}}}
 
         async def verified_user(request: Request):
-            if request.headers.get('authorization') != 'Bearer synthetic-alice':
+            user = users.get(request.headers.get('authorization'))
+            if user is None:
                 raise HTTPException(status_code=401, detail='Not authenticated')
-            return SimpleNamespace(id='alice')
+            return user
 
         async def isolated_session():
             yield self.session
+
+        async def get_many(*keys):
+            return {key: config[key] for key in keys if key in config}
+
+        async def has_permission(user_id, permission_key, default_permissions, db=None):
+            self.assertEqual(permission_key, 'features.folders')
+            return default_permissions['features']['folders']
 
         route_namespace = {
             'router': APIRouter(), 'BaseModel': BaseModel, 'Request': Request, 'AsyncSession': AsyncSession,
             'Depends': Depends, 'get_verified_user': verified_user, 'get_async_session': isolated_session,
             'get_active_task_item_ids': TASKS['get_active_task_item_ids'], 'Chats': Chats,
+            'Config': SimpleNamespace(get_many=get_many), 'has_permission': has_permission,
             'log': logging.getLogger('isolated-unread'), 'HTTPException': HTTPException, 'status': status,
             'ERROR_MESSAGES': SimpleNamespace(DEFAULT=lambda: 'Unavailable'),
         }
         execute_definitions(BACKEND / 'routers/chats.py', {
-            'ChatUnreadSummaryResponse', 'get_session_user_unread_chat_summary',
+            'ChatUnreadSummaryResponse', 'can_see_folders', 'get_session_user_unread_chat_summary',
         }, route_namespace)
         app = FastAPI()
         app.state.redis = FakeRedis({})
         app.include_router(route_namespace['router'], prefix='/api/v1/chats')
+        return app
+
+    async def unread_count(self, config, authorization):
+        app = self.unread_route_app(config)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            response = await client.get('/api/v1/chats/unread', headers={'Authorization': authorization})
+        self.assertEqual(response.status_code, 200)
+        return response.json()['count']
+
+    async def test_asgi_counts_folder_chats_only_while_the_sidebar_shows_folders(self):
+        await self.seed([
+            chat_row('root'),
+            chat_row('filed', folder_id='work'),
+            chat_row('filed-pinned', folder_id='work', pinned=True),
+        ])
+        allowed = {'folders.enable': True, 'user.permissions': {'features': {'folders': True}}}
+        denied = {'folders.enable': True, 'user.permissions': {'features': {'folders': False}}}
+        disabled = {'folders.enable': False, 'user.permissions': {'features': {'folders': True}}}
+        missing = {'user.permissions': {'features': {'folders': True}}}
+
+        self.assertEqual(await self.unread_count(allowed, 'Bearer synthetic-alice'), 3)
+        # Without the Folders section only root and pinned chats stay visible.
+        self.assertEqual(await self.unread_count(denied, 'Bearer synthetic-alice'), 2)
+        self.assertEqual(await self.unread_count(denied, 'Bearer synthetic-admin'), 3)
+        self.assertEqual(await self.unread_count(disabled, 'Bearer synthetic-admin'), 2)
+        self.assertEqual(await self.unread_count(missing, 'Bearer synthetic-admin'), 2)
+
+    async def test_asgi_requires_auth_scopes_owner_and_reports_lookup_failure(self):
+        await self.seed([chat_row('alice-unread'), chat_row('bob-unread', user_id='bob')])
+        app = self.unread_route_app()
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
             denied = await client.get('/api/v1/chats/unread')
             self.assertEqual(denied.status_code, 401)
