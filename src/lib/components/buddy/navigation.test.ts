@@ -117,20 +117,21 @@ describe('shared bottom navigation destinations', () => {
 		).toEqual({ notes: true, workspace: true, automations: true });
 	});
 
-	it('keeps the exact Workspace fallback when no dock destination reaches its landing page', () => {
+	it('shows the Workspace fallback only when Workspace has a landing page', () => {
 		const user = sessionUser('user', { tools: true });
-		expect(
-			getNavigationFallbacks(user, {}, { mounted: true, keyboardOpen: false }, false, true)
-		).toEqual({ notes: false, workspace: true, automations: false });
-		expect(
-			getNavigationFallbacks(
-				user,
-				{ enable_plugins: true },
-				{ mounted: true, keyboardOpen: false },
-				false,
-				true
-			)
-		).toEqual({ notes: false, workspace: false, automations: false });
+		const plugins = { enable_plugins: true };
+		const dockVisible = { mounted: true, keyboardOpen: false };
+		const dockHidden = { mounted: true, keyboardOpen: true };
+		const noFallbacks = { notes: false, workspace: false, automations: false };
+		// Tools without the plugins feature leave /workspace nothing to open.
+		expect(getNavigationFallbacks(user, {}, dockVisible, false, true)).toEqual(noFallbacks);
+		expect(getNavigationFallbacks(user, {}, dockHidden, false, true)).toEqual(noFallbacks);
+		expect(getNavigationFallbacks(user, plugins, dockVisible, false, true)).toEqual(noFallbacks);
+		expect(getNavigationFallbacks(user, plugins, dockHidden, false, true)).toEqual({
+			notes: false,
+			workspace: true,
+			automations: false
+		});
 	});
 
 	it('keeps permitted destinations pinnable while the dock deduplicates them', () => {

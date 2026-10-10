@@ -40,8 +40,8 @@ function configureNavigation({ knowledgeOnly = false, hiddenWorkspace = false } 
 	user.permissions.workspace = { knowledge: true, models: true, prompts: true };
 	if (knowledgeOnly) user.permissions.workspace = { knowledge: true };
 	if (hiddenWorkspace) {
-		// Workspace remains a sidebar destination, but tools are gated from the
-		// bottom dock until the plugins feature is enabled.
+		// Tools are gated until the plugins feature is enabled, which leaves Workspace
+		// with no page to open, so neither the dock nor its fallbacks link to it.
 		user.permissions.workspace = { tools: true };
 		config.features.enable_plugins = false;
 	}
@@ -387,19 +387,16 @@ async function runPermissionScenario({ name, knowledgeOnly, hiddenWorkspace }) {
 		pinnedMenuItems: pinnedNavigation
 	});
 	const { page } = session;
+	const workspaceFallbackCount = hiddenWorkspace ? 0 : 1;
 	try {
 		await page.locator('#sidebar-toggle-button').click();
 		await page.locator('#buddy-sidebar-close').waitFor({ state: 'visible' });
 		assert.equal(await page.locator('.buddy-dock a[aria-label="Notes"]').count(), 1);
 		assert.equal(await page.locator('#sidebar-notes-button').count(), 0);
 		assert.equal(await page.locator('.buddy-dock a[aria-label="Workspace"]').count(), 0);
-		assert.equal(await page.locator('#sidebar-workspace-button').count(), hiddenWorkspace ? 1 : 0);
+		assert.equal(await page.locator('#sidebar-workspace-button').count(), 0);
 		assert.equal(await page.locator('#sidebar-automations-button').count(), 0);
-		await assertProfileNavigation(page, {
-			notes: false,
-			workspace: Boolean(hiddenWorkspace),
-			automations: false
-		});
+		await assertProfileNavigation(page, { notes: false, workspace: false, automations: false });
 		if (knowledgeOnly) {
 			assert.equal(
 				await page.locator('.buddy-dock a[aria-label="Knowledge"]').getAttribute('href'),
@@ -411,21 +408,26 @@ async function runPermissionScenario({ name, knowledgeOnly, hiddenWorkspace }) {
 		await page.locator('#sidebar-toggle-button').click();
 		await page.locator('#buddy-sidebar-close').waitFor({ state: 'visible' });
 		assert.equal(await page.locator('#sidebar-notes-button').count(), 1);
-		assert.equal(await page.locator('#sidebar-workspace-button').count(), 1);
+		assert.equal(await page.locator('#sidebar-workspace-button').count(), workspaceFallbackCount);
 		assert.equal(await page.locator('#sidebar-automations-button').count(), 1);
-		await assertProfileNavigation(page, { notes: true, workspace: true, automations: true });
+		await assertProfileNavigation(page, {
+			notes: true,
+			workspace: !hiddenWorkspace,
+			automations: true
+		});
 		await page.setViewportSize({ width: 1280, height: 900 });
 		await page.locator('#buddy-sidebar-close').waitFor({ state: 'visible' });
 		// The close control is already visible before resize handlers update the fallback links.
 		await page.locator('#sidebar-notes-button').waitFor({ state: 'detached' });
 		assert.equal(await page.locator('#sidebar-notes-button').count(), 0);
-		assert.equal(await page.locator('#sidebar-workspace-button').count(), hiddenWorkspace ? 1 : 0);
+		assert.equal(await page.locator('#sidebar-workspace-button').count(), 0);
 		assert.equal(await page.locator('#sidebar-automations-button').count(), 0);
 		await assertNoRuntimeErrors(session);
 		results.push({
 			name,
-			desktopFallback: Boolean(hiddenWorkspace),
+			desktopFallback: false,
 			mobileFallback: true,
+			mobileWorkspaceFallback: !hiddenWorkspace,
 			responsiveRestored: true
 		});
 	} finally {

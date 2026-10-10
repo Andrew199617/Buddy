@@ -109,19 +109,13 @@ export function getPermittedNavigation(
 	features: DockFeatures | undefined
 ): NavigationItems {
 	const navigation = getDockNavigation(currentUser, features);
-	const workspace = currentUser?.permissions?.workspace;
-	const workspaceAllowed = Boolean(
-		currentUser?.role === 'admin' ||
-		workspace?.models ||
-		workspace?.knowledge ||
-		workspace?.prompts ||
-		workspace?.tools ||
-		workspace?.skills
-	);
+	// /workspace redirects to its first permitted section, so without one it only
+	// sends the user home (for example, tools while the plugins feature is off).
+	const workspaceDestination = getWorkspaceLandingDestination(currentUser, features);
 
 	return {
 		notes: navigation.notesVisible,
-		workspace: workspaceAllowed,
+		workspace: workspaceDestination !== null,
 		automations: navigation.automationsVisible
 	};
 }
