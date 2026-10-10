@@ -136,6 +136,7 @@ from open_webui.utils.skills import (
     has_prior_real_chat_content,
     strip_skill_mentions,
 )
+from open_webui.utils.subscriptions.common import SUBSCRIPTION_OWNED_BY
 from open_webui.utils.task import (
     get_task_model_id,
     rag_template,
@@ -2407,7 +2408,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             arena_model_ids = [
                 available_model['id']
                 for available_model in request.app.state.MODELS.values()
-                if available_model.get('owned_by') != 'arena' and available_model['id'] not in arena_model_ids
+                if available_model.get('owned_by') not in ('arena', SUBSCRIPTION_OWNED_BY)
+                and available_model['id'] not in arena_model_ids
             ]
 
         if isinstance(arena_model_ids, list) and arena_model_ids:
@@ -2416,7 +2418,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             arena_model_ids = [
                 available_model['id']
                 for available_model in request.app.state.MODELS.values()
-                if available_model.get('owned_by') != 'arena'
+                if available_model.get('owned_by') not in ('arena', SUBSCRIPTION_OWNED_BY)
             ]
             selected_model_id = random.choice(arena_model_ids)
 
