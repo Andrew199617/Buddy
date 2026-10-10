@@ -488,6 +488,9 @@ class CodexTests(unittest.TestCase):
         self.assertIsNone(thread_config('full'))
         # Chat and read threads read the effective config; full threads skip it.
         self.assertEqual(server.methods, ['config/read', 'config/read'])
+
+    def test_hooks_are_a_disabled_feature(self):
+        # Hooks run commands outside the read-only sandbox.
         self.assertIn('hooks', codex.DISABLED_FEATURES)
 
     def test_dropped_live_threads_are_released(self):
