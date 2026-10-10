@@ -1,21 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { getUnreadChatIds, isChatUnread } from './chatUnread';
+import { hasUnreadChatsOutsideSelection } from './chatUnread';
 
-describe('chat unread state', () => {
-	it('matches the existing timestamp and completion state', () => {
-		expect(isChatUnread({ id: 'unread', updated_at: 20, last_read_at: 10 })).toBe(true);
-		expect(isChatUnread({ id: 'never-read', updated_at: 20, last_read_at: null })).toBe(true);
-		expect(isChatUnread({ id: 'read', updated_at: 20, last_read_at: 20 })).toBe(false);
-		expect(isChatUnread({ id: 'later-read', updated_at: 20, last_read_at: 30 })).toBe(false);
-		expect(isChatUnread({ id: 'generating', updated_at: 20, last_read_at: 10, active: true })).toBe(
-			false
-		);
+describe('chat unread summary', () => {
+	it('shows no indicator for an empty aggregate', () => {
+		expect(hasUnreadChatsOutsideSelection({ count: 0, only_chat_id: null }, '')).toBe(false);
 	});
 
-	it('returns unique unread IDs without clearing them because their sidebar is opened', () => {
-		const unread = { id: 'unread', updated_at: 20, last_read_at: 10 };
-		expect(getUnreadChatIds([])).toEqual([]);
-		expect(getUnreadChatIds([unread, unread])).toEqual(['unread']);
-		expect(getUnreadChatIds([unread, unread])).toEqual(['unread']);
+	it('excludes only the selected chat without changing the summary', () => {
+		const summary = { count: 1, only_chat_id: 'unread' };
+		expect(hasUnreadChatsOutsideSelection(summary, 'unread')).toBe(false);
+		expect(hasUnreadChatsOutsideSelection(summary, 'other')).toBe(true);
+		expect(hasUnreadChatsOutsideSelection(summary, '')).toBe(true);
+		expect(summary).toEqual({ count: 1, only_chat_id: 'unread' });
+	});
+
+	it('shows an indicator when another unread chat remains outside the selection', () => {
+		expect(hasUnreadChatsOutsideSelection({ count: 2, only_chat_id: null }, 'unread')).toBe(true);
+		expect(hasUnreadChatsOutsideSelection({ count: 10000, only_chat_id: null }, 'unread')).toBe(
+			true
+		);
 	});
 });

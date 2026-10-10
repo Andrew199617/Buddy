@@ -16,15 +16,24 @@ const sourceMaps = readProductionSourceMaps(
 const production = resolveProductionExports(sourceMaps, '/stores/chatList.ts', [
 	'setChatReadAt',
 	'setChatActive',
-	'setAllChatsRead'
+	'setAllChatsRead',
+	'refreshUnreadChats'
 ]);
 const results = [];
 
 async function updateUnread(page, name, ...args) {
+	// Reflect the synthetic server event before the store fetches the bounded summary.
+	const chat = chats.find((item) => item.id === args[0]);
+	if (name === 'setChatReadAt' && chat) chat.last_read_at = args[1];
+	if (name === 'setChatActive' && chat) chat.active = args[1];
+	if (name === 'setAllChatsRead') {
+		for (const item of chats) item.last_read_at = item.updated_at;
+	}
 	await page.evaluate(
 		async ({ production, name, args }) => {
 			const module = await import(production.url);
 			module[production.aliases[name]](...args);
+			await module[production.aliases.refreshUnreadChats](localStorage.token);
 		},
 		{ production, name, args }
 	);
@@ -80,9 +89,31 @@ async function unreadScenario(name, viewport, mobile) {
 		await updateUnread(page, 'setChatActive', chats[0].id, false);
 		await expectUnread(page, true);
 		await page.screenshot({ path: resolve(outputDirectory, `${name}-unread.png`) });
+		await page.locator('#sidebar-toggle-button').click();
+		await page.locator(`#sidebar a[href="/c/${chats[0].id}"]`).first().click();
+		await page.waitForURL(`**/c/${chats[0].id}`);
+		if (await page.locator('#buddy-sidebar-close').isVisible()) {
+			await page.locator('#buddy-sidebar-close').click();
+		}
+		await expectUnread(page, false);
+		await updateUnread(page, 'setChatActive', chats[0].id, true);
+		await updateUnread(page, 'setChatActive', chats[0].id, false);
+		await expectUnread(page, false);
+		await updateUnread(page, 'setChatReadAt', chats[1].id, 0);
+		await expectUnread(page, true);
+		await updateUnread(page, 'setChatReadAt', chats[1].id, chats[1].updated_at);
+		await expectUnread(page, false);
+		await page.locator('button[aria-label="New Chat"]:visible').click();
+		await expectUnread(page, true);
+		assert.equal(chats[0].last_read_at, 0, 'Selecting the chat does not clear server unread state');
 		await updateUnread(page, 'setAllChatsRead');
 		await expectUnread(page, false);
 		assert.ok(!session.blockedMutations.some((request) => request.startsWith('DELETE ')));
+		assert.ok(session.requests.includes('GET /api/v1/chats/unread'));
+		assert.ok(
+			!session.requests.some((request) => /include_pinned=true|include_folders=true/.test(request)),
+			'Unread aggregation does not fetch whole history'
+		);
 		results.push({
 			name,
 			passed: true,
@@ -93,6 +124,10 @@ async function unreadScenario(name, viewport, mobile) {
 				'read last',
 				'live unread update',
 				'active completion',
+				'selected completed chat suppressed',
+				'another unread chat still visible',
+				'selection does not mark read',
+				'bounded unread summary request',
 				'bulk read'
 			]
 		});
@@ -102,6 +137,7 @@ async function unreadScenario(name, viewport, mobile) {
 	} finally {
 		chats[0].last_read_at = chats[0].updated_at;
 		chats[1].last_read_at = chats[1].updated_at;
+		chats[0].active = false;
 		await session.browser.close();
 	}
 }

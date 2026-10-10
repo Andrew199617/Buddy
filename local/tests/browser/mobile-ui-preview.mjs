@@ -118,6 +118,12 @@ function getApiResponse(url, textScale, options = {}) {
     return { ui: { textScale, models: [models[0].id], pinnedModels: [], showChatMenu: false, ...(options.pinnedMenuItems ? { pinnedMenuItems: options.pinnedMenuItems } : {}) }, keybindings: {} };
   }
   if (path === '/api/v1/chats') return Number(url.searchParams.get('page') ?? '1') > 1 ? [] : chats;
+  if (path === '/api/v1/chats/unread') {
+    const unread = chats.filter((chat) =>
+      !chat.active && (chat.last_read_at == null || chat.updated_at > chat.last_read_at)
+    );
+    return { count: unread.length, only_chat_id: unread.length === 1 ? unread[0].id : null };
+  }
   if (path === '/api/v1/chats/config') return {};
   if (path === '/api/v1/chats/archived/count') return { count: 0 };
   if (path.startsWith('/api/v1/chats/mobile-preview-chat-') && !path.endsWith('/tags')) return mockChat(path.split('/')[4], options);

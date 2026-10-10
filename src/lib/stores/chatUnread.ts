@@ -1,18 +1,15 @@
-export type ChatUnreadState = {
-	id: string;
-	active?: unknown;
-	updated_at?: unknown;
-	last_read_at?: unknown;
+export type ChatUnreadSummary = {
+	count: number;
+	only_chat_id: string | null;
 };
 
-// Match the existing chat-row unread state, without treating an open sidebar as a read.
-export const isChatUnread = (chat: ChatUnreadState): boolean =>
-	!chat.active &&
-	(chat.last_read_at == null ||
-		(typeof chat.updated_at === 'number' &&
-			typeof chat.last_read_at === 'number' &&
-			chat.updated_at > chat.last_read_at));
+export const hasUnreadChatsOutsideSelection = (
+	summary: ChatUnreadSummary,
+	selectedChatId: string
+): boolean => {
+	if (summary.count === 1) {
+		return summary.only_chat_id !== selectedChatId;
+	}
 
-export const getUnreadChatIds = (chats: ChatUnreadState[]): string[] => [
-	...new Set(chats.filter(isChatUnread).map((chat) => chat.id))
-];
+	return summary.count > 1;
+};

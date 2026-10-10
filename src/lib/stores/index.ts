@@ -52,7 +52,7 @@ export const shortCodesToEmojis = writable(
 
 export const TTSWorker = writable(null);
 
-export const chatId = writable('');
+export { chatId } from './chatSelection';
 export const chatTitle = writable('');
 
 export const channels = writable([]);
