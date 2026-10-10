@@ -274,12 +274,13 @@
 		}
 	};
 
-	const saveSettings = async (
+	// Resolves to the provider the server accepted, or null when nothing was saved.
+	const writeSettings = async (
 		settings: Partial<SubscriptionSettings>,
 		isDialogCurrent: () => boolean = () => true
-	) => {
+	): Promise<SubscriptionProvider | null> => {
 		if (disposed || settingsBlocked) {
-			return false;
+			return null;
 		}
 		invalidateChecks();
 		const generation = refreshGeneration;
@@ -300,20 +301,24 @@
 				expectedMachineRevision
 			);
 			settingsChanges.set({ providerId });
-			if (disposed || generation !== refreshGeneration) {
-				return false;
+			if (disposed) {
+				return null;
 			}
-			observedProvider = nextProvider;
-			provider = nextProvider;
+			// A registry reload started by the other provider's save can replace this row while the
+			// write is in flight. The write still counts; only apply its reply if nothing newer has.
+			if (generation === refreshGeneration) {
+				observedProvider = nextProvider;
+				provider = nextProvider;
+			}
 			if (isDialogCurrent()) {
-				toast.success($i18n.t('{{name}} subscription settings saved', { name: provider.name }));
+				toast.success($i18n.t('{{name}} subscription settings saved', { name: nextProvider.name }));
 			}
-			return !disposed && generation === refreshGeneration;
+			return nextProvider;
 		} catch (error) {
 			if (!disposed && generation === refreshGeneration && isDialogCurrent()) {
 				toast.error(`${error}`);
 			}
-			return false;
+			return null;
 		} finally {
 			settingsInFlight = false;
 			pendingSettings.update((pending) => ({
@@ -322,6 +327,14 @@
 			}));
 			scheduleCheck();
 		}
+	};
+
+	const saveSettings = async (
+		settings: Partial<SubscriptionSettings>,
+		isDialogCurrent: () => boolean
+	) => {
+		const accepted = await writeSettings(settings, isDialogCurrent);
+		return accepted !== null;
 	};
 
 	const toggleEnabled = async () => {
@@ -334,22 +347,23 @@
 		const machineId = provider.settings.machine_id;
 		const machineRevision = provider.machine?.revision;
 		const generation = refreshGeneration + 1;
-		const saved = await saveSettings({ enable });
-		if (!saved) {
+		const accepted = await writeSettings({ enable });
+		if (!accepted) {
 			if (!disposed && provider === optimisticProvider && generation === refreshGeneration) {
 				enabled = provider.settings.enable;
 			}
 			return;
 		}
+		// Decide from the accepted reply: a registry reload may have replaced this row with a
+		// snapshot taken before the write. The row must still show the same machine.
 		if (
 			!disposed &&
-			generation === refreshGeneration &&
 			provider.settings.machine_id === machineId &&
 			provider.machine?.revision === machineRevision &&
 			enable &&
-			provider.settings.enable &&
-			provider.status.installed &&
-			!provider.status.signed_in
+			accepted.settings.enable &&
+			accepted.status.installed &&
+			!accepted.status.signed_in
 		) {
 			showLoginModal = true;
 		}

@@ -1800,6 +1800,33 @@ async function delayedEnableCase(browser, profile, outcome = 'success') {
 	});
 }
 
+async function enableDuringOtherReloadCase(browser, profile) {
+	const name = 'enable-delayed-other-reload';
+	await runCase(browser, profile, name, name, async ({ page }, fixtures) => {
+		await setSettings(page, 'admin:connections');
+		const claudeToggle = providerCard(page, 'Claude').getByRole('switch');
+		const codexToggle = providerCard(page, 'ChatGPT').getByRole('switch');
+		await claudeToggle.click();
+		await waitUntil(fixtures.hasHeldConfig, 'The Claude enable save must be pending');
+		const modelReads = fixtures.count('GET', '/api/models');
+		await codexToggle.click();
+		await waitUntil(
+			() => fixtures.count('GET', '/api/models') > modelReads,
+			"ChatGPT's accepted save reloads both rows before Claude's reply arrives"
+		);
+		await fixtures.releaseConfig();
+		await loginDialog(page).waitFor();
+		assert.equal(fixtures.providerSettings().enable, true);
+		await waitUntil(
+			async () => (await claudeToggle.getAttribute('aria-checked')) === 'true',
+			'The row catches up with the accepted enable'
+		);
+		assert.equal(fixtures.providerSettings('codex').enable, false);
+		assert.equal(fixtures.count('POST'), 0, 'Enabling alone never starts CLI sign-in');
+		await dismiss(page, 'x');
+	});
+}
+
 async function removedMachineCase(browser, profile, replacement = 'runner-b') {
 	await runCase(
 		browser,
@@ -2327,6 +2354,7 @@ try {
 		await delayedEnableCase(browser, profile);
 		await delayedEnableCase(browser, profile, 'error');
 		await delayedEnableCase(browser, profile, 'remount');
+		await enableDuringOtherReloadCase(browser, profile);
 		await removedMachineCase(browser, profile);
 		await removedMachineCase(browser, profile, 'local');
 		await delayedLogoutCase(browser, profile, 'switch');
