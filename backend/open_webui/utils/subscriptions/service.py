@@ -1171,6 +1171,21 @@ async def _listed_models(provider_id: str) -> list[dict]:
         return []
 
 
+def _require_plan(provider_id: str, provider_status: dict | None) -> None:
+    """Start a turn only when the CLI is known to use a plan, so it never bills the API."""
+    label = PROVIDER_LABELS[provider_id]
+    if provider_status is None:
+        raise SubscriptionError(f'Still checking the {label} sign-in. Try again in a moment.')
+    if provider_status.get('api_billing'):
+        # Refuse rather than bill the API under a "plan" model name.
+        raise SubscriptionError(provider_status.get('message') or 'This account bills API usage, not a plan.')
+    if not uses_plan(provider_status):
+        raise SubscriptionError(
+            provider_status.get('message')
+            or f'{label} is not signed in. Sign in under Admin Settings → Connections → Subscriptions.'
+        )
+
+
 async def _apply_preset(request, payload: dict, metadata: dict, user) -> tuple[str, dict]:
     """Apply a Workspace model preset's params and system prompt, like the OpenAI route."""
     model_id = payload.get('model')
@@ -1224,10 +1239,7 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
                 f'{PROVIDER_LABELS[provider_id]} subscription models are turned off in '
                 'Admin Settings → Connections → Subscriptions.'
             )
-        provider_status = await status_cache.get(provider_id) or {}
-        if provider_status.get('api_billing'):
-            # Refuse rather than bill the API under a "plan" model name.
-            raise SubscriptionError(provider_status.get('message') or 'This account bills API usage, not a plan.')
+        _require_plan(provider_id, await status_cache.get(provider_id))
         async with _provider_lock(provider_id):
             if generation != _provider_generations.get(provider_id, 0):
                 raise SubscriptionError('The provider machine changed; refresh before starting another turn.')

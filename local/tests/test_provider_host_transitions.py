@@ -433,6 +433,26 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.service.models_cache._entries['claude'] = self.service._CacheEntry([model], time.monotonic() + 60)
 
+    async def test_chat_starts_only_when_the_status_shows_a_plan(self):
+        expected_errors = {
+            'Still checking the Claude sign-in': None,
+            'Claude is not signed in': {'installed': True, 'signed_in': False},
+            'Fixture status check failed': {
+                'installed': True, 'signed_in': False, 'message': 'Fixture status check failed'
+            },
+            'Fixture API account': {
+                'installed': True, 'signed_in': True, 'api_billing': True, 'message': 'Fixture API account'
+            },
+        }
+        for expected_error, provider_status in expected_errors.items():
+            with self.subTest(status=provider_status):
+                with patch.object(self.service.status_cache, 'get', AsyncMock(return_value=provider_status)):
+                    result = await self.fixture_chat()
+                self.assertEqual(len(result), 1)
+                self.assertIn(expected_error, result[0]['error'])
+        self.assertEqual(self.providers['claude'].calls, [])
+        self.assertEqual(self.machines['runner-a'].processes, [])
+
     async def test_enabled_legacy_remote_model_get_stays_empty_even_with_old_signed_in_cache(self):
         self.config.values['subscriptions.machines'][0].pop('revision')
         self.config.values['subscriptions.codex']['enable'] = False
