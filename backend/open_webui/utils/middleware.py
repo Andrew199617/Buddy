@@ -137,6 +137,7 @@ from open_webui.utils.skills import (
     has_prior_real_chat_content,
     strip_skill_mentions,
 )
+from open_webui.utils.subscriptions.common import SUBSCRIPTION_OWNED_BY
 from open_webui.utils.task import (
     get_task_model_id,
     rag_template,
@@ -2410,6 +2411,10 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             model = selected_model
             form_data['model'] = selected_model_id
             metadata['selected_model_id'] = selected_model_id
+            if model.get('owned_by') == SUBSCRIPTION_OWNED_BY:
+                # As when chosen directly (main.py): Claude Code and Codex cannot
+                # receive Buddy's tool definitions, so files and tools use prompts.
+                metadata.setdefault('params', {})['function_calling'] = 'legacy'
 
     # Captured before apply_params_to_form_data pops 'params'; populates metadata['system_prompt'] below
     model_system_prompt = (form_data.get('params') or {}).get('system')

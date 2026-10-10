@@ -166,10 +166,11 @@ class ArenaModelAccessTests(unittest.IsolatedAsyncioTestCase):
         return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(MODELS=models)),
                                state=SimpleNamespace())
 
-    async def payload_selection(self, arena, candidates):
+    async def payload_selection(self, arena, candidates, metadata=None):
         request = self.request(arena, candidates)
         form_data = {'model': 'arena', 'messages': []}
-        metadata = {}
+        if metadata is None:
+            metadata = {}
         with self.assertRaises(PayloadSelected) as captured:
             await self.middleware_namespace['process_chat_payload'](
                 request, form_data, self.user, metadata, arena)
@@ -228,6 +229,18 @@ class ArenaModelAccessTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response, {'provider': 'subscription', 'selected_model_id': 'subscription'})
         self.assertEqual(self.access_queries, [])
         self.assertEqual(self.group_queries, [])
+
+    async def test_arena_drawn_subscription_model_uses_prompt_based_tools(self):
+        self.user.role = 'admin'
+        candidates = [model_entry('public'), model_entry('subscription', 'subscription')]
+        for preferred_id, expected in [('subscription', 'legacy'), ('public', 'native')]:
+            with self.subTest(selected=preferred_id):
+                self.choice_priority = [preferred_id]
+                params = {'function_calling': 'native', 'tool_approval_mode': 'full'}
+                selected, _, metadata = await self.payload_selection(
+                    arena_entry(), candidates, metadata={'params': params})
+                self.assertEqual(selected['id'], preferred_id)
+                self.assertEqual(metadata['params'], {'function_calling': expected, 'tool_approval_mode': 'full'})
 
     async def test_excluding_every_model_does_not_fall_back_to_the_excluded_pool(self):
         arena = arena_entry(['public', 'subscription'], 'exclude')
