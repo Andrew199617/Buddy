@@ -676,8 +676,9 @@ def check(store, settings):
     perforce.prepare()
     perforce.run(['login', '-s'])
     perforce.run(['-ztag', 'info'])
-    for line in log:
-        if 'ticket expires' in line or 'serverAddress' in line:
+    output_lines = '\n'.join(log).splitlines()
+    for line in output_lines:
+        if 'ticket expires' in line or line.startswith('... serverAddress '):
             print(line)
     print(f'perforce: logged in as {settings.p4_user}; depot path {settings.depot}')
 
