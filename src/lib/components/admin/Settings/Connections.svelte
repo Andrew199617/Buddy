@@ -21,13 +21,13 @@
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import ArrowPath from '$lib/components/icons/ArrowPath.svelte';
 	import Plus from '$lib/components/icons/Plus.svelte';
+	import Cog6 from '$lib/components/icons/Cog6.svelte';
 
 	import OpenAIConnection from './Connections/OpenAIConnection.svelte';
 	import AddConnectionModal from '$lib/components/AddConnectionModal.svelte';
 	import OllamaConnection from './Connections/OllamaConnection.svelte';
 	import SubscriptionConnection from './Connections/SubscriptionConnection.svelte';
 	import SubscriptionMachineModal from './Connections/SubscriptionMachineModal.svelte';
-	import Cog6 from '$lib/components/icons/Cog6.svelte';
 	import AdminSettingRow from './AdminSettingRow.svelte';
 	import AdminSettingSection from './AdminSettingSection.svelte';
 
