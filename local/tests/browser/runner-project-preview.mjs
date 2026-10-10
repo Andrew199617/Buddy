@@ -386,7 +386,7 @@ async function lifecycle(session, fixture, profile) {
 	const stopped = await fetch(fixture.endpoint + terminalRequest.path, {
 		headers: { Origin: origin, Authorization: authorization }
 	});
-	assert.equal((await stopped.json()).terminal.status, 'closed');
+	assert.equal(stopped.status, 404, 'A confirmed stop removes the command session');
 	await page.getByRole('button', { name: 'Disconnect and revoke', exact: true }).click();
 	await page
 		.getByText('Disconnected. The host session and its commands were revoked.', { exact: true })
@@ -764,7 +764,7 @@ async function stopRetry(session, fixture, mode) {
 	const stopped = await fetch(fixture.endpoint + terminalPath, {
 		headers: { Origin: origin, Authorization: authorization }
 	});
-	assert.equal((await stopped.json()).terminal.status, 'closed');
+	assert.equal(stopped.status, 404, 'The confirmed retry removes the command session');
 	if (mode === 'grant-stop-retry')
 		assert.notEqual(await page.locator('#companion-grant').inputValue(), oldGrant);
 	await page.getByRole('button', { name: 'Disconnect and revoke', exact: true }).click();
@@ -795,9 +795,9 @@ async function delayedStop(session, fixture) {
 		headers: { Origin: origin, Authorization: authorization }
 	});
 	assert.equal(
-		(await stopped.json()).terminal.status,
-		'closed',
-		'Actual host stopped before acknowledgment delivery'
+		stopped.status,
+		404,
+		'Actual host stopped and removed the session before acknowledgment delivery'
 	);
 	await releaseDelayedBody(page);
 	await page.getByText('The command session was stopped and removed.', { exact: true }).waitFor();

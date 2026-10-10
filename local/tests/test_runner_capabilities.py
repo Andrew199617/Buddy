@@ -718,13 +718,28 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
         for _ in range(64):
             status, body, _ = await self.request('POST', '/v1/terminals', json={'workspaceId': workspace_id})
             self.assertEqual(status, 200)
-            status, _, _ = await self.request('DELETE', f'/v1/terminals/{body["terminal"]["id"]}')
+            terminal_id = body['terminal']['id']
+            status, body, _ = await self.request('DELETE', f'/v1/terminals/{terminal_id}')
+            self.assertEqual((status, body['terminal']['status']), (200, 'closed'))
+        # A confirmed stop removes the command session, so stopped ones never fill the history.
+        status, _, _ = await self.request('GET', f'/v1/terminals/{terminal_id}')
+        self.assertEqual(status, 404)
+        from unittest.mock import patch
+        with patch('open_webui.utils.subscriptions.workspace_capabilities.MAX_TERMINAL_HISTORY', 2):
+            retained = []
+            for _ in range(2):
+                status, body, _ = await self.request('POST', '/v1/terminals', json={'workspaceId': workspace_id})
+                self.assertEqual(status, 200)
+                retained.append(body['terminal']['id'])
+            status, body, _ = await self.request('POST', '/v1/terminals', json={'workspaceId': workspace_id})
+            self.assertEqual(status, 429)
+            self.assertNotIn('Restart', body['error'])
+            status, _, _ = await self.request('DELETE', f'/v1/terminals/{retained[0]}')
             self.assertEqual(status, 200)
-        status, _, _ = await self.request('POST', '/v1/terminals', json={'workspaceId': workspace_id})
-        self.assertEqual(status, 429)
+            status, _, _ = await self.request('POST', '/v1/terminals', json={'workspaceId': workspace_id})
+            self.assertEqual(status, 200)
         # Lower only the configured test fixture's entry threshold, preserving
         # the same streaming enumeration and rejection path as the 5,000 limit.
-        from unittest.mock import patch
         with patch('open_webui.utils.subscriptions.workspace_capabilities.MAX_DIRECTORY_ENTRIES', 2):
             status, _, _ = await self.request('GET', '/v1/directories', params={'grantId': grant['id'], 'path': ''})
             self.assertEqual(status, 413)

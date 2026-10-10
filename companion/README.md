@@ -103,7 +103,8 @@ Command sessions accept an executable plus a JSON string-array of arguments,
 without an implicit shell. They use pipes, not a PTY or persistent shell state.
 Limits include the newest 256 KiB of retained output (a command that prints more
 keeps running), 60-second commands, eight active sessions,
-64 retained sessions and ten-minute idle expiry. Disconnect, token expiry, grant
+64 retained sessions across all paired browsers (a confirmed stop through
+`DELETE /v1/terminals/{id}` removes one) and ten-minute idle expiry. Disconnect, token expiry, grant
 revocation, stop and shutdown dispose owned commands. Native Windows Job Objects
 contain descendants even after their leader exits; no PowerShell supervisor is
 needed. POSIX uses process groups. Deliberately detached POSIX processes require

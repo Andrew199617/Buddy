@@ -817,7 +817,7 @@ class WorkspaceCapabilities:
             self._resolve(grant, workspace.relative)
             self._active(session, grant)
             if len(self._terminals) >= MAX_TERMINAL_HISTORY:
-                _fail(429, 'The terminal history limit was reached. Restart the host to clear it.')
+                _fail(429, 'The command session history limit was reached. Stop and remove finished command sessions, or disconnect to clear them.')
             if sum(terminal.status != 'closed' for terminal in self._terminals.values()) >= MAX_TERMINALS:
                 _fail(429, 'The terminal session limit was reached.')
             terminal = _Terminal(str(uuid.uuid4()), workspace.id, session.key)
@@ -830,6 +830,9 @@ class WorkspaceCapabilities:
                 return {'terminal': terminal.public()}
             if method == 'DELETE' and not match[2]:
                 await self._stop_terminal(terminal)
+                # Only a confirmed stop gets here. Removing the session keeps
+                # stopped ones from filling the shared history limit.
+                self._terminals.pop(terminal.id, None)
                 return {'terminal': terminal.public()}
             if method == 'POST' and match[2]:
                 body = await self._body(request)
