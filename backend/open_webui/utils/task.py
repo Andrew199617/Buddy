@@ -12,8 +12,6 @@ from open_webui.utils.subscriptions.common import SUBSCRIPTION_OWNED_BY
 log = logging.getLogger(__name__)
 
 
-# Let the right tool be given for the work at hand,
-# not the one that flatters, but the one that serves.
 def is_shared_task_model(model_id: str | None, models) -> bool:
     """Whether a globally configured task model can run for every user.
 
@@ -28,6 +26,8 @@ def is_shared_task_model(model_id: str | None, models) -> bool:
     return model.get('owned_by') != SUBSCRIPTION_OWNED_BY
 
 
+# Let the right tool be given for the work at hand,
+# not the one that flatters, but the one that serves.
 def get_task_model_id(default_model_id: str, task_model: str, task_model_external: str, models) -> str:
     # Set the task model
     task_model_id = default_model_id
