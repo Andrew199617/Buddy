@@ -659,7 +659,10 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         config['capabilities'].update({'grants': ['private-root'], 'key': 'private-capability-key', 'pty': 'yes'})
         public = await self.service.describe_machines()
         remote = next(machine for machine in public if machine['id'] == 'runner-a')
-        self.assertEqual(set(remote), {'id', 'name', 'url', 'revision', 'browser_url', 'host', 'capabilities'})
+        self.assertEqual(
+            set(remote), {'id', 'name', 'url', 'has_key', 'revision', 'browser_url', 'host', 'capabilities'}
+        )
+        self.assertIs(remote['has_key'], True)
         self.assertEqual(remote['host'], {
             'id': 'host-a', 'name': 'Fixture PC', 'platform': 'win32', 'version': '1'
         })
@@ -823,6 +826,33 @@ class RunnerKeyConfigExportTests(unittest.IsolatedAsyncioTestCase):
                 await self.service.get_machine('runner-a')
         factory.assert_not_called()
         self.assertIn('runner key', str(caught.exception))
+
+    async def test_the_machine_list_says_which_machines_need_their_key_again(self):
+        self.config.values['subscriptions.machines'][0].pop('key')
+        public = {machine['id']: machine for machine in await self.service.describe_machines()}
+        self.assertIs(public['runner-a']['has_key'], False)
+        self.assertIs(public['runner-b']['has_key'], True)
+        self.assertNotIn('key', public['runner-a'])
+        self.assertNotIn('has_key', public['local'])
+
+    async def test_a_provider_on_a_machine_without_a_key_can_still_be_turned_off(self):
+        self.config.values['subscriptions.machines'][0].pop('key')
+        self.service.PROVIDERS = {'claude': FakeProvider(), 'codex': FakeCodexProvider()}
+        with patch.object(self.service, 'RemoteMachine') as factory:
+            settings = await self.service.save_settings(
+                'claude', {'enable': False}, 'runner-a', 'fixture-revision-runner-a'
+            )
+            self.assertIs(settings.enable, False)
+            self.assertEqual(self.config.values['subscriptions.claude'], {
+                **enabled_settings('runner-a'), 'enable': False
+            })
+            with self.assertRaises(self.service.SubscriptionError) as caught:
+                await self.service.save_settings(
+                    'claude', {'enable': True}, 'runner-a', 'fixture-revision-runner-a'
+                )
+        factory.assert_not_called()
+        self.assertIn('runner key', str(caught.exception))
+        self.assertIs(self.config.values['subscriptions.claude']['enable'], False)
 
 
 class SubscriptionMachineRouterTests(unittest.IsolatedAsyncioTestCase):

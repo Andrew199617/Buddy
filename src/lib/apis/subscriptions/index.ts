@@ -19,6 +19,8 @@ export type SubscriptionMachine = {
 	revision?: string;
 	// Null for "This server".
 	url: string | null;
+	// False when Buddy has no Runner key for this machine, as after a config import.
+	has_key?: boolean;
 	// Explicit browser address; the backend URL may not be reachable from a browser.
 	browser_url?: string | null;
 	host?: { id: string; name: string; platform: string; version: string };

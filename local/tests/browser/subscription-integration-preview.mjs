@@ -105,6 +105,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			name: 'Synthetic computer A',
 			url: 'https://host.docker.internal:8765',
 			browser_url: 'http://127.0.0.1:8765',
+			has_key: true,
 			host: {
 				id: 'fixture-host-a',
 				name: 'Synthetic computer A',
@@ -125,9 +126,15 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			revision: 'fixture-revision-b-1',
 			name: 'Synthetic computer B',
 			url: 'https://runner-b.example.invalid',
-			browser_url: null
+			browser_url: null,
+			has_key: true
 		}
 	];
+	if (mode === 'keyless-machine') {
+		// A config import keeps the machine but leaves out its Runner key.
+		machineKeys.delete('runner-a');
+		machines.find((machine) => machine.id === 'runner-a').has_key = false;
+	}
 	let checkingResolved = false;
 	let checkCount = 0;
 	let pollCount = 0;
@@ -300,6 +307,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			name: body.name,
 			url: normalizedUrl,
 			browser_url: body.browser_url ?? null,
+			has_key: Boolean(nextKey),
 			revision: identityChanged ? 'fixture-revision-write-' + ++revisionCount : old.revision
 		};
 		machines = [...machines.filter((machine) => machine.id !== id), machine];
@@ -1546,6 +1554,48 @@ async function machineCrudCase(browser, profile) {
 	});
 }
 
+async function keylessMachineCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'keyless-machine',
+		'keyless-machine',
+		async ({ page }, fixtures) => {
+			await openMachine(page, 'Synthetic computer A');
+			const dialog = machineDialog(page);
+			assert.equal(
+				await dialog.locator('#machine-key').getAttribute('placeholder'),
+				'Enter the Runner key',
+				'A machine imported without its key does not offer to keep a saved key'
+			);
+			await dialog.getByText(/No Runner key is saved for this machine/).waitFor();
+			assert.equal(
+				await dialog.getByRole('button', { name: 'Save', exact: true }).isDisabled(),
+				true,
+				'Save waits for the missing key'
+			);
+			await dialog.locator('#machine-key').fill('synthetic-restored-key-a');
+			await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+			await dialog.waitFor({ state: 'hidden' });
+			const saved = fixtures.requests.find(
+				(request) => request.method === 'POST' && request.path === machinesPath
+			);
+			assert.equal(saved.body.key, 'synthetic-restored-key-a');
+			await openMachine(page, 'Synthetic computer A');
+			assert.equal(
+				await machineDialog(page).locator('#machine-key').getAttribute('placeholder'),
+				'Leave empty to keep the saved key',
+				'Once a key is saved, a blank key keeps it'
+			);
+			assert.equal(
+				await machineDialog(page).getByRole('button', { name: 'Save', exact: true }).isEnabled(),
+				true
+			);
+			await dismissDialog(page, machineDialog(page), 'x');
+		}
+	);
+}
+
 async function delayedMachineCase(browser, profile, action, method, errorResponse = false) {
 	const name = 'machine-' + action + '-' + method + (errorResponse ? '-error' : '');
 	await runCase(browser, profile, name, name, async ({ page }, fixtures) => {
@@ -2448,6 +2498,7 @@ try {
 		await usageNavigationCase(browser, profile);
 		await permissionCase(browser, profile);
 		await machineCrudCase(browser, profile);
+		await keylessMachineCase(browser, profile);
 		await delayedMachineCase(browser, profile, 'verify', 'x');
 		await delayedMachineCase(browser, profile, 'verify', 'unmount', true);
 		await delayedMachineCase(browser, profile, 'verify', 'escape');

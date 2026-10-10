@@ -62,12 +62,15 @@
 		}
 	};
 
-	const getKeyPlaceholder = (changed: boolean) => {
+	const getKeyPlaceholder = (changed: boolean, saved: boolean) => {
 		if (!machine) {
 			return '';
 		}
 		if (changed) {
 			return $i18n.t('Enter the key for the new address');
+		}
+		if (!saved) {
+			return $i18n.t('Enter the Runner key');
 		}
 		return $i18n.t('Leave empty to keep the saved key');
 	};
@@ -108,7 +111,10 @@
 	// The saved key only ever goes to the saved address, so a new address needs its own key.
 	// Declared after the block above so it compares the address that loadForm just filled in.
 	$: addressChanged = machine !== null && runnerOrigin(url) !== runnerOrigin(machine.url ?? '');
-	$: keyMissing = addressChanged && !key.trim();
+	// A config import leaves out Runner keys, so an imported machine can have none saved.
+	$: keySaved = machine?.has_key !== false;
+	$: keyRequired = addressChanged || !keySaved;
+	$: keyMissing = keyRequired && !key.trim();
 
 	onMount(() => {
 		let initial = true;
@@ -293,8 +299,8 @@
 					type="password"
 					bind:value={key}
 					disabled={busy}
-					required={addressChanged}
-					placeholder={getKeyPlaceholder(addressChanged)}
+					required={keyRequired}
+					placeholder={getKeyPlaceholder(addressChanged, keySaved)}
 					autocomplete="off"
 					spellcheck="false"
 				/>
@@ -302,6 +308,12 @@
 					<p class="text-xs text-amber-700 dark:text-amber-400">
 						{$i18n.t(
 							'Buddy only sends the saved key to the saved address. Enter the Runner key from ~/.buddy-runner/key on the computer at the new address.'
+						)}
+					</p>
+				{:else if !keySaved}
+					<p class="text-xs text-amber-700 dark:text-amber-400">
+						{$i18n.t(
+							'No Runner key is saved for this machine. Enter the key from ~/.buddy-runner/key on that computer.'
 						)}
 					</p>
 				{/if}

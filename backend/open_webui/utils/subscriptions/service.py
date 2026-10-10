@@ -443,7 +443,8 @@ async def describe_machines() -> list[dict]:
 
 
 def _public_machine(config: dict) -> dict:
-    machine = {'id': config['id'], 'name': config['name'], 'url': config['url']}
+    # A config import can store a machine without its key; the form then asks for one.
+    machine = {'id': config['id'], 'name': config['name'], 'url': config['url'], 'has_key': bool(config.get('key'))}
     if isinstance(config.get('revision'), str):
         machine['revision'] = config['revision']
     if isinstance(config.get('browser_url'), str):
@@ -775,11 +776,15 @@ async def _save_settings(
     if settings.access not in ACCESS_LEVELS:
         raise SubscriptionError('Choose chat only, read files, or full access.')
 
-    machine = await get_machine(settings.machine_id)
-    if settings.workspace and not await machine.path_exists(settings.workspace, 'dir'):
-        raise SubscriptionError(f'The working folder does not exist on {machine.name}: {settings.workspace}')
-    if settings.cli_path and not await machine.path_exists(settings.cli_path, 'file'):
-        raise SubscriptionError(f'The CLI path does not exist on {machine.name}: {settings.cli_path}')
+    # Turning a provider off needs nothing from its machine, which may still be
+    # waiting for its runner key after a config import.
+    only_turns_off = settings == replace(previous, enable=False)
+    if not only_turns_off:
+        machine = await get_machine(settings.machine_id)
+        if settings.workspace and not await machine.path_exists(settings.workspace, 'dir'):
+            raise SubscriptionError(f'The working folder does not exist on {machine.name}: {settings.workspace}')
+        if settings.cli_path and not await machine.path_exists(settings.cli_path, 'file'):
+            raise SubscriptionError(f'The CLI path does not exist on {machine.name}: {settings.cli_path}')
 
     await Config.upsert({_config_key(provider_id): asdict(settings)})
     if settings != previous:
