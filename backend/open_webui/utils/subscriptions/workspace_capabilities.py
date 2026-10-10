@@ -17,6 +17,7 @@ import secrets
 import socket
 import stat
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -211,16 +212,27 @@ class _Terminal:
     workspace_id: str
     owner: str
     status: str = 'ready'
-    output: bytes = b''
     exit_code: int | None = None
     last_used: float = field(default_factory=_now_ms)
     child: ChildProcess | None = None
     task: asyncio.Task | None = None
     cleanup_error: str | None = None
     stopping: bool = False
+    # A command's reader thread appends here too, so the retained tail is locked.
+    _output: bytearray = field(default_factory=bytearray, repr=False, compare=False)
+    _output_lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def append(self, text: str) -> None:
-        self.output = (self.output + text.encode('utf-8', 'replace'))[-OUTPUT_BYTES:]
+        data = text.encode('utf-8', 'replace')
+        with self._output_lock:
+            self._output.extend(data)
+            excess = len(self._output) - OUTPUT_BYTES
+            if excess > 0:
+                del self._output[:excess]
+
+    def clear_output(self) -> None:
+        with self._output_lock:
+            self._output.clear()
 
     def record_cleanup_failure(self, error: BaseException) -> None:
         # New commands stay refused until a later stop confirms cleanup.
@@ -228,13 +240,37 @@ class _Terminal:
         self.cleanup_error = str(error)
 
     def public(self) -> dict:
+        with self._output_lock:
+            output = bytes(self._output)
         return {
             'id': self.id,
             'workspaceId': self.workspace_id,
             'status': self.status,
-            'output': self.output.decode('utf-8', 'ignore'),
+            'output': output.decode('utf-8', 'ignore'),
             'exitCode': self.exit_code,
         }
+
+
+class _TerminalProcess(ChildProcess):
+    """A workspace command whose reader thread writes straight into its terminal.
+
+    ChildProcess stops a process whose queued output outgrows its limit, which
+    protects provider JSON streams. A terminal keeps only its newest output, so
+    a fast command must not be killed just because the event loop was busy:
+    its text goes into the terminal's bounded tail, and only the end of output
+    is queued for the event loop.
+    """
+
+    def __init__(self, terminal: _Terminal, *args, **kwargs):
+        # Set before ChildProcess.__init__ starts the reader threads.
+        self._terminal = terminal
+        super().__init__(*args, **kwargs)
+
+    def _post(self, item: str | None) -> None:
+        if item is None:
+            super()._post(None)
+            return
+        self._terminal.append(item)
 
 
 class WorkspaceCapabilities:
@@ -574,6 +610,8 @@ class WorkspaceCapabilities:
             _fail(400, 'The command is too large.')
 
     async def _collect_output(self, terminal: _Terminal, child: ChildProcess) -> None:
+        # A _TerminalProcess appends its text from the reader thread, so this
+        # mostly waits for the end of output.
         try:
             while True:
                 text = await child.read_text()
@@ -627,12 +665,11 @@ class WorkspaceCapabilities:
                 if _identity(pinned.stat) != workspace.identity:
                     _fail(403, 'The workspace directory changed. Select it again.')
                 self._active(session, grant)
-                terminal.output = b''
+                terminal.clear_output()
                 terminal.exit_code = None
-                child = ChildProcess(
-                    [body['executable'], *body['args']], str(pinned.path), subscription_env(),
-                    merge_stderr=True, output_limit_bytes=OUTPUT_BYTES,
-                    cwd_fd=pinned.directory_fd,
+                child = _TerminalProcess(
+                    terminal, [body['executable'], *body['args']], str(pinned.path), subscription_env(),
+                    merge_stderr=True, cwd_fd=pinned.directory_fd,
                 )
         except OSError as error:
             terminal.append(f'Cannot start command: {error}\n')

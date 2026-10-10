@@ -876,7 +876,20 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
         await self.command(terminal, 'import sys; sys.stderr.write("x" * 400000); sys.stderr.flush()')
         finished = await self.wait_terminal(terminal)
         self.assertLessEqual(len(finished['output'].encode('utf-8')), OUTPUT_BYTES)
-        self.assertIn(finished['status'], ('exited', 'closed'))
+        self.assertEqual((finished['status'], finished['exitCode']), ('exited', 0))
+
+    async def test_fast_output_keeps_its_tail_while_the_event_loop_is_busy(self):
+        await self.start(roots=[{'path': str(self.project), 'execute': True}])
+        await self.pair()
+        terminal = await self.terminal()
+        await self.command(terminal, 'import sys; sys.stdout.write("x" * 5_000_000); print("tail-marker")')
+        # A synchronous stall lets the reader thread get far ahead of the event loop.
+        time.sleep(0.5)
+        finished = await self.wait_terminal(terminal)
+        self.assertEqual((finished['status'], finished['exitCode']), ('exited', 0), finished['output'][-200:])
+        self.assertTrue(finished['output'].rstrip().endswith('tail-marker'))
+        self.assertNotIn('Command output stopped', finished['output'])
+        self.assertLessEqual(len(finished['output'].encode('utf-8')), OUTPUT_BYTES)
 
     async def test_cleanup_failure_is_reported_and_never_claims_closed(self):
         await self.start(roots=[{'path': str(self.project), 'execute': True}])

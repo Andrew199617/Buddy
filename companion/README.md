@@ -101,7 +101,8 @@ on disk. Those permissions are independent of project file API grants.
 
 Command sessions accept an executable plus a JSON string-array of arguments,
 without an implicit shell. They use pipes, not a PTY or persistent shell state.
-Limits include 256 KiB retained output, 60-second commands, eight active sessions,
+Limits include the newest 256 KiB of retained output (a command that prints more
+keeps running), 60-second commands, eight active sessions,
 64 retained sessions and ten-minute idle expiry. Disconnect, token expiry, grant
 revocation, stop and shutdown dispose owned commands. Native Windows Job Objects
 contain descendants even after their leader exits; no PowerShell supervisor is
