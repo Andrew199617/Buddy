@@ -32,7 +32,11 @@
 	let wasOpen = false;
 	let disposed = false;
 	let formGeneration = 0;
+	// What the dialog loaded for the saved machine, restored if the admin switches away and back.
 	let initialMachineId = 'local';
+	let initialAccess: SubscriptionAccess = 'chat';
+	let initialWorkspace = '';
+	let initialCliPath = '';
 
 	const inputClass =
 		'w-full rounded-xl bg-gray-50 px-3 py-2 text-sm outline-hidden dark:bg-gray-850 placeholder:text-gray-300 dark:placeholder:text-gray-700';
@@ -68,12 +72,19 @@
 		}
 	];
 
+	const restoreInitialSettings = () => {
+		access = initialAccess;
+		workspace = initialWorkspace;
+		cliPath = initialCliPath;
+	};
+
 	const loadSettings = () => {
-		access = provider.settings.access;
-		machineId = provider.settings.machine_id;
-		workspace = provider.settings.workspace;
-		cliPath = provider.settings.cli_path;
-		initialMachineId = machineId;
+		initialMachineId = provider.settings.machine_id;
+		initialAccess = provider.settings.access;
+		initialWorkspace = provider.settings.workspace;
+		initialCliPath = provider.settings.cli_path;
+		machineId = initialMachineId;
+		restoreInitialSettings();
 	};
 
 	$: if (show && !wasOpen) {
@@ -91,6 +102,11 @@
 	});
 
 	const changeMachine = () => {
+		// Back on the saved machine: Save must not write the cleared values to it.
+		if (machineId === initialMachineId) {
+			restoreInitialSettings();
+			return;
+		}
 		access = 'chat';
 		workspace = '';
 		cliPath = '';

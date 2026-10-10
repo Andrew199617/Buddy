@@ -1638,6 +1638,39 @@ async function staleStatusSettingsCase(browser, profile, variant) {
 	});
 }
 
+async function machineRoundTripCase(browser, profile) {
+	const name = 'settings-machine-round-trip';
+	await runCase(browser, profile, name, name, async ({ page }, fixtures) => {
+		await openProviderSettings(page);
+		const dialog = settingsDialog(page);
+		assert.equal(await dialog.locator('input[value="full"]').isChecked(), true);
+		await dialog.locator('#subscription-machine').selectOption('runner-b');
+		assert.equal(await dialog.locator('input[value="chat"]').isChecked(), true);
+		assert.equal(await dialog.locator('#subscription-workspace').inputValue(), '');
+		await dialog.getByText(/Changing machines disables this subscription/).waitFor();
+		await dialog.locator('#subscription-machine').selectOption('local');
+		assert.equal(
+			await dialog.locator('input[value="full"]').isChecked(),
+			true,
+			'Returning to the saved machine restores its access'
+		);
+		assert.equal(await dialog.locator('#subscription-workspace').inputValue(), '/fixture/old');
+		assert.equal(
+			await dialog.locator('#subscription-cli-path').inputValue(),
+			'/fixture/claude-old'
+		);
+		assert.equal(await dialog.getByText(/Changing machines disables this subscription/).count(), 0);
+		await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+		await dialog.waitFor({ state: 'hidden' });
+		const saved = fixtures.requests.find((request) => request.path === configPath);
+		assert.equal(saved.body.machine_id, 'local');
+		assert.equal(saved.body.access, 'full');
+		assert.equal(saved.body.workspace, '/fixture/old');
+		assert.equal(saved.body.cli_path, '/fixture/claude-old');
+		assert.equal(fixtures.providerSettings().access, 'full');
+	});
+}
+
 async function staleStatusRegistryCase(browser, profile) {
 	await runCase(
 		browser,
@@ -2348,6 +2381,7 @@ try {
 		await staleStatusSettingsCase(browser, profile, 'switch-error');
 		await staleStatusSettingsCase(browser, profile, 'workspace');
 		await staleStatusRegistryCase(browser, profile);
+		await machineRoundTripCase(browser, profile);
 		await delayedSettingsCase(browser, profile, 'x');
 		await delayedSettingsCase(browser, profile, 'unmount');
 		await delayedSettingsCase(browser, profile, 'x', true);
