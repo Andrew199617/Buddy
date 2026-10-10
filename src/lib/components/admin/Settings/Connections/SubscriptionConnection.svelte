@@ -54,6 +54,10 @@
 	let disposed = false;
 	let refreshGeneration = 0;
 	let checkInFlight = false;
+	// A failed check stops the automatic retries. The error belongs to the provider snapshot it
+	// checked, so any newer provider (save, sign-out, registry reload) clears it.
+	let failedCheck: { provider: SubscriptionProvider; message: string } | null = null;
+	$: checkError = failedCheck?.provider === provider ? failedCheck.message : '';
 	let settingsInFlight = false;
 	let observedProvider = provider;
 	let observedMachines = machines;
@@ -185,6 +189,7 @@
 			if (disposed || generation !== refreshGeneration) {
 				return false;
 			}
+			failedCheck = { provider, message: `${error}` };
 			throw error;
 		} finally {
 			if (generation === refreshGeneration) {
@@ -201,6 +206,9 @@
 		if (disposed || settingsBlocked || checkTimer || checkInFlight || !provider.status?.checking) {
 			return;
 		}
+		if (failedCheck?.provider === provider) {
+			return;
+		}
 		const generation = refreshGeneration;
 		checkTimer = setTimeout(async () => {
 			checkTimer = null;
@@ -209,13 +217,20 @@
 			}
 			try {
 				await refresh(false);
-			} catch (error) {
-				if (!disposed) {
-					toast.error(`${error}`);
-				}
+			} catch {
+				// Shown under the row with a Retry button instead of a toast every few seconds.
 			}
 		}, CHECK_AGAIN_MS);
 	};
+
+	// A check rejected because the machine changed in another tab only succeeds with the
+	// new selection, so reload the registry before asking again.
+	const retryCheck = () =>
+		runAction(async () => {
+			failedCheck = null;
+			await onSettingsChanged();
+			scheduleCheck();
+		});
 
 	$: if (providerStatus.checking) {
 		scheduleCheck();
@@ -449,6 +464,22 @@
 
 	{#if providerStatus.message}
 		<p class="text-[0.6875rem] text-amber-700 dark:text-amber-400">{providerStatus.message}</p>
+	{/if}
+
+	{#if checkError}
+		<div class="flex flex-wrap items-center gap-x-2">
+			<p role="alert" class="min-w-0 break-words text-[0.6875rem] text-red-600 dark:text-red-400">
+				{$i18n.t('Could not check {{cli}}: {{error}}', { cli: cliName, error: checkError })}
+			</p>
+			<button
+				class="rounded-lg px-2 py-1 text-xs font-medium transition hover:bg-gray-100 dark:hover:bg-gray-850 disabled:opacity-50"
+				type="button"
+				disabled={busy}
+				on:click={retryCheck}
+			>
+				{$i18n.t('Retry')}
+			</button>
+		</div>
 	{/if}
 
 	{#if provider.settings.enable && providerStatus.signed_in}

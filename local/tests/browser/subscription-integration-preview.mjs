@@ -523,6 +523,10 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		}
 		if (path === '/api/v1/subscriptions/claude') {
 			checkCount += 1;
+			if (mode === 'checking-error' && !checkingResolved) {
+				await route.fulfill({ status: 500, json: { detail: 'Synthetic status check failure' } });
+				return;
+			}
 			if (
 				(mode === 'checking-late' ||
 					mode === 'checking-late-error' ||
@@ -1210,6 +1214,45 @@ async function lateCheckCase(browser, profile, errorResponse) {
 			'An unmounted check must not toast errors'
 		);
 	});
+}
+
+async function failedCheckCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'checking-error',
+		'checking-error',
+		async ({ page }, fixtures) => {
+			await setSettings(page, 'admin:connections');
+			const card = providerCard(page, 'Claude');
+			await card.getByText('Checking Claude Code…', { exact: true }).waitFor();
+			await card
+				.getByText('Could not check Claude Code: Synthetic status check failure', { exact: true })
+				.waitFor();
+			assert.equal(fixtures.count('GET', statusPath), 1);
+			await page.waitForTimeout(3300);
+			assert.equal(
+				fixtures.count('GET', statusPath),
+				1,
+				'A failed check waits for Retry instead of asking every three seconds'
+			);
+			assert.equal(
+				await page.getByText('Synthetic status check failure', { exact: true }).count(),
+				0,
+				'A failed automatic check is shown in the row, not toasted'
+			);
+			await captureScreenshot(page, profile.name + '-subscription-check-error');
+			fixtures.markCheckingReady();
+			const registryReads = fixtures.count('GET', '/api/v1/subscriptions');
+			await card.getByRole('button', { name: 'Retry', exact: true }).click();
+			await card.getByRole('button', { name: 'Sign in', exact: true }).waitFor();
+			assert.ok(
+				fixtures.count('GET', '/api/v1/subscriptions') > registryReads,
+				'Retry reloads the machine registry first'
+			);
+			assert.equal(await card.getByText(/Could not check/).count(), 0);
+		}
+	);
 }
 
 async function pendingCheckUnmountCase(browser, profile) {
@@ -2261,6 +2304,7 @@ try {
 		await checkingTransitionCase(browser, profile);
 		await lateCheckCase(browser, profile, false);
 		await lateCheckCase(browser, profile, true);
+		await failedCheckCase(browser, profile);
 		await pendingCheckUnmountCase(browser, profile);
 		await apiBillingCase(browser, profile);
 		await usageNavigationCase(browser, profile);
