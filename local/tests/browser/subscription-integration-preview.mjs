@@ -88,6 +88,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	let heldMachineAction = null;
 	let heldConfig = null;
 	let heldLogout = null;
+	let heldCode = null;
 	let machineActionCount = 0;
 	let configCount = 0;
 	let revisionCount = 1;
@@ -139,7 +140,10 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		url: 'https://example.invalid/synthetic-sign-in',
 		message: 'Synthetic pending sign-in; no CLI was started.',
 		needs_code:
-			mode === 'code-login' || mode === 'remote-code-login' || mode === 'poll-terminal-code'
+			mode === 'code-login' ||
+			mode === 'remote-code-login' ||
+			mode === 'code-held' ||
+			mode === 'poll-terminal-code'
 	};
 	if (
 		mode.includes('machine-remove') ||
@@ -504,6 +508,10 @@ function createFixtures(mode = 'normal', role = 'admin') {
 				});
 				return;
 			}
+			if (mode === 'code-held') {
+				heldCode = route;
+				return;
+			}
 			signedIn = true;
 			loginState = 'success';
 			await route.fulfill({ status: 200, json: { state: 'success' } });
@@ -563,6 +571,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		},
 		hasHeldStart: () => Boolean(heldStart),
 		hasHeldPoll: () => Boolean(heldPoll),
+		hasHeldCode: () => Boolean(heldCode),
 		hasHeldCheck: () => Boolean(heldCheck),
 		hasHeldMachineAction: () => Boolean(heldMachineAction),
 		hasHeldConfig: () => Boolean(heldConfig),
@@ -659,6 +668,24 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			const route = heldPoll;
 			heldPoll = null;
 			await route.fulfill({ status: 200, json: waiting });
+		},
+		async releaseTerminalPoll() {
+			assert.ok(heldPoll, 'A synthetic poll must be pending');
+			const route = heldPoll;
+			heldPoll = null;
+			loginState = mode.slice('poll-terminal-'.length);
+			await route.fulfill({
+				status: 200,
+				json: { state: loginState, message: 'Synthetic terminal login result' }
+			});
+		},
+		async releaseCode() {
+			assert.ok(heldCode, 'A synthetic code submission must be pending');
+			const route = heldCode;
+			heldCode = null;
+			signedIn = true;
+			loginState = 'success';
+			await route.fulfill({ status: 200, json: { state: 'success' } });
 		},
 		async releaseCheck() {
 			assert.ok(heldCheck, 'A synthetic status check must be pending');
@@ -919,10 +946,14 @@ async function terminalPollCase(browser, profile, terminal) {
 	await runCase(browser, profile, name, name, async ({ page }, fixtures) => {
 		await openLogin(page);
 		await startLogin(page);
-		await waitUntil(fixtures.hasHeldPoll, 'An older login waiting response must be held');
+		await waitUntil(fixtures.hasHeldPoll, 'A slow login poll must be held');
 		if (terminal === 'code') {
 			await loginDialog(page).locator('#subscription-login-code').fill('synthetic-approval-code');
 			await loginDialog(page).getByRole('button', { name: 'Finish', exact: true }).click();
+		} else {
+			await page.waitForTimeout(4500);
+			assert.equal(fixtures.count('GET'), 1, 'A slow poll is never overlapped by the next one');
+			await fixtures.releaseTerminalPoll();
 		}
 		await loginDialog(page)
 			.getByRole('button', { name: 'Get sign-in link', exact: true })
@@ -934,8 +965,8 @@ async function terminalPollCase(browser, profile, terminal) {
 		}
 		const polls = fixtures.count('GET');
 		const modelReads = fixtures.count('GET', '/api/models');
-		assert.equal(polls, terminal === 'code' ? 1 : 2);
-		await fixtures.releaseWaitingPoll();
+		assert.equal(polls, 1);
+		if (terminal === 'code') await fixtures.releaseWaitingPoll();
 		await page.waitForTimeout(2200);
 		assert.equal(
 			await loginDialog(page).getByRole('button', { name: 'Get sign-in link' }).isVisible(),
@@ -990,6 +1021,29 @@ async function codeLoginCase(browser, profile, remote = false) {
 			assert.equal(startRequest.expectedMachineRevision, 'fixture-revision-a-1');
 			assert.equal(fixtures.providerSettings().machine_id, 'runner-a');
 		}
+		assert.equal(fixtures.count('DELETE'), 0);
+	});
+}
+
+async function heldCodeCase(browser, profile) {
+	await runCase(browser, profile, 'code-held', 'code-held', async ({ page }, fixtures) => {
+		await openLogin(page);
+		await startLogin(page);
+		await loginDialog(page).locator('#subscription-login-code').fill('synthetic-approval-code');
+		await loginDialog(page).getByRole('button', { name: 'Finish', exact: true }).click();
+		await waitUntil(fixtures.hasHeldCode, 'The code submission must be pending');
+		const polls = fixtures.count('GET');
+		await page.waitForTimeout(4500);
+		assert.equal(
+			fixtures.count('GET'),
+			polls,
+			'Polling pauses while the server is still checking the code'
+		);
+		await fixtures.releaseCode();
+		await loginDialog(page).waitFor({ state: 'hidden' });
+		await providerCard(page, 'Claude')
+			.getByRole('button', { name: 'Sign out', exact: true })
+			.waitFor();
 		assert.equal(fixtures.count('DELETE'), 0);
 	});
 }
@@ -2115,6 +2169,7 @@ try {
 		await successCase(browser, profile);
 		await codeLoginCase(browser, profile);
 		await codeLoginCase(browser, profile, true);
+		await heldCodeCase(browser, profile);
 		await checkingTransitionCase(browser, profile);
 		await lateCheckCase(browser, profile, false);
 		await lateCheckCase(browser, profile, true);

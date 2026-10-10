@@ -64,6 +64,7 @@
 	let disposed = false;
 	let cancellation: Promise<void> | null = null;
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
+	let pollInFlight = false;
 	$: busy = $pendingProviderActions[provider.id] > 0;
 
 	const inputClass =
@@ -150,6 +151,10 @@
 		const generation = loginGeneration;
 		const owner = loginOwner;
 		if (disposed || !owner || !show || login.state !== 'waiting') return;
+		// The server answers one request per provider at a time, and a code submission can hold
+		// it for up to a minute. Skip this tick instead of queueing polls behind it.
+		if (pollInFlight || providerIsBusy(owner.providerId)) return;
+		pollInFlight = true;
 		try {
 			handleLoginUpdate(
 				await getSubscriptionLogin(
@@ -166,6 +171,8 @@
 				stopPolling();
 				toast.error(`${error}`);
 			}
+		} finally {
+			pollInFlight = false;
 		}
 	};
 
