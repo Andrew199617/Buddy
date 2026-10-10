@@ -92,6 +92,10 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	let configCount = 0;
 	let revisionCount = 1;
 	const settingsByProvider = {};
+	const machineKeys = new Map([
+		['runner-a', 'synthetic-saved-key-a'],
+		['runner-b', 'synthetic-saved-key-b']
+	]);
 	let machines = [
 		{ id: 'local', name: 'This server', url: null },
 		{
@@ -125,6 +129,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	];
 	let checkingResolved = false;
 	let checkCount = 0;
+	let pollCount = 0;
 	let signedIn = mode.startsWith('logout-');
 	let loginState = 'idle';
 	let startCount = 0;
@@ -133,7 +138,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		method: 'browser',
 		url: 'https://example.invalid/synthetic-sign-in',
 		message: 'Synthetic pending sign-in; no CLI was started.',
-		needs_code: mode === 'code-login'
+		needs_code: mode === 'code-login' || mode === 'poll-terminal-code'
 	};
 	if (
 		mode.includes('machine-remove') ||
@@ -211,6 +216,20 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		);
 	}
 
+	function recoversMissingMachine(request, id) {
+		const current = describeProvider(id).settings;
+		return (
+			request.method === 'POST' &&
+			request.path.endsWith('/config') &&
+			current.machine_id !== 'local' &&
+			request.expectedMachineId === current.machine_id &&
+			!machines.some((machine) => machine.id === current.machine_id) &&
+			typeof request.body?.machine_id === 'string' &&
+			request.body.machine_id.length > 0 &&
+			request.body.machine_id !== current.machine_id
+		);
+	}
+
 	function saveConfig(id, body) {
 		const { expected_machine_id, expected_machine_revision, ...settings } = body;
 		const current = describeProvider(id).settings;
@@ -244,6 +263,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		if (method === 'DELETE') {
 			const id = decodeURIComponent(path.split('/').at(-1));
 			machines = machines.filter((machine) => machine.id !== id);
+			machineKeys.delete(id);
 			for (const providerId of ['claude', 'codex']) {
 				if (describeProvider(providerId).settings.machine_id === id) {
 					settingsByProvider[providerId] = {
@@ -260,12 +280,15 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		}
 		const id = body.id || 'runner-new';
 		const old = machines.find((machine) => machine.id === id);
-		const identityChanged = !old || old.url !== body.url || Boolean(body.key);
+		const normalizedUrl = body.url.replace(/\/+$/, '');
+		const nextKey = body.key || machineKeys.get(id);
+		const identityChanged = !old || old.url !== normalizedUrl || machineKeys.get(id) !== nextKey;
+		machineKeys.set(id, nextKey);
 		const machine = {
 			...old,
 			id,
 			name: body.name,
-			url: body.url,
+			url: normalizedUrl,
 			browser_url: body.browser_url ?? null,
 			revision: identityChanged ? 'fixture-revision-write-' + ++revisionCount : old.revision
 		};
@@ -343,18 +366,19 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		}
 		const providerId = path.split('/')[4];
 		if (providerId === 'claude' || providerId === 'codex') {
+			const recovering = recoversMissingMachine(recordedRequest, providerId);
 			assert.equal(
 				typeof recordedRequest.expectedMachineId,
 				'string',
 				'Every provider action captures its selected machine'
 			);
-			if (recordedRequest.expectedMachineId !== 'local')
+			if (recordedRequest.expectedMachineId !== 'local' && !recovering)
 				assert.equal(
 					typeof recordedRequest.expectedMachineRevision,
 					'string',
 					'Remote actions capture their machine revision'
 				);
-			if (!ownsCurrentMachine(recordedRequest, providerId)) {
+			if (!ownsCurrentMachine(recordedRequest, providerId) && !recovering) {
 				recordedRequest.guardRejected = true;
 				await route.fulfill({
 					status: 409,
@@ -398,7 +422,10 @@ function createFixtures(mode = 'normal', role = 'admin') {
 				});
 				return;
 			}
-			if (mode.startsWith('settings-delayed') && configCount === 1) {
+			if (
+				(mode.startsWith('settings-delayed') || mode.startsWith('enable-delayed')) &&
+				configCount === 1
+			) {
 				heldConfig = { route, id, body, recordedRequest };
 				return;
 			}
@@ -437,6 +464,20 @@ function createFixtures(mode = 'normal', role = 'admin') {
 				heldPoll = route;
 				return;
 			}
+			if (mode.startsWith('poll-terminal-')) {
+				pollCount += 1;
+				if (pollCount === 1) {
+					heldPoll = route;
+					return;
+				}
+				loginState =
+					mode === 'poll-terminal-code' ? 'waiting' : mode.slice('poll-terminal-'.length);
+				await route.fulfill({
+					status: 200,
+					json: { state: loginState, message: 'Synthetic terminal login result' }
+				});
+				return;
+			}
 			if (mode === 'success') {
 				signedIn = true;
 				loginState = 'success';
@@ -453,6 +494,14 @@ function createFixtures(mode = 'normal', role = 'admin') {
 				'synthetic-approval-code',
 				'Only fixture codes reach the intercepted API'
 			);
+			if (mode === 'poll-terminal-code') {
+				loginState = 'error';
+				await route.fulfill({
+					status: 200,
+					json: { state: 'error', message: 'Synthetic terminal login result' }
+				});
+				return;
+			}
 			signedIn = true;
 			loginState = 'success';
 			await route.fulfill({ status: 200, json: { state: 'success' } });
@@ -516,6 +565,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		hasHeldMachineAction: () => Boolean(heldMachineAction),
 		hasHeldConfig: () => Boolean(heldConfig),
 		hasHeldLogout: () => Boolean(heldLogout),
+		providerSettings: (id = 'claude') => ({ ...describeProvider(id).settings }),
 		externalMachineSwitch() {
 			loginState = 'idle';
 			signedIn = false;
@@ -571,7 +621,10 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			assert.ok(heldConfig, 'A synthetic settings save must be pending');
 			const { route, id, body, recordedRequest } = heldConfig;
 			heldConfig = null;
-			if (!ownsCurrentMachine(recordedRequest, id)) {
+			if (
+				!ownsCurrentMachine(recordedRequest, id) &&
+				!recoversMissingMachine(recordedRequest, id)
+			) {
 				recordedRequest.guardRejected = true;
 				await route.fulfill({
 					status: 409,
@@ -598,6 +651,12 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			const route = heldPoll;
 			heldPoll = null;
 			await route.fulfill({ status: 200, json: { state: 'success' } });
+		},
+		async releaseWaitingPoll() {
+			assert.ok(heldPoll, 'An older synthetic waiting poll must be pending');
+			const route = heldPoll;
+			heldPoll = null;
+			await route.fulfill({ status: 200, json: waiting });
 		},
 		async releaseCheck() {
 			assert.ok(heldCheck, 'A synthetic status check must be pending');
@@ -851,6 +910,45 @@ async function stalePollCase(browser, profile, method) {
 			await dismiss(page, 'x');
 		}
 	);
+}
+
+async function terminalPollCase(browser, profile, terminal) {
+	const name = 'poll-terminal-' + terminal;
+	await runCase(browser, profile, name, name, async ({ page }, fixtures) => {
+		await openLogin(page);
+		await startLogin(page);
+		await waitUntil(fixtures.hasHeldPoll, 'An older login waiting response must be held');
+		if (terminal === 'code') {
+			await loginDialog(page).locator('#subscription-login-code').fill('synthetic-approval-code');
+			await loginDialog(page).getByRole('button', { name: 'Finish', exact: true }).click();
+		}
+		await loginDialog(page)
+			.getByRole('button', { name: 'Get sign-in link', exact: true })
+			.waitFor();
+		if (terminal === 'error' || terminal === 'code') {
+			await loginDialog(page)
+				.getByText('Synthetic terminal login result', { exact: true })
+				.waitFor();
+		}
+		const polls = fixtures.count('GET');
+		const modelReads = fixtures.count('GET', '/api/models');
+		assert.equal(polls, terminal === 'code' ? 1 : 2);
+		await fixtures.releaseWaitingPoll();
+		await page.waitForTimeout(2200);
+		assert.equal(
+			await loginDialog(page).getByRole('button', { name: 'Get sign-in link' }).isVisible(),
+			true
+		);
+		assert.equal(await loginDialog(page).getByText('Open Claude sign-in').count(), 0);
+		assert.equal(
+			fixtures.count('GET'),
+			polls,
+			'Late waiting responses cannot restart a completed polling flow'
+		);
+		assert.equal(fixtures.count('GET', '/api/models'), modelReads);
+		assert.equal(fixtures.count('POST'), 1);
+		await dismiss(page, 'x');
+	});
 }
 
 async function successCase(browser, profile) {
@@ -1436,11 +1534,79 @@ async function delayedSettingsCase(browser, profile, method, errorResponse = fal
 	});
 }
 
-async function removedMachineCase(browser, profile) {
+async function delayedEnableCase(browser, profile, outcome = 'success') {
+	const name = 'enable-delayed-' + outcome;
+	await runCase(browser, profile, name, name, async ({ page }, fixtures) => {
+		await setSettings(page, 'admin:connections');
+		const toggle = providerCard(page, 'Claude').getByRole('switch');
+		assert.equal(await toggle.getAttribute('aria-checked'), 'false');
+		await toggle.click();
+		await waitUntil(fixtures.hasHeldConfig, 'The synthetic enable save must be pending');
+		let expectedDraft = 'true';
+		if (outcome === 'remount') {
+			await setSettings(page, false);
+			await providerCard(page, 'Claude').waitFor({ state: 'hidden' });
+			await setSettings(page, 'admin:connections');
+			await toggle.waitFor();
+			expectedDraft = 'false';
+		}
+		assert.equal(
+			await toggle.isDisabled(),
+			true,
+			'Pending writes disable this owner across remounts'
+		);
+		assert.equal(await toggle.getAttribute('aria-checked'), expectedDraft);
+		await assert.rejects(toggle.click({ timeout: 250 }), { name: 'TimeoutError' });
+		assert.equal(
+			await toggle.getAttribute('aria-checked'),
+			expectedDraft,
+			'A busy click cannot change the draft'
+		);
+		assert.equal(
+			fixtures.providerSettings().enable,
+			false,
+			'Held enable has not changed accepted settings'
+		);
+		assert.equal(
+			fixtures.count('POST', configPath),
+			1,
+			'Rapid clicks never create a second config write'
+		);
+		await fixtures.releaseConfig(outcome === 'error');
+		await waitUntil(
+			async () => !(await toggle.isDisabled()),
+			'Enable completes and releases its busy state'
+		);
+		const accepted = outcome !== 'error';
+		await waitUntil(
+			async () => (await toggle.getAttribute('aria-checked')) === String(accepted),
+			'The switch must agree with the accepted config response'
+		);
+		assert.equal(fixtures.providerSettings().enable, accepted);
+		assert.equal(fixtures.count('POST', configPath), 1);
+		assert.equal(fixtures.count('POST'), 0, 'Enabling alone never starts CLI sign-in');
+		if (outcome === 'success') {
+			await loginDialog(page).waitFor();
+			await dismiss(page, 'x');
+		}
+		if (accepted) {
+			await toggle.click();
+			await waitUntil(
+				async () =>
+					(await toggle.getAttribute('aria-checked')) === 'false' && !(await toggle.isDisabled()),
+				'An explicit click after completion can disable the accepted subscription'
+			);
+			assert.equal(fixtures.providerSettings().enable, false);
+			assert.equal(fixtures.count('POST', configPath), 2);
+		}
+	});
+}
+
+async function removedMachineCase(browser, profile, replacement = 'runner-b') {
 	await runCase(
 		browser,
 		profile,
-		'machine-remove',
+		replacement === 'local' ? 'machine-remove-to-local' : 'machine-remove',
 		'machine-remove',
 		async ({ page }, fixtures) => {
 			await openMachine(page, 'Synthetic computer A');
@@ -1470,7 +1636,40 @@ async function removedMachineCase(browser, profile) {
 				0,
 				'Removing a selected host never writes a local-server fallback config'
 			);
+			await dialog.locator('#subscription-machine').selectOption(replacement);
+			await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+			await dialog.waitFor({ state: 'hidden' });
+			const recovery = fixtures.requests.find((request) => request.path === configPath);
+			assert.equal(recovery.body.machine_id, replacement);
+			assert.equal(recovery.expectedMachineId, 'runner-a');
+			assert.equal(
+				recovery.expectedMachineRevision,
+				null,
+				'A deleted machine has no revision left to capture'
+			);
+			assert.equal(fixtures.providerSettings().machine_id, replacement);
+			assert.equal(
+				fixtures.providerSettings().enable,
+				false,
+				'Recovery requires separate enable approval'
+			);
+			assert.equal(fixtures.providerSettings().access, 'chat');
+			await openProviderSettings(page);
+			assert.equal(await dialog.locator('#subscription-machine').inputValue(), replacement);
+			assert.equal(await dialog.locator('input[value="read"]').isDisabled(), false);
+			assert.equal(await dialog.locator('#subscription-workspace').inputValue(), '');
+			assert.equal(await dialog.locator('#subscription-cli-path').inputValue(), '');
 			await dismissDialog(page, dialog, 'x');
+			await providerCard(page, 'Claude').getByRole('switch').click();
+			await loginDialog(page).waitFor();
+			assert.equal(fixtures.providerSettings().enable, true);
+			assert.equal(fixtures.count('POST', configPath), 2);
+			assert.equal(
+				fixtures.count('POST'),
+				0,
+				'Recovering and enabling never start sign-in automatically'
+			);
+			await dismiss(page, 'x');
 		}
 	);
 }
@@ -1773,8 +1972,10 @@ async function revisionReplacementCase(browser, profile, action) {
 	});
 }
 
-async function loginRevisionCase(browser, profile, metadataOnly = false) {
-	const name = metadataOnly ? 'metadata-keeps-login-context' : 'login-revision-guard';
+async function loginRevisionCase(browser, profile, metadataOnly = false, equivalentTarget = false) {
+	let name = 'login-revision-guard';
+	if (metadataOnly) name = 'metadata-keeps-login-context';
+	if (equivalentTarget) name = 'metadata-equivalent-target-keeps-login-context';
 	const mode = metadataOnly ? 'machine-save-metadata-revision' : 'machine-save-login-revision';
 	await runCase(browser, profile, name, mode, async ({ page }, fixtures) => {
 		await openMachine(page, 'Synthetic computer A');
@@ -1786,6 +1987,10 @@ async function loginRevisionCase(browser, profile, metadataOnly = false) {
 			await machineDialog(page)
 				.locator('#machine-url')
 				.fill('https://replacement-a.example.invalid');
+		if (equivalentTarget) {
+			await machineDialog(page).locator('#machine-url').fill('http://host.docker.internal:8765/');
+			await machineDialog(page).locator('#machine-key').fill('synthetic-saved-key-a');
+		}
 		await machineDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
 		await waitUntil(fixtures.hasHeldMachineAction, 'Registry mutation must be pending');
 		await dismissDialog(page, machineDialog(page), 'x');
@@ -1887,6 +2092,10 @@ try {
 		await delayedStartCase(browser, profile, 'unmount');
 		await stalePollCase(browser, profile, 'escape');
 		await stalePollCase(browser, profile, 'unmount');
+		await terminalPollCase(browser, profile, 'error');
+		await terminalPollCase(browser, profile, 'cancelled');
+		await terminalPollCase(browser, profile, 'idle');
+		await terminalPollCase(browser, profile, 'code');
 		await successCase(browser, profile);
 		await codeLoginCase(browser, profile);
 		await checkingTransitionCase(browser, profile);
@@ -1911,7 +2120,11 @@ try {
 		await delayedSettingsCase(browser, profile, 'x');
 		await delayedSettingsCase(browser, profile, 'unmount');
 		await delayedSettingsCase(browser, profile, 'x', true);
+		await delayedEnableCase(browser, profile);
+		await delayedEnableCase(browser, profile, 'error');
+		await delayedEnableCase(browser, profile, 'remount');
 		await removedMachineCase(browser, profile);
+		await removedMachineCase(browser, profile, 'local');
 		await delayedLogoutCase(browser, profile, 'switch');
 		await delayedLogoutCase(browser, profile, 'unmount');
 		await delayedLogoutCase(browser, profile, 'unmount-same');
@@ -1923,6 +2136,7 @@ try {
 		await revisionReplacementCase(browser, profile, 'logout');
 		await loginRevisionCase(browser, profile);
 		await loginRevisionCase(browser, profile, true);
+		await loginRevisionCase(browser, profile, true, true);
 	}
 } finally {
 	await browser.close();

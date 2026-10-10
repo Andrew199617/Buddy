@@ -60,6 +60,8 @@
 	let observedMachineId = provider.settings.machine_id;
 	let observedMachineRevision = provider.machine?.revision;
 	$: settingsBlocked = settingsInFlight || ($pendingSettings[provider.id] ?? 0) > 0;
+	let enabled = provider.settings.enable;
+	$: enabled = provider.settings.enable;
 
 	const CHECK_AGAIN_MS = 3000;
 
@@ -308,7 +310,11 @@
 	};
 
 	const toggleEnabled = async () => {
-		const enable = provider.settings.enable;
+		if (disposed || settingsBlocked || busy) {
+			enabled = provider.settings.enable;
+			return;
+		}
+		const enable = enabled;
 		const optimisticProvider = provider;
 		const machineId = provider.settings.machine_id;
 		const machineRevision = provider.machine?.revision;
@@ -316,7 +322,7 @@
 		const saved = await saveSettings({ enable });
 		if (!saved) {
 			if (!disposed && provider === optimisticProvider && generation === refreshGeneration) {
-				provider.settings.enable = !enable;
+				enabled = provider.settings.enable;
 			}
 			return;
 		}
@@ -429,13 +435,15 @@
 				</button>
 			</Tooltip>
 
-			<Tooltip content={provider.settings.enable ? $i18n.t('Enabled') : $i18n.t('Disabled')}>
-				<Switch
-					bind:state={provider.settings.enable}
-					ariaLabel={$i18n.t('Use {{name}} subscription models', { name: provider.name })}
-					on:change={toggleEnabled}
-				/>
-			</Tooltip>
+			<fieldset class="m-0 min-w-0 border-0 p-0" disabled={settingsBlocked || busy}>
+				<Tooltip content={enabled ? $i18n.t('Enabled') : $i18n.t('Disabled')}>
+					<Switch
+						bind:state={enabled}
+						ariaLabel={$i18n.t('Use {{name}} subscription models', { name: provider.name })}
+						on:change={toggleEnabled}
+					/>
+				</Tooltip>
+			</fieldset>
 		</div>
 	</div>
 

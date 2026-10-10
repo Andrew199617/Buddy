@@ -124,20 +124,22 @@
 			return;
 		}
 		login = update;
-		if (login.state === 'success') {
+		if (login.state !== 'waiting') {
+			// Any other response still in flight belongs to the completed polling flow.
+			loginGeneration += 1;
 			stopPolling();
+		}
+		if (login.state === 'success') {
 			toast.success($i18n.t('Signed in to {{name}}', { name: provider.name }));
 			onSignedIn();
 			show = false;
-		} else if (login.state !== 'waiting') {
-			stopPolling();
 		}
 	};
 
 	const pollLogin = async () => {
 		const generation = loginGeneration;
 		const owner = loginOwner;
-		if (disposed || !owner || !show) return;
+		if (disposed || !owner || !show || login.state !== 'waiting') return;
 		try {
 			handleLoginUpdate(
 				await getSubscriptionLogin(
@@ -156,6 +158,7 @@
 				owner.machineId === provider.settings.machine_id &&
 				owner.machineRevision === provider.machine?.revision
 			) {
+				loginGeneration += 1;
 				stopPolling();
 				toast.error(`${error}`);
 			}
