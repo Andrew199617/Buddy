@@ -70,6 +70,17 @@ account. Browser tokens and directory approvals remain temporary and separate.
 Protect the Runner state directory and Buddy's configuration database as
 privileged secrets; neither belongs in source control or browser storage.
 
+On POSIX, the Runner requires its state directory to be owned by the current
+user with mode `0700`, and its key to be a singly linked regular file owned by
+that user with mode `0600`. New paths are created with those permissions.
+Existing unsafe ownership, modes, links or file types stop startup before the
+key is read. The Runner does not repair or rotate an existing credential.
+After verifying ownership, an operator can explicitly correct its state and
+key modes with `chmod 700` and `chmod 600`. A custom key may have trusted `0755`
+ancestors while the state directory remains independently private. Windows
+uses native pinned path checks and inherited directory ACLs; these checks do
+not establish a new private ACL or claim POSIX mode enforcement.
+
 ## Files, folders and commands
 
 The directory picker browses approved roots and selects a real project folder.
@@ -106,6 +117,9 @@ The host operator must stop/restart that Runner, then restart Buddy's backend to
 clear that state. Ordinary failures to connect do not create this state. Failed
 cleanup retains the known process handle. Native cleanup can retry verification;
 an unconfirmed remote stop after transport loss needs operator recovery.
+An ended remote stream without an exit status marks the provider disconnected.
+This liveness status does not confirm cleanup or permit a replacement process
+while old ownership remains unconfirmed.
 
 ## Browser, phone, Docker and other computers
 
@@ -136,6 +150,8 @@ saving before remote mutations. Changing a backend URL, key or observed host
 instance disables affected providers, clears inherited access and paths, and
 quiesces old operations. Editing only the name or browser address grants nothing
 and retains the execution revision.
+Older machine editors that omit the optional browser address preserve its
+saved value. Explicitly clearing the field removes only that address.
 
 Provider execution and host transitions require a single Buddy backend worker.
 The server refuses new provider execution and mutations with multiple workers,
@@ -153,8 +169,11 @@ providers, read account credentials or approve live directories:
 .venv\Scripts\python.exe -B -m unittest discover -s local\tests -p test_remote_process_cleanup.py -v
 .venv\Scripts\python.exe -B -m unittest discover -s local\tests -p 'test_subscription*.py' -v
 .venv\Scripts\python.exe -B -m unittest discover -s local\tests -p test_provider_host_transitions.py -v
+.venv\Scripts\python.exe -B -m unittest discover -s local\tests -p test_remote_liveness.py -v
+.venv\Scripts\python.exe -B -m unittest discover -s local\tests -p test_codex_effort_metadata.py -v
 ```
 
 See [validation evidence](VALIDATION.md). Native Windows coverage does not imply
-POSIX runtime coverage. The UI and combined desktop/mobile fixtures are delivered
-in the companion styling stack; backend PR #3 intentionally contains no src UI.
+POSIX runtime coverage. PR #3 includes the five subscription client files needed
+to carry selected-machine proof through provider actions. Project UI, styling,
+unread features and their combined desktop/mobile fixtures remain in PR #4.
