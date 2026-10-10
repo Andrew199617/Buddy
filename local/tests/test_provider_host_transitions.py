@@ -408,7 +408,7 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.config.commits, [])
 
     async def fixture_chat(self, stream=False):
-        async def passthrough_preset(request, payload, metadata, user):
+        async def passthrough_preset(request, payload, metadata, user, models):
             return payload['model'], payload
 
         self.service._apply_preset = passthrough_preset

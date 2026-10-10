@@ -272,6 +272,7 @@ from open_webui.utils.plugin import install_tool_and_function_dependencies
 from open_webui.utils.redis import get_redis_client
 from open_webui.utils.session_pool import cleanup_response, get_client_timeout, get_session, stream_wrapper
 from open_webui.utils.subscriptions.common import SUBSCRIPTION_OWNED_BY
+from open_webui.utils.subscriptions.service import is_conflicting_preset_row
 from open_webui.utils.tool_approval import (
     ResolveToolCallForm,
     build_tool_approval_resume_payload,
@@ -1119,6 +1120,9 @@ async def chat_completion(
 
             model = request.app.state.MODELS[model_id]
             model_info = await Models.get_model_by_id(model_id)
+            if is_conflicting_preset_row(model, model_info):
+                # A preset row that reuses a subscription model's ID cannot redirect or reconfigure it.
+                model_info = None
             missing_base_model = bool(
                 model_info and model_info.base_model_id and model_info.base_model_id not in request.app.state.MODELS
             )

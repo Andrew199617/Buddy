@@ -1186,11 +1186,29 @@ def _require_plan(provider_id: str, provider_status: dict | None) -> None:
         )
 
 
-async def _apply_preset(request, payload: dict, metadata: dict, user) -> tuple[str, dict]:
+def is_conflicting_preset_row(model: dict | None, model_info) -> bool:
+    """Whether a Workspace row based on another model reuses a subscription model's own ID.
+
+    The model list shows the subscription model itself in that case, so the
+    row is not its settings, and following it would let whoever created the
+    row choose the model and system prompt of a turn on the administrator's
+    plan. A subscription model's own settings are saved without a base model,
+    which only administrators can do.
+    """
+    if not model or not model_info:
+        return False
+    is_subscription_base_model = bool(model.get('subscription')) and not model.get('preset')
+    return is_subscription_base_model and bool(model_info.base_model_id)
+
+
+async def _apply_preset(request, payload: dict, metadata: dict, user, models: dict) -> tuple[str, dict]:
     """Apply a Workspace model preset's params and system prompt, like the OpenAI route."""
     model_id = payload.get('model')
     model_info = await Models.get_model_by_id(model_id)
     if not model_info:
+        return model_id, payload
+    if is_conflicting_preset_row(models.get(model_id), model_info):
+        log.warning('Ignoring the Workspace model %s: it reuses a subscription model ID', model_id)
         return model_id, payload
 
     if model_info.base_model_id:
@@ -1213,7 +1231,7 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
 
     payload = {**form_data}
     metadata = payload.pop('metadata', None) or {}
-    model_id, payload = await _apply_preset(request, payload, metadata, user)
+    model_id, payload = await _apply_preset(request, payload, metadata, user, models)
     base_model = models.get(model_id) or {}
     subscription = base_model.get('subscription')
     if not subscription:

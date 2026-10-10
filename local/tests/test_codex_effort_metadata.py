@@ -133,7 +133,7 @@ class CodexEffortMetadataTests(unittest.IsolatedAsyncioTestCase):
         service.get_machine = AsyncMock(return_value=self.machine)
         service.working_directory = AsyncMock(return_value='fixture-chat-directory')
 
-        async def no_database_preset(request, payload, metadata, user):
+        async def no_database_preset(request, payload, metadata, user, models):
             return payload['model'], payload
 
         service._apply_preset = no_database_preset
