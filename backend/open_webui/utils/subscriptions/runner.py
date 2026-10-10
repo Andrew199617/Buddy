@@ -27,9 +27,12 @@ import math
 import os
 import secrets
 import socket
+import ssl
 import stat
 import sys
+import tempfile
 from contextlib import ExitStack, contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from aiohttp import WSMsgType, web
@@ -579,12 +582,61 @@ def load_or_create_key(key_file: Path, *, state_dir: Path | None = None) -> str:
         raise
 
 
+def _check_server_certificate_validity(certificate_data: bytes) -> None:
+    from cryptography import x509
+
+    leaf = x509.load_pem_x509_certificate(certificate_data)
+    valid_from = getattr(leaf, 'not_valid_before_utc', None)
+    expires = getattr(leaf, 'not_valid_after_utc', None)
+    if valid_from is None:
+        valid_from = leaf.not_valid_before.replace(tzinfo=timezone.utc)
+        expires = leaf.not_valid_after.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    if now < valid_from:
+        raise ValueError(f'The Runner TLS certificate is not valid until {valid_from.isoformat()}. Supply a currently valid certificate.')
+    if now >= expires:
+        raise ValueError(f'The Runner TLS certificate expired on {expires.isoformat()}. Renew it before starting.')
+    if expires - now <= timedelta(days=30):
+        log.warning(
+            'Runner TLS certificate expires on %s. Renew the host certificate and restart the Runner to load it; active CLI and terminal sessions will stop.',
+            expires.isoformat(),
+        )
+
+
+def build_server_tls_context(certificate: Path | None, private_key: Path | None) -> ssl.SSLContext | None:
+    if certificate is None and private_key is None:
+        return None
+    if certificate is None or private_key is None:
+        raise ValueError('Supply --tls-cert and --tls-key together for HTTPS.')
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    try:
+        # An empty password explicitly disables OpenSSL's interactive prompt.
+        # Operators supply an unencrypted key; this process never creates one.
+        certificate_data = certificate.read_bytes()
+        if b'PRIVATE KEY-----' in certificate_data:
+            raise ValueError('The server certificate chain must not contain a private key; keep the key in its separate host-only file.')
+        _check_server_certificate_validity(certificate_data)
+        # OpenSSL requires a filename. Load the exact public bytes validated
+        # above, even if the operator replaces the original during startup.
+        # The private key stays at its original host-only path.
+        with tempfile.TemporaryDirectory(prefix='buddy-runner-public-cert-') as directory:
+            with tempfile.NamedTemporaryFile(dir=directory, suffix='.pem', delete=False) as snapshot:
+                snapshot.write(certificate_data)
+            context.load_cert_chain(snapshot.name, str(private_key), password='')
+    except (OSError, ValueError) as error:
+        raise ValueError(f'Could not load the Runner TLS certificate and private key: {error}') from error
+    return context
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Run Claude Code and Codex for a Buddy server.')
     parser.add_argument('--host', default='127.0.0.1', help='Address to listen on (default: 127.0.0.1).')
     parser.add_argument('--port', type=int, default=DEFAULT_PORT)
     parser.add_argument('--state-dir', type=Path, default=DEFAULT_STATE_DIR)
     parser.add_argument('--key-file', type=Path, default=None, help='Default: <state-dir>/key')
+    parser.add_argument('--tls-cert', type=Path, default=None, help='Operator-supplied PEM server certificate chain for HTTPS.')
+    parser.add_argument('--tls-key', type=Path, default=None, help='Operator-supplied unencrypted PEM private key; use with --tls-cert.')
     parser.add_argument('--root', action='append', default=[], help='Approve one absolute project directory; repeat as needed.')
     parser.add_argument('--write', action='store_true', help='Approve edits of existing UTF-8 files in the selected roots.')
     parser.add_argument('--allow-host-execution', action='store_true', help='Approve commands as the Runner account; a working directory is not a sandbox.')
@@ -594,11 +646,18 @@ def main() -> None:
     args = parser.parse_args()
     if args.host not in ('127.0.0.1', 'localhost', '::1'):
         parser.error('The Runner binds only to loopback. Use a separately reviewed authenticated private transport for remote access.')
+    try:
+        tls_context = build_server_tls_context(args.tls_cert, args.tls_key)
+    except ValueError as error:
+        # TLS misconfiguration must fail before persistent Runner credentials
+        # or state directories are created.
+        parser.error(str(error))
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     key_file = args.key_file or args.state_dir / 'key'
     key = load_or_create_key(key_file, state_dir=args.state_dir)
-    log.info('Buddy Runner on http://%s:%s; key in %s', args.host, args.port, key_file)
+    scheme = 'https' if tls_context is not None else 'http'
+    log.info('Buddy Runner on %s://%s:%s; key in %s', scheme, args.host, args.port, key_file)
     origins = args.origin or [
         'http://127.0.0.1:8081', 'http://localhost:8081',
         'http://127.0.0.1:8082', 'http://localhost:8082',
@@ -615,7 +674,7 @@ def main() -> None:
         print(f'One-use workspace pairing code (expires in 5 minutes): {workspace_host.pairing_code}', flush=True)
     if args.allow_host_execution:
         log.warning('Commands run as the host OS account. Their working directory is not a sandbox.')
-    web.run_app(app, host=args.host, port=args.port, print=None)
+    web.run_app(app, host=args.host, port=args.port, ssl_context=tls_context, print=None)
 
 
 if __name__ == '__main__':
