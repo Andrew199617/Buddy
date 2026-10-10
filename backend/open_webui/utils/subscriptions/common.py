@@ -2,6 +2,7 @@
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 from open_webui.utils.subscriptions.conversation import Conversation
 
@@ -28,6 +29,8 @@ class ProviderSettings:
     access: str = ACCESS_CHAT
     workspace: str = ''
     cli_path: str = ''
+    # Which machine runs the CLI: 'local' (this server) or a Buddy Runner id.
+    machine_id: str = 'local'
 
 
 @dataclass
@@ -48,6 +51,8 @@ class TurnRequest:
     cwd: str
     effort: str | None = None
     is_task: bool = False
+    # LocalMachine or RemoteMachine from subscriptions.machines.
+    machine: Any = None
 
     @property
     def access(self) -> str:

@@ -1,13 +1,16 @@
-"""Subscription models inside Open WebUI: settings, model list, and chat.
+"""Subscription models inside Open WebUI: settings, machines, model list, and chat.
 
 Settings live in the config table under ``subscriptions.claude`` and
-``subscriptions.codex``. Models appear only when a provider is turned on and
-its CLI is signed in. Only administrators can use them: they run on the
-administrator's personal plan and, with tool access, on this computer.
+``subscriptions.codex``; Buddy Runner machines under ``subscriptions.machines``.
+Each provider runs its CLI on one machine: this server, or a runner such as
+the administrator's PC. Models appear only when a provider is turned on and
+its CLI is signed in on that machine. Only administrators can use them: they
+run on the administrator's personal plan and, with tool access, on that machine.
 """
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
@@ -33,29 +36,132 @@ from open_webui.utils.subscriptions.common import (
 )
 from open_webui.utils.subscriptions.conversation import parse_messages
 from open_webui.utils.subscriptions.events import SubscriptionError
+from open_webui.utils.subscriptions.machines import LOCAL_MACHINE_ID, LocalMachine, RemoteMachine
 from open_webui.utils.subscriptions.streaming import collect_events, failure_events, stream_events
 
 log = logging.getLogger(__name__)
 
 STATE_DIR = Path(DATA_DIR) / 'subscriptions'
-CHAT_DIR = STATE_DIR / 'chat'
-DEFAULT_WORKSPACE = STATE_DIR / 'workspace'
 STATUS_TTL_SECONDS = 60
 MODELS_TTL_SECONDS = 600
 FIRST_LOAD_WAIT_SECONDS = 20
+MACHINES_CONFIG_KEY = 'subscriptions.machines'
 
 PROVIDERS = {
-    'claude': ClaudeCodeProvider(STATE_DIR, CHAT_DIR),
-    'codex': CodexProvider(CHAT_DIR),
+    'claude': ClaudeCodeProvider(STATE_DIR),
+    'codex': CodexProvider(),
 }
 PROVIDER_LABELS = {'claude': 'Claude', 'codex': 'ChatGPT'}
 MODEL_ID_PREFIXES = {'claude': 'claude-code', 'codex': 'codex'}
 MODEL_TAGS = {'claude': 'Claude plan', 'codex': 'ChatGPT plan'}
+
+LOCAL_MACHINE = LocalMachine(STATE_DIR)
+# RemoteMachine objects keep an HTTP session, so they are reused until their
+# address or key changes.
+_remote_machines: dict[str, RemoteMachine] = {}
+
+
 def get_provider(provider_id: str):
     provider = PROVIDERS.get(provider_id)
     if not provider:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Unknown subscription provider.')
     return provider
+
+
+# Machines
+
+
+async def _machine_configs() -> list[dict]:
+    stored = await Config.get(MACHINES_CONFIG_KEY, []) or []
+    return [machine for machine in stored if isinstance(machine, dict) and machine.get('id')]
+
+
+async def get_machine(machine_id: str):
+    if not machine_id or machine_id == LOCAL_MACHINE_ID:
+        return LOCAL_MACHINE
+
+    config = next((machine for machine in await _machine_configs() if machine['id'] == machine_id), None)
+    if not config:
+        raise SubscriptionError('The selected machine no longer exists. Choose another in the subscription settings.')
+
+    cached = _remote_machines.get(machine_id)
+    if cached and cached.matches(config['name'], config['url'], config['key']):
+        return cached
+    if cached:
+        await cached.close()
+    machine = RemoteMachine(machine_id, config['name'], config['url'], config['key'])
+    _remote_machines[machine_id] = machine
+    return machine
+
+
+async def describe_machines() -> list[dict]:
+    """Machines for the settings page; runner keys never leave the server."""
+    machines = [{'id': LOCAL_MACHINE_ID, 'name': LOCAL_MACHINE.name, 'url': None}]
+    for config in await _machine_configs():
+        machines.append({'id': config['id'], 'name': config['name'], 'url': config['url']})
+    return machines
+
+
+def _machine_id_from_name(name: str, taken: set[str]) -> str:
+    base = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-') or 'machine'
+    machine_id = base
+    suffix = 2
+    while machine_id in taken or machine_id == LOCAL_MACHINE_ID:
+        machine_id = f'{base}-{suffix}'
+        suffix += 1
+    return machine_id
+
+
+async def verify_machine(url: str, key: str) -> dict:
+    probe = RemoteMachine('verify', 'The runner', url, key)
+    try:
+        return await probe.info()
+    finally:
+        await probe.close()
+
+
+async def save_machine(machine_id: str | None, name: str, url: str, key: str | None) -> dict:
+    """Add or update a runner after checking that it answers with the key."""
+    name = name.strip()
+    url = url.strip().rstrip('/')
+    if not name or not url:
+        raise SubscriptionError('Enter a name and the runner address.')
+
+    configs = await _machine_configs()
+    existing = next((config for config in configs if config['id'] == machine_id), None) if machine_id else None
+    key = (key or '').strip() or (existing or {}).get('key', '')
+    if not key:
+        raise SubscriptionError('Enter the runner key from ~/.buddy-runner/key on that computer.')
+
+    await verify_machine(url, key)
+
+    if existing:
+        existing.update({'name': name, 'url': url, 'key': key})
+        saved = existing
+    else:
+        saved = {'id': _machine_id_from_name(name, {config['id'] for config in configs}), 'name': name, 'url': url}
+        saved['key'] = key
+        configs.append(saved)
+    await Config.upsert({MACHINES_CONFIG_KEY: configs})
+    for provider_id in PROVIDERS:
+        invalidate(provider_id)
+    return {'id': saved['id'], 'name': saved['name'], 'url': saved['url']}
+
+
+async def delete_machine(machine_id: str) -> None:
+    configs = [config for config in await _machine_configs() if config['id'] != machine_id]
+    await Config.upsert({MACHINES_CONFIG_KEY: configs})
+    cached = _remote_machines.pop(machine_id, None)
+    if cached:
+        await cached.close()
+    # Providers that used the machine fall back to this server.
+    for provider_id in PROVIDERS:
+        settings = await get_settings(provider_id)
+        if settings.machine_id == machine_id:
+            await save_settings(provider_id, {'machine_id': LOCAL_MACHINE_ID})
+
+
+# Provider settings
 
 
 def _config_key(provider_id: str) -> str:
@@ -72,12 +178,14 @@ async def get_settings(provider_id: str) -> ProviderSettings:
         access=access,
         workspace=str(stored.get('workspace') or '').strip(),
         cli_path=str(stored.get('cli_path') or '').strip(),
+        machine_id=str(stored.get('machine_id') or LOCAL_MACHINE_ID),
     )
 
 
 async def save_settings(provider_id: str, updates: dict) -> ProviderSettings:
     provider = get_provider(provider_id)
-    current = asdict(await get_settings(provider_id))
+    previous = await get_settings(provider_id)
+    current = asdict(previous)
     for setting in fields(ProviderSettings):
         if updates.get(setting.name) is not None:
             current[setting.name] = updates[setting.name]
@@ -87,27 +195,32 @@ async def save_settings(provider_id: str, updates: dict) -> ProviderSettings:
     settings.cli_path = settings.cli_path.strip()
     if settings.access not in ACCESS_LEVELS:
         raise SubscriptionError('Choose chat only, read files, or full access.')
-    if settings.workspace and not Path(settings.workspace).is_dir():
-        raise SubscriptionError(f'The working folder does not exist: {settings.workspace}')
-    if settings.cli_path and not Path(settings.cli_path).is_file():
-        raise SubscriptionError(f'The CLI path does not exist: {settings.cli_path}')
+
+    machine = await get_machine(settings.machine_id)
+    if settings.workspace and not await machine.path_exists(settings.workspace, 'dir'):
+        raise SubscriptionError(f'The working folder does not exist on {machine.name}: {settings.workspace}')
+    if settings.cli_path and not await machine.path_exists(settings.cli_path, 'file'):
+        raise SubscriptionError(f'The CLI path does not exist on {machine.name}: {settings.cli_path}')
 
     await Config.upsert({_config_key(provider_id): asdict(settings)})
+    if settings.machine_id != previous.machine_id:
+        await provider.cancel_login()
     if not settings.enable and isinstance(provider, CodexProvider):
         provider.stop()
     invalidate(provider_id)
     return settings
 
 
-def working_directory(settings: ProviderSettings, access: str) -> str:
+async def working_directory(settings: ProviderSettings, access: str, machine) -> str:
     """Chat-only turns run in an empty folder; tool access uses the workspace."""
     if access == ACCESS_CHAT:
-        CHAT_DIR.mkdir(parents=True, exist_ok=True)
-        return str(CHAT_DIR)
+        return await machine.chat_dir()
     if settings.workspace:
         return settings.workspace
-    DEFAULT_WORKSPACE.mkdir(parents=True, exist_ok=True)
-    return str(DEFAULT_WORKSPACE)
+    return await machine.default_workspace()
+
+
+# Cached status and model lists
 
 
 @dataclass
@@ -177,7 +290,8 @@ def _log_refresh_failure(task: asyncio.Task) -> None:
 async def _load_status(provider_id: str) -> dict:
     settings = await get_settings(provider_id)
     try:
-        return await get_provider(provider_id).status(settings)
+        machine = await get_machine(settings.machine_id)
+        return await get_provider(provider_id).status(settings, machine)
     except (SubscriptionError, OSError) as error:
         return {'installed': True, 'signed_in': False, 'message': str(error)}
 
@@ -185,7 +299,8 @@ async def _load_status(provider_id: str) -> dict:
 async def _load_models(provider_id: str) -> list[ProviderModel]:
     settings = await get_settings(provider_id)
     try:
-        return await get_provider(provider_id).list_models(settings)
+        machine = await get_machine(settings.machine_id)
+        return await get_provider(provider_id).list_models(settings, machine)
     except (SubscriptionError, OSError) as error:
         log.warning('Could not list %s models: %s', PROVIDER_LABELS[provider_id], error)
         return []
@@ -217,6 +332,16 @@ async def describe_provider(provider_id: str, fresh: bool = False) -> dict:
     if settings.enable and uses_plan(provider_status):
         for model in await models_cache.get(provider_id, fresh=fresh) or []:
             models.append({'id': _model_id(provider_id, model), 'name': model.name})
+
+    machine_name = LOCAL_MACHINE.name
+    default_workspace = ''
+    try:
+        machine = await get_machine(settings.machine_id)
+        machine_name = machine.name
+        default_workspace = await machine.default_workspace()
+    except SubscriptionError as error:
+        log.info('Could not describe the machine for %s: %s', provider_id, error)
+
     return {
         'id': provider_id,
         'name': PROVIDER_LABELS[provider_id],
@@ -224,8 +349,12 @@ async def describe_provider(provider_id: str, fresh: bool = False) -> dict:
         'status': provider_status,
         'login': provider.login_state(),
         'models': models,
-        'default_workspace': str(DEFAULT_WORKSPACE),
+        'machine': {'id': settings.machine_id, 'name': machine_name},
+        'default_workspace': default_workspace,
     }
+
+
+# Models and chat
 
 
 def _model_id(provider_id: str, model: ProviderModel) -> str:
@@ -314,14 +443,16 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
         if provider_status.get('api_billing'):
             # Refuse rather than bill the API under a "plan" model name.
             raise SubscriptionError(provider_status.get('message') or 'This account bills API usage, not a plan.')
+        machine = await get_machine(settings.machine_id)
         access = ACCESS_CHAT if is_task else settings.access
         turn = TurnRequest(
             model=subscription['model'],
             conversation=parse_messages(payload.get('messages')),
             settings=settings,
-            cwd=working_directory(settings, access),
+            cwd=await working_directory(settings, access, machine),
             effort=requested_effort(payload),
             is_task=is_task,
+            machine=machine,
         )
     except SubscriptionError as error:
         events = failure_events(str(error))

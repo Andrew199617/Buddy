@@ -132,10 +132,11 @@ also allow that exact callback URI.
 
 Buddy can chat with Claude and OpenAI models on your Claude Pro/Max and ChatGPT
 Plus/Pro plans. Usage counts against the plan's limits instead of API billing.
-Buddy runs the official command-line apps on this computer: Claude Code
-(`claude -p`) and Codex (`codex app-server`). Each app signs in with its own
-flow and keeps its own credentials. Buddy does not read or store your
-password or tokens.
+Buddy runs the official command-line apps, Claude Code (`claude -p`) and Codex
+(`codex app-server`), on a machine: the computer running Buddy, or a Buddy
+Runner on another computer (see [Machines](#machines-and-the-buddy-runner)).
+Each app signs in with its own flow and keeps its own credentials on that
+machine. Buddy does not read or store your password or tokens.
 
 Anthropic's help center says `claude -p` and the Claude Agent SDK draw from
 your plan's limits. OpenAI documents Codex sign-in with ChatGPT for scripted
@@ -180,11 +181,12 @@ any file your account can. Buddy turns off Codex hooks and MCP servers outside
 Full access. Instruction files in the folder (`CLAUDE.md`, `AGENTS.md`) can
 still steer the model.
 
-**Full access** lets the model edit files and run terminal commands on this
-computer as you, in the working folder you choose (Buddy's
-`open-webui-data/subscriptions/workspace` by default). Anyone who can sign in
-to Buddy as an administrator can then do the same. Status lines show each
-command while it runs, and the reasoning block keeps a log of them.
+**Full access** lets the model edit files and run terminal commands on the
+machine as you, in the working folder you choose (`subscriptions/workspace` in
+Buddy's data folder, or `~/.buddy-runner/workspace` on a runner, by default).
+Anyone who can sign in to Buddy as an administrator can then do the same.
+Status lines show each command while it runs, and the reasoning block keeps a
+log of them.
 
 Notes:
 
@@ -200,6 +202,59 @@ Notes:
 - These models cannot receive Buddy's native tool definitions, so Buddy uses
   prompt-based (legacy) function calling for them. Attached files, knowledge,
   web search, and research tools still reach the model as context.
+
+### Machines and the Buddy Runner
+
+A machine is where Claude Code and Codex run, sign in, and work on files. The
+**Machines** list under Subscriptions always has **This server**, the
+computer or container running Buddy. To use another computer, such as your
+Windows PC while Buddy runs in Docker, start the Buddy Runner there and add it:
+
+1. On that computer, run `local\start-buddy-runner.ps1` from this checkout
+   (or `python -m open_webui.utils.subscriptions.runner` with `backend` on
+   `PYTHONPATH`). It listens on `127.0.0.1:8765` and creates its key in
+   `~/.buddy-runner/key` on first start.
+2. In Buddy, choose **Add machine** and enter a name, the runner address, and
+   the key, then **Verify**. From Buddy in Docker Desktop, the Docker host is
+   `http://host.docker.internal:8765`.
+3. Open a provider's gear button and set **Runs on** to that machine. Sign in
+   from there; the sign-in lives on that machine.
+
+The runner starts the CLIs over plain pipes and streams their output to Buddy;
+a process stops when Buddy's connection to it closes. Anyone holding the
+runner key can run any command as the user running the runner, so it listens
+only on the local loopback by default and Buddy never sends the key to the
+browser.
+
+## Buddy in Docker
+
+`docker/buddy/compose.yaml` runs Buddy as two containers: the backend (with
+the `local/` patches) and the production frontend server. Data lives in the
+`buddy_buddy-data` volume.
+
+```powershell
+Copy-Item docker\buddy\example.env docker\buddy\.env   # then fill in WEBUI_SECRET_KEY
+docker compose -f docker/buddy/compose.yaml up -d --build
+```
+
+Open `http://localhost:8082` (or the Tailscale address on port 8082). The
+backend is also published on 8081. `docker compose -f docker/buddy/compose.yaml
+ps` shows what is running, and `logs -f buddy` follows the server log.
+
+To move existing data in, stop the Windows instance using it, create the
+volume, and copy the data folder over it; reuse that data's
+`WEBUI_SECRET_KEY` so sign-ins and connected tools keep working:
+
+```powershell
+docker compose -f docker/buddy/compose.yaml run --rm --no-deps buddy true
+docker run --rm -v buddy_buddy-data:/data -v "C:\path\to\data:/source:ro" alpine sh -c "cp -a /source/. /data/"
+```
+
+Claude Code and Codex are not installed in the image. Add a Buddy Runner on
+your PC as a machine so they run there with your sign-ins, repositories, and
+terminal. Inside the container, `localhost` is the container itself; use
+`http://host.docker.internal:<port>` for services on your PC, such as a
+llama.cpp server.
 
 ## Research tools
 

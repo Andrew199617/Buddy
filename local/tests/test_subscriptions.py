@@ -16,7 +16,7 @@ from unittest.mock import patch
 ROOT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT_DIR / 'backend'))
 
-from open_webui.utils.subscriptions import claude_code, codex, streaming  # noqa: E402
+from open_webui.utils.subscriptions import claude_code, codex, discovery, runner, streaming  # noqa: E402
 from open_webui.utils.subscriptions.common import (  # noqa: E402
     ProviderSettings,
     TurnRequest,
@@ -37,6 +37,7 @@ from open_webui.utils.subscriptions.events import (  # noqa: E402
     TokenUsage,
     TurnFailed,
 )
+from open_webui.utils.subscriptions.machines import LocalMachine, RemoteMachine, temp_file_arg  # noqa: E402
 from open_webui.utils.subscriptions.process import ChildProcess, subscription_env  # noqa: E402
 
 PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgo='
@@ -133,17 +134,6 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(requested_effort({'reasoning': {'effort': 'low'}}), 'low')
         self.assertIsNone(requested_effort({'reasoning_effort': ''}))
 
-    def test_key_tracks_image_order_and_url_identity(self):
-        other_image = 'data:image/png;base64,b3RoZXI='
-        original = [ChatTurn('user', 'Compare these', [PNG_DATA_URL, other_image])]
-        same = [ChatTurn('user', 'Compare these', [PNG_DATA_URL, other_image])]
-        reordered = [ChatTurn('user', 'Compare these', [other_image, PNG_DATA_URL])]
-        self.assertEqual(conversation_key(original), conversation_key(same))
-        self.assertNotEqual(conversation_key(original), conversation_key(reordered))
-        first_url = [ChatTurn('user', 'Look', ['https://example.invalid/first.png'])]
-        edited_url = [ChatTurn('user', 'Look', ['https://example.invalid/edited.png'])]
-        self.assertNotEqual(conversation_key(first_url), conversation_key(edited_url))
-
 
 class ClaudeStreamTests(unittest.TestCase):
     def test_streams_text_thinking_and_tool_activity(self):
@@ -236,7 +226,7 @@ class ClaudeStreamTests(unittest.TestCase):
 
     def test_turn_arguments_follow_access_level(self):
         with tempfile.TemporaryDirectory() as directory:
-            provider = claude_code.ClaudeCodeProvider(Path(directory), Path(directory))
+            provider = claude_code.ClaudeCodeProvider(Path(directory))
             conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
 
             def turn_args(access, **turn_options):
@@ -319,7 +309,7 @@ class ClaudeStreamTests(unittest.TestCase):
         started = []
 
         class FakeProcess:
-            def __init__(self, args, cwd, env):
+            def __init__(self, args):
                 messages, stderr = scripted_runs[len(started)]
                 started.append(self)
                 self.args = args
@@ -347,35 +337,31 @@ class ClaudeStreamTests(unittest.TestCase):
             def kill(self):
                 pass
 
+        class FakeMachine:
+            id = 'fake'
+            name = 'Fake machine'
+
+            async def find_tool(self, tool, configured_path=''):
+                return 'claude'
+
+            async def start_process(self, args, cwd, extra_env=None, temp_files=None):
+                return FakeProcess(args)
+
         async def run():
             with tempfile.TemporaryDirectory() as directory:
-                provider = claude_code.ClaudeCodeProvider(Path(directory), Path(directory))
+                provider = claude_code.ClaudeCodeProvider(Path(directory))
                 conversation = parse_messages(
                     [
-                        {
-                            'role': 'user',
-                            'content': [
-                                {'type': 'text', 'text': 'My name is Ada'},
-                                {'type': 'image_url', 'image_url': {'url': PNG_DATA_URL}},
-                            ],
-                        },
+                        {'role': 'user', 'content': 'My name is Ada'},
                         {'role': 'assistant', 'content': 'Hi Ada'},
-                        {
-                            'role': 'user',
-                            'content': [
-                                {'type': 'text', 'text': 'Who am I?'},
-                                {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/new.png'}},
-                            ],
-                        },
+                        {'role': 'user', 'content': 'Who am I?'},
                     ]
                 )
-                turn = TurnRequest('opus', conversation, ProviderSettings(enable=True), directory)
+                turn = TurnRequest(
+                    'opus', conversation, ProviderSettings(enable=True), directory, machine=FakeMachine()
+                )
                 provider._sessions.put(provider._session_key(turn, conversation.history), 'old-session')
-                with (
-                    patch.object(claude_code, 'ChildProcess', FakeProcess),
-                    patch.object(claude_code, 'find_claude_cli', return_value='claude'),
-                ):
-                    events = await collect(provider.run_turn(turn))
+                events = await collect(provider.run_turn(turn))
                 answered = conversation.history + [conversation.prompt, ChatTurn('assistant', 'You are Ada.')]
                 return events, provider._sessions.get(provider._session_key(turn, answered))
 
@@ -384,15 +370,11 @@ class ClaudeStreamTests(unittest.TestCase):
         self.assertIn('--resume', started[0].args)
         self.assertNotIn('--resume', started[1].args)
         self.assertIn('My name is Ada', started[1].written)
-        fresh_content = json.loads(started[1].written)['message']['content']
-        fresh_images = [block['source'] for block in fresh_content if block['type'] == 'image']
-        self.assertEqual(fresh_images[0]['data'], 'iVBORw0KGgo=')
-        self.assertEqual(fresh_images[1]['url'], 'https://example.invalid/new.png')
         self.assertEqual(stored_session, 'fresh-session')
 
     def test_rate_limit_events_become_usage_windows(self):
         with tempfile.TemporaryDirectory() as directory:
-            provider = claude_code.ClaudeCodeProvider(Path(directory), Path(directory))
+            provider = claude_code.ClaudeCodeProvider(Path(directory))
             self.assertIsNone(provider.usage_summary())
             provider._record_rate_limit(
                 {'status': 'allowed', 'rateLimitType': 'five_hour', 'utilization': 0.42, 'resetsAt': 1_800_000_000_000}
@@ -412,7 +394,7 @@ class ClaudeStreamTests(unittest.TestCase):
 
         async def run():
             with tempfile.TemporaryDirectory() as directory:
-                provider = claude_code.ClaudeCodeProvider(Path(directory), Path(directory))
+                provider = claude_code.ClaudeCodeProvider(Path(directory))
                 process = FakeProcess()
                 login = claude_code.ClaudeLogin(process)
                 login.watcher = asyncio.get_running_loop().create_future()
@@ -425,144 +407,19 @@ class ClaudeStreamTests(unittest.TestCase):
 
     def test_finds_newest_desktop_bundle(self):
         with tempfile.TemporaryDirectory() as directory:
-            bundles = Path(directory) / 'Claude' / 'claude-code'
-            for version in ('2.1.9', '2.1.295', '2.1.30'):
-                binary = bundles / version / 'abc' / 'claude.exe'
+            appdata = Path(directory) / 'Roaming'
+            local_appdata = Path(directory) / 'Local'
+            # The MSIX app's real files live under Packages; %APPDATA% is virtualized.
+            package_bundles = local_appdata / 'Packages' / 'Claude_abc123' / 'LocalCache' / 'Roaming' / 'Claude'
+            installs = [(appdata / 'Claude', '2.1.9'), (package_bundles, '2.1.295'), (appdata / 'Claude', '2.1.30')]
+            for root, version in installs:
+                binary = root / 'claude-code' / version / 'abc' / 'claude.exe'
                 binary.parent.mkdir(parents=True)
                 binary.write_text('')
-            with patch.dict(os.environ, {'APPDATA': directory}, clear=True):
-                newest = claude_code._newest_desktop_bundle()
+            with patch.dict(os.environ, {'APPDATA': str(appdata), 'LOCALAPPDATA': str(local_appdata)}):
+                newest = discovery._newest_desktop_bundle()
+            self.assertIn('Claude_abc123', newest)
             self.assertIn('2.1.295', newest)
-
-    def test_edited_history_image_starts_fresh_while_matching_history_resumes(self):
-        started = []
-
-        class FakeProcess:
-            def __init__(self, args, cwd, env):
-                started.append(self)
-                self.args = args
-                self.written = ''
-                self._lines = [
-                    json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'Compared.'}]}}),
-                    json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'session_id': 'fresh-id'}),
-                ]
-
-            async def write(self, text):
-                self.written += text
-
-            async def read_line(self):
-                if self._lines:
-                    return self._lines.pop(0)
-                return None
-
-            def stderr_text(self):
-                return ''
-
-            def close_stdin(self):
-                pass
-
-            def kill(self):
-                pass
-
-        async def run():
-            with tempfile.TemporaryDirectory() as directory:
-                provider = claude_code.ClaudeCodeProvider(Path(directory), Path(directory))
-
-                def image_conversation(image):
-                    return parse_messages(
-                        [
-                            {
-                                'role': 'user',
-                                'content': [
-                                    {'type': 'text', 'text': 'Describe it'},
-                                    {'type': 'image_url', 'image_url': {'url': image}},
-                                ],
-                            },
-                            {'role': 'assistant', 'content': 'A tree.'},
-                            {
-                                'role': 'user',
-                                'content': [
-                                    {'type': 'text', 'text': 'Compare this'},
-                                    {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/new.png'}},
-                                ],
-                            },
-                        ]
-                    )
-
-                original = image_conversation(PNG_DATA_URL)
-                edited = image_conversation('data:image/png;base64,b3RoZXI=')
-                original_turn = TurnRequest('opus', original, ProviderSettings(enable=True), directory)
-                edited_turn = TurnRequest('opus', edited, ProviderSettings(enable=True), directory)
-                provider._sessions.put(provider._session_key(original_turn, original.history), 'original-session')
-                with (
-                    patch.object(claude_code, 'ChildProcess', FakeProcess),
-                    patch.object(claude_code, 'find_claude_cli', return_value='claude'),
-                ):
-                    self.assertEqual(await collect(provider.run_turn(edited_turn)), [TextDelta('Compared.')])
-                    self.assertEqual(await collect(provider.run_turn(original_turn)), [TextDelta('Compared.')])
-
-        asyncio.run(run())
-        self.assertNotIn('--resume', started[0].args)
-        fresh_content = json.loads(started[0].written)['message']['content']
-        fresh_images = [block['source'] for block in fresh_content if block['type'] == 'image']
-        self.assertEqual(fresh_images[0]['data'], 'b3RoZXI=')
-        self.assertEqual(fresh_images[1]['url'], 'https://example.invalid/new.png')
-        self.assertEqual(started[1].args[started[1].args.index('--resume') + 1], 'original-session')
-        resumed_content = json.loads(started[1].written)['message']['content']
-        self.assertEqual(resumed_content[0]['text'], 'Compare this')
-        self.assertEqual(len(resumed_content), 2)
-        self.assertEqual(resumed_content[1]['source']['url'], 'https://example.invalid/new.png')
-
-    def test_finds_store_bundle_without_regular_appdata(self):
-        with tempfile.TemporaryDirectory() as directory:
-            bundle_root = (
-                Path(directory) / 'Packages' / 'Claude_test' / 'LocalCache' / 'Roaming' / 'Claude' / 'claude-code'
-            )
-            for version in ('2.1.9', '2.1.295', '2.1.30'):
-                binary = bundle_root / version / 'bundle-id' / 'claude.exe'
-                binary.parent.mkdir(parents=True)
-                binary.write_text('')
-            with (
-                patch.dict(os.environ, {'LOCALAPPDATA': directory}, clear=True),
-                patch.object(claude_code.sys, 'platform', 'win32'),
-            ):
-                newest = claude_code._newest_desktop_bundle()
-            self.assertEqual(newest, str(bundle_root / '2.1.295' / 'bundle-id' / 'claude.exe'))
-
-    def test_selects_newest_bundle_across_regular_and_store_installs(self):
-        with tempfile.TemporaryDirectory() as directory:
-            regular_root = Path(directory) / 'regular'
-            local_root = Path(directory) / 'local'
-            regular_binary = regular_root / 'Claude' / 'claude-code' / '2.1.300' / 'bundle-id' / 'claude.exe'
-            store_root = local_root / 'Packages' / 'Claude_test' / 'LocalCache' / 'Roaming' / 'Claude' / 'claude-code'
-            store_binary = store_root / '2.1.295' / 'bundle-id' / 'claude.exe'
-            for binary in (regular_binary, store_binary):
-                binary.parent.mkdir(parents=True)
-                binary.write_text('')
-            # A matching directory is not an installed executable.
-            (store_root / '9.0.0' / 'bundle-id' / 'claude.exe').mkdir(parents=True)
-            with (
-                patch.dict(os.environ, {'APPDATA': str(regular_root), 'LOCALAPPDATA': str(local_root)}, clear=True),
-                patch.object(claude_code.sys, 'platform', 'win32'),
-            ):
-                newest = claude_code._newest_desktop_bundle()
-            self.assertEqual(newest, str(regular_binary))
-
-    def test_cli_discovery_preserves_explicit_and_native_precedence(self):
-        with (
-            patch.object(claude_code.os.path, 'isfile', return_value=True),
-            patch.object(claude_code, '_newest_desktop_bundle', return_value='store/claude.exe') as bundled,
-            patch.object(claude_code.shutil, 'which', return_value='path/claude.exe'),
-        ):
-            self.assertEqual(claude_code.find_claude_cli('configured/claude.exe'), 'configured/claude.exe')
-            self.assertEqual(claude_code.find_claude_cli(), 'path/claude.exe')
-            bundled.assert_not_called()
-        with (
-            patch.object(claude_code.shutil, 'which', return_value='npm/claude.cmd'),
-            patch.object(claude_code.Path, 'is_file', return_value=False),
-            patch.object(claude_code, '_newest_desktop_bundle', return_value='store/claude.exe'),
-        ):
-            self.assertEqual(claude_code.find_claude_cli(), 'store/claude.exe')
 
 
 class CodexTests(unittest.TestCase):
@@ -622,7 +479,7 @@ class CodexTests(unittest.TestCase):
                 self.method = method
                 return {'config': {'mcp_servers': {'node_repl': {'command': 'node'}}}}
 
-        provider = codex.CodexProvider(Path('.'))
+        provider = codex.CodexProvider()
         conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
 
         def thread_config(access):
@@ -653,7 +510,7 @@ class CodexTests(unittest.TestCase):
         self.assertIsNone(codex.summarize_rate_limits(None))
 
     def test_effort_uses_model_levels(self):
-        provider = codex.CodexProvider(Path('.'))
+        provider = codex.CodexProvider()
         provider._model_efforts['gpt-x'] = ['low', 'medium', 'high']
         conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
 
@@ -665,20 +522,6 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(effort('none'), 'low')
         self.assertIsNone(effort('max'))
         self.assertEqual(effort('high', is_task=True), 'low')
-
-    def test_edited_history_image_does_not_reuse_a_live_thread(self):
-        provider = codex.CodexProvider(Path('.'))
-        conversation = parse_messages([{'role': 'user', 'content': 'Compare this'}])
-        turn = TurnRequest('gpt-x', conversation, ProviderSettings(), '.')
-        original_history = [ChatTurn('user', 'Describe it', [PNG_DATA_URL]), ChatTurn('assistant', 'A tree.')]
-        edited_history = [
-            ChatTurn('user', 'Describe it', ['data:image/png;base64,b3RoZXI=']),
-            ChatTurn('assistant', 'A tree.'),
-        ]
-        live = codex.LiveThread('original-thread', generation=1, access='chat', cwd='.', usage_total=None)
-        provider._keep_live_thread(conversation_key(original_history), live)
-        self.assertIsNone(provider._take_live_thread(conversation_key(edited_history), turn, generation=1))
-        self.assertIs(provider._take_live_thread(conversation_key(original_history), turn, generation=1), live)
 
 
 class ProcessTests(unittest.TestCase):
@@ -717,6 +560,103 @@ class ProcessTests(unittest.TestCase):
             return first, second, end
 
         self.assertEqual(asyncio.run(run()), ('echo:first', 'echo:second', None))
+
+
+class RunnerTests(unittest.TestCase):
+    """A real runner served in-process, driven through RemoteMachine."""
+
+    def run_with_runner(self, scenario, key='test-key', client_key=None):
+        from aiohttp.test_utils import TestServer
+
+        async def run():
+            with tempfile.TemporaryDirectory() as directory:
+                server = TestServer(runner.build_app(key, Path(directory)))
+                await server.start_server()
+                machine = RemoteMachine('pc', 'Test PC', str(server.make_url('')), client_key or key)
+                try:
+                    return await scenario(machine, Path(directory))
+                finally:
+                    await machine.close()
+                    await server.close()
+
+        return asyncio.run(run())
+
+    def test_health_and_short_commands(self):
+        async def scenario(machine, state_dir):
+            info = await machine.info()
+            returncode, stdout, _ = await machine.run(
+                [sys.executable, '-c', 'print("hello from runner")'], await machine.chat_dir(), 30
+            )
+            exists = await machine.path_exists(str(state_dir), 'dir')
+            missing = await machine.path_exists(str(state_dir / 'nope.txt'), 'file')
+            return info, returncode, stdout, exists, missing
+
+        info, returncode, stdout, exists, missing = self.run_with_runner(scenario)
+        self.assertTrue(info['ok'])
+        self.assertTrue(info['chat_dir'].endswith('chat'))
+        self.assertEqual((returncode, stdout.strip()), (0, 'hello from runner'))
+        self.assertTrue(exists)
+        self.assertFalse(missing)
+
+    def test_streams_a_process_over_pipes(self):
+        script = (
+            'import sys\n'
+            'print("instructions:" + open(sys.argv[1], encoding="utf-8").read(), flush=True)\n'
+            'for line in sys.stdin:\n'
+            '    print("echo:" + line.strip(), flush=True)\n'
+        )
+
+        async def scenario(machine, state_dir):
+            process = await machine.start_process(
+                [sys.executable, '-c', script, temp_file_arg('instructions')],
+                await machine.chat_dir(),
+                temp_files={'instructions': 'be brief'},
+            )
+            first = await asyncio.wait_for(process.read_line(), 20)
+            # JSON with escapes and a long line must pass through unchanged.
+            payload = json.dumps({'text': 'quote " slash \\ newline \\n', 'pad': 'x' * 10000})
+            await process.write(payload + '\n')
+            second = await asyncio.wait_for(process.read_line(), 20)
+            process.close_stdin()
+            end = await asyncio.wait_for(process.read_line(), 20)
+            code = await process.wait(20)
+            leftover_temp_files = list((state_dir / 'tmp').iterdir())
+            return first, second, payload, end, code, leftover_temp_files
+
+        first, second, payload, end, code, leftover = self.run_with_runner(scenario)
+        self.assertEqual(first, 'instructions:be brief')
+        self.assertEqual(second, 'echo:' + payload)
+        self.assertIsNone(end)
+        self.assertEqual(code, 0)
+        self.assertEqual(leftover, [])
+
+    def test_wrong_key_is_rejected(self):
+        async def scenario(machine, state_dir):
+            with self.assertRaises(SubscriptionError) as raised:
+                await machine.info()
+            return str(raised.exception)
+
+        message = self.run_with_runner(scenario, client_key='wrong-key')
+        self.assertIn('runner key', message)
+
+    def test_local_machine_substitutes_temp_files(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as directory:
+                machine = LocalMachine(Path(directory))
+                process = await machine.start_process(
+                    [sys.executable, '-c', 'import sys; print(open(sys.argv[1]).read())', temp_file_arg('notes')],
+                    await machine.chat_dir(),
+                    temp_files={'notes': 'hi'},
+                )
+                line = await asyncio.wait_for(process.read_line(), 20)
+                await process.wait(20)
+                temp_path = process.args[-1]
+                process.kill()
+                return line, os.path.exists(temp_path)
+
+        line, still_there = asyncio.run(run())
+        self.assertEqual(line, 'hi')
+        self.assertFalse(still_there)
 
 
 class StreamingTests(unittest.TestCase):

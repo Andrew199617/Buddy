@@ -62,15 +62,58 @@ def subscription_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
-class ChildProcess:
-    """A CLI process with piped stdin, stdout, and stderr."""
+class StreamedOutput:
+    """Stdout text that arrives in pieces, read as text or as whole lines.
 
-    def __init__(self, args: list[str], cwd: str, env: dict[str, str]):
-        self.args = args
-        self._loop = asyncio.get_running_loop()
+    Subclasses put decoded text into ``_chunks`` and None when stdout ends.
+    """
+
+    def __init__(self):
         self._chunks: asyncio.Queue[str | None] = asyncio.Queue()
         self._pending_text = ''
         self._stdout_closed = False
+
+    async def read_text(self, timeout: float | None = None) -> str | None:
+        """Return the next piece of stdout text, or None once stdout is closed."""
+        if self._pending_text:
+            text, self._pending_text = self._pending_text, ''
+            return text
+        if self._stdout_closed:
+            return None
+        chunk = await asyncio.wait_for(self._chunks.get(), timeout)
+        if chunk is None:
+            self._stdout_closed = True
+        return chunk
+
+    async def read_line(self) -> str | None:
+        """Return the next stdout line without its newline, or None at the end."""
+        while '\n' not in self._pending_text:
+            if self._stdout_closed:
+                break
+            chunk = await self._chunks.get()
+            if chunk is None:
+                self._stdout_closed = True
+                break
+            self._pending_text += chunk
+
+        if '\n' in self._pending_text:
+            line, _, self._pending_text = self._pending_text.partition('\n')
+            return line.rstrip('\r')
+        if self._pending_text:
+            line, self._pending_text = self._pending_text, ''
+            return line
+        return None
+
+
+class ChildProcess(StreamedOutput):
+    """A CLI process with piped stdin, stdout, and stderr."""
+
+    def __init__(self, args: list[str], cwd: str, env: dict[str, str], cleanup_paths: list[str] | None = None):
+        super().__init__()
+        self.args = args
+        # Temporary files the command reads; removed when the process is stopped.
+        self._cleanup_paths = list(cleanup_paths or [])
+        self._loop = asyncio.get_running_loop()
         self._stderr_tail = collections.deque(maxlen=40)
         self.process = subprocess.Popen(
             args,
@@ -137,37 +180,6 @@ class ChildProcess:
         finally:
             self.process.stderr.close()
 
-    async def read_text(self, timeout: float | None = None) -> str | None:
-        """Return the next piece of stdout text, or None once stdout is closed."""
-        if self._pending_text:
-            text, self._pending_text = self._pending_text, ''
-            return text
-        if self._stdout_closed:
-            return None
-        chunk = await asyncio.wait_for(self._chunks.get(), timeout)
-        if chunk is None:
-            self._stdout_closed = True
-        return chunk
-
-    async def read_line(self) -> str | None:
-        """Return the next stdout line without its newline, or None at the end."""
-        while '\n' not in self._pending_text:
-            if self._stdout_closed:
-                break
-            chunk = await self._chunks.get()
-            if chunk is None:
-                self._stdout_closed = True
-                break
-            self._pending_text += chunk
-
-        if '\n' in self._pending_text:
-            line, _, self._pending_text = self._pending_text.partition('\n')
-            return line.rstrip('\r')
-        if self._pending_text:
-            line, self._pending_text = self._pending_text, ''
-            return line
-        return None
-
     def _write_blocking(self, text: str) -> None:
         try:
             self.process.stdin.write(text.encode('utf-8'))
@@ -204,7 +216,17 @@ class ChildProcess:
             raise TimeoutError(str(error)) from error
 
     def kill(self) -> None:
-        """Stop the process and any commands it started."""
+        """Stop the process and any commands it started, and remove its temporary files."""
+        self._stop_process_tree()
+        self.close_stdin()
+        for path in self._cleanup_paths:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        self._cleanup_paths = []
+
+    def _stop_process_tree(self) -> None:
         if self.process.poll() is not None:
             return
         try:

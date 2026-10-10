@@ -8,6 +8,24 @@ export type SubscriptionSettings = {
 	access: SubscriptionAccess;
 	workspace: string;
 	cli_path: string;
+	// 'local' (this server) or the id of a Buddy Runner machine.
+	machine_id: string;
+};
+
+export type SubscriptionMachine = {
+	id: string;
+	name: string;
+	// Null for "This server".
+	url: string | null;
+};
+
+export type SubscriptionMachineInfo = {
+	ok: boolean;
+	version: number;
+	platform: string;
+	hostname: string;
+	chat_dir: string;
+	default_workspace: string;
 };
 
 export type SubscriptionUsageWindow = {
@@ -54,6 +72,7 @@ export type SubscriptionProvider = {
 	status: SubscriptionStatus;
 	login: SubscriptionLogin;
 	models: { id: string; name: string }[];
+	machine: { id: string; name: string };
 	default_workspace: string;
 };
 
@@ -81,8 +100,30 @@ const subscriptionRequest = async (
 
 export const getSubscriptions = async (
 	token: string
-): Promise<{ providers: SubscriptionProvider[] }> => {
+): Promise<{ providers: SubscriptionProvider[]; machines: SubscriptionMachine[] }> => {
 	return subscriptionRequest(token, '/');
+};
+
+export const saveSubscriptionMachine = async (
+	token: string,
+	machine: { id?: string; name: string; url: string; key?: string }
+): Promise<{ machine: SubscriptionMachine; machines: SubscriptionMachine[] }> => {
+	return subscriptionRequest(token, '/machines', 'POST', machine);
+};
+
+export const verifySubscriptionMachine = async (
+	token: string,
+	url: string,
+	key: string
+): Promise<SubscriptionMachineInfo> => {
+	return subscriptionRequest(token, '/machines/verify', 'POST', { url, key });
+};
+
+export const deleteSubscriptionMachine = async (
+	token: string,
+	machineId: string
+): Promise<{ machines: SubscriptionMachine[] }> => {
+	return subscriptionRequest(token, `/machines/${encodeURIComponent(machineId)}`, 'DELETE');
 };
 
 export const getSubscription = async (
