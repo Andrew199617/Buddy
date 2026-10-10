@@ -4,10 +4,13 @@ Run with the repository virtualenv:
     .venv\\Scripts\\python.exe -m unittest discover -s local/tests -p test_subscriptions.py -v
 """
 
+import asyncio
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT_DIR / 'backend'))
@@ -20,6 +23,7 @@ from open_webui.utils.subscriptions.conversation import (  # noqa: E402
     parse_messages,
 )
 from open_webui.utils.subscriptions.events import SubscriptionError  # noqa: E402
+from open_webui.utils.subscriptions.process import ChildProcess, subscription_env  # noqa: E402
 
 PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgo='
 
@@ -101,6 +105,44 @@ class ConversationTests(unittest.TestCase):
             reloaded = SessionStore(path, limit=2)
             self.assertIsNone(reloaded.get('a'))
             self.assertEqual(reloaded.get('c'), 'session-c')
+
+
+class ProcessTests(unittest.TestCase):
+    def test_env_drops_session_and_api_key_variables(self):
+        variables = {
+            'CLAUDECODE': '1',
+            'CLAUDE_CODE_ENTRYPOINT': 'desktop',
+            'CLAUDE_CODE_GIT_BASH_PATH': r'C:\Git\bin\bash.exe',
+            'ANTHROPIC_API_KEY': 'test-key',
+            'OPENAI_API_KEY': 'test-key',
+            'PATH_FOR_TEST': 'kept',
+        }
+        with patch.dict(os.environ, variables):
+            env = subscription_env({'BROWSER': 'none'})
+        self.assertNotIn('CLAUDECODE', env)
+        self.assertNotIn('CLAUDE_CODE_ENTRYPOINT', env)
+        self.assertNotIn('ANTHROPIC_API_KEY', env)
+        self.assertNotIn('OPENAI_API_KEY', env)
+        self.assertEqual(env['CLAUDE_CODE_GIT_BASH_PATH'], r'C:\Git\bin\bash.exe')
+        self.assertEqual(env['PATH_FOR_TEST'], 'kept')
+        self.assertEqual(env['BROWSER'], 'none')
+
+    def test_child_process_reads_lines_and_stops(self):
+        script = 'import sys\nfor line in sys.stdin:\n    print("echo:" + line.strip(), flush=True)\n'
+
+        async def run():
+            process = ChildProcess([sys.executable, '-c', script], os.getcwd(), dict(os.environ))
+            await process.write('first\n')
+            first = await asyncio.wait_for(process.read_line(), 10)
+            await process.write('second\n')
+            second = await asyncio.wait_for(process.read_line(), 10)
+            process.close_stdin()
+            end = await asyncio.wait_for(process.read_line(), 10)
+            await process.wait(10)
+            process.kill()
+            return first, second, end
+
+        self.assertEqual(asyncio.run(run()), ('echo:first', 'echo:second', None))
 
 
 if __name__ == '__main__':
