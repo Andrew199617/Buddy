@@ -313,3 +313,46 @@ async def has_active_tasks(redis, chat_id: str) -> bool:
     """Check if a chat has any active tasks."""
     task_ids = await list_task_ids_by_item_id(redis, chat_id)
     return len(task_ids) > 0
+
+
+async def get_active_task_item_ids(redis) -> set[str]:
+    """Read active item IDs without a registry lookup for every chat.
+
+    Redis keeps expired task IDs in its hash until normal cleanup. Check their
+    TTL markers in bounded pipelines, including tasks owned by other workers.
+    Lookup failures propagate so callers never mistake unavailable state for
+    an empty registry. This read does not mutate task ownership or cleanup.
+    """
+    if not redis:
+        active_item_ids = set()
+        for item_id, task_ids in list(item_tasks.items()):
+            for task_id in task_ids:
+                task = tasks.get(task_id)
+                if task is not None and not task.done():
+                    active_item_ids.add(item_id)
+                    break
+        return active_item_ids
+
+    registry = await redis.hgetall(REDIS_TASKS_KEY)
+    entries = []
+    for task_id, item_id in registry.items():
+        if not item_id:
+            continue
+        if isinstance(task_id, bytes):
+            task_id = task_id.decode('utf-8')
+        if isinstance(item_id, bytes):
+            item_id = item_id.decode('utf-8')
+        entries.append((task_id, item_id))
+    if REDIS_TASK_TTL == 0:
+        return {item_id for _, item_id in entries}
+
+    active_item_ids = set()
+    for start in range(0, len(entries), 256):
+        batch = entries[start : start + 256]
+        pipe = redis.pipeline(transaction=False)
+        for task_id, _ in batch:
+            pipe.exists(f'{REDIS_TASKS_KEY}:{task_id}')
+        for (_, item_id), live in zip(batch, await pipe.execute()):
+            if live:
+                active_item_ids.add(item_id)
+    return active_item_ids
