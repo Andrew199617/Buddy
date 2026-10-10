@@ -630,6 +630,10 @@ class ClaudeCodeProvider:
             turn.cwd,
             temp_files={INSTRUCTIONS_FILE: self._instructions(turn)},
         )
+        # Stays False when the caller stops the reply (Stop, a closed chat) or
+        # something fails here. The CLI keeps working after stdin closes, so
+        # then it is killed at once instead of being given time to exit.
+        output_ended = False
         try:
             await process.write(json.dumps(message) + '\n')
             while not parser.finished:
@@ -641,15 +645,20 @@ class ClaudeCodeProvider:
                 if parser.rate_limit:
                     self._record_rate_limit(parser.rate_limit)
                     parser.rate_limit = None
+            output_ended = True
         except ProcessClosedError:
             attempt.exited_early = True
+            output_ended = True
         finally:
             process.close_stdin()
-            if parser.error or not parser.finished:
-                # The CLI is exiting with an error; it explains why on stderr.
-                await process.finish_output(5)
-            process.kill()
-            attempt.stderr = process.stderr_text()
+            try:
+                if output_ended and (parser.error or not parser.finished):
+                    # The CLI is exiting with an error; it explains why on stderr.
+                    await process.finish_output(5)
+            finally:
+                # Runs even when a second cancellation interrupts the wait.
+                process.kill()
+                attempt.stderr = process.stderr_text()
 
     async def run_turn(self, turn: TurnRequest):
         """Run one chat turn and yield its events."""

@@ -412,6 +412,86 @@ class ClaudeStreamTests(unittest.TestCase):
         self.assertEqual(fresh_images[1]['url'], 'https://example.invalid/new.png')
         self.assertEqual(stored_session, 'fresh-session')
 
+    def stop_claude_turn_while_waiting(self, lines: list[dict], wait_in: str):
+        """Cancel a Claude turn once its CLI process blocks in ``wait_in``; return whether it stopped at once."""
+        calls = []
+
+        class BusyProcess:
+            """Sends ``lines``, then keeps working: reads and exit waits never finish."""
+
+            def __init__(self):
+                self._lines = [json.dumps(line) for line in lines]
+                self.waiting = asyncio.Event()
+                self._never = asyncio.Event()
+
+            async def _block(self, name):
+                calls.append(name)
+                if name == wait_in:
+                    self.waiting.set()
+                await self._never.wait()
+
+            async def write(self, text):
+                pass
+
+            async def read_line(self):
+                if self._lines:
+                    return self._lines.pop(0)
+                await self._block('read_line')
+
+            async def finish_output(self, timeout):
+                await self._block('finish_output')
+
+            def stderr_text(self):
+                return ''
+
+            def close_stdin(self):
+                calls.append('close_stdin')
+
+            def kill(self):
+                calls.append('kill')
+
+        class FakeMachine:
+            id = 'fake'
+            name = 'Fake machine'
+
+            def __init__(self, process):
+                self.process = process
+
+            async def find_tool(self, tool, configured_path=''):
+                return 'claude'
+
+            async def start_process(self, args, cwd, extra_env=None, temp_files=None):
+                return self.process
+
+        async def run():
+            with tempfile.TemporaryDirectory() as directory:
+                provider = claude_code.ClaudeCodeProvider(Path(directory))
+                process = BusyProcess()
+                conversation = parse_messages([{'role': 'user', 'content': 'Run the tests'}])
+                settings = ProviderSettings(enable=True, access='full')
+                turn = TurnRequest('opus', conversation, settings, directory, machine=FakeMachine(process))
+                reply = asyncio.create_task(collect(provider.run_turn(turn)))
+                await asyncio.wait_for(process.waiting.wait(), 5)
+                reply.cancel()
+                done, _ = await asyncio.wait({reply}, timeout=1)
+                return bool(done) and reply.cancelled()
+
+        return asyncio.run(run()), calls
+
+    def test_stopping_a_reply_kills_the_cli_at_once(self):
+        """The CLI keeps running tools after stdin closes, so Stop must not wait for it to exit."""
+        working = {'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'Running them.'}]}}
+        stopped_at_once, calls = self.stop_claude_turn_while_waiting([working], 'read_line')
+        self.assertTrue(stopped_at_once)
+        self.assertNotIn('finish_output', calls)
+        self.assertEqual(calls[-1], 'kill')
+
+    def test_stopping_during_the_error_wait_still_kills_the_cli(self):
+        failed = {'type': 'result', 'subtype': 'error_during_execution', 'is_error': True, 'session_id': 's'}
+        stopped_at_once, calls = self.stop_claude_turn_while_waiting([failed], 'finish_output')
+        self.assertTrue(stopped_at_once)
+        self.assertEqual(calls, ['close_stdin', 'finish_output', 'kill'])
+
     def test_rate_limit_events_become_usage_windows(self):
         with tempfile.TemporaryDirectory() as directory:
             provider = claude_code.ClaudeCodeProvider(Path(directory))
