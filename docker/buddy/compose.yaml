@@ -6,7 +6,11 @@
 # Codex run on machines added in Admin Settings → Connections → Subscriptions,
 # such as a TLS-enabled Runner at https://host.docker.internal:8765.
 # Use the optional runner TLS overlay for application-scoped public CA trust;
-# see companion/TLS_SETUP.md. Never mount the Runner private key here.
+# see companion/TLS_SETUP.md. Never mount the Runner private key here. Once
+# you use it, pass it on every compose command, or Compose recreates Buddy
+# without the Runner CA:
+#
+#   docker compose -f docker/buddy/compose.yaml -f docker/buddy/runner-tls.yaml up -d --build
 name: buddy
 
 services:

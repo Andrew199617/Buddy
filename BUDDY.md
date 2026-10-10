@@ -269,6 +269,18 @@ Tailscale host name to `BUDDY_ALLOWED_HOSTS` in `docker/buddy/.env`, and the
 Tailscale IP as well if MCP sign-ins go through it. The backend is also published on 8081. `docker compose -f docker/buddy/compose.yaml
 ps` shows what is running, and `logs -f buddy` follows the server log.
 
+If Buddy trusts a Runner's certificate through `docker/buddy/runner-tls.yaml`
+(see [the HTTPS setup](companion/TLS_SETUP.md)), add that overlay after
+`compose.yaml` to every compose command in this section, including the
+`up -d --build` you run to update. Setting `BUDDY_RUNNER_CA_HOST_FILE` in
+`.env` alone does not add it, and a command without the overlay recreates the
+backend without the Runner CA, so every HTTPS Runner then fails certificate
+verification:
+
+```powershell
+docker compose -f docker/buddy/compose.yaml -f docker/buddy/runner-tls.yaml up -d --build
+```
+
 To move existing data in, stop the Windows instance using it (and Buddy in
 Docker if it is running: `docker compose -f docker/buddy/compose.yaml stop`),
 create the volume, and copy the data folder over it; reuse that data's
