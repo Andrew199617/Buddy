@@ -462,16 +462,20 @@ class CodexTests(unittest.TestCase):
 
     def test_thread_config_limits_chat_and_read_threads(self):
         class FakeServer:
+            def __init__(self):
+                self.methods = []
+
             async def request(self, method, params=None, timeout=None):
-                self.method = method
+                self.methods.append(method)
                 return {'config': {'mcp_servers': {'node_repl': {'command': 'node'}}}}
 
         provider = codex.CodexProvider()
         conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
+        server = FakeServer()
 
         def thread_config(access):
             turn = TurnRequest('gpt-x', conversation, ProviderSettings(access=access), '.')
-            return asyncio.run(provider._thread_config(FakeServer(), turn))
+            return asyncio.run(provider._thread_config(server, turn))
 
         chat_config = thread_config('chat')
         self.assertEqual(chat_config['mcp_servers'], {'node_repl': {'enabled': False}})
@@ -482,6 +486,8 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(read_config, {'mcp_servers': {'node_repl': {'enabled': False}}})
 
         self.assertIsNone(thread_config('full'))
+        # Chat and read threads read the effective config; full threads skip it.
+        self.assertEqual(server.methods, ['config/read', 'config/read'])
         self.assertIn('hooks', codex.DISABLED_FEATURES)
 
     def test_dropped_live_threads_are_released(self):
