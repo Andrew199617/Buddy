@@ -23,8 +23,11 @@ services:
       WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:?Set WEBUI_SECRET_KEY in docker/buddy/.env}
       WEBUI_URL: ${BUDDY_PUBLIC_URL:-http://localhost:8082}
       MCP_OAUTH_ALLOWED_REDIRECT_HOSTS: ${BUDDY_ALLOWED_HOSTS:-}
+      # Written by the `backup` service; Admin Settings > Backups reads it and queues manual runs there.
+      BUDDY_BACKUP_STATUS_DB: /app/backend/backup-status/status.db
     volumes:
       - buddy-data:/app/backend/data
+      - backup-status:/app/backend/backup-status
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     ports:
