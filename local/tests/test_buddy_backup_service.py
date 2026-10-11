@@ -64,6 +64,34 @@ class ScheduleTest(unittest.TestCase):
         self.assertEqual(last_slot, utc(2026, 3, 7, 11, 0))
         self.assertEqual(next_slot, utc(2026, 3, 8, 10, 0))
 
+    def test_time_skipped_by_spring_forward_runs_after_the_jump(self):
+        # 2026-03-08 has no 02:30 in Los Angeles; it runs at 03:30 PDT (10:30 UTC), never in the future of now.
+        last_slot, next_slot = bb.schedule_slots(utc(2026, 3, 8, 10, 15), '02:30', PACIFIC)
+        self.assertEqual(last_slot, utc(2026, 3, 7, 10, 30))
+        self.assertEqual(next_slot, utc(2026, 3, 8, 10, 30))
+        last_slot, next_slot = bb.schedule_slots(utc(2026, 3, 8, 10, 31), '02:30', PACIFIC)
+        self.assertEqual(last_slot, utc(2026, 3, 8, 10, 30))
+        self.assertEqual(next_slot, utc(2026, 3, 9, 9, 30))
+
+    def test_time_repeated_by_fall_back_runs_once_at_the_first_occurrence(self):
+        # 2026-11-01 01:30 happens twice; the slot is the first one, 01:30 PDT (08:30 UTC).
+        for now in (utc(2026, 11, 1, 8, 45), utc(2026, 11, 1, 9, 45)):
+            with self.subTest(now=now):
+                last_slot, next_slot = bb.schedule_slots(now, '01:30', PACIFIC)
+                self.assertEqual(last_slot, utc(2026, 11, 1, 8, 30))
+                self.assertEqual(next_slot, utc(2026, 11, 2, 9, 30))
+                self.assertGreater(next_slot, now)
+
+    def test_slots_always_surround_now(self):
+        # Every 10 minutes across both 2026 DST changes, for times inside and outside the changed hours.
+        for schedule_time in ('00:30', '01:30', '02:30', '03:00', '23:59'):
+            for start in (utc(2026, 3, 7, 0, 0), utc(2026, 10, 31, 0, 0)):
+                for step in range(0, 72 * 6):
+                    now = start + timedelta(minutes=10 * step)
+                    last_slot, next_slot = bb.schedule_slots(now, schedule_time, PACIFIC)
+                    self.assertLessEqual(last_slot, now, (schedule_time, now))
+                    self.assertGreater(next_slot, now, (schedule_time, now))
+
     def test_rejects_bad_time(self):
         with self.assertRaises(ValueError):
             bb.schedule_slots(utc(2026, 10, 10, 17, 0), '25:00', PACIFIC)

@@ -41,7 +41,7 @@ git -c user.name=AndrewVelezMuse -c user.email=336336425+AndrewVelezMuse@users.n
 
 The release instance is the Docker stack `docker/buddy/compose.yaml` (project `buddy`, volume `buddy_buddy-data`). Its `backup` service (`docker/buddy/backup/`) backs it up to the owner's Perforce depot.
 
-- **Schedule.** Nightly at `BUDDY_BACKUP_TIME` in `BUDDY_BACKUP_TZ` (default 03:00 America/Los_Angeles, DST-aware). If the PC was off at that time, the service catches up once when it starts. A failed scheduled run is retried hourly.
+- **Schedule.** Nightly at `BUDDY_BACKUP_TIME` in `BUDDY_BACKUP_TZ` (default 03:00 America/Los_Angeles, DST-aware; a time skipped when clocks spring forward runs right after the jump, and a repeated time runs at its first occurrence). If the PC was off at that time, the service catches up once when it starts. A failed scheduled run is retried hourly.
 - **Contents.** Each run submits one changelist to `BUDDY_BACKUP_DEPOT_PATH` (default `//Backups/Buddy`). Filetype is `binary+S7`, so the server keeps the last 7 revisions of each file:
   - `webui.db`: an online-backup copy of the SQLite database, integrity-checked.
   - `data.tar.gz`: the rest of the data volume (uploads, `vector_db`, `static`, generated images and audio). SQLite files inside it are copied the same way. The model caches `cache/embedding`, `cache/whisper` and `cache/tiktoken` are left out; Buddy downloads them again.
