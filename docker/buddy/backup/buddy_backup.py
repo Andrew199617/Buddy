@@ -186,6 +186,34 @@ class RunResult:
     error: str | None = None
 
 
+def scheduled_run_due_in(connection, last_slot, now):
+    """The due rule of StatusStore.scheduled_run_due, inside the caller's connection or transaction."""
+    slot_text = format_time(last_slot)
+    handled = connection.execute(
+        "SELECT count(*) FROM backup_runs WHERE status IN ('succeeded', 'running', 'queued') AND created_at >= ?",
+        (slot_text,),
+    ).fetchone()[0]
+    if handled:
+        return False
+    last_failure = connection.execute(
+        "SELECT max(finished_at) FROM backup_runs WHERE status = 'failed' AND trigger = 'scheduled' "
+        'AND created_at >= ?',
+        (slot_text,),
+    ).fetchone()[0]
+    if last_failure is None:
+        return True
+    return now - parse_time(last_failure) >= RETRY_FAILED_AFTER
+
+
+def insert_running_run(connection, trigger, now):
+    run_id = str(uuid.uuid4())
+    connection.execute(
+        'INSERT INTO backup_runs (id, status, trigger, created_at, started_at) VALUES (?, ?, ?, ?, ?)',
+        (run_id, 'running', trigger, format_time(now), format_time(now)),
+    )
+    return run_id
+
+
 class StatusStore:
     """The status file both the backup service and Buddy's backend open (on the shared `backup-status` volume)."""
 
@@ -263,23 +291,22 @@ class StatusStore:
         A failed attempt since the slot is retried after RETRY_FAILED_AFTER, so a lasting failure (for example an
         expired Perforce ticket) is retried hourly instead of every loop.
         """
-        slot_text = format_time(last_slot)
         with closing(self.connect()) as connection:
-            handled = connection.execute(
-                "SELECT count(*) FROM backup_runs WHERE status IN ('succeeded', 'running', 'queued') "
-                'AND created_at >= ?',
-                (slot_text,),
-            ).fetchone()[0]
-            last_failure = connection.execute(
-                "SELECT max(finished_at) FROM backup_runs WHERE status = 'failed' AND trigger = 'scheduled' "
-                'AND created_at >= ?',
-                (slot_text,),
-            ).fetchone()[0]
-        if handled:
-            return False
-        if last_failure is None:
-            return True
-        return now - parse_time(last_failure) >= RETRY_FAILED_AFTER
+            return scheduled_run_due_in(connection, last_slot, now)
+
+    def start_scheduled_run_if_due(self, last_slot, now):
+        """Start the scheduled run in the same transaction that checks it is due; returns its id or None.
+
+        A run Buddy queued in the meantime goes first: it is claimed on the next loop, and when it was queued after
+        the slot it also counts as that night's backup.
+        """
+        with self.transaction() as connection:
+            queued = connection.execute("SELECT count(*) FROM backup_runs WHERE status = 'queued'").fetchone()[0]
+            if queued:
+                return None
+            if not scheduled_run_due_in(connection, last_slot, now):
+                return None
+            return insert_running_run(connection, 'scheduled', now)
 
     def start_run(self, trigger, now):
         """Insert a running run and return its id; refuses while another run is running."""
@@ -287,12 +314,7 @@ class StatusStore:
             running = connection.execute("SELECT count(*) FROM backup_runs WHERE status = 'running'").fetchone()[0]
             if running:
                 raise BackupError('Another backup is already running.')
-            run_id = str(uuid.uuid4())
-            connection.execute(
-                'INSERT INTO backup_runs (id, status, trigger, created_at, started_at) VALUES (?, ?, ?, ?, ?)',
-                (run_id, 'running', trigger, format_time(now), format_time(now)),
-            )
-            return run_id
+            return insert_running_run(connection, trigger, now)
 
     def finish_run(self, run_id, result: RunResult, now):
         if result.ok:
@@ -653,8 +675,10 @@ def serve(store, settings):
             run_id = store.claim_queued_run(now)
             if run_id:
                 do_backup(store, settings, run_id, 'manual', beat)
-            elif store.scheduled_run_due(last_slot, now):
-                do_backup(store, settings, store.start_run('scheduled', now), 'scheduled', beat)
+            else:
+                scheduled_run_id = store.start_scheduled_run_if_due(last_slot, now)
+                if scheduled_run_id:
+                    do_backup(store, settings, scheduled_run_id, 'scheduled', beat)
         except Exception as exc:  # noqa: BLE001 - keep the service alive; the admin page shows the stale heartbeat
             print(f'buddy-backup loop error: {exc}', file=sys.stderr, flush=True)
         time.sleep(LOOP_SECONDS)
