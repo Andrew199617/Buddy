@@ -280,9 +280,10 @@ class _Terminal:
 class _TerminalProcess(ChildProcess):
     """A workspace command whose reader thread writes straight into its terminal.
 
-    ChildProcess stops a process whose queued output outgrows its limit, which
-    protects provider JSON streams. A terminal keeps only its newest output, so
-    a fast command must not be killed just because the event loop was busy:
+    ChildProcess pauses a process whose unread output reaches its queue budget:
+    its reader thread stops reading, so the pipe fills and the CLI waits. That
+    keeps provider JSON streams whole. A terminal keeps only its newest output,
+    so a fast command should keep running even while the event loop is busy:
     its text goes into the terminal's bounded tail, and only the end of output
     is queued for the event loop.
     """
