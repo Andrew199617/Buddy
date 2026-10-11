@@ -301,11 +301,14 @@ class StatusStore:
         """Start the scheduled run in the same transaction that checks it is due; returns its id or None.
 
         A run Buddy queued in the meantime goes first: it is claimed on the next loop, and when it was queued after
-        the slot it also counts as that night's backup.
+        the slot it also counts as that night's backup. Nothing starts while any run is running, whenever it began
+        (a `run-now` started before the slot shares /work/ws and the Perforce client).
         """
         with self.transaction() as connection:
-            queued = connection.execute("SELECT count(*) FROM backup_runs WHERE status = 'queued'").fetchone()[0]
-            if queued:
+            waiting_or_running = connection.execute(
+                "SELECT count(*) FROM backup_runs WHERE status IN ('queued', 'running')"
+            ).fetchone()[0]
+            if waiting_or_running:
                 return None
             if not scheduled_run_due_in(connection, last_slot, now):
                 return None
