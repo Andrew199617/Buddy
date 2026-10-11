@@ -24,6 +24,7 @@ import sqlite3
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 import traceback
 import uuid
@@ -595,7 +596,7 @@ def describe_change(settings, trigger, run_id, sizes, db_revision):
     )
 
 
-def create_backup_files(root, log, beat):
+def create_backup_files(root, log):
     """Write webui.db, data.tar.gz and buddy.env into root; returns (sizes, alembic revision)."""
     source_database = os.path.join(DATA_DIR, DATABASE_NAME)
     if not os.path.isfile(source_database):
@@ -606,14 +607,12 @@ def create_backup_files(root, log, beat):
     snapshot_sqlite(source_database, database_copy)
     db_revision, counts = describe_database(database_copy)
     log.append(f'{DATABASE_NAME}: copied and integrity-checked in {time.monotonic() - started:.1f} s; {counts}')
-    beat()
 
     scratch_dir = os.path.join(WORK_DIR, 'scratch')
     os.makedirs(scratch_dir, exist_ok=True)
     started = time.monotonic()
     build_data_archive(DATA_DIR, os.path.join(root, ARCHIVE_NAME), scratch_dir, log)
     log.append(f'{ARCHIVE_NAME}: written in {time.monotonic() - started:.1f} s (left out: {", ".join(EXCLUDED_PATHS)})')
-    beat()
 
     copy_env_file(ENV_FILE, os.path.join(root, ENV_NAME), log)
 
@@ -623,14 +622,14 @@ def create_backup_files(root, log, beat):
     return sizes, db_revision
 
 
-def do_backup(store, settings, run_id, trigger, beat=lambda: None):
+def do_backup(store, settings, run_id, trigger):
     log = [f'backup {run_id} ({trigger}) -> {settings.depot}']
     result = RunResult(ok=False, log=log)
     root = os.path.join(WORK_DIR, 'ws')
     shutil.rmtree(root, ignore_errors=True)
     os.makedirs(root, exist_ok=True)
     try:
-        sizes, db_revision = create_backup_files(root, log, beat)
+        sizes, db_revision = create_backup_files(root, log)
         result.sizes = sizes
         result.db_revision = db_revision
         perforce = Perforce(settings, log)
@@ -655,6 +654,31 @@ def do_backup(store, settings, run_id, trigger, beat=lambda: None):
 # ---------------------------------------------------------------------------------------------- entrypoints
 
 
+@contextmanager
+def heartbeat_while_running(beat, interval=LOOP_SECONDS):
+    """Refresh the heartbeat from a background thread while a backup blocks the loop.
+
+    Compressing or uploading a large data volume can take longer than the 5 minutes after which the admin page
+    reports the service as not responding.
+    """
+    stop = threading.Event()
+
+    def keep_beating():
+        while not stop.wait(interval):
+            try:
+                beat()
+            except Exception as exc:  # noqa: BLE001 - a missed beat must not stop the backup
+                print(f'buddy-backup heartbeat error: {exc}', file=sys.stderr, flush=True)
+
+    thread = threading.Thread(target=keep_beating, name='buddy-backup-heartbeat', daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join()
+
+
 def serve(store, settings):
     print(
         f'buddy-backup: {settings.schedule_time} {settings.timezone} -> {settings.depot} '
@@ -673,12 +697,13 @@ def serve(store, settings):
 
             beat()
             run_id = store.claim_queued_run(now)
+            trigger = 'manual'
+            if run_id is None:
+                run_id = store.start_scheduled_run_if_due(last_slot, now)
+                trigger = 'scheduled'
             if run_id:
-                do_backup(store, settings, run_id, 'manual', beat)
-            else:
-                scheduled_run_id = store.start_scheduled_run_if_due(last_slot, now)
-                if scheduled_run_id:
-                    do_backup(store, settings, scheduled_run_id, 'scheduled', beat)
+                with heartbeat_while_running(beat):
+                    do_backup(store, settings, run_id, trigger)
         except Exception as exc:  # noqa: BLE001 - keep the service alive; the admin page shows the stale heartbeat
             print(f'buddy-backup loop error: {exc}', file=sys.stderr, flush=True)
         time.sleep(LOOP_SECONDS)
