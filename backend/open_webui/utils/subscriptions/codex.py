@@ -46,9 +46,10 @@ NOT_INSTALLED_MESSAGE = (
     'The Codex CLI was not found. Install it with "npm install -g @openai/codex" '
     'or set its path in the ChatGPT subscription settings.'
 )
-OVERSIZED_OUTPUT_MESSAGE = (
-    'Codex sent more output at once than Buddy can read, so Buddy stopped Codex. '
-    'A large image or command output can cause this; try again with a smaller image.'
+# Over-long output lines are skipped, so this happens only when Codex's output
+# piles up on a Runner while Buddy's reader is held up.
+OUTPUT_BACKLOG_MESSAGE = (
+    "Buddy fell behind reading Codex's output from its machine, so Buddy stopped Codex. Try again."
 )
 # Desktop-app features that add computer-use and browser tools to every thread,
 # and hooks, which run commands outside the read-only sandbox.
@@ -395,8 +396,8 @@ class CodexAppServer:
         try:
             await self._handle_messages(process)
         except OutputLimitError:
-            log.warning('Codex sent output larger than Buddy can read; stopping its app-server')
-            reason = OVERSIZED_OUTPUT_MESSAGE
+            log.warning('Buddy fell behind reading Codex output; stopping its app-server')
+            reason = OUTPUT_BACKLOG_MESSAGE
         except ProcessClosedError as error:
             log.info('Codex app-server output ended: %s', error)
         except Exception:

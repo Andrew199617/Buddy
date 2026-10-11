@@ -830,9 +830,9 @@ class CodexTests(unittest.TestCase):
 
             async def read_line(self):
                 line = await self._lines.get()
-                if line == 'oversized':
-                    # Such as an item/started line that echoes a large image.
-                    raise OutputLimitError('A CLI output line exceeded its buffer limit')
+                if line == 'backlog':
+                    # Output piled up on a Runner while Buddy's reader was held up.
+                    raise OutputLimitError('The remote CLI stdout buffer limit was reached')
                 if line == 'exit':
                     return None
                 return line
@@ -864,7 +864,7 @@ class CodexTests(unittest.TestCase):
             provider = codex.CodexProvider()
             machine = FakeMachine()
             settings = ProviderSettings(enable=True, access='full')
-            conversation = parse_messages([{'role': 'user', 'content': 'Describe this photo'}])
+            conversation = parse_messages([{'role': 'user', 'content': 'Summarize the fixture notes'}])
             turn = TurnRequest('gpt-x', conversation, settings, '.', machine=machine)
             server = await provider._server_for(settings, machine)
             waiting_request = asyncio.create_task(server.request('account/read', {}))
@@ -878,10 +878,11 @@ class CodexTests(unittest.TestCase):
         turn_message, request_message, running = asyncio.run(run())
         return turn_message, request_message, running, processes[0].killed
 
-    def test_oversized_app_server_output_ends_the_turn_and_waiting_requests(self):
-        turn_message, request_message, running, killed = self.run_until_app_server_ends('oversized')
-        self.assertEqual(turn_message, codex.OVERSIZED_OUTPUT_MESSAGE)
-        self.assertEqual(request_message, codex.OVERSIZED_OUTPUT_MESSAGE)
+    def test_an_app_server_output_backlog_ends_the_turn_and_waiting_requests(self):
+        turn_message, request_message, running, killed = self.run_until_app_server_ends('backlog')
+        self.assertEqual(turn_message, codex.OUTPUT_BACKLOG_MESSAGE)
+        self.assertEqual(request_message, codex.OUTPUT_BACKLOG_MESSAGE)
+        self.assertNotIn('image', turn_message)
         # The next request starts a new app-server instead of writing to this one.
         self.assertFalse(running)
         self.assertTrue(killed)
