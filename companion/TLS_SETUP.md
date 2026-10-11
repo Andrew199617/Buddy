@@ -59,7 +59,10 @@ machine's browser address in Machines:
   a private CA to Windows or the browser is a separate operator decision.
 - Keep this Runner for Buddy in Docker, and start a second Runner without the
   TLS flags for the Projects page, on another free loopback port and with its
-  own `-StateDir`. Approve project roots only on that Runner, and use
+  own `-StateDir`. Let that Runner create the folder: on Windows it refuses a
+  folder that other accounts can use (see
+  [Keep the Runner key private](README.md#keep-the-runner-key-private)).
+  Approve project roots only on that Runner, and use
   `http://127.0.0.1:<port>`. Each Runner has its own key, pairing codes and
   project grants.
 

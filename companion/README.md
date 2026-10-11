@@ -73,6 +73,8 @@ requests. Revocation cannot approve or add a new root. Restart with explicit
 `--root` arguments to change the approved directory set. Workspace clients
 revoke only their own session through `DELETE /v1/session`.
 
+## Keep the Runner key private
+
 The existing provider key is persistent and grants full execution as the Runner
 account. Browser tokens and directory approvals remain temporary and separate.
 Protect the Runner state directory and Buddy's configuration database as
@@ -85,9 +87,50 @@ Existing unsafe ownership, modes, links or file types stop startup before the
 key is read. The Runner does not repair or rotate an existing credential.
 After verifying ownership, an operator can explicitly correct its state and
 key modes with `chmod 700` and `chmod 600`. A custom key may have trusted `0755`
-ancestors while the state directory remains independently private. Windows
-uses native pinned path checks and inherited directory ACLs; these checks do
-not establish a new private ACL or claim POSIX mode enforcement.
+ancestors while the state directory remains independently private.
+
+On Windows, the owner and access list decide instead. The state folder and the
+key must be owned by the Runner's account, SYSTEM or Administrators, and no
+other account may have any access to them. A separate `--key-file` folder
+needs one of those owners too; other accounts may read it, but none may change
+it. Folders above these are not checked; native pinned path checks keep them
+in place while the key is read. New folders and keys are created private to the
+Runner's account, SYSTEM and Administrators instead of inheriting their
+parent's access. Existing ones are never repaired: the Runner refuses to start,
+names the other accounts or the wrong owner, and prints the `icacls` command
+that fixes it.
+
+A state folder made by an earlier Runner version, such as the default
+`%USERPROFILE%\.buddy-runner`, inherits its access from the profile folder. If
+the profile also grants another account, for example an account from an
+earlier domain, the Runner refuses it. Stop the Runner, then run these commands
+in PowerShell as the account that runs the Runner. They remove the inherited
+entries and give that account full control; the key inherits the change and
+keeps its value, so the key saved in Buddy keeps working. For another
+`-StateDir`, set `$folder` to it.
+
+```powershell
+$folder = Join-Path $env:USERPROFILE '.buddy-runner'
+$me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+icacls $folder /inheritance:r /grant:r "*${me}:(OI)(CI)F"
+icacls $folder
+icacls (Join-Path $folder 'key')
+```
+
+The two listings should show only your account, `NT AUTHORITY\SYSTEM` or
+`BUILTIN\Administrators`. An account still listed was granted to the folder or
+key directly; remove it with `icacls <path> /remove:g "<account>"`, using the
+name the listing shows. icacls cannot remove an entry that it lists only as a
+SID (`S-1-5-...`); remove that one in PowerShell instead:
+
+```powershell
+$path = '<path>'
+$acl = Get-Acl -LiteralPath $path
+$acl.PurgeAccessRules([Security.Principal.SecurityIdentifier]'<SID>')
+Set-Acl -LiteralPath $path -AclObject $acl
+```
+
+Then start the Runner again.
 
 ## Files, folders and commands
 
