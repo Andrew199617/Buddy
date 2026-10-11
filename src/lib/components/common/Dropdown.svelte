@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { flyAndScale } from '$lib/utils/transitions';
 	import { tick } from 'svelte';
-	import { mobile } from '$lib/stores';
 	import {
 		getMobileComposerMenuMaxHeight,
 		getMobileComposerMenuPosition
 	} from '$lib/utils/mobile-composer-menu';
+	import { mobile } from '$lib/stores';
 
 	/** Whether the dropdown is open */
 	export let show = false;
@@ -33,6 +33,10 @@
 
 	/** Position against the visual viewport, e.g. when the mobile keyboard is open */
 	export let visualViewportAware = false;
+	export let preserveComposerFocus = false;
+	export let composerMenu = 'dropdown';
+	/** Plus and Tools use an adaptive, frosted menu on mobile. */
+	export let mobileActionMenu = false;
 
 	let triggerEl: HTMLElement | null = null;
 	let contentEl: HTMLElement | null = null;
@@ -52,26 +56,41 @@
 		// async list finishes loading - which would otherwise leave it overflowing the
 		// viewport. Compare scrollHeight (the natural content height) so that clamping
 		// max-height here cannot feed back into another reposition.
+		let lastRenderedHeight = 0;
+		let lastRenderedWidth = 0;
 		const resizeObserver = new ResizeObserver(() => {
-			if (node.scrollHeight === lastContentHeight) return;
+			const sameNaturalHeight = node.scrollHeight === lastContentHeight;
+			if (mobileActionMenu) {
+				if (
+					sameNaturalHeight &&
+					node.offsetHeight === lastRenderedHeight &&
+					node.offsetWidth === lastRenderedWidth
+				) {
+					return;
+				}
+				lastRenderedHeight = node.offsetHeight;
+				lastRenderedWidth = node.offsetWidth;
+			} else if (sameNaturalHeight) {
+				return;
+			}
 			lastContentHeight = node.scrollHeight;
 			schedulePositionUpdate();
 		});
 		resizeObserver.observe(node);
 
 		const viewport = window.visualViewport;
-		const mobileAnchor = mobileComposerActionAnchor();
-		const watchViewport = visualViewportAware || Boolean(mobileAnchor);
+		const watchViewport =
+			visualViewportAware || mobileActionMenu || Boolean(mobileComposerActionAnchor());
 		if (watchViewport) {
 			viewport?.addEventListener('resize', scheduleSettledPositionUpdates);
 			viewport?.addEventListener('scroll', schedulePositionUpdate);
 		}
 
 		let anchorResizeObserver: ResizeObserver | null = null;
-		if (mobileAnchor) {
+		if ((mobileActionMenu || mobileComposerActionAnchor()) && triggerEl) {
 			anchorResizeObserver = new ResizeObserver(schedulePositionUpdate);
-			anchorResizeObserver.observe(mobileAnchor);
-			const composer = mobileAnchor.closest('.buddy-composer');
+			anchorResizeObserver.observe(triggerEl);
+			const composer = triggerEl.closest('.buddy-composer');
 			if (composer) anchorResizeObserver.observe(composer);
 		}
 
@@ -91,6 +110,61 @@
 		};
 	}
 
+	function getActiveComposerInput(): Element | null {
+		const activeElement = document.activeElement;
+		if (activeElement?.closest('#chat-input')) {
+			return activeElement;
+		}
+		if (
+			activeElement?.matches('input, textarea, select, [contenteditable="true"]') &&
+			activeElement.closest('[data-composer-menu]')
+		) {
+			return activeElement;
+		}
+		return null;
+	}
+
+	function shouldKeepComposerFocus(): boolean {
+		if (!preserveComposerFocus) {
+			return false;
+		}
+		const touchLayout = $mobile || window.matchMedia('(pointer: coarse)').matches;
+		if (!touchLayout) return false;
+		const input = getActiveComposerInput();
+		if (!input) return false;
+		if (mobileActionMenu && input.closest('#chat-input')) {
+			const composer = triggerEl?.closest('.buddy-composer');
+			// Initial desktop-style autofocus can leave an idle mobile draft quietly focused.
+			if (composer?.getAttribute('data-expanded') === 'false') return false;
+		}
+		return true;
+	}
+
+	function preserveInputFocus(event: PointerEvent): void {
+		if (!event.isPrimary || event.button !== 0 || !shouldKeepComposerFocus()) {
+			return;
+		}
+		const target = event.target;
+		if (!(target instanceof Element)) {
+			return;
+		}
+		if (!target.closest('input, textarea, select, [contenteditable="true"]')) {
+			event.preventDefault();
+		}
+	}
+
+	function handleContentPointerDown(event: PointerEvent): void {
+		preserveInputFocus(event);
+		event.stopPropagation();
+	}
+
+	function handleContentKeydown(event: KeyboardEvent): void {
+		if (!mobileActionMenu || event.key !== 'Escape') return;
+		// The menu owns Escape before the page's composer shortcut can refocus the draft.
+		event.stopPropagation();
+		closeDropdown();
+	}
+
 	/** Svelte action: captures the first child element as the trigger reference */
 	function trigger(node: HTMLElement) {
 		triggerEl = (node.firstElementChild as HTMLElement | null) || node;
@@ -104,11 +178,13 @@
 				toggleOpen();
 			}
 		}
+		node.addEventListener('pointerdown', preserveInputFocus);
 		node.addEventListener('pointerdown', preserveMobileActionMenuFocus);
 		node.addEventListener('click', handleClick);
 		node.addEventListener('keydown', handleKeydown);
 		return {
 			destroy() {
+				node.removeEventListener('pointerdown', preserveInputFocus);
 				node.removeEventListener('pointerdown', preserveMobileActionMenuFocus);
 				node.removeEventListener('click', handleClick);
 				node.removeEventListener('keydown', handleKeydown);
@@ -188,7 +264,14 @@
 
 	function positionContentVisualViewport() {
 		if (!triggerEl || !contentEl) return;
-		const rect = triggerEl.getBoundingClientRect();
+		let anchor = triggerEl;
+		if (preserveComposerFocus) {
+			const composer = triggerEl.closest<HTMLElement>('.buddy-composer');
+			if (composer) {
+				anchor = composer;
+			}
+		}
+		const rect = anchor.getBoundingClientRect();
 		const viewport = visualViewportRect();
 		const viewportRight = viewport.left + viewport.width;
 		const viewportBottom = viewport.top + viewport.height;
@@ -230,6 +313,45 @@
 		resolvedMaxHeight =
 			contentHeight > availableHeight ? `min(${maxHeight}, ${availableHeight}px)` : maxHeight;
 		contentEl.style.maxHeight = resolvedMaxHeight;
+	}
+
+	function positionContentActionMenu(): void {
+		if (!triggerEl || !contentEl) return;
+		const button = triggerEl.querySelector<HTMLElement>('button') || triggerEl;
+		const buttonRect = button.getBoundingClientRect();
+		const viewport = visualViewportRect();
+		const viewportRight = viewport.left + viewport.width;
+		const viewportBottom = viewport.top + viewport.height;
+		const pad = 8;
+		const gap = 8;
+		const viewportHeight = Math.max(0, viewport.height - pad * 2);
+		const spaceAboveButton = Math.max(0, buttonRect.top - viewport.top - gap - pad);
+		const minimumUsefulHeight = 160;
+		let availableHeight = Math.min(spaceAboveButton, viewportHeight);
+		// Leave the trigger available for a second tap when there is usable space above it.
+		// Very tight viewports use the full visible area so the menu never collapses to nothing.
+		if (availableHeight < minimumUsefulHeight) {
+			availableHeight = viewportHeight;
+		}
+
+		contentEl.style.position = 'fixed';
+		contentEl.style.zIndex = '9999';
+		resolvedMaxHeight = `min(${maxHeight}, ${availableHeight}px)`;
+		contentEl.style.maxHeight = resolvedMaxHeight;
+
+		// Measure after the cap is applied; scrollHeight can describe much taller hidden content.
+		const renderedHeight = contentEl.offsetHeight;
+		const renderedWidth = contentEl.offsetWidth;
+		let preferredLeft = buttonRect.left;
+		if (align === 'end') preferredLeft = buttonRect.right - renderedWidth;
+		const preferredTop = buttonRect.top - renderedHeight - gap;
+		const maxTop = viewportBottom - pad - renderedHeight;
+		const maxLeft = viewportRight - pad - renderedWidth;
+
+		contentEl.style.top = `${Math.max(viewport.top + pad, Math.min(preferredTop, maxTop))}px`;
+		contentEl.style.bottom = 'auto';
+		contentEl.style.left = `${Math.max(viewport.left + pad, Math.min(preferredLeft, maxLeft))}px`;
+		contentEl.style.right = 'auto';
 	}
 
 	function mobileComposerActionAnchor(): HTMLElement | null {
@@ -339,7 +461,9 @@
 	function positionContent() {
 		if (!show || !contentEl?.isConnected) return;
 		if (positionMobileComposerActionMenu()) return;
-		if (visualViewportAware) {
+		if (mobileActionMenu) {
+			positionContentActionMenu();
+		} else if (visualViewportAware) {
 			positionContentVisualViewport();
 		} else {
 			positionContentDefault();
@@ -372,7 +496,7 @@
 		positionContent();
 
 		// Re-check after transition renders real dimensions
-		if (visualViewportAware || mobileComposerActionAnchor()) {
+		if (visualViewportAware || mobileActionMenu || mobileComposerActionAnchor()) {
 			scheduleSettledPositionUpdates();
 		} else {
 			setTimeout(positionContent, 50);
@@ -380,8 +504,10 @@
 
 		if (shouldFocusContent) {
 			shouldFocusContent = false;
-			if (!mobileComposerActionInputFocused()) {
-				contentEl?.focus();
+			if (!shouldKeepComposerFocus()) {
+				if (!mobileComposerActionInputFocused()) {
+					contentEl?.focus();
+				}
 			}
 		}
 	}
@@ -391,7 +517,7 @@
 		if (focusContent) {
 			previouslyFocused =
 				document.activeElement instanceof HTMLElement ? document.activeElement : null;
-			shouldFocusContent = true;
+			shouldFocusContent = !shouldKeepComposerFocus();
 		}
 		show = true;
 		onOpenChange(true);
@@ -406,7 +532,7 @@
 		shouldFocusContent = false;
 
 		if (restoreFocus && previouslyFocused?.isConnected) {
-			previouslyFocused.focus();
+			previouslyFocused.focus({ preventScroll: true });
 		}
 		previouslyFocused = null;
 	}
@@ -481,14 +607,18 @@
 	<div
 		use:portal
 		bind:this={contentEl}
+		data-composer-menu={preserveComposerFocus ? composerMenu : undefined}
+		data-composer-anchor={mobileActionMenu ? 'trigger' : undefined}
 		class={contentClass}
+		class:buddy-action-menu={mobileActionMenu}
 		role="menu"
 		tabindex="-1"
 		style:max-height={resolvedMaxHeight}
 		style:overflow-y="auto"
 		transition:flyAndScale
 		on:click={(e) => e.stopPropagation()}
-		on:pointerdown={(e) => e.stopPropagation()}
+		on:pointerdown={handleContentPointerDown}
+		on:keydown={handleContentKeydown}
 	>
 		<slot name="content" />
 	</div>

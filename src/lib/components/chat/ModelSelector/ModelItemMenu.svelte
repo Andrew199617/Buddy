@@ -15,6 +15,7 @@
 	const i18n = getContext('i18n');
 
 	export let show = false;
+	export let preserveComposerFocus = false;
 	export let model;
 
 	export let pinModelHandler: (modelId: string) => void = () => {};
@@ -28,6 +29,9 @@
 
 <Dropdown
 	bind:show
+	{preserveComposerFocus}
+	visualViewportAware={preserveComposerFocus}
+	contentClass="model-selector-child-menu"
 	align="end"
 	sideOffset={-2}
 	onOpenChange={(state) => {

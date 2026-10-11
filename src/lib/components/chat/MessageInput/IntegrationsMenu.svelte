@@ -84,6 +84,7 @@
 	export let onClose: Function;
 	export let onWebSearchToggle: Function = () => {};
 	export let closeOnOutsideClick = true;
+	export let preserveComposerFocus = false;
 
 	let show = false;
 	let tab = '';
@@ -293,6 +294,10 @@
 
 <Dropdown
 	bind:show
+	{preserveComposerFocus}
+	composerMenu="integrations"
+	mobileActionMenu={preserveComposerFocus}
+	visualViewportAware={preserveComposerFocus}
 	{closeOnOutsideClick}
 	onOpenChange={(state) => {
 		if (state === false) {
@@ -306,10 +311,13 @@
 		<slot />
 	</Tooltip>
 	<div slot="content">
-		<DropdownMenu className="min-w-70 max-w-70 max-h-72 overflow-hidden">
+		<DropdownMenu
+			unstyled={preserveComposerFocus}
+			className="min-w-70 max-w-70 max-h-72 overflow-hidden"
+		>
 			{#if tab === ''}
 				<div
-					class="max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin"
+					class="buddy-action-list max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin"
 					in:fly={{ x: -20, duration: 150 }}
 				>
 					{#if tools}
@@ -320,7 +328,7 @@
 									tab = 'tools';
 								}}
 							>
-								<Wrench />
+								<span class="buddy-action-icon"><Wrench /></span>
 
 								<div class="flex items-center w-full justify-between">
 									<div class=" line-clamp-1">
@@ -342,7 +350,9 @@
 									tab = 'skills';
 								}}
 							>
-								<Cube className="size-3.5" strokeWidth="1.75" />
+								<span class="buddy-action-icon"
+									><Cube className="size-3.5" strokeWidth="1.75" /></span
+								>
 
 								<div class="flex items-center w-full justify-between">
 									<div class=" line-clamp-1">
@@ -386,7 +396,7 @@
 								>
 									<div class="flex-1 truncate">
 										<div class="flex flex-1 gap-2 items-center">
-											<div class="shrink-0">
+											<div class="buddy-action-icon shrink-0">
 												{#if filter?.icon}
 													<div class="size-3.5 items-center flex justify-center">
 														<img
@@ -454,7 +464,7 @@
 							>
 								<div class="flex-1 truncate">
 									<div class="flex flex-1 gap-2 items-center">
-										<div class="shrink-0">
+										<div class="buddy-action-icon shrink-0">
 											<GlobeAlt />
 										</div>
 
@@ -480,7 +490,7 @@
 							>
 								<div class="flex-1 truncate">
 									<div class="flex flex-1 gap-2 items-center">
-										<div class="shrink-0">
+										<div class="buddy-action-icon shrink-0">
 											<Photo className="size-3.5" strokeWidth="1.5" />
 										</div>
 
@@ -506,7 +516,7 @@
 							>
 								<div class="flex-1 truncate">
 									<div class="flex flex-1 gap-2 items-center">
-										<div class="shrink-0">
+										<div class="buddy-action-icon shrink-0">
 											<Terminal className="size-3.5" strokeWidth="1.75" />
 										</div>
 

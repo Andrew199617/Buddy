@@ -258,6 +258,269 @@
 	display: none;
 }
 
+/* Portaled mobile pickers share a surface independent of the shell's inherited tokens. */
+.buddy-composer-picker {
+	--buddy-picker-surface: #ffffff;
+	--buddy-picker-text: #31483b;
+	--buddy-picker-muted: #667368;
+	--buddy-picker-edge: rgba(39, 99, 75, 0.14);
+	--buddy-picker-hover: rgba(39, 99, 75, 0.06);
+	--buddy-picker-selected: rgba(39, 99, 75, 0.11);
+}
+
+.dark .buddy-composer-picker {
+	--buddy-picker-surface: #292e2b;
+	--buddy-picker-text: #e4eee7;
+	--buddy-picker-muted: #9daa9f;
+	--buddy-picker-edge: rgba(231, 245, 235, 0.12);
+	--buddy-picker-hover: rgba(151, 184, 159, 0.08);
+	--buddy-picker-selected: rgba(151, 184, 159, 0.16);
+}
+
+.buddy-composer-picker.composer-model-picker,
+.buddy-composer-picker.buddy-thinking-picker {
+	border: 1px solid var(--buddy-picker-edge);
+	border-radius: 16px;
+	background: var(--buddy-picker-surface);
+	color: var(--buddy-picker-text);
+	box-shadow:
+		0 12px 36px rgba(17, 35, 24, 0.16),
+		0 2px 8px rgba(17, 35, 24, 0.08);
+}
+
+.dark .buddy-composer-picker.composer-model-picker,
+.dark .buddy-composer-picker.buddy-thinking-picker {
+	box-shadow:
+		0 12px 36px rgba(0, 0, 0, 0.3),
+		0 2px 8px rgba(0, 0, 0, 0.18);
+}
+
+.buddy-composer-picker.composer-model-picker button[role='option']:hover {
+	background: var(--buddy-picker-hover);
+}
+
+.buddy-composer-picker.composer-model-picker button[role='option'][aria-selected='true'] {
+	background: var(--buddy-picker-selected);
+}
+
+.buddy-composer-picker.composer-model-picker input {
+	color: var(--buddy-picker-text);
+}
+
+/* Plus and Tools use a frosted action surface on touch layouts. */
+.buddy-action-menu {
+	--buddy-action-surface: rgba(245, 249, 246, 0.94);
+	--buddy-action-text: #263d2e;
+	--buddy-action-muted: #66796c;
+	--buddy-action-edge: rgba(255, 255, 255, 0.7);
+	--buddy-action-icon: rgba(52, 91, 63, 0.08);
+	--buddy-action-hover: rgba(52, 91, 63, 0.09);
+	width: min(312px, calc(100vw - 16px));
+	border: 1px solid var(--buddy-action-edge);
+	border-radius: 30px;
+	background: var(--buddy-action-surface);
+	color: var(--buddy-action-text);
+	box-shadow:
+		0 18px 48px rgba(17, 35, 24, 0.2),
+		inset 0 1px 0 rgba(255, 255, 255, 0.45);
+	-webkit-backdrop-filter: blur(28px) saturate(150%);
+	backdrop-filter: blur(28px) saturate(150%);
+	overflow-x: hidden;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	scrollbar-width: none;
+	transform-origin: bottom left;
+}
+
+.dark .buddy-action-menu {
+	--buddy-action-surface: rgba(49, 57, 52, 0.94);
+	--buddy-action-text: #f0f5f1;
+	--buddy-action-muted: #a9b7ad;
+	--buddy-action-edge: rgba(232, 245, 235, 0.16);
+	--buddy-action-icon: rgba(231, 242, 234, 0.1);
+	--buddy-action-hover: rgba(231, 242, 234, 0.1);
+	box-shadow:
+		0 18px 48px rgba(0, 0, 0, 0.32),
+		inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.buddy-action-menu .app-dropdown-menu {
+	width: 100%;
+	min-width: 0;
+	max-width: none;
+	max-height: none;
+	padding: 8px !important;
+	border: 0;
+	border-radius: 0 !important;
+	background: transparent !important;
+	color: inherit;
+	box-shadow: none;
+	overflow: visible;
+}
+
+.buddy-action-menu .buddy-action-list {
+	max-height: none;
+	overflow: visible;
+}
+
+.buddy-action-menu .app-dropdown-menu button.w-full {
+	height: auto;
+	min-height: 48px;
+	padding: 8px 10px !important;
+	border-radius: 18px !important;
+	color: inherit;
+	font-size: 15px;
+	line-height: 1.35;
+	text-align: left;
+}
+
+.buddy-action-menu .buddy-action-list button.w-full {
+	min-height: 68px;
+	gap: 14px;
+	font-size: 18px;
+}
+
+.buddy-action-menu .buddy-action-list button.w-full .flex.gap-2 {
+	gap: 14px;
+}
+
+.buddy-action-menu .buddy-action-list button[aria-pressed] {
+	gap: 8px;
+}
+
+.buddy-action-menu .buddy-action-list button[aria-pressed] .flex.gap-2 {
+	gap: 10px;
+}
+
+.buddy-action-menu .buddy-action-list button[aria-pressed] .truncate {
+	min-width: 0;
+	white-space: normal;
+	overflow: visible;
+	overflow-wrap: anywhere;
+	text-overflow: clip;
+}
+
+.buddy-action-menu .buddy-action-permissions > div {
+	position: relative;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 3px;
+}
+
+.buddy-action-menu .buddy-action-permissions > div > div:first-child {
+	padding-right: 22px;
+}
+
+.buddy-action-menu .buddy-action-permissions > div > div:last-child > div:last-child {
+	position: absolute;
+	right: 0;
+	top: 50%;
+	transform: translateY(-50%);
+}
+
+.buddy-action-menu .buddy-action-icon {
+	display: inline-flex;
+	flex: 0 0 44px;
+	width: 44px;
+	height: 44px;
+	align-items: center;
+	justify-content: center;
+	border-radius: 50%;
+	background: var(--buddy-action-icon);
+}
+
+.buddy-action-menu .buddy-action-icon svg,
+.buddy-action-menu .buddy-action-icon img {
+	width: 22px;
+	height: 22px;
+}
+
+.buddy-action-menu .buddy-action-icon > div {
+	width: 22px;
+	height: 22px;
+}
+
+.buddy-action-menu .app-dropdown-menu button.w-full:hover,
+.buddy-action-menu .app-dropdown-menu button.w-full:focus-visible {
+	background: var(--buddy-action-hover);
+}
+
+.buddy-action-menu .app-dropdown-menu [class*='text-gray-500'],
+.buddy-action-menu .app-dropdown-menu [class*='text-gray-600'] {
+	color: var(--buddy-action-muted);
+}
+
+.buddy-action-menu .app-dropdown-menu input {
+	font-size: 16px;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+	.buddy-action-menu {
+		background: #f5f9f6;
+		backdrop-filter: none;
+	}
+
+	.dark .buddy-action-menu {
+		background: #313934;
+	}
+}
+
+@media (max-width: 767px), (pointer: coarse) {
+	[data-composer-menu='attachments']:not(.buddy-action-menu)
+		.app-dropdown-menu
+		button:not([role='switch']),
+	[data-composer-menu='integrations']:not(.buddy-action-menu)
+		.app-dropdown-menu
+		button:not([role='switch']),
+	[data-composer-menu='terminal'] .app-dropdown-menu button:not([role='switch']) {
+		min-height: 44px;
+	}
+
+	[data-composer-menu='attachments'] input,
+	[data-composer-menu='integrations'] input {
+		font-size: 16px;
+	}
+}
+
+/* Model and thinking stay together above the draft, away from send actions. */
+.buddy-chat .buddy-composer-settings {
+	margin: 8px 10px 0;
+	padding-bottom: 5px;
+	border-bottom: 1px solid var(--buddy-edge);
+}
+
+.buddy-chat .buddy-composer-settings .buddy-composer-model > div,
+.buddy-chat .buddy-composer-settings .buddy-model-trigger {
+	width: 100%;
+}
+
+.buddy-chat .buddy-composer-settings button {
+	min-height: 36px;
+}
+
+.buddy-chat .buddy-composer-settings .owui-rl-chip {
+	gap: 5px;
+	padding: 6px 10px;
+	border-radius: 12px;
+	background: var(--buddy-glass);
+}
+
+.buddy-chat .buddy-composer-settings .owui-rl-chip[data-set='true'] {
+	color: #52795c;
+}
+
+.dark .buddy-chat .buddy-composer-settings .owui-rl-chip[data-set='true'] {
+	color: #b0d1b8;
+}
+
+.buddy-chat .buddy-composer-settings .owui-rl-label {
+	display: inline;
+}
+
+.buddy-chat .buddy-composer[data-expanded='false'] .buddy-composer-settings {
+	display: none;
+}
+
 .buddy-chat .buddy-composer[data-expanded='false'] .buddy-composer-editor {
 	padding: 0;
 }
@@ -332,6 +595,12 @@
 	);
 	overflow-y: auto;
 	overscroll-behavior-y: contain;
+}
+
+.buddy-chat
+	.buddy-composer[data-expanded='true']:has(.buddy-composer-settings)
+	#chat-input-container {
+	padding-top: 8px;
 }
 
 .buddy-chat .buddy-composer[data-expanded='true'] .buddy-composer-tools {
@@ -523,6 +792,17 @@
 
 	.buddy-welcome-body {
 		padding-bottom: 30px;
+	}
+}
+
+/* Welcome content gives way to the draft while the mobile keyboard is open. */
+@media (max-width: 767px), (pointer: coarse) {
+	.buddy-keyboard-open .buddy-chat-welcome {
+		justify-content: flex-end;
+	}
+
+	.buddy-keyboard-open .buddy-chat-welcome .buddy-welcome-body {
+		padding-block: 0;
 	}
 }
 

@@ -22,6 +22,7 @@
 
 	export let show = false;
 	export let disabled = false;
+	export let preserveComposerFocus = false;
 
 	const chatContext = (terminal: any) => terminal?.contexts?.chat ?? {};
 
@@ -143,7 +144,13 @@
 			</button>
 		</Tooltip>
 	{:else}
-		<Dropdown bind:show align="start">
+		<Dropdown
+			bind:show
+			align="start"
+			{preserveComposerFocus}
+			composerMenu="terminal"
+			visualViewportAware={preserveComposerFocus}
+		>
 			<Tooltip content={$i18n.t('Terminal')} placement="top">
 				<button type="button" class={triggerClass}>
 					<Cloud className="size-3.5" strokeWidth="2" />

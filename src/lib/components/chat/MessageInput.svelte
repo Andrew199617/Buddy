@@ -73,6 +73,7 @@
 	import { WEBUI_BASE_URL, WEBUI_API_BASE_URL, PASTED_TEXT_CHARACTER_LIMIT } from '$lib/constants';
 	import { matchKeybinding, Shortcut } from '$lib/shortcuts';
 	import { resolveLocalizedModelName } from '$lib/utils/localizedContent';
+	import { installComposerControlInteractions } from '$lib/utils/composer-controls';
 
 	import { createNoteHandler } from '../notes/utils';
 	import { getSuggestionRenderer } from '../common/RichTextInput/suggestions';
@@ -705,17 +706,47 @@
 	let recording = false;
 	let composerFocused = false;
 	let composerMenuOpen = false;
+	let composerControlActive = false;
+	let coarsePointer = false;
+	$: mobileComposer = $mobile || coarsePointer;
 	$: composerExpanded =
 		composerFocused ||
-		composerMenuOpen ||
+		(!mobileComposer && composerControlActive) ||
+		(!mobileComposer && composerMenuOpen) ||
 		Boolean(prompt.trim()) ||
 		files.length > 0 ||
 		generating ||
 		recording ||
 		atSelectedModel !== undefined;
 
+	onMount(() => {
+		const pointerQuery = window.matchMedia('(pointer: coarse)');
+		function updateComposerPointer(): void {
+			coarsePointer = pointerQuery.matches;
+		}
+		updateComposerPointer();
+		pointerQuery.addEventListener('change', updateComposerPointer);
+		return () => pointerQuery.removeEventListener('change', updateComposerPointer);
+	});
+
+	async function restoreComposerAfterMenuClose(): Promise<void> {
+		if (mobileComposer) {
+			return;
+		}
+		await tick();
+		const chatInput = document.getElementById('chat-input');
+		chatInput?.focus();
+	}
+
 	function handleComposerFocusIn(event: FocusEvent): void {
-		const editorFocused = event.target instanceof HTMLElement && event.target.id === 'chat-input';
+		const target = event.target;
+		if (mobileComposer && target instanceof Element) {
+			const editable = target.closest('input, textarea, select, [contenteditable="true"]');
+			if (!editable) {
+				return;
+			}
+		}
+		const editorFocused = target instanceof HTMLElement && target.id === 'chat-input';
 		// Keep initial editor autofocus quiet, while restored control focus reveals the tools.
 		if (event.relatedTarget || !editorFocused) {
 			composerFocused = true;
@@ -726,6 +757,54 @@
 		let firstTapPointerId: number | null = null;
 		let firstTapEditor: HTMLElement | null = null;
 
+		function reconcileComposerFocus(): void {
+			if (!mobileComposer || composerControlActive || composerMenuOpen) {
+				return;
+			}
+			const activeElement = document.activeElement;
+			if (activeElement instanceof Element) {
+				if (form.contains(activeElement) || activeElement.closest('[data-composer-menu]')) {
+					return;
+				}
+			}
+			composerFocused = false;
+		}
+
+		function setControlInteraction(active: boolean): void {
+			composerControlActive = active;
+			if (active) {
+				const activeElement = document.activeElement;
+				if (activeElement && form.contains(activeElement)) {
+					composerFocused = true;
+				}
+			} else {
+				reconcileComposerFocus();
+			}
+		}
+		function shouldPreserveComposerInteractions(): boolean {
+			if (!mobileComposer || embedded) {
+				return false;
+			}
+			if (composerExpanded || composerControlActive) {
+				return true;
+			}
+			// Searching an idle menu owns the keyboard without expanding the message draft.
+			const activeElement = document.activeElement;
+			if (!(activeElement instanceof Element)) {
+				return false;
+			}
+			const editable = activeElement.closest('input, textarea, select, [contenteditable="true"]');
+			return Boolean(editable?.closest('[data-composer-menu]'));
+		}
+		const controlInteractionOptions = {
+			isMobile: shouldPreserveComposerInteractions,
+			onInteractionChange: setControlInteraction
+		};
+		const disposeControlInteractions = installComposerControlInteractions(
+			form,
+			controlInteractionOptions
+		);
+
 		function cancelComposerPointer(): void {
 			firstTapPointerId = null;
 			firstTapEditor = null;
@@ -734,9 +813,9 @@
 		function handleComposerPointerDown(event: PointerEvent): void {
 			cancelComposerPointer();
 			const wasCollapsed = !composerExpanded;
-			composerFocused = true;
 
 			if (embedded || !event.isPrimary || event.button !== 0) {
+				composerFocused = true;
 				return;
 			}
 
@@ -754,18 +833,13 @@
 				'button, a, input, textarea, select, [role="button"], [role="menuitem"], [contenteditable="false"]'
 			);
 			if (control) {
-				const opensComposerMenu = control.matches(
-					'button[id^="model-selector-"][id$="-button"], #owui-reasoning-chip'
-				);
-				const editorFocused = document.activeElement?.closest('#chat-input');
-				const touchInteraction =
-					event.pointerType === 'touch' || window.matchMedia('(pointer: coarse)').matches;
-				if (opensComposerMenu && editorFocused && touchInteraction) {
-					// Keep the keyboard from moving this trigger before its click opens the menu.
-					event.preventDefault();
+				// Idle action menus keep the compact bar; typing gestures are owned by the helper.
+				if (!mobileComposer) {
+					composerFocused = true;
 				}
 				return;
 			}
+			composerFocused = true;
 			if (!wasCollapsed) {
 				return;
 			}
@@ -814,12 +888,41 @@
 			}
 		}
 
+		function handleConversationInteraction(event: MouseEvent): void {
+			if (embedded || !mobileComposer || !(event.target instanceof Element)) {
+				return;
+			}
+			if (!event.target.closest('.buddy-chat #messages-container')) {
+				return;
+			}
+			if (event.type === 'pointerup') {
+				if (event.button !== 0) {
+					return;
+				}
+				const transcriptControl = event.target.closest(
+					'button, a[href], input, textarea, select, [role="button"], [contenteditable="true"]'
+				);
+				if (transcriptControl) {
+					return;
+				}
+			}
+			const activeElement = document.activeElement;
+			if (!(activeElement instanceof HTMLElement)) {
+				return;
+			}
+			if (form.contains(activeElement) || activeElement.closest('[data-composer-menu]')) {
+				activeElement.blur();
+			}
+			composerFocused = false;
+		}
+
 		function updateComposerMenus(): void {
 			composerMenuOpen = Boolean(
 				form.querySelector(
 					'.buddy-composer [aria-expanded="true"], .owui-context-rail [aria-expanded="true"]'
 				)
 			);
+			reconcileComposerFocus();
 		}
 		const menuObserver = new MutationObserver(updateComposerMenus);
 		menuObserver.observe(form, {
@@ -831,6 +934,8 @@
 		form.addEventListener('pointerup', handleComposerPointerUp);
 		form.addEventListener('pointercancel', cancelComposerPointer);
 		form.addEventListener('click', handleComposerClick, true);
+		document.addEventListener('pointerup', handleConversationInteraction, true);
+		document.addEventListener('click', handleConversationInteraction);
 		updateComposerMenus();
 		return {
 			destroy() {
@@ -838,16 +943,26 @@
 				form.removeEventListener('pointerup', handleComposerPointerUp);
 				form.removeEventListener('pointercancel', cancelComposerPointer);
 				form.removeEventListener('click', handleComposerClick, true);
+				document.removeEventListener('pointerup', handleConversationInteraction, true);
+				document.removeEventListener('click', handleConversationInteraction);
 				cancelComposerPointer();
 				menuObserver.disconnect();
+				disposeControlInteractions();
 			}
 		};
 	}
 
 	function handleComposerFocusOut(event: FocusEvent): void {
-		const container = event.currentTarget as HTMLElement;
-		if (event.relatedTarget instanceof Node && container.contains(event.relatedTarget)) {
+		// Composer controls own focus until their menu action has finished.
+		if (mobileComposer && (composerControlActive || composerMenuOpen)) {
 			return;
+		}
+		const container = event.currentTarget as HTMLElement;
+		const nextTarget = event.relatedTarget;
+		if (nextTarget instanceof Element) {
+			if (container.contains(nextTarget) || nextTarget.closest('[data-composer-menu]')) {
+				return;
+			}
 		}
 		composerFocused = false;
 	}
@@ -2058,6 +2173,26 @@
 								: ''}  transition px-0.5 bg-white/5 dark:bg-gray-500/5 backdrop-blur-sm dark:text-gray-100"
 							dir={$settings?.chatDirection ?? 'auto'}
 						>
+							{#if mobileComposer}
+								<div
+									class="buddy-composer-settings flex min-w-0 items-center gap-2"
+									role="group"
+									aria-label={$i18n.t('Model and thinking settings')}
+								>
+									<div class="buddy-composer-model flex min-w-0 flex-1 items-center">
+										<ModelSelector
+											bind:this={modelSelector}
+											bind:selectedModels
+											showSetDefault={!history?.currentId}
+											preserveComposerFocus
+											placement="top"
+											align="start"
+											triggerClassName="buddy-model-trigger items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-[0.8125rem] font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+										/>
+									</div>
+								</div>
+							{/if}
+
 							{#if atSelectedModel !== undefined}
 								<div class="px-2.5 pt-2.5 text-left w-full flex flex-col z-10">
 									<div class="flex items-center justify-between w-full">
@@ -2384,13 +2519,12 @@
 							</div>
 
 							<div
-								class="buddy-composer-tools flex justify-between mt-0.5 mb-2 mx-0.5 max-w-full max-[360px]:flex-wrap"
+								class="buddy-composer-tools flex justify-between mt-0.5 mb-2 mx-0.5 max-w-full"
 								dir="ltr"
 							>
-								<div
-									class="buddy-composer-left ml-1 self-end flex items-center flex-1 min-w-0 max-[360px]:basis-full"
-								>
+								<div class="buddy-composer-left ml-1 self-end flex items-center flex-1 min-w-0">
 									<InputMenu
+										preserveComposerFocus={mobileComposer && !embedded}
 										bind:files
 										selectedModels={selectedModelIds}
 										fileUploadCapableModels={getFilesystemUploadTerminal(
@@ -2443,12 +2577,7 @@
 											}
 										}}
 										{onUpload}
-										onClose={async () => {
-											await tick();
-
-											const chatInput = document.getElementById('chat-input');
-											chatInput?.focus();
-										}}
+										onClose={restoreComposerAfterMenuClose}
 									>
 										<button
 											type="button"
@@ -2471,6 +2600,7 @@
 									>
 										{#if showWebSearchButton || showImageGenerationButton || showCodeInterpreterButton || showToolsButton || showSkillsButton || (toggleFilters && toggleFilters.length > 0)}
 											<IntegrationsMenu
+												preserveComposerFocus={mobileComposer && !embedded}
 												selectedModels={selectedModelIds}
 												{toggleFilters}
 												{showWebSearchButton}
@@ -2496,12 +2626,7 @@
 													showValvesModal = true;
 													integrationsMenuCloseOnOutsideClick = false;
 												}}
-												onClose={async () => {
-													await tick();
-
-													const chatInput = document.getElementById('chat-input');
-													chatInput?.focus();
-												}}
+												onClose={restoreComposerAfterMenuClose}
 											>
 												<button
 													type="button"
@@ -2741,6 +2866,7 @@
 											<!-- Terminal Server Selector -->
 											{#if showTerminalSelector}
 												<TerminalMenu
+													preserveComposerFocus={mobileComposer && !embedded}
 													bind:show={showTerminalMenu}
 													disabled={generating ||
 														(!!history?.currentId &&
@@ -2752,20 +2878,22 @@
 								</div>
 
 								<div
-									class="buddy-composer-actions self-end flex items-center space-x-1 mr-1 min-w-0 gap-[0.03125rem] max-[360px]:ms-auto"
+									class="buddy-composer-actions self-end flex items-center space-x-1 mr-1 min-w-0 gap-[0.03125rem]"
 								>
-									<div
-										class="buddy-composer-model flex min-w-0 max-w-[10rem] items-center sm:max-w-[13rem]"
-									>
-										<ModelSelector
-											bind:this={modelSelector}
-											bind:selectedModels
-											showSetDefault={!history?.currentId}
-											placement="auto"
-											align="end"
-											triggerClassName="items-center gap-1.5 rounded-lg pl-2 pr-1.5 py-1 text-[0.8125rem] font-normal text-gray-600 transition-colors duration-100 hover:bg-gray-50/40 hover:text-gray-700 dark:text-gray-300 dark:hover:bg-gray-800/40 dark:hover:text-gray-200"
-										/>
-									</div>
+									{#if !mobileComposer}
+										<div
+											class="buddy-composer-model flex min-w-0 max-w-[10rem] items-center sm:max-w-[13rem]"
+										>
+											<ModelSelector
+												bind:this={modelSelector}
+												bind:selectedModels
+												showSetDefault={!history?.currentId}
+												placement="auto"
+												align="end"
+												triggerClassName="items-center gap-1.5 rounded-lg pl-2 pr-1.5 py-1 text-[0.8125rem] font-normal text-gray-600 transition-colors duration-100 hover:bg-gray-50/40 hover:text-gray-700 dark:text-gray-300 dark:hover:bg-gray-800/40 dark:hover:text-gray-200"
+											/>
+										</div>
+									{/if}
 
 									{#if hasChatVariables}
 										<Tooltip content={$i18n.t('Chat Variables')} placement="top">
@@ -2923,7 +3051,9 @@
 												>
 													<button
 														id="send-message-button"
-														class="flex items-center justify-center {!(prompt === '' && files.length === 0) || uploadPending
+														class="flex items-center justify-center {!(
+															prompt === '' && files.length === 0
+														) || uploadPending
 															? 'bg-black text-white hover:bg-gray-900 dark:bg-white dark:text-black dark:hover:bg-gray-100 '
 															: 'text-white bg-gray-200 dark:text-gray-900 dark:bg-gray-700 disabled'} transition rounded-full p-[0.3125rem] self-center"
 														type="submit"

@@ -449,6 +449,9 @@ html.owui-model-screen-open, html.owui-model-screen-open body {
 	}
 
 	function createPicker(search) {
+		// Composer menus keep the draft and keyboard active instead of making the app inert.
+		if (search.closest('[data-composer-menu]')) return null;
+
 		const panel = search.parentElement.parentElement;
 		const portal = panel.parentElement;
 		if (portal.parentElement !== document.body || portal.style.position !== 'fixed') return null;

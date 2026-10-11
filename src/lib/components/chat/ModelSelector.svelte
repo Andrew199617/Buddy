@@ -11,6 +11,7 @@
 
 	export let selectedModels = [''];
 	export let disabled = false;
+	export let preserveComposerFocus = false;
 
 	export let showSetDefault = true;
 	export let triggerClassName = 'text-lg';
@@ -83,6 +84,7 @@
 					multipleEnabled={$user?.role === 'admin' ||
 						($user?.permissions?.chat?.multiple_models ?? true)}
 					{disabled}
+					{preserveComposerFocus}
 					bind:compareEnabled={compareModels}
 					bind:values={selectedModels}
 				/>
