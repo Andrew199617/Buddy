@@ -19,6 +19,7 @@ import unittest
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / 'docker' / 'buddy' / 'backup' / 'buddy_backup.py'
@@ -265,7 +266,7 @@ class DataArchiveTest(unittest.TestCase):
             archive_path = os.path.join(directory, 'data.tar.gz')
             log = []
             try:
-                bb.build_data_archive(data_dir, archive_path, scratch_dir, log)
+                vanished = bb.build_data_archive(data_dir, archive_path, scratch_dir, log)
             finally:
                 writer.close()
 
@@ -282,8 +283,82 @@ class DataArchiveTest(unittest.TestCase):
                 self.assertNotIn(left_out, names)
             self.assertFalse(any(name.startswith('cache/embedding/') for name in names))
             self.assertEqual(count_items(os.path.join(extract_dir, 'vector_db', 'chroma.sqlite3')), 7)
+            self.assertEqual(vanished, [])
             self.assertEqual(os.listdir(scratch_dir), [])
             self.assertIn('vector_db/chroma.sqlite3: SQLite copied with the backup API', log)
+
+
+def create_buddy_database(path, file_ids):
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute('CREATE TABLE file (id TEXT PRIMARY KEY, path TEXT)')
+        connection.executemany(
+            'INSERT INTO file VALUES (?, ?)', [(file_id, f'/app/backend/data/uploads/{file_id}.png') for file_id in file_ids]
+        )
+        connection.commit()
+
+
+class ConsistentSnapshotTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.data_dir = os.path.join(temporary.name, 'data')
+        os.makedirs(os.path.join(self.data_dir, 'uploads'))
+        for file_id in ('a', 'b'):
+            Path(self.data_dir, 'uploads', f'{file_id}.png').write_bytes(b'png')
+        create_buddy_database(os.path.join(self.data_dir, 'webui.db'), ['a', 'b'])
+        self.root = os.path.join(temporary.name, 'ws')
+        self.scratch_dir = os.path.join(temporary.name, 'scratch')
+        os.makedirs(self.root)
+        os.makedirs(self.scratch_dir)
+        data_dir_patch = patch.object(bb, 'DATA_DIR', self.data_dir)
+        data_dir_patch.start()
+        self.addCleanup(data_dir_patch.stop)
+        self.real_build_data_archive = bb.build_data_archive
+
+    def delete_upload(self, file_id):
+        with closing(sqlite3.connect(os.path.join(self.data_dir, 'webui.db'))) as connection:
+            connection.execute('DELETE FROM file WHERE id = ?', (file_id,))
+            connection.commit()
+        os.remove(os.path.join(self.data_dir, 'uploads', f'{file_id}.png'))
+
+    def archived_names(self):
+        with tarfile.open(os.path.join(self.root, bb.ARCHIVE_NAME)) as archive:
+            return set(archive.getnames())
+
+    def test_unchanged_files_take_one_attempt(self):
+        log = []
+        bb.snapshot_database_and_files(self.root, self.scratch_dir, log)
+        self.assertFalse(any('taking it again' in line for line in log))
+        self.assertEqual(bb.file_record_ids(os.path.join(self.root, bb.DATABASE_NAME)), {'a', 'b'})
+        self.assertTrue({'uploads/a.png', 'uploads/b.png'} <= self.archived_names())
+
+    def test_deletion_between_database_and_archive_is_taken_again(self):
+        archive_calls = []
+
+        def build_after_a_deletion(*args):
+            archive_calls.append(args)
+            if len(archive_calls) == 1:
+                # Buddy deletes upload b after webui.db was copied, before the archive reaches it.
+                self.delete_upload('b')
+            return self.real_build_data_archive(*args)
+
+        log = []
+        with patch.object(bb, 'build_data_archive', build_after_a_deletion):
+            bb.snapshot_database_and_files(self.root, self.scratch_dir, log)
+        self.assertEqual(len(archive_calls), 2)
+        self.assertTrue(any('1 file record(s)' in line and 'taking it again' in line for line in log))
+        self.assertEqual(bb.file_record_ids(os.path.join(self.root, bb.DATABASE_NAME)), {'a'})
+        self.assertIn('uploads/a.png', self.archived_names())
+        self.assertNotIn('uploads/b.png', self.archived_names())
+
+    def test_fails_when_files_keep_vanishing(self):
+        def build_with_a_vanishing_file(*args):
+            return self.real_build_data_archive(*args) + ['cache/audio/transcriptions/temporary.wav']
+
+        with patch.object(bb, 'build_data_archive', build_with_a_vanishing_file):
+            with self.assertRaises(bb.BackupError) as raised:
+                bb.snapshot_database_and_files(self.root, self.scratch_dir, [])
+        self.assertIn(f'{bb.SNAPSHOT_ATTEMPTS} attempts', str(raised.exception))
 
 
 class EnvFileTest(unittest.TestCase):

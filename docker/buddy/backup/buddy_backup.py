@@ -57,6 +57,8 @@ EXCLUDED_PATHS = ('cache/embedding', 'cache/whisper', 'cache/tiktoken')
 SQLITE_SIDE_FILE_SUFFIXES = ('-wal', '-shm', '-journal')
 SQLITE_HEADER = b'SQLite format 3\x00'
 REQUIRED_ENV_KEYS = ('WEBUI_SECRET_KEY',)
+# Times webui.db and data.tar.gz are taken again when Buddy deletes files in between, before the run fails.
+SNAPSHOT_ATTEMPTS = 3
 
 STATUS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS backup_runs (
@@ -368,6 +370,19 @@ def snapshot_sqlite(source, destination):
             raise BackupError(f'The copy of {source} left {os.path.basename(leftover)} behind')
 
 
+def file_record_ids(database_path):
+    """Ids in Buddy's `file` table (uploads and knowledge files), or None when the database has no such table.
+
+    Read-only, so it also works on the live database through the read-only mount.
+    """
+    database_uri = Path(database_path).resolve().as_uri() + '?mode=ro'
+    with closing(sqlite3.connect(database_uri, uri=True, timeout=60)) as connection:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if 'file' not in tables:
+            return None
+        return {row[0] for row in connection.execute('SELECT id FROM file')}
+
+
 def describe_database(path):
     """(alembic revision or None, 'users N, chats N') of a copied webui.db, for the log and the description."""
     with closing(sqlite3.connect(path)) as connection:
@@ -419,7 +434,7 @@ def add_sqlite_snapshot(archive, source_path, member_name, scratch_dir):
             os.remove(snapshot_path)
 
 
-def add_directory_contents(archive, source_dir, prefix, scratch_dir, log):
+def add_directory_contents(archive, source_dir, prefix, scratch_dir, log, vanished):
     for name in sorted(os.listdir(source_dir)):
         source_path = os.path.join(source_dir, name)
         member_name = f'{prefix}/{name}' if prefix else name
@@ -428,20 +443,23 @@ def add_directory_contents(archive, source_dir, prefix, scratch_dir, log):
         try:
             if os.path.isdir(source_path) and not os.path.islink(source_path):
                 archive.add(source_path, arcname=member_name, recursive=False)
-                add_directory_contents(archive, source_path, member_name, scratch_dir, log)
+                add_directory_contents(archive, source_path, member_name, scratch_dir, log, vanished)
             elif os.path.isfile(source_path) and not os.path.islink(source_path) and is_sqlite_database(source_path):
                 add_sqlite_snapshot(archive, source_path, member_name, scratch_dir)
                 log.append(f'{member_name}: SQLite copied with the backup API')
             else:
                 archive.add(source_path, arcname=member_name, recursive=False)
         except FileNotFoundError:
-            # Deleted by Buddy between listing and reading (temporary audio and the like).
-            log.append(f'{member_name}: removed during the backup, skipped')
+            # Deleted by Buddy between listing and reading; the caller takes the backup again.
+            vanished.append(member_name)
 
 
 def build_data_archive(data_dir, archive_path, scratch_dir, log):
+    """Write the archive; returns the members that disappeared while it was being written."""
+    vanished = []
     with tarfile.open(archive_path, 'w:gz', compresslevel=6) as archive:
-        add_directory_contents(archive, data_dir, '', scratch_dir, log)
+        add_directory_contents(archive, data_dir, '', scratch_dir, log, vanished)
+    return vanished
 
 
 # ----------------------------------------------------------------------------------------------- env file
@@ -596,23 +614,57 @@ def describe_change(settings, trigger, run_id, sizes, db_revision):
     )
 
 
+def snapshot_database_and_files(root, scratch_dir, log):
+    """Copy webui.db, then archive the rest, so that every file record in the copy has its file in the archive.
+
+    Buddy can delete an upload (record and file) after the database is copied and before the archive reaches it.
+    When file records disappear or files vanish in that window, both are taken again. Files added meanwhile only
+    leave an unreferenced file in the archive, which is harmless. Returns the alembic revision of the copy.
+    """
+    source_database = os.path.join(DATA_DIR, DATABASE_NAME)
+    database_copy = os.path.join(root, DATABASE_NAME)
+    archive_path = os.path.join(root, ARCHIVE_NAME)
+    for attempt in range(1, SNAPSHOT_ATTEMPTS + 1):
+        if os.path.exists(database_copy):
+            os.remove(database_copy)
+        started = time.monotonic()
+        snapshot_sqlite(source_database, database_copy)
+        db_revision, counts = describe_database(database_copy)
+        log.append(f'{DATABASE_NAME}: copied and integrity-checked in {time.monotonic() - started:.1f} s; {counts}')
+        records_in_copy = file_record_ids(database_copy)
+
+        started = time.monotonic()
+        vanished = build_data_archive(DATA_DIR, archive_path, scratch_dir, log)
+        log.append(
+            f'{ARCHIVE_NAME}: written in {time.monotonic() - started:.1f} s (left out: {", ".join(EXCLUDED_PATHS)})'
+        )
+
+        removed_records = set()
+        if records_in_copy is not None:
+            records_now = file_record_ids(source_database)
+            if records_now is None:
+                records_now = set()
+            removed_records = records_in_copy - records_now
+        if not removed_records and not vanished:
+            return db_revision
+        details = f'{len(removed_records)} file record(s) and {len(vanished)} file(s)'
+        if vanished:
+            details += f' ({", ".join(vanished[:5])})'
+        log.append(f'attempt {attempt}: Buddy deleted {details} during the backup; taking it again')
+    raise BackupError(
+        f'Buddy kept deleting files while the backup ran ({SNAPSHOT_ATTEMPTS} attempts); the run is retried later'
+    )
+
+
 def create_backup_files(root, log):
     """Write webui.db, data.tar.gz and buddy.env into root; returns (sizes, alembic revision)."""
     source_database = os.path.join(DATA_DIR, DATABASE_NAME)
     if not os.path.isfile(source_database):
         raise BackupError(f'{source_database} not found: is the Buddy data volume mounted at {DATA_DIR}?')
 
-    database_copy = os.path.join(root, DATABASE_NAME)
-    started = time.monotonic()
-    snapshot_sqlite(source_database, database_copy)
-    db_revision, counts = describe_database(database_copy)
-    log.append(f'{DATABASE_NAME}: copied and integrity-checked in {time.monotonic() - started:.1f} s; {counts}')
-
     scratch_dir = os.path.join(WORK_DIR, 'scratch')
     os.makedirs(scratch_dir, exist_ok=True)
-    started = time.monotonic()
-    build_data_archive(DATA_DIR, os.path.join(root, ARCHIVE_NAME), scratch_dir, log)
-    log.append(f'{ARCHIVE_NAME}: written in {time.monotonic() - started:.1f} s (left out: {", ".join(EXCLUDED_PATHS)})')
+    db_revision = snapshot_database_and_files(root, scratch_dir, log)
 
     copy_env_file(ENV_FILE, os.path.join(root, ENV_NAME), log)
 
