@@ -5,7 +5,7 @@ import { chromium, webkit } from 'playwright';
 
 export const outputDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '../.qa');
 const workspace = resolve(outputDirectory, '../../..');
-const origin = process.env.BUDDY_UI_TEST_ORIGIN ?? 'http://localhost:8080';
+const origin = new URL(process.env.BUDDY_UI_TEST_ORIGIN ?? 'http://localhost:8080').origin;
 const now = Math.floor(Date.now() / 1000);
 const avatar = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" rx="16" fill="#f59e0b"/><text x="16" y="21" text-anchor="middle" fill="white" font-family="Arial" font-size="12">PU</text></svg>';
 
@@ -144,22 +144,23 @@ export async function createMockedPage(options = {}) {
   const browser = await browserType.launch({ headless: true });
   const context = await browser.newContext({
     viewport: options.viewport ?? { width: 390, height: 844 }, hasTouch: options.hasTouch ?? true, isMobile: options.isMobile ?? true,
-    deviceScaleFactor: 1, locale: 'en-US', colorScheme: options.colorScheme ?? 'light', serviceWorkers: 'block'
+    deviceScaleFactor: 1, locale: options.locale ?? 'en-US', colorScheme: options.colorScheme ?? 'light', serviceWorkers: 'block'
   });
   const requests = [];
   const errors = [];
   const blockedMutations = [];
-  await context.addInitScript(({ theme, previewOrigin }) => {
+  await context.addInitScript(({ theme, previewOrigin, locale }) => {
     if (location.origin !== previewOrigin) return;
     localStorage.setItem('token', 'mobile-preview-fake-token');
-    localStorage.setItem('locale', 'en-US');
+    localStorage.setItem('locale', locale);
     localStorage.setItem('theme', theme);
     localStorage.setItem('sidebar', 'false');
     localStorage.setItem('sidebarWidth', '245');
     localStorage.setItem('changelog', '0.11.4');
   }, {
     theme: options.colorScheme === 'dark' ? 'dark' : 'light',
-    previewOrigin: origin
+    previewOrigin: origin,
+    locale: options.locale ?? 'en-US'
   });
   await context.route('**/*', async (route) => {
     const request = route.request();
@@ -219,7 +220,9 @@ export async function createMockedPage(options = {}) {
   await page.goto(`${origin}${options.urlPath ?? '/'}`, { waitUntil: 'domcontentloaded' });
   try {
     await page.locator('#chat-input').waitFor({ state: 'visible', timeout: 30000 });
-    await page.locator('#model-selector-model-button').waitFor({ state: options.modelSelectorVisible === false ? 'attached' : 'visible', timeout: 10000 });
+    let modelSelectorState = 'visible';
+    if (options.modelSelectorVisible === false) modelSelectorState = 'attached';
+    await page.locator('#model-selector-model-button').waitFor({ state: modelSelectorState, timeout: 10000 });
     await page.evaluate(() => document.fonts.ready);
     await page.waitForTimeout(250);
   } catch (error) {
