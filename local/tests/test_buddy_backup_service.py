@@ -464,19 +464,34 @@ class EnvFileTest(unittest.TestCase):
             handle.write(text)
         return path
 
-    def test_reports_key_names_only(self):
+    def test_logs_a_count_and_the_required_name_only(self):
         with tempfile.TemporaryDirectory() as directory:
             source = self.write_env(
                 directory,
-                '# comment\nWEBUI_SECRET_KEY="s3cret-value"\nexport BUDDY_PORT=8082\nEMPTY=\n',
+                '# comment\nWEBUI_SECRET_KEY="s3cret-value"\nexport BUDDY_PORT=8082\nEMPTY=\nSPACED= # note\n',
             )
             self.assertEqual(
-                bb.env_file_keys(source), {'WEBUI_SECRET_KEY': True, 'BUDDY_PORT': True, 'EMPTY': False}
+                bb.env_file_keys(source),
+                {'WEBUI_SECRET_KEY': True, 'BUDDY_PORT': True, 'EMPTY': False, 'SPACED': False},
             )
             log = []
             bb.copy_env_file(source, os.path.join(directory, 'buddy.env'), log)
-            self.assertIn('WEBUI_SECRET_KEY', log[0])
-            self.assertNotIn('s3cret-value', '\n'.join(log))
+            self.assertEqual(log, ['buddy.env: 4 settings; WEBUI_SECRET_KEY set'])
+
+    def test_multiline_quoted_values_are_one_setting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = self.write_env(
+                directory,
+                "WEBUI_SECRET_KEY='first-line\nSYNTHETIC_SECRET_FRAGMENT==\nlast-line'\n"
+                'OTHER="escaped \\" quote\nSECOND_FRAGMENT=x"\n'
+                'BUDDY_PORT=8082\n',
+            )
+            self.assertEqual(
+                bb.env_file_keys(source), {'WEBUI_SECRET_KEY': True, 'OTHER': True, 'BUDDY_PORT': True}
+            )
+            log = []
+            bb.copy_env_file(source, os.path.join(directory, 'buddy.env'), log)
+            self.assertNotIn('FRAGMENT', '\n'.join(log))
 
     def test_requires_the_secret_key(self):
         with tempfile.TemporaryDirectory() as directory:

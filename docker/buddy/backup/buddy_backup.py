@@ -488,20 +488,57 @@ def build_data_archive(data_dir, archive_path, scratch_dir, log):
 # ----------------------------------------------------------------------------------------------- env file
 
 
+def closing_quote_index(text, quote):
+    """Index of the quote that ends a quoted dotenv value, or -1 when the value continues on the next line.
+
+    Inside double quotes a backslash escapes the next character.
+    """
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if quote == '"' and character == '\\':
+            index += 2
+            continue
+        if character == quote:
+            return index
+        index += 1
+    return -1
+
+
 def env_file_keys(path):
-    """{key: has a non-empty value} for a dotenv file. Values are never returned, logged or printed."""
-    keys = {}
+    """{key: has a non-empty value} for a dotenv file. Values are never returned, logged or printed.
+
+    Quoted values are followed across lines (Compose allows multi-line quoted values), so no line inside a value,
+    such as part of a wrapped key, is mistaken for a key name.
+    """
     with open(path, encoding='utf-8-sig') as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line or line.startswith('#') or '=' not in line:
-                continue
-            key, value = line.split('=', 1)
-            key = key.strip()
-            if key.startswith('export '):
-                key = key[len('export ') :].strip()
-            value = value.strip().strip('"\'')
-            keys[key] = bool(value)
+        lines = handle.read().splitlines()
+    keys = {}
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
+        index += 1
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, raw_value = line.split('=', 1)
+        key = key.strip()
+        if key.startswith('export '):
+            key = key[len('export ') :].strip()
+        value = raw_value.strip()
+        if value[:1] not in ('"', "'"):
+            # An unquoted value ends where a space-preceded # starts a comment.
+            keys[key] = bool(raw_value.split(' #', 1)[0].strip())
+            continue
+        quote = value[0]
+        body = value[1:]
+        end = closing_quote_index(body, quote)
+        while end == -1 and index < len(lines):
+            body += '\n' + lines[index]
+            index += 1
+            end = closing_quote_index(body, quote)
+        if end != -1:
+            body = body[:end]
+        keys[key] = bool(body)
     return keys
 
 
@@ -513,7 +550,8 @@ def copy_env_file(source, destination, log):
     for required in REQUIRED_ENV_KEYS:
         if not keys.get(required):
             raise BackupError(f'{ENV_NAME} has no value for {required}; a restore needs it')
-    log.append(f'{ENV_NAME}: {len(keys)} keys ({", ".join(sorted(keys))})')
+    # Only a count and the required names: the file also holds the secrets, so nothing read from it is logged.
+    log.append(f'{ENV_NAME}: {len(keys)} settings; {", ".join(REQUIRED_ENV_KEYS)} set')
 
 
 # ----------------------------------------------------------------------------------------------- commands
