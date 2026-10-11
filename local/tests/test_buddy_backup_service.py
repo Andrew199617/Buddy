@@ -145,6 +145,14 @@ class StatusStoreTest(unittest.TestCase):
         self.assertIsNone(self.store.start_scheduled_run_if_due(self.slot, now))
         self.assertEqual(self.store.claim_queued_run(now), queued)
 
+    def test_no_scheduled_run_while_an_earlier_run_is_still_running(self):
+        # A run-now started at 02:59 is still running at 03:00: the scheduled run must not start beside it.
+        self.store.start_run('manual', self.slot - timedelta(minutes=1))
+        self.assertIsNone(self.store.start_scheduled_run_if_due(self.slot, self.slot))
+        with closing(self.store.connect()) as connection:
+            running = connection.execute("SELECT count(*) FROM backup_runs WHERE status = 'running'").fetchone()[0]
+        self.assertEqual(running, 1)
+
     def test_claims_the_oldest_queued_run_once(self):
         older = self.insert_run('queued', 'manual', self.slot)
         newer = self.insert_run('queued', 'manual', self.slot + timedelta(seconds=1))
