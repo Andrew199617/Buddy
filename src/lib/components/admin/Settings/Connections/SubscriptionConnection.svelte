@@ -59,6 +59,8 @@
 	let failedCheck: { provider: SubscriptionProvider; message: string } | null = null;
 	$: checkError = failedCheck?.provider === provider ? failedCheck.message : '';
 	let settingsInFlight = false;
+	// Takes keyboard focus from Retry, whose row is removed when it runs.
+	let statusLine: HTMLDivElement | null = null;
 	let observedProvider = provider;
 	let observedMachines = machines;
 	let observedMachineId = provider.settings.machine_id;
@@ -225,12 +227,18 @@
 
 	// A check rejected because the machine changed in another tab only succeeds with the
 	// new selection, so reload the registry before asking again.
-	const retryCheck = () =>
-		runAction(async () => {
+	const retryCheck = (event: MouseEvent) => {
+		// Retry's row goes away below, which would drop keyboard focus to the page. Move it to
+		// this provider's status line first. A tap that did not focus Retry moves nothing.
+		if (document.activeElement === event.currentTarget) {
+			statusLine?.focus();
+		}
+		return runAction(async () => {
 			failedCheck = null;
 			await onSettingsChanged();
 			scheduleCheck();
 		});
+	};
 
 	$: if (providerStatus.checking) {
 		scheduleCheck();
@@ -421,7 +429,11 @@
 					})} · {accessLabel}
 				</span>
 			</div>
-			<div class="break-words text-xs text-gray-500 dark:text-gray-400">
+			<div
+				bind:this={statusLine}
+				class="break-words rounded-sm text-xs text-gray-500 dark:text-gray-400"
+				tabindex="-1"
+			>
 				{getStatusText(providerStatus)}
 			</div>
 		</div>

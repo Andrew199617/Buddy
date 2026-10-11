@@ -1268,13 +1268,35 @@ async function failedCheckCase(browser, profile) {
 			await captureScreenshot(page, profile.name + '-subscription-check-error');
 			fixtures.markCheckingReady();
 			const registryReads = fixtures.count('GET', '/api/v1/subscriptions');
-			await card.getByRole('button', { name: 'Retry', exact: true }).click();
+			const retry = card.getByRole('button', { name: 'Retry', exact: true });
+			if (profile.mobile) {
+				await retry.click();
+			} else {
+				await retry.focus();
+				await page.keyboard.press('Enter');
+			}
 			await card.getByRole('button', { name: 'Sign in', exact: true }).waitFor();
 			assert.ok(
 				fixtures.count('GET', '/api/v1/subscriptions') > registryReads,
 				'Retry reloads the machine registry first'
 			);
 			assert.equal(await card.getByText(/Could not check/).count(), 0);
+			if (!profile.mobile) {
+				const statusLine = card.getByText('Not signed in', { exact: true });
+				assert.equal(
+					await statusLine.evaluate((element) => element === document.activeElement),
+					true,
+					'Retry hands keyboard focus to the status line instead of dropping it to the page'
+				);
+				await page.keyboard.press('Tab');
+				assert.equal(
+					await card
+						.getByRole('button', { name: 'Sign in', exact: true })
+						.evaluate((element) => element === document.activeElement),
+					true,
+					'The next Tab continues within the provider row'
+				);
+			}
 		}
 	);
 }
