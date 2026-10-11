@@ -19,8 +19,11 @@ BASE_ID = 'claude-code.fixture-opus'
 OTHER_ID = 'claude-code.fixture-sonnet'
 PRESET_ID = 'fixture-preset'
 DEFAULT_ID = 'fixture-default-model'
+API_MODEL_ID = 'fixture-anthropic-api-model'
+API_URL = 'https://fixture-anthropic.invalid/v1'
 MAIN_PATH = ROOT / 'backend' / 'open_webui' / 'main.py'
 MISC_PATH = ROOT / 'backend' / 'open_webui' / 'utils' / 'misc.py'
+OPENAI_ROUTER_PATH = ROOT / 'backend' / 'open_webui' / 'routers' / 'openai.py'
 
 
 class ReachedChatSetup(BaseException):
@@ -204,6 +207,121 @@ class ChatRoutePresetRowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(form_data['model'], BASE_ID)
         self.assertEqual(form_data['params']['system'], 'Fixture administrator instructions')
         self.assertEqual(form_data['params']['temperature'], 0.2)
+
+
+class MessagesRoutePresetRowTests(unittest.IsolatedAsyncioTestCase):
+    """The Anthropic /api/v1/messages route cannot pass a subscription model's turn to an API connection."""
+
+    def setUp(self):
+        service = load_service(MemoryConfig(), ROOT / 'unused-offline-preset-data')
+        self.rows = {}
+        self.calls = []
+        self.listed_models = {
+            BASE_ID: subscription_model(BASE_ID, 'fixture-opus'),
+            PRESET_ID: {'id': PRESET_ID, 'owned_by': 'openai', 'preset': True},
+            API_MODEL_ID: {'id': API_MODEL_ID, 'owned_by': 'openai'},
+        }
+        self.models = dict(self.listed_models)
+        self.openai_models = {API_MODEL_ID: {'id': API_MODEL_ID, 'urlIdx': 0}}
+
+        async def get_model_by_id(model_id):
+            return self.rows.get(model_id)
+
+        async def load_all_models(request, user=None):
+            self.calls.append(('load_models',))
+            self.models.update(self.listed_models)
+
+        async def check_model_access(user, model_info, bypass_filter=False):
+            return None
+
+        async def get_openai_connection(url_index):
+            return API_URL, 'fixture-key', {}
+
+        async def get_headers_and_cookies(request, url, key, api_config, user=None):
+            return {}, {}
+
+        self.router = {
+            'Models': types.SimpleNamespace(get_model_by_id=get_model_by_id),
+            'check_model_access': check_model_access,
+            'BYPASS_MODEL_ACCESS_CONTROL': False,
+            'is_conflicting_preset_row': service.is_conflicting_preset_row,
+            'get_all_models': AsyncMock(),
+            'get_openai_connection': get_openai_connection,
+            'strip_provider_model_prefix': lambda model_id, prefix_id: model_id,
+            'get_headers_and_cookies': get_headers_and_cookies,
+            'is_anthropic_url': lambda url: False,
+            'ERROR_MESSAGES': types.SimpleNamespace(MODEL_NOT_FOUND=lambda: 'Fixture model not found'),
+            'HTTPException': HTTPException,
+        }
+        load_functions(OPENAI_ROUTER_PATH, {'get_anthropic_request_target'}, self.router)
+
+        async def count_anthropic_tokens(request, form_data, user):
+            target = await self.router['get_anthropic_request_target'](request, form_data, user)
+            self.calls.append(('count_tokens', target[1]['model']))
+            return 7
+
+        async def passthrough_anthropic_messages(request, form_data, user):
+            self.calls.append(('passthrough_to_api_key', form_data['model']))
+            return {'passthrough': True}
+
+        async def chat_completion(request, payload, user):
+            self.calls.append(('chat_completion', payload['model']))
+            return {'model': payload['model']}
+
+        def convert_to_anthropic_response(response, model, input_tokens):
+            return {'model': model, 'input_tokens': input_tokens}
+
+        self.route = {
+            'openai': types.SimpleNamespace(
+                count_anthropic_tokens=count_anthropic_tokens,
+                get_all_models=AsyncMock(),
+                get_openai_connection=get_openai_connection,
+            ),
+            'Models': types.SimpleNamespace(get_model_by_id=get_model_by_id),
+            'is_conflicting_preset_row': service.is_conflicting_preset_row,
+            'get_all_models': load_all_models,
+            # The fixture connection is an Anthropic one, so a request routed to it passes through.
+            'is_anthropic_messages_passthrough': lambda url, api_config: True,
+            'passthrough_anthropic_messages': passthrough_anthropic_messages,
+            'convert_anthropic_to_openai_payload': lambda form_data, params: {'model': form_data['model']},
+            'chat_completion': chat_completion,
+            'StreamingResponse': type('FixtureStreamingResponse', (), {}),
+            'convert_openai_to_anthropic_response': convert_to_anthropic_response,
+            'Depends': Depends,
+            'get_verified_user': None,
+            'log': logging.getLogger(__name__),
+        }
+        load_functions(MAIN_PATH, {'generate_messages', 'load_models_for_messages'}, self.route)
+
+    async def send(self, model_id):
+        state = types.SimpleNamespace(MODELS=self.models, OPENAI_MODELS=self.openai_models)
+        request = types.SimpleNamespace(app=types.SimpleNamespace(state=state))
+        admin = types.SimpleNamespace(id='fixture-admin', role='admin')
+        form_data = {'model': model_id, 'messages': [], 'max_tokens': 16}
+        return await self.route['generate_messages'](request, form_data, admin)
+
+    async def test_a_row_reusing_a_subscription_model_id_does_not_pass_its_turn_to_the_api(self):
+        self.rows[BASE_ID] = preset_row(BASE_ID, API_MODEL_ID, 'Fixture injected instructions')
+        with self.assertLogs(__name__, logging.WARNING):
+            response = await self.send(BASE_ID)
+        self.assertEqual(response, {'model': BASE_ID, 'input_tokens': None})
+        # Counting found no API model for the subscription model ID, so it did not use the API key.
+        self.assertEqual(self.calls, [('chat_completion', BASE_ID)])
+
+    async def test_the_route_loads_the_model_list_before_deciding(self):
+        self.rows[BASE_ID] = preset_row(BASE_ID, API_MODEL_ID, 'Fixture injected instructions')
+        self.models.clear()
+        with self.assertLogs(__name__, logging.WARNING):
+            await self.send(BASE_ID)
+        self.assertEqual(self.calls, [('load_models',), ('chat_completion', BASE_ID)])
+
+    async def test_a_listed_preset_still_passes_through_to_its_api_model(self):
+        self.rows[PRESET_ID] = preset_row(PRESET_ID, API_MODEL_ID, 'Fixture preset instructions')
+        response = await self.send(PRESET_ID)
+        self.assertEqual(response, {'passthrough': True})
+        self.assertEqual(self.calls, [
+            ('count_tokens', API_MODEL_ID), ('passthrough_to_api_key', PRESET_ID),
+        ])
 
 
 if __name__ == '__main__':

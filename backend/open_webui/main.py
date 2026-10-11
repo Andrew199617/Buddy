@@ -1929,6 +1929,12 @@ from open_webui.utils.anthropic import (
 )
 
 
+async def load_models_for_messages(request: Request, user) -> None:
+    """Load the model list, which tells a subscription model from a preset row that reuses its ID."""
+    if not request.app.state.MODELS:
+        await get_all_models(request, user=user)
+
+
 @app.post('/api/message/count_tokens')
 @app.post('/api/v1/messages/count_tokens')  # Anthropic Messages token-count endpoint
 async def count_message_tokens(
@@ -1936,6 +1942,7 @@ async def count_message_tokens(
     form_data: dict,
     user=Depends(get_verified_user),
 ):
+    await load_models_for_messages(request, user)
     return {'input_tokens': await openai.count_anthropic_tokens(request, form_data, user)}
 
 
@@ -2019,6 +2026,7 @@ async def generate_messages(
     Anthropic's x-api-key header (via middleware translation).
     """
     requested_model = form_data.get('model', '')
+    await load_models_for_messages(request, user)
     input_tokens = None
     try:
         input_tokens = await openai.count_anthropic_tokens(request, form_data, user)
@@ -2028,6 +2036,10 @@ async def generate_messages(
 
     model_id = requested_model
     model_info = await Models.get_model_by_id(model_id)
+    if is_conflicting_preset_row(request.app.state.MODELS.get(model_id), model_info):
+        # A preset row that reuses a subscription model's ID cannot send its
+        # requests to an API connection; chat_completion reaches the plan.
+        model_info = None
     if model_info and model_info.base_model_id:
         model_id = model_info.base_model_id
 

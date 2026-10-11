@@ -56,6 +56,7 @@ from open_webui.utils.session_pool import (
     get_session,
     stream_wrapper,
 )
+from open_webui.utils.subscriptions.service import is_conflicting_preset_row
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -462,6 +463,10 @@ async def get_anthropic_request_target(request: Request, form_data: dict, user: 
     model_info = await Models.get_model_by_id(model_id)
     await check_model_access(user, model_info, BYPASS_MODEL_ACCESS_CONTROL)
 
+    if is_conflicting_preset_row(request.app.state.MODELS.get(requested_model), model_info):
+        # A preset row that reuses a subscription model's ID cannot send its
+        # requests to an API connection.
+        model_info = None
     if model_info and model_info.base_model_id:
         model_id = model_info.base_model_id
         payload['model'] = model_id
