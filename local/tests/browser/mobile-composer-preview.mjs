@@ -401,6 +401,29 @@ async function enableComposerFixtures({ context, page }) {
 	});
 }
 
+async function closeActionMenu(page, triggerSelector, menuSelector) {
+	const hit = await page.locator(triggerSelector).evaluate((button, selector) => {
+		const bounds = button.getBoundingClientRect();
+		const target = document.elementFromPoint(
+			bounds.x + bounds.width / 2,
+			bounds.y + bounds.height / 2
+		);
+		const menu = document.querySelector(selector);
+		return {
+			triggerReceivesTap: Boolean(target && button.contains(target)),
+			menuCoversTrigger: Boolean(target && menu?.contains(target))
+		};
+	}, menuSelector);
+	if (hit.triggerReceivesTap) {
+		await page.locator(triggerSelector).tap();
+	} else {
+		assert.equal(hit.menuCoversTrigger, true,
+			'The focused action overlay covers the trigger while keeping its choices reachable');
+		await page.keyboard.press('Escape');
+	}
+	await page.locator(menuSelector).waitFor({ state: 'detached' });
+}
+
 async function plusLifecycle(browser) {
 	async function verifyPlusLifecycle(session) {
 		await enableComposerFixtures(session);
@@ -419,9 +442,8 @@ async function plusLifecycle(browser) {
 		await menu.getByRole('button', { name: 'Ask for approval', exact: true }).tap();
 		await menu.getByRole('button', { name: /^Tool Permissions.*Ask for approval/ }).waitFor();
 		await focused(page, draft, 'Choosing a harmless tool approval setting preserves draft focus');
-		await page.locator(plusTrigger).tap();
-		await menu.waitFor({ state: 'detached' });
-		await focused(page, draft, 'Toggling Plus closed preserves draft focus');
+		await closeActionMenu(page, plusTrigger, plusMenu);
+		await focused(page, draft, 'Closing Plus preserves draft focus');
 		await page.locator(plusTrigger).tap();
 		await menu.waitFor({ state: 'visible' });
 		await page.keyboard.press('Escape');
@@ -454,9 +476,8 @@ async function toolsLifecycle(browser) {
 			return Boolean(option?.textContent.includes('Preview helper'));
 		});
 		await focused(page, draft, 'Selecting a synthetic tool preserves draft focus');
-		await page.locator(toolsTrigger).tap();
-		await menu.waitFor({ state: 'detached' });
-		await focused(page, draft, 'Toggling Tools closed preserves draft focus');
+		await closeActionMenu(page, toolsTrigger, toolsMenu);
+		await focused(page, draft, 'Closing Tools preserves draft focus');
 		await page.locator(toolsTrigger).tap();
 		await menu.waitFor({ state: 'visible' });
 		await page.keyboard.press('Escape');
@@ -555,14 +576,23 @@ async function inlineComposerToggle(browser) {
 		assert.equal(await codeToggle.getAttribute('aria-pressed'), 'true',
 			'A harmless composer flag can be selected in the menu');
 		await focused(page, draft, 'Selecting a composer flag preserves draft focus');
-		await page.locator(toolsTrigger).tap();
-		await menu.waitFor({ state: 'detached' });
+		await closeActionMenu(page, toolsTrigger, toolsMenu);
 		const inline = page.locator('.buddy-composer').getByRole('button', {
 			name: 'Disable Code Interpreter', exact: true
 		});
 		await inline.tap();
 		await inline.waitFor({ state: 'detached' });
 		await focused(page, draft, 'Tapping an inline composer toggle preserves draft focus');
+
+		await page.locator(toolsTrigger).tap();
+		await menu.waitFor({ state: 'visible' });
+		await codeToggle.tap();
+		await closeActionMenu(page, toolsTrigger, toolsMenu);
+		await inline.waitFor({ state: 'visible' });
+		await focused(page, draft, 'Escape closes an owned menu without clearing the chosen control');
+		await page.keyboard.press('Escape');
+		await inline.waitFor({ state: 'detached' });
+		await focused(page, draft, 'Escape without an open menu still clears the draft control');
 		await noDraftBlur(page);
 	}
 	await runCase(browser, 'inline-composer-toggle-empty', verifyInlineComposerToggle);
@@ -840,12 +870,15 @@ function assertFrostedMenu(metrics) {
 	assertPopupBounds(metrics.panel);
 }
 
-function assertActionMenuAnchor(panel, anchor) {
-	const preferredTop = anchor.y - panel.height - 8;
+function assertActionMenuAnchor(panel, anchor, focused = false) {
+	let preferredTop = anchor.y - panel.height - 8;
+	if (focused) {
+		preferredTop = anchor.y + anchor.height / 2 - panel.height / 2;
+	}
 	const maximumTop = panel.viewportTop + panel.viewportHeight - panel.height - 8;
 	const expectedTop = Math.max(panel.viewportTop + 8, Math.min(preferredTop, maximumTop));
 	assert.ok(Math.abs(panel.y - expectedTop) <= 1,
-		'The action menu prefers eight pixels above its trigger and clamps within the keyboard viewport');
+		'The action menu stays near its trigger and clamps within the keyboard viewport');
 	const expectedLeft = Math.max(panel.viewportLeft + 8, Math.min(anchor.x,
 		panel.viewportLeft + panel.viewportWidth - panel.width - 8));
 	assert.ok(Math.abs(panel.x - expectedLeft) <= 1, 'The panel aligns with its anchor inside viewport gutters');
@@ -1017,7 +1050,7 @@ async function frostedActionMenu(browser, trigger, menu, rowName, label, theme) 
 		writeFileSync(resolve(outputDirectory, engineName + '-frosted-' + label + '-' + theme + '-geometry.json'),
 			JSON.stringify({ composer, button, metrics, codeLabel, largeCodeLabel }, null, 2));
 		assertFrostedMenu(metrics);
-		assertActionMenuAnchor(metrics.panel, button);
+		assertActionMenuAnchor(metrics.panel, button, true);
 		await focused(page, draft, 'The frosted action menu preserves draft keyboard focus');
 		await noDraftBlur(page);
 	}
@@ -1319,12 +1352,24 @@ async function verifyLastIphoneActionRow(session, menu, name) {
 		await portal.evaluate((element) => { element.scrollTop = element.scrollHeight; });
 		await page.waitForTimeout(150);
 	} else {
-		for (let attempt = 0; attempt < 5; attempt += 1) {
+		const scrolling = await portal.evaluate((element) => ({
+			visibleHeight: element.clientHeight,
+			contentHeight: element.scrollHeight
+		}));
+		// Short keyboard viewports require more swipes than the ordinary phone layout.
+		const minimumSwipeDistance = Math.max(1, scrolling.visibleHeight * 0.5 - 32);
+		const maximumAttempts = Math.min(30,
+			Math.ceil(scrolling.contentHeight / minimumSwipeDistance) + 2);
+		for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
 			const geometry = await iphoneNewChatGeometry(page, menu);
 			const rows = geometry.rows.filter((row) => row.text);
 			const last = rows[rows.length - 1];
 			if (last.hit && last.bounds.bottom <= geometry.portal.bottom) break;
+			const previousScrollTop = await portal.evaluate((element) => element.scrollTop);
 			await swipePopup(page, context, menu);
+			const nextScrollTop = await portal.evaluate((element) => element.scrollTop);
+			assert.ok(nextScrollTop > previousScrollTop,
+				'A trusted swipe advances the action list toward its last option');
 		}
 	}
 	const geometry = await iphoneNewChatGeometry(page, menu);

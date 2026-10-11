@@ -2413,6 +2413,13 @@
 															document.getElementById('suggestions-container');
 
 														if (e.key === 'Escape') {
+															const composer = document.getElementById('chat-input')?.closest('.buddy-composer');
+															const openMenuTrigger = composer?.querySelector('[aria-expanded="true"]');
+															const composerMenu = document.querySelector('[data-composer-menu]');
+															if (openMenuTrigger && composerMenu) {
+																// The open menu owns Escape; keep the draft's selected controls.
+																return;
+															}
 															stopResponse();
 														}
 
