@@ -14,6 +14,7 @@ import os
 import sqlite3
 import tarfile
 import tempfile
+import time
 import unittest
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
@@ -186,6 +187,24 @@ class StatusStoreTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]['depot_path'], '//Backups/Buddy-test')
         self.assertEqual(rows[0]['next_run_at'], bb.format_time(self.slot + timedelta(days=1)))
+
+
+class HeartbeatWhileRunningTest(unittest.TestCase):
+    def test_beats_during_a_blocking_step_and_stops_after(self):
+        beats = []
+
+        def beat():
+            beats.append(time.monotonic())
+            if len(beats) == 2:
+                raise sqlite3.OperationalError('database is locked')
+
+        with bb.heartbeat_while_running(beat, interval=0.02):
+            time.sleep(0.2)
+        count_at_exit = len(beats)
+        time.sleep(0.1)
+        # A failed beat (the second) did not stop the thread, and nothing beats after the run.
+        self.assertGreaterEqual(count_at_exit, 4)
+        self.assertEqual(len(beats), count_at_exit)
 
 
 def create_wal_database(path, rows):
