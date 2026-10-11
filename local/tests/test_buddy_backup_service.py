@@ -187,6 +187,18 @@ class StatusStoreTest(unittest.TestCase):
         self.assertEqual(row['db_revision'], 'abc123')
         self.assertEqual(row['log'], 'line\nline\nline')
 
+    def test_workspace_failure_is_recorded_as_a_failed_run(self):
+        run_id = self.store.start_scheduled_run_if_due(self.slot, self.slot)
+        settings = bb.Settings(depot='//Backups/Buddy-test')
+        disk_full = OSError(28, 'No space left on device')
+        with patch.object(bb, 'WORK_DIR', self.temporary.name), patch.object(bb.os, 'makedirs', side_effect=disk_full):
+            self.assertFalse(bb.do_backup(self.store, settings, run_id, 'scheduled'))
+        row = self.run_row(run_id)
+        self.assertEqual(row['status'], 'failed')
+        self.assertIn('No space left on device', row['error'])
+        # Nothing is left running, so a retry or a manual run can start.
+        self.assertIsNotNone(self.store.start_run('manual', self.slot + timedelta(minutes=5)))
+
     def test_heartbeat_keeps_one_row(self):
         settings = bb.Settings(depot='//Backups/Buddy-test', p4_port='ssl:example:1666', timezone=PACIFIC)
         self.store.heartbeat(settings, self.slot, self.slot)

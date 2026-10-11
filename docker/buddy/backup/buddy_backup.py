@@ -681,9 +681,10 @@ def do_backup(store, settings, run_id, trigger):
     log = [f'backup {run_id} ({trigger}) -> {settings.depot}']
     result = RunResult(ok=False, log=log)
     root = os.path.join(WORK_DIR, 'ws')
-    shutil.rmtree(root, ignore_errors=True)
-    os.makedirs(root, exist_ok=True)
     try:
+        # Inside the try, so a failure here (such as a full disk) is recorded instead of leaving the run running.
+        shutil.rmtree(root, ignore_errors=True)
+        os.makedirs(root, exist_ok=True)
         sizes, db_revision = create_backup_files(root, log)
         result.sizes = sizes
         result.db_revision = db_revision
