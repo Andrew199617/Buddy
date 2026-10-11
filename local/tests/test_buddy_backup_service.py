@@ -336,6 +336,54 @@ class DataArchiveTest(unittest.TestCase):
             self.assertIn('vector_db/chroma.sqlite3: SQLite copied with the backup API', log)
 
 
+class UploadedSqliteTest(unittest.TestCase):
+    """SQLite files people upload are attachments: archived byte for byte, never opened as databases."""
+
+    def archive_uploads(self, uploads):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        data_dir = os.path.join(temporary.name, 'data')
+        os.makedirs(os.path.join(data_dir, 'uploads'))
+        for name, content in uploads.items():
+            Path(data_dir, 'uploads', name).write_bytes(content)
+        scratch_dir = os.path.join(temporary.name, 'scratch')
+        os.makedirs(scratch_dir)
+        archive_path = os.path.join(temporary.name, 'data.tar.gz')
+        log = []
+        vanished = bb.build_data_archive(data_dir, archive_path, scratch_dir, log)
+        with tarfile.open(archive_path) as archive:
+            archived = {}
+            for member in archive.getmembers():
+                if member.isfile():
+                    archived[member.name] = archive.extractfile(member).read()
+        return archived, log, vanished
+
+    def valid_sqlite_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'attachment.db')
+            with closing(sqlite3.connect(path)) as connection:
+                connection.execute('CREATE TABLE note (body TEXT)')
+                connection.execute("INSERT INTO note VALUES ('hello')")
+                connection.commit()
+            return Path(path).read_bytes()
+
+    def test_damaged_sqlite_upload_does_not_break_the_backup(self):
+        damaged = bb.SQLITE_HEADER + b'\x00' * 4000
+        archived, log, vanished = self.archive_uploads({'1_broken.db': damaged})
+        self.assertEqual(archived['uploads/1_broken.db'], damaged)
+        self.assertEqual(vanished, [])
+        self.assertFalse(any('backup API' in line for line in log))
+
+    def test_valid_sqlite_upload_is_archived_byte_for_byte(self):
+        original = self.valid_sqlite_bytes()
+        archived, _, _ = self.archive_uploads({'2_notes.db': original})
+        self.assertEqual(archived['uploads/2_notes.db'], original)
+
+    def test_upload_named_like_a_side_file_is_kept(self):
+        archived, _, _ = self.archive_uploads({'3_report.txt': b'report', '3_report.txt-journal': b'journal'})
+        self.assertEqual(archived['uploads/3_report.txt-journal'], b'journal')
+
+
 def create_buddy_database(path, file_ids):
     with closing(sqlite3.connect(path)) as connection:
         connection.execute('CREATE TABLE file (id TEXT PRIMARY KEY, path TEXT)')
