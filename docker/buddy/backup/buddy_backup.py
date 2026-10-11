@@ -154,26 +154,28 @@ def parse_schedule_time(text):
 
 
 def slot_on(day: date, hour, minute, zone):
-    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=zone)
+    """The UTC instant of the scheduled wall-clock time on a local calendar day.
+
+    A time skipped when clocks spring forward runs the same distance after the jump (02:30 becomes 03:30), and a
+    time repeated when they fall back runs at its first occurrence (fold=0).
+    """
+    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=zone).astimezone(UTC)
 
 
 def schedule_slots(now_utc, schedule_time, timezone_name):
     """(last scheduled slot <= now, next slot > now) as aware UTC datetimes.
 
-    Slots are built from local calendar dates, so the wall-clock time stays the same across DST changes.
+    Slots are built from local calendar dates, so the wall-clock time stays the same across DST changes. They
+    are compared as UTC instants: comparing two times of the same zone in Python compares their wall clocks,
+    which puts a slot in a skipped hour after a later instant.
     """
     zone = ZoneInfo(timezone_name)
     hour, minute = parse_schedule_time(schedule_time)
-    local_now = now_utc.astimezone(zone)
-    today = local_now.date()
+    today = now_utc.astimezone(zone).date()
     today_slot = slot_on(today, hour, minute, zone)
-    if local_now >= today_slot:
-        last_slot = today_slot
-        next_slot = slot_on(today + timedelta(days=1), hour, minute, zone)
-    else:
-        last_slot = slot_on(today - timedelta(days=1), hour, minute, zone)
-        next_slot = today_slot
-    return last_slot.astimezone(UTC), next_slot.astimezone(UTC)
+    if now_utc >= today_slot:
+        return today_slot, slot_on(today + timedelta(days=1), hour, minute, zone)
+    return slot_on(today - timedelta(days=1), hour, minute, zone), today_slot
 
 
 # ------------------------------------------------------------------------------------------- status store
