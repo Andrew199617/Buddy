@@ -118,6 +118,13 @@ async function nativeCategory(page, id) {
   await tab.click();
   await categoryPanel(page, id).waitFor({ state: 'visible' });
   assert.equal(await tab.getAttribute('aria-selected'), 'true');
+  const heading = page.locator('#owui-mobile-settings-heading');
+  if (await heading.count()) {
+    const categoryLabel = (await tab.locator('span').textContent()).trim();
+    await page.waitForFunction((expected) => {
+      return document.getElementById('owui-mobile-settings-heading')?.textContent.trim() === expected;
+    }, categoryLabel);
+  }
 }
 
 async function baselineScenario() {
