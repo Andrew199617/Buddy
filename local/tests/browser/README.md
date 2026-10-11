@@ -22,6 +22,9 @@ Keep the frontend server running at `http://localhost:8080` in another terminal:
 ```
 
 The launcher applies the local loader scripts that these checks expect.
+To test another local frontend, set `BUDDY_UI_TEST_ORIGIN` before running a
+script, for example `$env:BUDDY_UI_TEST_ORIGIN = 'http://localhost:8082'` for
+the Buddy instance. API responses still come from fixtures at that origin.
 Install the separate browser-test dependencies from the repository root:
 
 ```powershell
@@ -45,6 +48,7 @@ node local/tests/browser/mobile-scroll-preview.mjs
 node local/tests/browser/chat-header-preview.mjs
 node local/tests/browser/chat-actions-preview.mjs
 node local/tests/browser/mobile-settings-preview.mjs
+node local/tests/browser/settings-save-preview.mjs
 node local/tests/browser/model-activity-preview.mjs
 node local/tests/browser/model-edit-preview.mjs
 node local/tests/browser/final-mobile-regression.mjs
@@ -65,7 +69,21 @@ The `mobile-ui-preview.mjs` command captures screens for visual review. The
 other scripts assert geometry and interaction behavior. The scrolling script's
 Apple rendering scenario simulates the vendor branch in Chromium; use the
 explicit WebKit command above to exercise that browser engine.
+The Settings script also checks that native category labels and mobile detail
+headings show readable text instead of raw `settings.*` translation keys.
+Run `node local/tests/browser/mobile-settings-preview.mjs --locales` for
+focused checks of saved `en` and `en-AU` locale fallback.
 
+The focused Settings Save script uses the native `?settings=general` route and
+synthetic settings responses. It holds a write open to verify the spinner,
+"Saving..." label, disabled button, and protection against a second press.
+Successful phone saves return to the category list with focus on the original
+row, while desktop saves retain their selected category. API and transport
+failures preserve the draft and allow retry. Interface and Audio checks hold
+their requests to verify success is announced only after persistence; automatic
+Audio changes keep the details page open. A delayed completion after Back and
+reopening the same category also preserves that new visit. The pending screenshot is
+saved as `local/tests/.qa/settings-save-phone-saving.png`.
 For an additional native baseline capture, `mobile-ui-preview.mjs`,
 `mobile-settings-preview.mjs`, and `model-edit-preview.mjs` accept `--baseline`.
 The launcher can still inject other local extensions during those captures.
@@ -120,6 +138,89 @@ adding test hooks to the app. Results and failure screenshots are saved under
 Set `BUDDY_PLAYWRIGHT_MODULE` to a module path or file URL when Playwright is
 provided by a bundled runtime rather than installed in this test directory.
 Use `--only=case-name,another-case` to rerun selected cases.
+
+## Mobile composer controls
+
+After rebuilding the frontend and serving it on `BUDDY_LAZY_TEST_ORIGIN`, run:
+
+```powershell
+node local/tests/browser/mobile-composer-preview.mjs
+node local/tests/browser/mobile-composer-preview.mjs --webkit
+```
+
+These checks use the same isolated synthetic API fixture as the lazy-feature
+suite. Trusted touchscreen taps verify model, thinking, Plus, and Tools menus
+with empty and populated drafts, safe child options, popup toggles, deliberate
+search, keyboard Escape, inline flag controls, and editor/toolbar padding.
+Transcript taps close menus and dismiss the empty composer. The suite compares
+the model/thinking palette and anchor geometry in dark and light modes, checks
+a constrained landscape keyboard viewport, and verifies desktop toolbar and
+mobile context bubble layout. The Chromium run also uses a trusted swipe to
+verify that thinking choices scroll without selecting a level. The landscape
+fixture rotates to 844 by 390 pixels and reduces the visual viewport to 240
+pixels, exceeding the application's 140-pixel keyboard detection threshold.
+The captured layout and hit stack explain which controls receive each tap.
+
+The action-menu checks verify frosted surfaces and circular icon wells in both
+color themes, idle Plus placement without expanding the composer, unfocused
+Tools placement for a populated draft, and trigger-anchored floating placement while typing. The panel prefers an
+eight-pixel trigger gap and clamps within visual-viewport gutters; very short
+viewports permit overlap so choices remain usable.
+A larger synthetic keyboard constrains each action menu and verifies that the
+outer rounded panel owns scrolling. Chromium uses trusted touchscreen swipes;
+WebKit verifies the same bounds and scroll state through direct DOM scrolling.
+Idle Plus child-search checks select only synthetic attachment metadata and
+exercise Escape without relying on a previously focused draft. Desktop menus
+retain their existing compact layout. A fresh landscape reload also checks
+coarse-pointer opt-in, visual-viewport-only resize/pan events, and menu reopening
+for both Plus and Tools, including nonzero viewport offsets. Tools label
+checks verify the full Code Interpreter label at normal size and at an enlarged
+font offset, then restore the original size before the final screenshot.
+
+Exact iPhone 12 Pro Max cases use the installed descriptor's 428 by 926 CSS
+pixel screen and DPR 3. Primary standalone captures override its content
+viewport to the full screen size; separate Safari cases use the descriptor's
+428 by 746 content viewport. Each opens an actual empty new-chat route at
+430-, 320-, and 280-pixel synthetic keyboard visual viewport heights. Before
+tapping, the suite checks the complete composer and both action triggers are
+inside the visible viewport and receive hit testing. It then scrolls to the
+last option and verifies safe Tools selection without running anything.
+
+Use a separate phase to preserve before/after screenshots and reports:
+
+```powershell
+node local/tests/browser/mobile-composer-preview.mjs --webkit --capture-phase=after --only=iphone12-new-chat-plus,iphone12-new-chat-tools,iphone12-new-chat-plus-tight,iphone12-new-chat-tools-tight
+```
+
+This writes to `local/tests/.qa/mobile-composer/iphone12-pro-max-after/`.
+Full screenshots retain the device viewport; `-visible-viewport.png` crops
+show the application area above the simulated keyboard. These are browser
+emulation captures and do not contain an actual iOS keyboard. The explicitly
+constrained native Tools toolbar case narrows its scroll row to exercise
+scroll-parent touch handling independently of normal phone layout. Portal
+option replay introduces a native-default blur, expands the keyboard viewport
+only if focus remains lost, and ends the touch at the original coordinates.
+Chromium uses trusted protocol touch events for that sequence; desktop WebKit
+uses explicit DOM pointer/touch events because it lacks a touch-start API.
+Ordinary WebKit taps remain trusted. Replay assertions require immediate
+input recovery and no viewport expansion; they allow the injected focusout
+event. Deliberate menu search and a harmless URL dialog retain native focus.
+
+Plus/Tools fixtures supply one synthetic authenticated tool and enable only
+local menu flags through the real production stores resolved from source maps.
+No tool is executed. Every account API, provider, and media request remains
+isolated by the shared fixture.
+
+The Safari touch-default scenario models the reported native blur after an
+uncanceled `touchstart`, even when `pointerdown` was canceled. This catches the
+empty composer collapsing and moving the control before its click. An idle
+attachment-search option also replays the blur between pointerdown and
+touchstart, verifying that deliberate search focus is restored while native
+list scrolling remains available. The WebKit
+run exercises that browser engine with a mobile viewport; it cannot verify a
+physical iPhone keyboard. Screenshots, event ordering, focus state, geometry,
+and results are saved under `local/tests/.qa/mobile-composer/`. Use
+`--only=case-name,another-case` to rerun selected cases.
 
 ## Real authenticated startup benchmark
 
