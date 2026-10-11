@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SettingsSaveButton from './SettingsSaveButton.svelte';
 	import { createEventDispatcher, getContext } from 'svelte';
 	import InterfaceSettings from '$lib/components/common/InterfaceSettings.svelte';
 
@@ -9,15 +10,17 @@
 	export let personalSettingsValue: Record<string, any> = {};
 
 	let interfaceSettings: any;
+
+	const saveInterfaceSettings = async () => {
+		await interfaceSettings.save();
+	};
+	let saveButton: SettingsSaveButton;
 </script>
 
 <form
 	id="tab-interface"
 	class="flex flex-col h-full justify-between text-sm"
-	on:submit|preventDefault={async () => {
-		await interfaceSettings?.save();
-		dispatch('save');
-	}}
+	on:submit|preventDefault={() => saveButton.save()}
 >
 	<h2 class="text-sm font-medium text-gray-900 dark:text-white mb-4">
 		{$i18n.t('settings.personal.interface.title')}
@@ -28,11 +31,11 @@
 	</div>
 
 	<div class="shrink-0 flex justify-end text-sm font-normal">
-		<button
-			class="px-3.5 py-1.5 text-sm font-normal bg-black hover:bg-gray-900 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full"
+		<SettingsSaveButton
+			bind:this={saveButton}
 			type="submit"
-		>
-			{$i18n.t('Save')}
-		</button>
+			saveAction={saveInterfaceSettings}
+			on:save={(event) => dispatch('save', event.detail)}
+		/>
 	</div>
 </form>

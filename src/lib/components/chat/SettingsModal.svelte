@@ -6,7 +6,7 @@
 		type SettingsTab
 	} from '$lib/utils/settings-search';
 	import { browser } from '$app/environment';
-	import { getContext, tick } from 'svelte';
+	import { getContext, setContext, tick } from 'svelte';
 	import type { Writable } from 'svelte/store';
 	import { toast } from 'svelte-sonner';
 	import { config, models, settings, user } from '$lib/stores';
@@ -443,19 +443,45 @@
 		}
 	};
 
+	let settingsNavigation: HTMLElement;
+
+	const captureSettingsNavigation = () => ({
+		navigationRevision: settingsNavigation?.getAttribute('data-settings-navigation-revision')
+	});
+	setContext('settings-save-navigation', captureSettingsNavigation);
+
+	const notifySettingsSaved = (event: CustomEvent) => {
+		const savedEvent = new CustomEvent('buddy:settings-saved', {
+			bubbles: true,
+			detail: event.detail
+		});
+		settingsNavigation?.dispatchEvent(savedEvent);
+	};
+
+	const personalSettingsSaveHandler = (event: CustomEvent) => {
+		toast.success($i18n.t('Settings saved successfully!'));
+		notifySettingsSaved(event);
+	};
+
 	const saveSettings = async (updated: Record<string, any>) => {
-		const saved = await updateUserSettings(localStorage.token, {
-			ui: updated
-		}).catch((error) => {
+		try {
+			const saved = await updateUserSettings(localStorage.token, { ui: updated });
+			if (!saved) throw new Error($i18n.t('Failed to save settings. Please try again.'));
+			personalUiSettings =
+				saved.ui && typeof saved.ui === 'object' && !Array.isArray(saved.ui) ? saved.ui : {};
+			await settings.set(
+				mergeUiSettings($config?.ui?.default_interface_settings ?? {}, personalUiSettings)
+			);
+			await models.set(await getModels());
+		} catch (error) {
 			toast.error(`${error}`);
 			throw error;
-		});
-		personalUiSettings =
-			saved?.ui && typeof saved.ui === 'object' && !Array.isArray(saved.ui) ? saved.ui : {};
-		await settings.set(
-			mergeUiSettings($config?.ui?.default_interface_settings ?? {}, personalUiSettings)
-		);
-		await models.set(await getModels());
+		}
+	};
+
+	const saveSettingsWithSuccessToast = async (updated: Record<string, any>) => {
+		await saveSettings(updated);
+		toast.success($i18n.t('Settings saved successfully!'));
 	};
 
 	const getModels = async () => {
@@ -520,6 +546,7 @@
 	bind:show={modalShow}
 >
 	<nav
+		bind:this={settingsNavigation}
 		id="settings-tabs-container"
 		class="shrink-0 min-w-0 md:min-h-0 flex flex-col border-b md:border-b-0 md:border-r border-gray-100/30 dark:border-white/[0.02] md:w-[15rem]"
 	>
@@ -797,53 +824,25 @@
 	<div class="flex-1 min-w-0 min-h-0 p-4 md:px-5 flex flex-col">
 		<div class="flex-1 min-h-0 overflow-hidden">
 			{#if selectedTab === 'general'}
-				<General
-					{getModels}
-					{saveSettings}
-					on:save={() => {
-						toast.success($i18n.t('Settings saved successfully!'));
-					}}
-				/>
+				<General {getModels} {saveSettings} on:save={personalSettingsSaveHandler} />
 			{:else if selectedTab === 'interface'}
 				<Interface
 					{saveSettings}
 					personalSettingsValue={personalUiSettings}
-					on:save={() => {
-						toast.success($i18n.t('Settings saved successfully!'));
-					}}
+					on:save={personalSettingsSaveHandler}
 				/>
 			{:else if selectedTab === 'notifications'}
 				<Notifications {saveSettings} />
 			{:else if selectedTab === 'shortcuts'}
 				<Shortcuts {saveSettings} />
 			{:else if selectedTab === 'connections'}
-				<Connections
-					saveSettings={async (updated: Record<string, any>) => {
-						await saveSettings(updated);
-						toast.success($i18n.t('Settings saved successfully!'));
-					}}
-				/>
+				<Connections saveSettings={saveSettingsWithSuccessToast} on:save={notifySettingsSaved} />
 			{:else if selectedTab === 'tools'}
-				<Integrations
-					saveSettings={async (updated: Record<string, any>) => {
-						await saveSettings(updated);
-						toast.success($i18n.t('Settings saved successfully!'));
-					}}
-				/>
+				<Integrations saveSettings={saveSettingsWithSuccessToast} on:save={notifySettingsSaved} />
 			{:else if selectedTab === 'personalization'}
-				<Personalization
-					{saveSettings}
-					on:save={() => {
-						toast.success($i18n.t('Settings saved successfully!'));
-					}}
-				/>
+				<Personalization {saveSettings} on:save={personalSettingsSaveHandler} />
 			{:else if selectedTab === 'audio'}
-				<Audio
-					{saveSettings}
-					on:save={() => {
-						toast.success($i18n.t('Settings saved successfully!'));
-					}}
-				/>
+				<Audio {saveSettings} on:save={personalSettingsSaveHandler} />
 			{:else if selectedTab === 'data_controls'}
 				<DataControls {saveSettings} />
 			{:else if selectedTab === 'usage'}
@@ -851,11 +850,7 @@
 			{:else if selectedTab === 'archived_chats'}
 				<ArchivedChats />
 			{:else if selectedTab === 'account'}
-				<Account
-					saveHandler={() => {
-						toast.success($i18n.t('Settings saved successfully!'));
-					}}
-				/>
+				<Account saveHandler={personalSettingsSaveHandler} />
 			{:else if selectedTab === 'about'}
 				<About />
 			{:else if selectedTab === 'admin:general'}

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SettingsSaveButton from './SettingsSaveButton.svelte';
 	import Switch from '$lib/components/common/Switch.svelte';
 	import { config, settings } from '$lib/stores';
 	import { createEventDispatcher, onMount, getContext } from 'svelte';
@@ -100,14 +101,17 @@
 		enableMemory = $settings?.memory ?? $config?.features?.enable_memories ?? false;
 		await loadMemories();
 	});
+	const saveMemorySettings = async () => {
+		await saveSettings({ memory: enableMemory });
+	};
+
+	let saveButton: SettingsSaveButton;
 </script>
 
 <form
 	id="tab-personalization"
 	class="flex flex-col h-full justify-between text-sm"
-	on:submit|preventDefault={() => {
-		dispatch('save');
-	}}
+	on:submit|preventDefault={() => saveButton.save()}
 >
 	<h2 class="text-sm font-medium text-gray-900 dark:text-white mb-4">
 		{$i18n.t('settings.personal.personalization.title')}
@@ -272,12 +276,12 @@
 	</div>
 
 	<div class="shrink-0 flex justify-end text-sm font-normal">
-		<button
-			class="px-3.5 py-1.5 text-sm font-normal bg-black hover:bg-gray-900 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full"
+		<SettingsSaveButton
+			bind:this={saveButton}
 			type="submit"
-		>
-			{$i18n.t('Save')}
-		</button>
+			saveAction={saveMemorySettings}
+			on:save={(event) => dispatch('save', event.detail)}
+		/>
 	</div>
 </form>
 

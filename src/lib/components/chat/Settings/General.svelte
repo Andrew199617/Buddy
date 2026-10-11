@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SettingsSaveButton from './SettingsSaveButton.svelte';
 	import {
 		canEditSystemPrompt as allowSystemPrompt,
 		canEditParameters
@@ -120,12 +121,7 @@
 					: {})
 			};
 		}
-		try {
-			await saveSettings(updated);
-			dispatch('save');
-		} catch {
-			// The settings modal displays the save error; do not report success.
-		}
+		await saveSettings(updated);
 	};
 
 	onMount(async () => {
@@ -240,13 +236,9 @@
 	</div>
 
 	<div class="shrink-0 flex justify-end pt-3 text-sm font-normal">
-		<button
-			class="px-3.5 py-1.5 text-sm font-normal bg-black hover:bg-gray-900 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full"
-			on:click={() => {
-				saveHandler();
-			}}
-		>
-			{$i18n.t('Save')}
-		</button>
+		<SettingsSaveButton
+			saveAction={saveHandler}
+			on:save={(event) => dispatch('save', event.detail)}
+		/>
 	</div>
 </div>

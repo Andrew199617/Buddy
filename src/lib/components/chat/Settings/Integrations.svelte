@@ -1,6 +1,8 @@
 <script lang="ts">
+	import SettingsSaveButton from './SettingsSaveButton.svelte';
 	import { toast } from 'svelte-sonner';
-	import { onMount, getContext } from 'svelte';
+	import { createEventDispatcher, onMount, getContext } from 'svelte';
+	const dispatch = createEventDispatcher();
 	import type { Writable } from 'svelte/store';
 	import type { i18n as i18nType } from 'i18next';
 	import { getToolServersData } from '$lib/apis';
@@ -89,6 +91,7 @@
 		servers = $settings?.toolServers ?? [];
 		terminalServerConfigs = ($settings as any)?.terminalServers ?? [];
 	});
+	let saveButton: SettingsSaveButton;
 </script>
 
 <AddToolServerModal bind:show={showConnectionModal} onSubmit={addConnectionHandler} direct />
@@ -96,9 +99,7 @@
 <form
 	id="tab-tools"
 	class="flex flex-col h-full justify-between text-sm"
-	on:submit|preventDefault={() => {
-		updateHandler();
-	}}
+	on:submit|preventDefault={() => saveButton.save()}
 >
 	<h2 class="text-sm font-medium text-gray-900 dark:text-white mb-4">
 		{$i18n.t('settings.personal.tools.title')}
@@ -192,11 +193,11 @@
 	</div>
 
 	<div class="shrink-0 flex justify-end pt-3 text-sm font-normal">
-		<button
-			class="px-3.5 py-1.5 text-sm font-normal bg-black hover:bg-gray-900 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full"
+		<SettingsSaveButton
+			bind:this={saveButton}
 			type="submit"
-		>
-			{$i18n.t('Save')}
-		</button>
+			saveAction={updateHandler}
+			on:save={(event) => dispatch('save', event.detail)}
+		/>
 	</div>
 </form>
