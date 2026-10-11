@@ -129,6 +129,20 @@ class StatusStoreTest(unittest.TestCase):
         self.assertFalse(self.store.scheduled_run_due(self.slot, failed_at + timedelta(minutes=59)))
         self.assertTrue(self.store.scheduled_run_due(self.slot, failed_at + timedelta(hours=1)))
 
+    def test_starts_the_scheduled_run_when_due(self):
+        now = self.slot + timedelta(hours=4)
+        run_id = self.store.start_scheduled_run_if_due(self.slot, now)
+        row = self.run_row(run_id)
+        self.assertEqual((row['status'], row['trigger']), ('running', 'scheduled'))
+        self.assertIsNone(self.store.start_scheduled_run_if_due(self.slot, now + timedelta(seconds=30)))
+
+    def test_queued_run_goes_before_the_scheduled_run(self):
+        # Queued before the slot, so it does not count as tonight's backup, but it still goes first.
+        queued = self.insert_run('queued', 'manual', self.slot - timedelta(minutes=5))
+        now = self.slot + timedelta(minutes=1)
+        self.assertIsNone(self.store.start_scheduled_run_if_due(self.slot, now))
+        self.assertEqual(self.store.claim_queued_run(now), queued)
+
     def test_claims_the_oldest_queued_run_once(self):
         older = self.insert_run('queued', 'manual', self.slot)
         newer = self.insert_run('queued', 'manual', self.slot + timedelta(seconds=1))
