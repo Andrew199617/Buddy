@@ -3,7 +3,7 @@
 POSIX keeps the key private with modes 0700 and 0600. On Windows the owner and
 the DACL decide access instead, so the Runner reads both. It refuses an
 existing state folder, key folder, or key that other accounts can use, and
-never repairs one; the error names the command that fixes it. New folders and
+never repairs one; the error names the commands that fix it. New folders and
 keys start with a protected DACL, so they never inherit a shared parent's.
 
 Unlike POSIX, higher folders are not checked, because ordinary Windows roots
@@ -101,21 +101,32 @@ def _account_list(sids: list[str]) -> str:
     return ', '.join(names)
 
 
-def access_message(path: Path, what: str, others: list[str], user_sid: str, *, directory: bool, private: bool) -> str:
+def access_fix_commands(path: Path, user_sid: str, *, directory: bool) -> list[str]:
+    """The icacls commands that leave only the user's own access, in the order they run.
+
+    icacls refuses to name an entry for a deleted or unmapped account, and
+    then changes nothing, so the commands never list the other accounts.
+    /reset drops every entry set on the object itself, and /inheritance:r
+    then drops the inherited ones while granting the user full control.
+    """
     if directory:
         grant = f'"*{user_sid}:(OI)(CI)F"'
     else:
         grant = f'"*{user_sid}:F"'
-    command = f'icacls "{path}" /inheritance:r /grant:r {grant}'
-    removals = [f'*{sid}' for sid in others if sid]
-    if removals:
-        command += ' /remove:g ' + ' '.join(removals)
+    reset_explicit_entries = f'icacls "{path}" /reset'
+    keep_only_user = f'icacls "{path}" /inheritance:r /grant:r {grant}'
+    return [reset_explicit_entries, keep_only_user]
+
+
+def access_message(path: Path, what: str, others: list[str], user_sid: str, *, directory: bool, private: bool) -> str:
+    reset_explicit_entries, keep_only_user = access_fix_commands(path, user_sid, directory=directory)
     if private:
         problem = f'The Runner {what} {path} can be used by other Windows accounts: {_account_list(others)}.'
     else:
         problem = f'The Runner {what} {path} can be changed by other Windows accounts: {_account_list(others)}.'
     return (
-        f'{problem} Make it private to your account with: {command} '
+        f'{problem} Make it private to your account by running {reset_explicit_entries} '
+        f'and then {keep_only_user} '
         f'Then check that icacls "{path}" lists only your account, SYSTEM or Administrators, '
         'and start the Runner again.'
     )

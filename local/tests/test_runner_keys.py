@@ -29,6 +29,9 @@ USER_SID = 'S-1-5-21-1000-1000-1000-1001'
 OTHER_SID = 'S-1-5-21-1000-1000-1000-1002'
 USERS = 'S-1-5-32-545'
 AUTHENTICATED_USERS = 'S-1-5-11'
+# Accounts in a domain that does not exist, so Windows cannot name them.
+UNKNOWN_SID = 'S-1-5-21-1111111111-2222222222-3333333333-4444'
+INHERITED_UNKNOWN_SID = 'S-1-5-21-1111111111-2222222222-3333333333-4445'
 READ_ONLY = 0x120089
 MODIFY = 0x1301bf
 
@@ -53,6 +56,20 @@ def allowed(sid, mask=acl.GENERIC_ALL):
 def grant_access(path, entry):
     """Add one access entry to a disposable Windows fixture, such as *S-1-5-32-545:R."""
     subprocess.run(['icacls', str(path), '/grant', entry], check=True, capture_output=True)
+
+
+def set_access_sddl(path, sddl):
+    """Set the entries a disposable Windows fixture holds itself, including ones icacls cannot name."""
+    script = (
+        '$acl = Get-Acl -LiteralPath $env:FIXTURE_PATH; '
+        "$acl.SetSecurityDescriptorSddlForm($env:FIXTURE_SDDL, 'Access'); "
+        'Set-Acl -LiteralPath $env:FIXTURE_PATH -AclObject $acl'
+    )
+    environment = {**os.environ, 'FIXTURE_PATH': str(path), 'FIXTURE_SDDL': sddl}
+    subprocess.run(
+        ['powershell', '-NoProfile', '-NonInteractive', '-Command', script],
+        env=environment, check=True, capture_output=True,
+    )
 
 
 class RunnerKeyMetadataTests(unittest.TestCase):
@@ -159,11 +176,20 @@ class WindowsKeyAccessPolicyTests(unittest.TestCase):
             with self.subTest(owner=owner):
                 self.assertFalse(acl.owner_is_trusted(acl.Security(owner, []), USER_SID))
 
-    def test_synthetic_messages_name_the_command_that_fixes_access(self):
-        folder = acl.access_message(Path('C:/Runner'), 'state folder', [USERS], USER_SID, directory=True, private=True)
-        self.assertIn(f'/inheritance:r /grant:r "*{USER_SID}:(OI)(CI)F" /remove:g *{USERS}', folder)
-        key = acl.access_message(Path('C:/Runner/key'), 'key', [USERS], USER_SID, directory=False, private=True)
-        self.assertIn(f'/inheritance:r /grant:r "*{USER_SID}:F" /remove:g *{USERS}', key)
+    def test_synthetic_messages_name_the_commands_that_fix_access(self):
+        folder_path = Path('C:/Runner')
+        folder = acl.access_message(folder_path, 'state folder', [USERS], USER_SID, directory=True, private=True)
+        self.assertIn(
+            f'running icacls "{folder_path}" /reset and then '
+            f'icacls "{folder_path}" /inheritance:r /grant:r "*{USER_SID}:(OI)(CI)F" Then check',
+            folder,
+        )
+        key_path = Path('C:/Runner/key')
+        key = acl.access_message(key_path, 'key', [USERS], USER_SID, directory=False, private=True)
+        self.assertIn(f'icacls "{key_path}" /inheritance:r /grant:r "*{USER_SID}:F" Then check', key)
+        # icacls cannot name an entry for a deleted account, so no command lists the other accounts.
+        self.assertNotIn(f'*{USERS}', folder)
+        self.assertNotIn(f'*{USERS}', key)
         owner = acl.owner_message(Path('C:/Runner'), 'state folder', USERS, USER_SID)
         self.assertIn(f'/setowner *{USER_SID}', owner)
 
@@ -360,9 +386,10 @@ class WindowsRunnerKeyAccessTests(TemporaryKeyTests):
         return {entry.sid for entry in acl.read_security(path).entries}
 
     def run_suggested_fix(self, message):
-        command = message.split('Make it private to your account with: ')[1].split(' Then check')[0]
-        # The command is written for a Command Prompt or PowerShell; run it as typed.
-        subprocess.run(command, check=True, capture_output=True)
+        commands = message.split('Make it private to your account by running ')[1].split(' Then check')[0]
+        # The commands are written for a Command Prompt or PowerShell; run them as typed.
+        for command in commands.split(' and then '):
+            subprocess.run(command, check=True, capture_output=True)
 
     def test_windows_new_state_and_key_are_private_under_a_shared_parent(self):
         shared = self.base / 'shared'
@@ -417,6 +444,34 @@ class WindowsRunnerKeyAccessTests(TemporaryKeyTests):
             runner.load_or_create_key(key_file, state_dir=self.state)
         self.assertIn(f'key folder {custom} can be changed', str(refused.exception))
         self.assertEqual(key_file.read_text(encoding='utf-8'), FIXTURE_KEY)
+
+    def test_windows_suggested_fix_works_when_entries_name_unknown_accounts(self):
+        user_sid = acl.current_user_sid()
+        # The state folder inherits an entry for an account Windows cannot
+        # name, such as a deleted domain user, and also holds one itself.
+        parent = self.base / 'parent'
+        parent.mkdir()
+        set_access_sddl(parent, f'D:P(A;OICI;FA;;;{user_sid})(A;OICI;FR;;;{INHERITED_UNKNOWN_SID})')
+        state = parent / 'state'
+        state.mkdir()
+        set_access_sddl(state, f'D:(A;OICI;FA;;;{user_sid})(A;OICI;FR;;;{UNKNOWN_SID})')
+        key_file = state / 'key'
+        write_fixture(key_file)
+        set_access_sddl(key_file, f'D:(A;;FA;;;{user_sid})(A;;FR;;;{UNKNOWN_SID})')
+        self.assertEqual(self.entry_sids(state), {user_sid, UNKNOWN_SID, INHERITED_UNKNOWN_SID})
+
+        with self.assertRaises(ValueError) as key_refused:
+            acl.check_private(key_file, 'key', directory=False)
+        self.run_suggested_fix(str(key_refused.exception))
+        self.assertEqual(self.entry_sids(key_file), {user_sid})
+        acl.check_private(key_file, 'key', directory=False)
+
+        with self.assertRaises(ValueError) as state_refused:
+            acl.check_private(state, 'state folder', directory=True)
+        self.run_suggested_fix(str(state_refused.exception))
+        self.assertEqual(self.entry_sids(state), {user_sid})
+        acl.check_private(state, 'state folder', directory=True)
+        self.assertEqual(runner.load_or_create_key(key_file), FIXTURE_KEY)
 
 
 @unittest.skipUnless(os.name == 'posix', 'Native POSIX ownership and mode semantics are unavailable on Windows')
