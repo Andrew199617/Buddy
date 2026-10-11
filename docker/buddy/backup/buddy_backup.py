@@ -4,8 +4,9 @@
 Each run submits ONE changelist to BACKUP_DEPOT_PATH (default //Backups/Buddy) holding three files with filetype
 binary+S7, so the server keeps only the last 7 revisions of each:
   webui.db      Buddy's SQLite database, copied with the online backup API and integrity-checked
-  data.tar.gz   the rest of the data volume (uploads, vector_db, static, generated images and audio); SQLite files
-                inside it are copied the same way, and re-downloadable model caches are left out
+  data.tar.gz   the rest of the data volume (uploads, vector_db, static, generated images and audio); the vector
+                store's SQLite files are copied the same way, everything else byte for byte, and re-downloadable
+                model caches are left out
   buddy.env     docker/buddy/.env, the secrets a restore needs (WEBUI_SECRET_KEY)
 
 The data volume and buddy.env are mounted read-only. Runs and a heartbeat are recorded in a small SQLite status
@@ -55,6 +56,9 @@ BACKUP_FILES = (DATABASE_NAME, ARCHIVE_NAME, ENV_NAME)
 # Model downloads Buddy fetches again on first use (about 1.2 GB together). Paths are relative to the data volume.
 EXCLUDED_PATHS = ('cache/embedding', 'cache/whisper', 'cache/tiktoken')
 SQLITE_SIDE_FILE_SUFFIXES = ('-wal', '-shm', '-journal')
+# Folders of the data volume where Buddy itself keeps SQLite databases open; those are copied with the online
+# backup API. Every other file, including SQLite files people upload, is archived byte for byte.
+MANAGED_SQLITE_DIRECTORIES = ('vector_db',)
 SQLITE_HEADER = b'SQLite format 3\x00'
 REQUIRED_ENV_KEYS = ('WEBUI_SECRET_KEY',)
 # Times webui.db and data.tar.gz are taken again when Buddy deletes files in between, before the run fails.
@@ -408,14 +412,20 @@ def describe_database(path):
 # ------------------------------------------------------------------------------------------------ archive
 
 
+def is_in_managed_sqlite_directory(member_name):
+    return member_name.split('/', 1)[0] in MANAGED_SQLITE_DIRECTORIES
+
+
 def is_left_out(member_name, directory, file_name):
     """True for files the archive skips: the top-level webui.db (backed up on its own), model caches, and the
-    -wal/-shm/-journal files next to an SQLite database (its snapshot already includes them)."""
+    -wal/-shm/-journal files next to a database Buddy manages (its snapshot already includes them)."""
     if member_name in EXCLUDED_PATHS:
         return True
     top_level_database = member_name == DATABASE_NAME or member_name.startswith(DATABASE_NAME + '-')
     if top_level_database:
         return True
+    if not is_in_managed_sqlite_directory(member_name):
+        return False
     for suffix in SQLITE_SIDE_FILE_SUFFIXES:
         if file_name.endswith(suffix):
             database_name = file_name[: -len(suffix)]
@@ -439,6 +449,14 @@ def add_sqlite_snapshot(archive, source_path, member_name, scratch_dir):
             os.remove(snapshot_path)
 
 
+def is_managed_sqlite_database(source_path, member_name):
+    if not is_in_managed_sqlite_directory(member_name):
+        return False
+    if os.path.islink(source_path) or not os.path.isfile(source_path):
+        return False
+    return is_sqlite_database(source_path)
+
+
 def add_directory_contents(archive, source_dir, prefix, scratch_dir, log, vanished):
     for name in sorted(os.listdir(source_dir)):
         source_path = os.path.join(source_dir, name)
@@ -449,7 +467,7 @@ def add_directory_contents(archive, source_dir, prefix, scratch_dir, log, vanish
             if os.path.isdir(source_path) and not os.path.islink(source_path):
                 archive.add(source_path, arcname=member_name, recursive=False)
                 add_directory_contents(archive, source_path, member_name, scratch_dir, log, vanished)
-            elif os.path.isfile(source_path) and not os.path.islink(source_path) and is_sqlite_database(source_path):
+            elif is_managed_sqlite_database(source_path, member_name):
                 add_sqlite_snapshot(archive, source_path, member_name, scratch_dir)
                 log.append(f'{member_name}: SQLite copied with the backup API')
             else:
