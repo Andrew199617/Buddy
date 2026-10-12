@@ -13,19 +13,13 @@ import logging
 import os
 import socket
 import sys
-import tempfile
 from pathlib import Path
 from urllib.parse import quote
 
 import aiohttp
 
 from buddy_runner.discovery import find_tool
-from open_webui.utils.subscriptions.events import SubscriptionError
-from open_webui.utils.subscriptions.runner_transport import (
-    normalize_runner_url,
-    runner_ssl_context,
-    runner_trace_config,
-)
+from buddy_runner.local_process import start_local_process
 from buddy_runner.process import (
     ChildProcess,
     MAX_STDERR_BYTES,
@@ -35,11 +29,16 @@ from buddy_runner.process import (
     run_command,
     subscription_env,
 )
+from open_webui.utils.subscriptions.events import SubscriptionError
+from open_webui.utils.subscriptions.runner_transport import (
+    normalize_runner_url,
+    runner_ssl_context,
+    runner_trace_config,
+)
 
 log = logging.getLogger(__name__)
 
 LOCAL_MACHINE_ID = 'local'
-TEMP_FILE_TOKEN = '{temp:%s}'
 MAX_WEBSOCKET_MESSAGE_BYTES = 32 * 1024 * 1024
 # Unread stdout from a Runner process. Its WebSocket also carries heartbeats
 # and the stop reply, which are only handled while it is read, so the output
@@ -72,57 +71,6 @@ async def _finish_cancelled_cleanup(operation: asyncio.Task) -> None:
         except asyncio.CancelledError:
             continue
     operation.result()
-
-
-def temp_file_arg(name: str) -> str:
-    """Placeholder for a temporary file in process arguments; see start_process."""
-    return TEMP_FILE_TOKEN % name
-
-
-def _write_temp_files(temp_files: dict[str, str] | None, directory: str | None = None) -> dict[str, str]:
-    paths = {}
-    for name, content in (temp_files or {}).items():
-        handle = tempfile.NamedTemporaryFile(
-            'w', encoding='utf-8', suffix='.md', prefix=f'buddy-{name}-', dir=directory, delete=False
-        )
-        with handle:
-            handle.write(content)
-        paths[name] = handle.name
-    return paths
-
-
-def _substitute_temp_files(args: list[str], paths: dict[str, str]) -> list[str]:
-    substituted = []
-    for arg in args:
-        for name, path in paths.items():
-            arg = arg.replace(temp_file_arg(name), path)
-        substituted.append(arg)
-    return substituted
-
-
-def start_local_process(
-    args: list[str],
-    cwd: str,
-    extra_env: dict[str, str] | None = None,
-    temp_files: dict[str, str] | None = None,
-    temp_dir: str | None = None,
-) -> ChildProcess:
-    """Start a CLI on this computer; shared by LocalMachine and the runner."""
-    paths = _write_temp_files(temp_files, temp_dir)
-    try:
-        return ChildProcess(
-            _substitute_temp_files(args, paths),
-            cwd,
-            subscription_env(extra_env),
-            cleanup_paths=list(paths.values()),
-        )
-    except (OSError, ValueError, TypeError):
-        for path in paths.values():
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
-        raise
 
 
 class LocalMachine:

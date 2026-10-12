@@ -44,8 +44,8 @@ from open_webui.utils.subscriptions.machines import (  # noqa: E402
     LocalMachine,
     RemoteMachine,
     RemoteProcess,
-    temp_file_arg,
 )
+from buddy_runner.local_process import temp_file_arg  # noqa: E402
 from buddy_runner.process import (  # noqa: E402
     ChildProcess,
     OutputLimitError,
