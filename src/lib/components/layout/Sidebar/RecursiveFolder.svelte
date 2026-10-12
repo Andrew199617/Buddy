@@ -39,6 +39,7 @@
 
 	import FolderIcon from './icons/Folder.svelte';
 	import MoreHorizontal from './icons/MoreHorizontal.svelte';
+	import Plus from '$lib/components/icons/Plus.svelte';
 
 	import ChatItem from './ChatItem.svelte';
 	import FolderMenu from './Folders/FolderMenu.svelte';
@@ -600,6 +601,12 @@
 		return target instanceof Element && !!target.closest('button, a, input, [role="menu"]');
 	};
 
+	/** A new chat in this folder, starting from the folder's defaults for new chats. */
+	const newChatInFolderHandler = async (event: MouseEvent) => {
+		event.stopPropagation();
+		await openFolderHandler();
+	};
+
 	const openFolderHandler = async () => {
 		const folder = await getFolderById(localStorage.token, folderId).catch((error) => {
 			toast.error(`${error}`);
@@ -818,7 +825,7 @@
 					{/if}
 				</button>
 
-				<div class="translate-y-[0.5px] flex min-w-0 flex-1 items-center gap-1.5 pr-6 text-start">
+				<div class="translate-y-[0.5px] flex min-w-0 flex-1 items-center gap-1.5 pr-12 text-start">
 					{#if edit}
 						<input
 							id="folder-{folderId}-input"
@@ -862,6 +869,14 @@
 				</div>
 
 				{#if isWritable}
+					<button
+						type="button"
+						class="absolute z-10 right-8 hover-reveal self-center flex size-5 items-center justify-center rounded-md text-gray-600 transition hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
+						aria-label={$i18n.t('New chat in {{name}}', { name: folders[folderId]?.name ?? '' })}
+						on:click={newChatInFolderHandler}
+					>
+						<Plus className="size-3.5" strokeWidth="2" />
+					</button>
 					<button
 						class="absolute z-10 right-2 hover-reveal self-center flex items-center dark:text-gray-300"
 					>
