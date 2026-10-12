@@ -1494,26 +1494,32 @@ async def _settings_for(ref: ProviderRef, settings: ProviderSettings, machine_id
 
 
 async def describe_computer_settings(owner_id: str, machine_id: str) -> dict:
-    """A computer's start folder and CLI paths, as turns there use them."""
+    """A computer's own start folder and CLI paths, and what plans saved for it before it had its own."""
     revision = await _machine_revision(owner_id, machine_id)
     if revision is None:
         raise SubscriptionError(REMOVED_COMPUTER_MESSAGE)
     saved = computer_settings.current(await _saved_computer_settings(owner_id), machine_id, revision)
     start_folder = ''
     cli_paths = {}
+    from_plans = {}
     for provider_id in PROVIDER_IDS:
-        ref = _ref(owner_id, provider_id)
-        on_computer = await _settings_for(ref, await _load_settings(ref), machine_id)
-        cli_paths[provider_id] = on_computer.cli_path
-        if not start_folder:
-            start_folder = on_computer.workspace
+        cli_paths[provider_id] = ''
+        if saved is not None:
+            cli_paths[provider_id] = saved.cli_path(provider_id)
+            continue
+        settings = await _load_settings(_ref(owner_id, provider_id))
+        if settings.machine_id == machine_id and (settings.workspace or settings.cli_path):
+            # Turns there still use these; each plan kept its own.
+            from_plans[provider_id] = {'start_folder': settings.workspace, 'cli_path': settings.cli_path}
+    if saved is not None:
+        start_folder = saved.start_folder
     return {
         'machine_id': machine_id,
         'revision': revision,
+        'saved': saved is not None,
         'start_folder': start_folder,
         'cli_paths': cli_paths,
-        # False while it still uses what was saved with a plan.
-        'saved': saved is not None,
+        'from_plans': from_plans,
     }
 
 
