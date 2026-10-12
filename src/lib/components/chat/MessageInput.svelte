@@ -758,6 +758,11 @@
 
 	function handleComposerFocusIn(event: FocusEvent): void {
 		const target = event.target;
+		// The run target bar sits above the composer box; focusing it keeps the composer as it is,
+		// since expanding the box would move the bar out from under the pointer.
+		if (target instanceof Element && target.closest('.buddy-run-target-bar')) {
+			return;
+		}
 		if (mobileComposer && target instanceof Element) {
 			const editable = target.closest('input, textarea, select, [contenteditable="true"]');
 			if (!editable) {
@@ -842,8 +847,13 @@
 				return;
 			}
 
-			// The run target bar counts as part of the composer, so a tap on it keeps the composer open.
-			const composer = target.closest('.buddy-composer, .buddy-run-target-bar');
+			// A tap on the run target bar keeps the composer as it is: expanding the box above which
+			// the bar sits would move the bar out from under the pointer.
+			if (target.closest('.buddy-run-target-bar')) {
+				return;
+			}
+
+			const composer = target.closest('.buddy-composer');
 			if (!composer || !form.contains(composer)) {
 				return;
 			}
