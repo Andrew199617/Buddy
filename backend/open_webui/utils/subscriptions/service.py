@@ -1572,6 +1572,21 @@ async def delete_credential(owner_id: str, provider_id: str, kind: str) -> dict:
     return await _describe_credential(ref)
 
 
+async def use_stored_credential(owner_id: str, provider_id: str, kind: str) -> dict:
+    """Use a token or key Buddy already keeps for this provider, without pasting it again."""
+    ref = _ref(owner_id, provider_id)
+    if kind not in (KIND_API_KEY, KIND_PLAN_TOKEN) or (kind == KIND_PLAN_TOKEN and provider_id != 'claude'):
+        raise SubscriptionError('Unknown kind of sign-in.')
+    _require_single_worker()
+    await _require_allowed_credential(ref, kind)
+    async with _provider_lock(ref):
+        if not await SubscriptionCredentials.secret(owner_id, provider_id, kind):
+            raise SubscriptionError('Nothing is stored for that sign-in. Paste it first.')
+        if await _load_credential_mode(ref) != kind:
+            await _use_credential(ref, kind)
+    return await _describe_credential(ref)
+
+
 async def use_machine_sign_in(owner_id: str, provider_id: str) -> dict:
     """Use the CLI's own sign-in on the computer, keeping any stored token or key for later."""
     ref = _ref(owner_id, provider_id)

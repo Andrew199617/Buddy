@@ -25,6 +25,7 @@ Routes:
   PUT    /claude/credentials/plan_token     — keep a one-year Claude token and use it everywhere
   DELETE /{provider}/credentials/{kind}     — forget a stored token or key
   POST   /{provider}/credentials/machine    — use the computer's own sign-in again
+  POST   /{provider}/credentials/{kind}/use — use a stored token or key again
 
 Stored tokens and keys never come back: responses show a fingerprint and expiry.
 """
@@ -339,6 +340,15 @@ async def delete_credential(provider_id: str, kind: str, user=Depends(get_machin
 async def use_machine_sign_in(provider_id: str, user=Depends(get_machine_session_user)):
     try:
         await service.use_machine_sign_in(user.id, provider_id)
+    except SubscriptionError as error:
+        raise _bad_request(error)
+    return await service.describe_provider(user.id, provider_id, fresh=True)
+
+
+@router.post('/{provider_id}/credentials/{kind}/use')
+async def use_stored_credential(provider_id: str, kind: str, user=Depends(get_machine_session_user)):
+    try:
+        await service.use_stored_credential(user.id, provider_id, kind)
     except SubscriptionError as error:
         raise _bad_request(error)
     return await service.describe_provider(user.id, provider_id, fresh=True)
