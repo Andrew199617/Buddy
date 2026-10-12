@@ -110,6 +110,19 @@
 		return readFilesDescription($i18n, plan.id);
 	}
 
+	/** Names only the plans listed: another plan that is on may already use files. */
+	function chatOnlySummary(listed: FolderPlan[]): string {
+		if (listed.length === 1) {
+			return $i18n.t(
+				'{{name}} is set to Chat only, so it can’t open a project folder. Allowing files changes it for all your chats, not just this folder.',
+				{ name: listed[0].name }
+			);
+		}
+		return $i18n.t(
+			'These plans are set to Chat only, so they can’t open a project folder. Allowing files changes them for all your chats, not just this folder.'
+		);
+	}
+
 	/** The question's details, read out with it when focus moves inside. */
 	function questionDetailIds(planId: string, access: FileAccess): string {
 		const ids = [`plan-access-what-${planId}`];
@@ -137,9 +150,7 @@
 		{:else}
 			<p id="plan-access-heading" class="text-sm">{$i18n.t('Let a plan work with files')}</p>
 			<p class="text-[0.6875rem] text-gray-500 dark:text-gray-400">
-				{$i18n.t(
-					'Your plans are set to Chat only, so they can’t open a project folder. Allowing files changes the plan for all your chats, not just this folder.'
-				)}
+				{chatOnlySummary(plans)}
 			</p>
 		{/if}
 	</div>

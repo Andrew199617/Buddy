@@ -357,6 +357,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		'folder-allow',
 		'folder-allow-stale',
 		'folder-allow-beside',
+		'folder-allow-homeless',
 		'folder-no-plans'
 	]);
 	// Modes where the folder settings ask for something before the choices show.
@@ -364,6 +365,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		'folder-allow',
 		'folder-allow-stale',
 		'folder-allow-beside',
+		'folder-allow-homeless',
 		'folder-no-plans'
 	]);
 	// Modes where every plan that is on is Chat only.
@@ -406,6 +408,13 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	];
 	if (mode === 'folder-no-plans') {
 		folderPlans[0].enable = false;
+	}
+	if (mode === 'folder-allow-homeless') {
+		// Claude has Full access on a This server the policy no longer allows;
+		// ChatGPT is on Work PC but only chats.
+		folderPlans[0].machine = null;
+		folderPlans[1].enable = true;
+		folderPlans[1].machine = { id: 'pc-1', name: 'Work PC', revision: 'rev-pc-1' };
 	}
 	if (mode === 'folder-allow-beside') {
 		// Claude already opens folders on Work PC; ChatGPT is on there but only chats.
@@ -3080,6 +3089,36 @@ async function folderAllowBesideCase(browser, profile) {
 	);
 }
 
+async function folderAllowHomelessCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'folder-allow-homeless',
+		'folder-allow-homeless',
+		async ({ page }) => {
+			const dialog = await openFolderSettings(page);
+			const request = dialog.getByRole('group', {
+				name: 'Let a plan work with files',
+				exact: true
+			});
+			// Only ChatGPT is called Chat only; Claude's missing computer is named too.
+			await request
+				.getByText(
+					'ChatGPT is set to Chat only, so it can’t open a project folder. Allowing files changes it for all your chats, not just this folder.',
+					{ exact: true }
+				)
+				.waitFor();
+			await dialog
+				.getByText('Claude has no computer it can use. Choose one in Settings → Machines.', {
+					exact: true
+				})
+				.waitFor();
+			await dialog.getByRole('button', { name: 'Open Settings → Machines', exact: true }).waitFor();
+			assert.equal(await request.getByText('Claude', { exact: true }).count(), 0);
+		}
+	);
+}
+
 async function folderNoPlansCase(browser, profile) {
 	await runCase(
 		browser,
@@ -3144,6 +3183,7 @@ try {
 		await folderAllowCase(browser, profile);
 		await folderAllowStaleCase(browser, profile);
 		await folderAllowBesideCase(browser, profile);
+		await folderAllowHomelessCase(browser, profile);
 		await folderNoPlansCase(browser, profile);
 		await cancellationCase(browser, profile, 'x');
 		await cancellationCase(browser, profile, 'escape');

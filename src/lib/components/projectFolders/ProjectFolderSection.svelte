@@ -7,6 +7,7 @@
 		clearFolderProject,
 		getFolderProject,
 		saveFolderProject,
+		type FolderPlan,
 		type FolderProject,
 		type ProjectFolderChoice,
 		type ProjectFolderComputer
@@ -22,8 +23,10 @@
 		draftFromProject,
 		fileAccessNeed,
 		plansToAllow,
+		plansWithoutComputer,
 		sameDraft,
 		waitsForOwnChoice,
+		type FileAccessNeed,
 		type ProjectDraft
 	} from './project-folders';
 
@@ -46,6 +49,7 @@
 	$: dirty = !sameDraft(draft, saved);
 	$: need = project ? fileAccessNeed(project) : 'ready';
 	$: allowablePlans = project ? plansToAllow(project) : [];
+	$: homelessPlans = project ? plansWithoutComputer(project) : [];
 
 	async function fetchProject() {
 		const loaded = await getFolderProject(localStorage.token, folderId);
@@ -102,6 +106,28 @@
 	}
 
 	$: if (waitingForSettings && !$showSettings) void settingsClosed();
+
+	function machineSettingsReason(currentNeed: FileAccessNeed, homeless: FolderPlan[]): string {
+		if (currentNeed === 'turn_on') {
+			return $i18n.t(
+				'Claude and ChatGPT aren’t turned on. Turn one on in Settings → Machines to let it work in a folder on your computer.'
+			);
+		}
+		if (currentNeed === 'computer') {
+			return $i18n.t(
+				'The plans you turned on have no computer they can use. Choose one in Settings → Machines.'
+			);
+		}
+		// Beside a Chat-only plan that can be allowed here.
+		if (homeless.length === 1) {
+			return $i18n.t('{{name}} has no computer it can use. Choose one in Settings → Machines.', {
+				name: homeless[0].name
+			});
+		}
+		return $i18n.t(
+			'Some of your plans have no computer they can use. Choose one in Settings → Machines.'
+		);
+	}
 
 	async function planAllowed() {
 		// The folder page chip and a chat's Project tab list this folder's computers too.
@@ -216,29 +242,24 @@
 				onBack={closePicker}
 				onPick={choosePath}
 			/>
-		{:else if need === 'allow'}
-			<PlanAccessRequest plans={allowablePlans} reload={refresh} onAllowed={planAllowed} />
 		{:else if need !== 'ready'}
-			<div class="flex flex-col gap-1.5">
-				<p class="text-xs text-gray-600 dark:text-gray-300">
-					{#if need === 'computer'}
-						{$i18n.t(
-							'The plans you turned on have no computer they can use. Choose one in Settings → Machines.'
-						)}
-					{:else}
-						{$i18n.t(
-							'Claude and ChatGPT aren’t turned on. Turn one on in Settings → Machines to let it work in a folder on your computer.'
-						)}
-					{/if}
-				</p>
-				<button
-					type="button"
-					class="min-h-11 self-start rounded-lg border border-gray-100 px-3 text-xs font-medium hover:bg-gray-100 dark:border-gray-850 dark:hover:bg-gray-850 md:min-h-8"
-					on:click={openMachineSettings}
-				>
-					{$i18n.t('Open Settings → Machines')}
-				</button>
-			</div>
+			{#if need === 'allow'}
+				<PlanAccessRequest plans={allowablePlans} reload={refresh} onAllowed={planAllowed} />
+			{/if}
+			{#if need !== 'allow' || homelessPlans.length > 0}
+				<div class="flex flex-col gap-1.5">
+					<p class="text-xs text-gray-600 dark:text-gray-300">
+						{machineSettingsReason(need, homelessPlans)}
+					</p>
+					<button
+						type="button"
+						class="min-h-11 self-start rounded-lg border border-gray-100 px-3 text-xs font-medium hover:bg-gray-100 dark:border-gray-850 dark:hover:bg-gray-850 md:min-h-8"
+						on:click={openMachineSettings}
+					>
+						{$i18n.t('Open Settings → Machines')}
+					</button>
+				</div>
+			{/if}
 		{:else}
 			<div class="flex flex-col gap-1.5" role="radiogroup" aria-labelledby="project-folder-heading">
 				{#if waitsForOwnChoice(project)}

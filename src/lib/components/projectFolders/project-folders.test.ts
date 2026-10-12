@@ -13,6 +13,7 @@ import {
 	needsAttention,
 	parentWithinRoot,
 	plansToAllow,
+	plansWithoutComputer,
 	sameDraft,
 	waitsForOwnChoice
 } from './project-folders';
@@ -170,6 +171,21 @@ describe('file access', () => {
 			computers: []
 		});
 		expect(fileAccessNeed(homeless)).toBe('computer');
+		expect(plansWithoutComputer(homeless).map((plan) => plan.id)).toEqual(['claude']);
+	});
+
+	it('names a plan with files but no computer beside one that can be allowed', () => {
+		const mixed = project({
+			plans: [
+				{ ...claudePlan, machine: null },
+				{ ...chatGptPlan, enable: true, machine: claudePlan.machine }
+			],
+			computers: []
+		});
+		expect(fileAccessNeed(mixed)).toBe('allow');
+		expect(plansWithoutComputer(mixed).map((plan) => plan.id)).toEqual(['claude']);
+		// A Chat-only plan without a computer has nothing to open folders with anyway.
+		expect(plansWithoutComputer(project({ plans: [chatGptPlan] }))).toEqual([]);
 	});
 
 	it('needs a plan turned on when none is', () => {

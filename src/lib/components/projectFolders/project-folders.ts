@@ -107,6 +107,13 @@ export function plansToAllow(project: FolderProject): FolderPlan[] {
 	);
 }
 
+/** Plans that are on and may use files, but have no computer they can use. */
+export function plansWithoutComputer(project: FolderProject): FolderPlan[] {
+	return project.plans.filter(
+		(plan) => plan.enable && plan.access !== 'chat' && plan.machine === null
+	);
+}
+
 // 'ready': some plan can open folders. Otherwise what is missing: a Chat-only
 // plan to 'allow', a 'computer' for the plans that are on, or a plan to 'turn_on'.
 export type FileAccessNeed = 'ready' | 'allow' | 'computer' | 'turn_on';
