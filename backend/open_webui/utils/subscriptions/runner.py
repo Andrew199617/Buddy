@@ -39,7 +39,7 @@ from pathlib import Path
 from aiohttp import WSMsgType, web
 
 from buddy_runner import windows_key_acl
-from open_webui.utils.subscriptions.discovery import find_tool
+from buddy_runner.discovery import find_tool
 from open_webui.utils.subscriptions.machines import start_local_process
 from buddy_runner.pinned_paths import PinnedPath, PinnedPathError
 from buddy_runner.process import OutputLimitError, ProcessClosedError, run_command, subscription_env

@@ -19,7 +19,7 @@ from urllib.parse import quote
 
 import aiohttp
 
-from open_webui.utils.subscriptions.discovery import find_tool
+from buddy_runner.discovery import find_tool
 from open_webui.utils.subscriptions.events import SubscriptionError
 from open_webui.utils.subscriptions.runner_transport import (
     normalize_runner_url,

@@ -34,7 +34,7 @@ from open_webui.utils.subscriptions.events import (
     TokenUsage,
     TurnFailed,
 )
-from open_webui.utils.subscriptions.discovery import TOOL_CLAUDE
+from buddy_runner.discovery import TOOL_CLAUDE
 from open_webui.utils.subscriptions.machines import temp_file_arg
 from buddy_runner.process import ProcessClosedError
 

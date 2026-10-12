@@ -18,7 +18,8 @@ from unittest.mock import patch
 ROOT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT_DIR / 'backend'))
 
-from open_webui.utils.subscriptions import claude_code, codex, discovery, runner, streaming  # noqa: E402
+from buddy_runner import discovery  # noqa: E402
+from open_webui.utils.subscriptions import claude_code, codex, runner, streaming  # noqa: E402
 from open_webui.utils.subscriptions.common import (  # noqa: E402
     ProviderSettings,
     TurnRequest,
