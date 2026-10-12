@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import { CompanionError, type CompanionTerminal } from '$lib/apis/companion';
-import type { FolderProject, ProjectFolderComputer } from '$lib/apis/subscriptions';
+import type {
+	ChatRunTargetDetails,
+	FolderProject,
+	ProjectFolderComputer,
+	RunTargetComputer
+} from '$lib/apis/subscriptions';
 import {
+	chatProjectTarget,
 	checkTerminalReply,
 	crumbsBelow,
 	isTransientFailure,
@@ -100,6 +106,53 @@ describe('the project folders a chat can open', () => {
 			own: folderChoice({ 'pc-1': { path: 'C:\\x', problem: 'computer_changed' } })
 		});
 		expect(projectTargets(chosen)[0].chooseAgain).toBe(true);
+	});
+});
+
+describe('a started chat’s own folder', () => {
+	const laptop: RunTargetComputer = {
+		machine_id: 'laptop',
+		name: 'Laptop',
+		kind: 'app',
+		online: true,
+		platform: 'win32',
+		can_browse: true,
+		folders: 'on',
+		recent_paths: [],
+		revision: 'rev-1',
+		providers: { claude: { state: 'ready', message: null } }
+	};
+	const runsInSite: ChatRunTargetDetails = {
+		kind: 'computer',
+		machine_id: 'laptop',
+		computer: { name: 'Laptop', kind: 'app', online: true },
+		folder_mode: 'path',
+		path: '/home/sam/site',
+		access: 'full',
+		source: 'bar',
+		note: null,
+		problem: null
+	};
+
+	it('opens the computer and folder the chat runs in', () => {
+		const target = chatProjectTarget(runsInSite, [laptop]);
+		expect(target?.computer.name).toBe('Laptop');
+		expect(target?.path).toBe('/home/sam/site');
+		expect(target?.chooseAgain).toBe(false);
+		expect(chatProjectTarget({ ...runsInSite, problem: 'reset' }, [laptop])?.chooseAgain).toBe(
+			true
+		);
+	});
+
+	it('has none when the chat runs Detached, lets the AI choose, or its computer is gone', () => {
+		expect(
+			chatProjectTarget({ ...runsInSite, folder_mode: 'auto', path: null }, [laptop])
+		).toBeNull();
+		expect(
+			chatProjectTarget({ ...runsInSite, kind: 'detached', machine_id: null }, [laptop])
+		).toBeNull();
+		expect(chatProjectTarget(runsInSite, [])).toBeNull();
+		expect(chatProjectTarget(null, [laptop])).toBeNull();
 	});
 });
 
