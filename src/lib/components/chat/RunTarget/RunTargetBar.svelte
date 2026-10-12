@@ -255,6 +255,7 @@
 					{providers}
 					{thisPcMachineId}
 					{stateFor}
+					inMenu={false}
 					onPick={pickComputer}
 					onClose={() => (showSheet = false)}
 				/>
@@ -263,6 +264,7 @@
 					{options}
 					{providers}
 					{computerName}
+					inMenu={false}
 					onPick={pickAccess}
 					onAcknowledge={acknowledge}
 					onClose={() => (showSheet = false)}
@@ -295,12 +297,7 @@
 				composerMenu="run-target"
 				visualViewportAware
 			>
-				<button
-					type="button"
-					class={chipClass}
-					aria-haspopup="listbox"
-					aria-expanded={showComputer}
-				>
+				<button type="button" class={chipClass} aria-haspopup="menu" aria-expanded={showComputer}>
 					{#if !selectedReady}
 						<span class="size-1.5 shrink-0 rounded-full bg-amber-500" aria-hidden="true"></span>
 					{/if}
@@ -332,11 +329,13 @@
 					preserveComposerFocus
 					composerMenu="run-target"
 					visualViewportAware
+					contentRole="dialog"
+					contentLabel={$i18n.t('Folder')}
 				>
 					<button
 						type="button"
 						class={chipClass}
-						aria-haspopup="listbox"
+						aria-haspopup="dialog"
 						aria-expanded={showFolder}
 						title={folderHelp?.kind === 'path' ? folderHelp.path : undefined}
 					>
@@ -372,7 +371,7 @@
 				composerMenu="run-target"
 				visualViewportAware
 			>
-				<button type="button" class={chipClass} aria-haspopup="listbox" aria-expanded={showAccess}>
+				<button type="button" class={chipClass} aria-haspopup="menu" aria-expanded={showAccess}>
 					{#if options.chat_folder?.shared_instructions && draft.acknowledgedFolderId === null && draft.kind === 'computer'}
 						<LockClosed className="size-3 shrink-0" />
 					{/if}
@@ -421,6 +420,8 @@
 				preserveComposerFocus
 				composerMenu="run-target"
 				visualViewportAware
+				contentRole="dialog"
+				contentLabel={$i18n.t('Where this chat runs')}
 			>
 				<button
 					type="button"

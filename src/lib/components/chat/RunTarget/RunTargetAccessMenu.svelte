@@ -18,6 +18,8 @@
 	export let computerName = '';
 	export let onPick: (access: SubscriptionAccess) => void;
 	export let onAcknowledge: (folderId: string | null) => void;
+	// Inside a menu popup it is one group; on its own, as in the phone sheet, it is the menu.
+	export let inMenu = true;
 	export let onClose: () => void = () => {};
 
 	const CHOICES: SubscriptionAccess[] = ['chat', 'read', 'full'];
@@ -64,7 +66,11 @@
 		providers[0] ?? (Object.keys(options.plan_access ?? {})[0] as SubscriptionProviderId);
 </script>
 
-<div class="flex flex-col gap-0.5 p-1" role="group" aria-label={$i18n.t('Access')}>
+<div
+	class="flex flex-col gap-0.5 p-1"
+	role={inMenu ? 'group' : 'menu'}
+	aria-label={$i18n.t('Access')}
+>
 	{#if detached}
 		<p class="px-2 py-1.5 text-xs text-gray-500 dark:text-gray-400">
 			{$i18n.t("Detached chats can't use files.")}
@@ -83,6 +89,8 @@
 			<label class="mt-1.5 flex min-h-11 items-center gap-2 md:min-h-8">
 				<input
 					type="checkbox"
+					role="menuitemcheckbox"
+					aria-checked={draft.acknowledgedFolderId !== null}
 					checked={draft.acknowledgedFolderId !== null}
 					on:change={acknowledge}
 				/>
@@ -121,6 +129,7 @@
 	{#if firstPlan}
 		<button
 			type="button"
+			role="menuitem"
 			class="mt-0.5 min-h-11 rounded-lg px-2 text-start text-xs text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-gray-800/60 md:min-h-9 md:text-[0.6875rem]"
 			on:click={changeDefault}
 		>

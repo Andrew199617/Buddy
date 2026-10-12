@@ -21,6 +21,8 @@
 	// The state each computer is shown with, including fresh checks the bar made.
 	export let stateFor: (computer: RunTargetComputer) => RunTargetPlanState;
 	export let onPick: (machineId: string | null) => void;
+	// Inside a menu popup it is one group; on its own, as in the phone sheet, it is the menu.
+	export let inMenu = true;
 	export let onClose: () => void = () => {};
 
 	const inDesktopApp = getDesktop() !== null;
@@ -100,27 +102,44 @@
 	</button>
 {/snippet}
 
-<div class="flex flex-col gap-0.5 p-1" role="group" aria-label={$i18n.t('Run on')}>
-	<div class="px-2 pt-1 text-[0.6875rem] font-medium text-gray-500 dark:text-gray-400">
+<div
+	class="flex flex-col gap-0.5 p-1"
+	role={inMenu ? 'group' : 'menu'}
+	aria-label={$i18n.t('Run on')}
+>
+	<div
+		class="px-2 pt-1 text-[0.6875rem] font-medium text-gray-500 dark:text-gray-400"
+		aria-hidden="true"
+	>
 		{$i18n.t('Run on')}
 	</div>
 	{#if local.length > 0}
-		<div class="px-2 pt-1 text-[0.625rem] uppercase tracking-wider text-gray-400">
-			{$i18n.t('Local')}
+		<div class="flex flex-col gap-0.5" role="group" aria-label={$i18n.t('Local')}>
+			<div
+				class="px-2 pt-1 text-[0.625rem] uppercase tracking-wider text-gray-400"
+				aria-hidden="true"
+			>
+				{$i18n.t('Local')}
+			</div>
+			{#each local as computer (computer.machine_id)}
+				{@render computerRow(computer, $i18n.t('This PC · {{name}}', { name: computer.name }))}
+			{/each}
 		</div>
-		{#each local as computer (computer.machine_id)}
-			{@render computerRow(computer, $i18n.t('This PC · {{name}}', { name: computer.name }))}
-		{/each}
 	{/if}
 	{#if remote.length > 0}
-		<div class="px-2 pt-1 text-[0.625rem] uppercase tracking-wider text-gray-400">
-			{$i18n.t('Remote')}
+		<div class="flex flex-col gap-0.5" role="group" aria-label={$i18n.t('Remote')}>
+			<div
+				class="px-2 pt-1 text-[0.625rem] uppercase tracking-wider text-gray-400"
+				aria-hidden="true"
+			>
+				{$i18n.t('Remote')}
+			</div>
+			{#each remote as computer (computer.machine_id)}
+				{@render computerRow(computer, computerName(computer))}
+			{/each}
 		</div>
-		{#each remote as computer (computer.machine_id)}
-			{@render computerRow(computer, computerName(computer))}
-		{/each}
 	{/if}
-	<div class="px-2 pt-1 text-[0.625rem] uppercase tracking-wider text-gray-400">
+	<div class="px-2 pt-1 text-[0.625rem] uppercase tracking-wider text-gray-400" aria-hidden="true">
 		{$i18n.t('No computer')}
 	</div>
 	<button
@@ -138,9 +157,10 @@
 			{$i18n.t('Chat only. No files or commands.')}
 		</span>
 	</button>
-	<hr class="mx-1 my-0.5 border-gray-100 dark:border-gray-800" />
+	<hr class="mx-1 my-0.5 border-gray-100 dark:border-gray-800" role="separator" />
 	<button
 		type="button"
+		role="menuitem"
 		class="min-h-11 rounded-lg px-2 text-start text-[0.8125rem] text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800/60 md:min-h-9"
 		on:click={connect}
 	>
