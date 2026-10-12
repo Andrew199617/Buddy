@@ -746,7 +746,11 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			// A sign-in action on a chosen computer names it, with the revision the page showed.
 			const chosen = machines.find((machine) => machine.id === chosenMachineId);
 			assert.ok(chosen, 'A chosen computer is one of the person’s');
-			assert.equal(recordedRequest.expectedMachineId, null, 'A chosen computer is not the plan’s guard');
+			assert.equal(
+				recordedRequest.expectedMachineId,
+				null,
+				'A chosen computer is not the plan’s guard'
+			);
 			assert.equal(
 				recordedRequest.expectedMachineRevision,
 				chosen.revision ?? 'local',
@@ -3013,26 +3017,33 @@ async function folderEditCase(browser, profile) {
 }
 
 async function computerSignInCase(browser, profile) {
-	await runCase(browser, profile, 'computer-sign-in', 'computer-sign-in', async ({ page }, fixtures) => {
-		await setSettings(page, PROVIDERS_TAB);
-		const row = page
-			.getByRole('list', { name: 'Plans on Synthetic computer A' })
-			.getByRole('listitem')
-			.filter({ hasText: 'Claude' });
-		assert.match(await row.innerText(), /Not signed in/);
-		await row.getByRole('button', { name: 'Sign in here', exact: true }).click();
-		await loginDialog(page).waitFor();
-		await startLogin(page);
-		await waitUntil(() => fixtures.count('POST') === 1, 'One sign-in starts');
-		const start = fixtures.requests.find(
-			(request) => request.method === 'POST' && request.path === '/api/v1/subscriptions/claude/login'
-		);
-		// The chosen computer is named apart from the plan's own computer.
-		assert.equal(start.body.machine_id, 'runner-a');
-		assert.equal(start.body.expected_machine_revision, 'fixture-revision-a-1');
-		assert.equal(start.body.expected_machine_id, undefined);
-		await captureScreenshot(page, `computer-sign-in-${profile.name}`);
-	});
+	await runCase(
+		browser,
+		profile,
+		'computer-sign-in',
+		'computer-sign-in',
+		async ({ page }, fixtures) => {
+			await setSettings(page, PROVIDERS_TAB);
+			const row = page
+				.getByRole('list', { name: 'Plans on Synthetic computer A' })
+				.getByRole('listitem')
+				.filter({ hasText: 'Claude' });
+			assert.match(await row.innerText(), /Not signed in/);
+			await row.getByRole('button', { name: 'Sign in here', exact: true }).click();
+			await loginDialog(page).waitFor();
+			await startLogin(page);
+			await waitUntil(() => fixtures.count('POST') === 1, 'One sign-in starts');
+			const start = fixtures.requests.find(
+				(request) =>
+					request.method === 'POST' && request.path === '/api/v1/subscriptions/claude/login'
+			);
+			// The chosen computer is named apart from the plan's own computer.
+			assert.equal(start.body.machine_id, 'runner-a');
+			assert.equal(start.body.expected_machine_revision, 'fixture-revision-a-1');
+			assert.equal(start.body.expected_machine_id, undefined);
+			await captureScreenshot(page, `computer-sign-in-${profile.name}`);
+		}
+	);
 }
 
 function runTargetBar(page) {
@@ -3045,44 +3056,57 @@ function runTargetChip(bar, text) {
 }
 
 async function runTargetNewCase(browser, profile) {
-	await runCase(browser, profile, 'run-target-new', 'run-target-new', async ({ page }, fixtures) => {
-		const bar = runTargetBar(page);
-		await bar.waitFor();
-		const readiness = () =>
-			fixtures.requests.filter((request) => request.path === '/api/v1/subscriptions/run-target/readiness');
-		if (profile.mobile) {
-			// One summary chip opens a sheet with every choice.
-			const summary = bar.locator('.buddy-run-target-summary');
-			assert.match(await summary.innerText(), /Detached/);
-			const box = await summary.boundingBox();
-			assert.ok(box && box.height >= 44, 'The summary chip is a full touch target');
-			await summary.click();
-			const sheet = page.getByRole('dialog', { name: 'Where this chat runs' });
-			await sheet.waitFor();
-			await sheet.getByRole('menuitemradio', { name: /Work PC/ }).click();
-			await waitUntil(() => readiness().length === 1, 'Picking a computer checks it again');
-			await sheet.getByRole('option', { name: /site C:\\code\\site/ }).click();
-			await sheet.waitFor({ state: 'hidden' });
-			await waitUntil(
-				async () => /Work PC · site · Full/.test(await summary.innerText()),
-				'The summary shows the computer, folder and access'
-			);
-		} else {
-			await runTargetChip(bar, 'Detached').click();
-			await page.getByRole('menuitemradio', { name: /Work PC/ }).click();
-			await waitUntil(() => readiness().length === 1, 'Picking a computer checks it again');
-			assert.equal(readiness()[0].provider, 'codex');
-			await runTargetChip(bar, 'Remote · Work PC').waitFor();
-			await runTargetChip(bar, 'Full access').waitFor();
-			await runTargetChip(bar, 'AI chooses').click();
-			// A folder ChatGPT worked in, checked on the computer before it is used.
-			await page.getByRole('option', { name: /^api C:\\code\\api/ }).click();
-			await runTargetChip(bar, /^\s*api\s*$/).waitFor();
-			const checks = fixtures.requests.filter((request) => request.path.endsWith('/folders/check'));
-			assert.deepEqual(checks.map((request) => request.body), [{ path: 'C:\\code\\api' }]);
+	await runCase(
+		browser,
+		profile,
+		'run-target-new',
+		'run-target-new',
+		async ({ page }, fixtures) => {
+			const bar = runTargetBar(page);
+			await bar.waitFor();
+			const readiness = () =>
+				fixtures.requests.filter(
+					(request) => request.path === '/api/v1/subscriptions/run-target/readiness'
+				);
+			if (profile.mobile) {
+				// One summary chip opens a sheet with every choice.
+				const summary = bar.locator('.buddy-run-target-summary');
+				assert.match(await summary.innerText(), /Detached/);
+				const box = await summary.boundingBox();
+				assert.ok(box && box.height >= 44, 'The summary chip is a full touch target');
+				await summary.click();
+				const sheet = page.getByRole('dialog', { name: 'Where this chat runs' });
+				await sheet.waitFor();
+				await sheet.getByRole('menuitemradio', { name: /Work PC/ }).click();
+				await waitUntil(() => readiness().length === 1, 'Picking a computer checks it again');
+				await sheet.getByRole('option', { name: /site C:\\code\\site/ }).click();
+				await sheet.waitFor({ state: 'hidden' });
+				await waitUntil(
+					async () => /Work PC · site · Full/.test(await summary.innerText()),
+					'The summary shows the computer, folder and access'
+				);
+			} else {
+				await runTargetChip(bar, 'Detached').click();
+				await page.getByRole('menuitemradio', { name: /Work PC/ }).click();
+				await waitUntil(() => readiness().length === 1, 'Picking a computer checks it again');
+				assert.equal(readiness()[0].provider, 'codex');
+				await runTargetChip(bar, 'Remote · Work PC').waitFor();
+				await runTargetChip(bar, 'Full access').waitFor();
+				await runTargetChip(bar, 'AI chooses').click();
+				// A folder ChatGPT worked in, checked on the computer before it is used.
+				await page.getByRole('option', { name: /^api C:\\code\\api/ }).click();
+				await runTargetChip(bar, /^\s*api\s*$/).waitFor();
+				const checks = fixtures.requests.filter((request) =>
+					request.path.endsWith('/folders/check')
+				);
+				assert.deepEqual(
+					checks.map((request) => request.body),
+					[{ path: 'C:\\code\\api' }]
+				);
+			}
+			await captureScreenshot(page, `run-target-new-${profile.name}`);
 		}
-		await captureScreenshot(page, `run-target-new-${profile.name}`);
-	});
+	);
 }
 
 async function runTargetBoundCase(browser, profile) {
@@ -3108,7 +3132,10 @@ async function runTargetBoundCase(browser, profile) {
 		await panel.getByRole('button', { name: 'Close', exact: true }).first().click();
 
 		if (profile.mobile) {
-			await bar.locator('.buddy-run-target-summary').filter({ hasText: 'Work PC · site · Full' }).click();
+			await bar
+				.locator('.buddy-run-target-summary')
+				.filter({ hasText: 'Work PC · site · Full' })
+				.click();
 		} else {
 			await runTargetChip(bar, 'Work PC · site · Full').click();
 		}
