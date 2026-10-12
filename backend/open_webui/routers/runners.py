@@ -36,10 +36,6 @@ log = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Failed or expired enrollments allowed per address in the window.
-ENROLL_ATTEMPTS_PER_WINDOW = 20
-ENROLL_WINDOW_SECONDS = 600
-_enroll_attempts: dict[str, list[float]] = {}
 # Cleanup retries started when a computer reconnects; kept until they finish.
 _background_tasks: set[asyncio.Task] = set()
 RELAY_BODY_BYTES = 2 * 1024 * 1024
@@ -53,15 +49,53 @@ class EnrollForm(BaseModel):
     host: Optional[dict] = None
 
 
-def _allow_enroll_attempt(address: str) -> bool:
-    now = time.monotonic()
-    recent = [moment for moment in _enroll_attempts.get(address, []) if now - moment < ENROLL_WINDOW_SECONDS]
-    if len(recent) >= ENROLL_ATTEMPTS_PER_WINDOW:
-        _enroll_attempts[address] = recent
-        return False
-    recent.append(now)
-    _enroll_attempts[address] = recent
-    return True
+class EnrollThrottle:
+    """Limits enrollment attempts per address and overall, in a sliding window.
+
+    Tokens are 256-bit and single-use, so this bounds work and memory rather
+    than guessing. The address can come from X-Forwarded-For, which a caller
+    may forge, so the overall ceiling also caps how many addresses are kept.
+    """
+
+    def __init__(self, per_address: int, overall: int, window_seconds: float, clock=time.monotonic):
+        self.per_address = per_address
+        self.overall = overall
+        self.window_seconds = window_seconds
+        self.clock = clock
+        self.by_address: dict[str, list[float]] = {}
+        # Every attempt counted per address, oldest first.
+        self.all_attempts: list[float] = []
+
+    def allow(self, address: str) -> bool:
+        now = self.clock()
+        self._forget_expired(now)
+        if len(self.all_attempts) >= self.overall:
+            return False
+        recent = self.by_address.get(address, [])
+        if len(recent) >= self.per_address:
+            return False
+        recent.append(now)
+        self.by_address[address] = recent
+        self.all_attempts.append(now)
+        return True
+
+    def _is_recent(self, moment: float, now: float) -> bool:
+        return now - moment < self.window_seconds
+
+    def _forget_expired(self, now: float) -> None:
+        # Attempts are kept in time order, so nothing has expired while the oldest is recent.
+        if not self.all_attempts or self._is_recent(self.all_attempts[0], now):
+            return
+        self.all_attempts = [moment for moment in self.all_attempts if self._is_recent(moment, now)]
+        for address in list(self.by_address):
+            recent = [moment for moment in self.by_address[address] if self._is_recent(moment, now)]
+            if recent:
+                self.by_address[address] = recent
+            else:
+                del self.by_address[address]
+
+
+ENROLL_THROTTLE = EnrollThrottle(per_address=20, overall=200, window_seconds=600)
 
 
 @router.post('/enrollments')
@@ -75,7 +109,7 @@ async def create_enrollment(user=Depends(get_machine_session_user)):
 @router.post('/enroll')
 async def enroll(form_data: EnrollForm, request: Request):
     address = request.client.host if request.client else 'unknown'
-    if not _allow_enroll_attempt(address):
+    if not ENROLL_THROTTLE.allow(address):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail='Too many attempts. Wait a few minutes.')
     try:
         return await service.redeem_enrollment(form_data.token, form_data.name, form_data.host)
