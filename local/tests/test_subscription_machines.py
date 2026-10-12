@@ -106,6 +106,9 @@ class FakeCodexProvider(FakeProvider):
             self.observe_cleanup()
         self.calls.append('stop')
 
+    def stop_machine(self, machine_id):
+        self.calls.append(('stop_machine', machine_id))
+
     def use_credential(self, credential_mode, api_key):
         self.credential_mode = credential_mode
         self.api_key = api_key

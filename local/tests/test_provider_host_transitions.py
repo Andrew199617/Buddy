@@ -1349,6 +1349,38 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(observed[0].cli_path, 'C:\\tools\\claude.exe')
         self.assertEqual(observed[0].workspace, '')
 
+    async def test_removing_a_computer_stops_every_plans_work_there_but_nowhere_else(self):
+        claude = self.service.ProviderRef(OWNER, 'claude')
+        on_plan_computer = self.service._tracking_machine(claude, self.machines['runner-a'])
+        kept = await on_plan_computer.start_process(['fixture-turn'], 'fixture-cwd')
+        on_removed = self.service._tracking_machine(claude, self.machines['runner-b'])
+        stopped = await on_removed.start_process(['fixture-sign-in'], 'fixture-cwd')
+        self.service._login_computers[claude] = 'runner-b'
+        await self.service.delete_machine(OWNER, 'runner-b')
+        self.assertGreaterEqual(stopped.kill_count, 1)
+        self.assertNotIn(claude.on('runner-b'), self.service._tracked_machines)
+        self.assertNotIn(claude, self.service._login_computers)
+        self.assertIn('cancel_login', self.providers['claude'].calls)
+        # Claude's plan runs on runner-a, so it stays on, and its work there keeps running.
+        self.assertEqual(kept.kill_count, 0)
+        self.assertIs(self.service._tracked_machines[claude.on('runner-a')], on_plan_computer)
+        self.assertTrue(self.config.values['subscriptions.claude']['enable'])
+        # Codex's plan ran on runner-b, so it is turned off as before.
+        self.assertFalse(self.config.values['subscriptions.codex']['enable'])
+
+    async def test_replacing_a_computers_address_stops_other_plans_work_there_first(self):
+        claude = self.service.ProviderRef(OWNER, 'claude')
+        on_replaced = self.service._tracking_machine(claude, self.machines['runner-b'])
+        process = await on_replaced.start_process(['fixture-sign-in'], 'fixture-cwd')
+        original = self.config.values['subscriptions.machines'][1]
+        with patch.object(self.service, 'verify_machine', AsyncMock(return_value={'host': original['host']})):
+            await self.service.save_machine(
+                OWNER, 'runner-b', original['name'], 'https://moved.example.invalid:8083', 'fixture-new-key'
+            )
+        self.assertGreaterEqual(process.kill_count, 1)
+        self.assertNotIn(claude.on('runner-b'), self.service._tracked_machines)
+        self.assertTrue(self.config.values['subscriptions.claude']['enable'])
+
     async def test_unconfirmed_cleanup_on_an_offline_app_computer_waits_for_that_computer_alone(self):
         ref = self.service.ProviderRef(OWNER, 'claude')
         laptop = self.service.TunnelMachine('laptop', 'Laptop', self.service.HUB)

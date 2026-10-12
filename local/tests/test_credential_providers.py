@@ -183,6 +183,20 @@ class CodexApiKeyTests(unittest.IsolatedAsyncioTestCase):
             await provider.start_login(ProviderSettings(enable=True), FakeCodexMachine('chatgpt'), 'device')
         provider.stop()
 
+    async def test_stopping_one_computer_keeps_the_other_computers_app_servers(self):
+        provider = codex.CodexProvider()
+        laptop = FakeCodexMachine('chatgpt')
+        laptop.id = 'laptop'
+        desktop = FakeCodexMachine('chatgpt')
+        desktop.id = 'desktop'
+        await provider.status(ProviderSettings(enable=True), laptop)
+        await provider.status(ProviderSettings(enable=True), desktop)
+        provider.stop_machine('laptop')
+        self.assertEqual(laptop.processes[0].returncode, 1)
+        self.assertIsNone(desktop.processes[0].returncode)
+        self.assertEqual(list(provider._servers), ['desktop'])
+        provider.stop()
+
     def test_changing_the_credential_restarts_codex_and_repeating_it_does_not(self):
         provider = codex.CodexProvider()
         stops = []
