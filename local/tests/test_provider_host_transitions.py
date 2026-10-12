@@ -1379,6 +1379,18 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         saved = await self.service.save_settings(OWNER, 'claude', {'access': 'read'}, 'runner-a', REVISION_A)
         self.assertEqual(saved.access, 'read')
 
+    async def test_computer_settings_are_not_saved_for_a_computer_removed_while_its_paths_were_checked(self):
+        machine = self.machines['runner-b']
+
+        async def removed_during_check(path, kind):
+            self.config.values['subscriptions.machines'].pop(1)
+            return True
+
+        machine.path_exists = removed_during_check
+        with self.assertRaisesRegex(self.service.SubscriptionError, 'That computer was removed'):
+            await self.service.save_computer_settings(OWNER, 'runner-b', REVISION_B, 'C:\\code', {})
+        self.assertNotIn('subscriptions.users.owner-1.computers', self.config.values)
+
     async def test_saving_computer_settings_needs_the_revision_the_page_showed(self):
         await self.assert_conflict(
             self.service.save_computer_settings(OWNER, 'runner-b', REVISION_A, '', {})

@@ -1552,6 +1552,9 @@ async def save_computer_settings(
             paths[provider_id] = path
 
     async with _computer_settings_lock:
+        # The paths were checked on the computer without the lock; it or its owner may be gone since.
+        if await _machine_revision(owner_id, machine_id) != revision or await Users.get_user_by_id(owner_id) is None:
+            raise SubscriptionError(REMOVED_COMPUTER_MESSAGE)
         saved = await _saved_computer_settings(owner_id)
         # Entries for removed computers are dropped here, the next time anything is saved.
         kept = await _owned_machine_ids(owner_id)
@@ -2416,7 +2419,9 @@ async def forget_user(user_id: str) -> None:
             updates[await _credential_mode_key(ref)] = CREDENTIAL_MACHINE
         updates[project_folders.choices_key(user_id)] = {}
         updates[computer_settings.settings_key(user_id)] = {}
-        await Config.upsert(updates)
+        # Taken last, after the machine and provider locks, as everywhere else.
+        async with _computer_settings_lock:
+            await Config.upsert(updates)
         await SubscriptionCredentials.delete_user(user_id)
         for ref in refs:
             _providers.pop(ref, None)
