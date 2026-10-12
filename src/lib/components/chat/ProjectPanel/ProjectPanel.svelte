@@ -30,6 +30,21 @@
 	$: target = chooseTarget(targets, selectedMachineId);
 	$: problem = target ? targetProblem(target) : null;
 
+	// Computers opened so far stay open, so switching back to one keeps its open
+	// file and running command. A folder that changed closes its old session.
+	let openedKeys: string[] = [];
+	$: if (target && problem === null && !openedKeys.includes(targetKey(target))) {
+		openedKeys = [...openedKeys, targetKey(target)];
+	}
+	$: openedTargets = targets.filter(
+		(candidate) => openedKeys.includes(targetKey(candidate)) && targetProblem(candidate) === null
+	);
+	$: shownKey = target && problem === null ? targetKey(target) : '';
+
+	function targetKey(candidate: ProjectTarget): string {
+		return `${candidate.computer.machine_id}:${candidate.path}`;
+	}
+
 	function chooseTarget(all: ProjectTarget[], machineId: string): ProjectTarget | null {
 		const chosen = all.find((candidate) => candidate.computer.machine_id === machineId);
 		return chosen ?? preferredTarget(all);
@@ -162,10 +177,11 @@
 					{$i18n.t('Check again')}
 				</button>
 			</div>
-		{:else}
-			{#key `${target.computer.machine_id}:${target.path}`}
-				<ProjectComputer {target} />
-			{/key}
 		{/if}
+		{#each openedTargets as opened (targetKey(opened))}
+			<div class="h-full" class:hidden={mode !== 'folder' || targetKey(opened) !== shownKey}>
+				<ProjectComputer target={opened} />
+			</div>
+		{/each}
 	</div>
 </div>
