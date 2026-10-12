@@ -48,7 +48,7 @@ NOT_INSTALLED_MESSAGE = (
     'Claude Code was not found. Install it from https://claude.com/claude-code '
     'or set its path in the Claude subscription settings.'
 )
-NOT_SIGNED_IN_MESSAGE = 'Claude is not signed in. Sign in under Admin Settings → Connections → Subscriptions.'
+NOT_SIGNED_IN_MESSAGE = 'Claude is not signed in. Sign in under Settings → Machines.'
 EFFORT_LEVELS = ('low', 'medium', 'high', 'xhigh', 'max')
 # No WebFetch: a prompt in the folder could make it send file contents to any URL.
 READ_ONLY_TOOLS = 'Read,Grep,Glob,WebSearch'

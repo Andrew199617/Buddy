@@ -1,8 +1,9 @@
 """Buddy Runner: lets a Buddy server start Claude Code and Codex on this computer.
 
 Run it on the machine whose terminal, files, and CLI sign-ins the models
-should use, then add it to Buddy under Admin Settings → Connections →
-Subscriptions → Machines:
+should use, then add it to Buddy under Admin Settings → AI plans → Your
+Runner addresses. (The Buddy app runs it in connect mode instead; see
+buddy_runner/connect.py.)
 
     python -m buddy_runner --port 8765
 
