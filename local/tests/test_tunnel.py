@@ -10,15 +10,18 @@ import asyncio
 import json
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import aiohttp
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'backend'))
 
+import buddy_runner.runner as runner_module  # noqa: E402
 from buddy_runner.runner import Runner  # noqa: E402
 from buddy_runner.tunnel import Tunnel  # noqa: E402
 from buddy_runner.workspace_capabilities import WorkspaceCapabilities  # noqa: E402
@@ -133,6 +136,31 @@ class TunnelEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.machine.path_exists(str(self.state_dir), 'dir'))
         self.assertFalse(await self.machine.path_exists(str(self.state_dir / 'missing'), 'dir'))
         self.assertEqual(await self.machine.chat_dir(), str(self.state_dir / 'chat'))
+
+    async def test_a_slow_path_check_does_not_hold_up_other_calls(self):
+        release = threading.Event()
+
+        def slow_path_exists(path, kind):
+            release.wait(5)
+            return True
+
+        self.runner.path_exists = slow_path_exists
+        checking = asyncio.create_task(self.machine.path_exists('Z:\\asleep', 'dir'))
+        connection = await self.hub.wait_connection('machine-1', 1)
+        # Another call is answered while the drive is still busy.
+        health = await asyncio.wait_for(connection.call('health', {}), 2)
+        self.assertEqual(health['chat_dir'], str(self.state_dir / 'chat'))
+        self.assertFalse(checking.done())
+        release.set()
+        self.assertTrue(await asyncio.wait_for(checking, 5))
+
+    async def test_a_path_check_that_never_answers_gives_up(self):
+        stuck = threading.Event()
+        self.addCleanup(stuck.set)
+        self.runner.path_exists = lambda path, kind: stuck.wait(5)
+        with patch.object(runner_module, 'PATH_CHECK_SECONDS', 0.2):
+            with self.assertRaisesRegex(SubscriptionError, 'took too long'):
+                await self.machine.path_exists('Z:\\asleep', 'dir')
 
     async def test_a_process_runs_and_its_exit_confirms_cleanup(self):
         process = await self.machine.start_process(

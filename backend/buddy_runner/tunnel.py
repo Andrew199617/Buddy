@@ -206,7 +206,8 @@ class Tunnel:
         return {'path': self._runner.locate_tool(tool, configured_path)}
 
     async def _check_path(self, params: dict) -> dict:
-        return {'exists': self._runner.path_exists(str(params.get('path') or ''), params.get('kind'))}
+        exists = await self._runner.check_path_exists(str(params.get('path') or ''), params.get('kind'))
+        return {'exists': exists}
 
     async def _workspace_request(self, params: dict) -> dict:
         status, body = await self._runner.workspaces.relay(
