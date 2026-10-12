@@ -41,10 +41,14 @@ function workingComputers(project: FolderProject): ProjectFolderComputer[] {
 	return project.computers.filter((computer) => computer.providers.length > 0);
 }
 
-/** Something needs choosing again: a computer was set up again, or one running a plan has no folder. */
+/**
+ * Something needs choosing again: a computer was set up again, the computers
+ * with folders were all removed, or one running a plan has no folder.
+ */
 export function needsAttention(project: FolderProject): boolean {
 	const choice = effectiveChoice(project);
 	if (choice.mode !== 'folder') return false;
+	if (Object.keys(choice.paths).length === 0) return true;
 	if (Object.values(choice.paths).some((saved) => saved.problem !== null)) return true;
 	return workingComputers(project).some((computer) => !choice.paths[computer.machine_id]);
 }

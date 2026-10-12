@@ -74,6 +74,15 @@ describe('the chip', () => {
 		expect(needsAttention(otherComputer)).toBe(true);
 	});
 
+	it('asks for attention when every computer with a folder was removed', () => {
+		const removed = project({ own: choice('folder', {}), computers: [] });
+		expect(chipState(removed)).toEqual({
+			label: 'Project folder needs attention',
+			tone: 'attention',
+			fromFolderName: ''
+		});
+	});
+
 	it('describes the other modes and where they come from', () => {
 		expect(chipState(project()).label).toBe('AI chooses where to work');
 		const inherited = chipState(project({ inherited: choice('chat', {}, 'Work') }));
