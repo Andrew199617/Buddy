@@ -220,8 +220,8 @@ export function emptyDraft(mode: ProjectDraft['mode']): ProjectDraft {
 export function draftFromProject(project: FolderProject): ProjectDraft {
 	if (!project.own) {
 		if (waitsForOwnChoice(project)) return emptyDraft('unchosen');
-		if (project.inherited) return emptyDraft('inherit');
-		return emptyDraft('auto');
+		// No own choice: new chats follow the parent folder, or start detached without one.
+		return emptyDraft('inherit');
 	}
 	const own = project.own;
 	const paths: Record<string, string> = {};
@@ -288,6 +288,121 @@ export function choiceFromDraft(
 		if (entries.length > 0) offered[computerId] = [...entries];
 	}
 	return { mode, paths, machine_id: machineId, access: draft.access, offered };
+}
+
+const ACCESS_ORDER: SubscriptionAccess[] = ['chat', 'read', 'full'];
+
+/**
+ * The access new chats start with when the folder follows the plans: the lowest
+ * of the plans that are on. Null when no plan is on.
+ */
+export function planDefaultAccess(project: FolderProject): SubscriptionAccess | null {
+	// Every computer lists the same plans, the ones that are on.
+	const providers = project.computers[0]?.providers ?? [];
+	let lowest: SubscriptionAccess | null = null;
+	for (const provider of providers) {
+		if (lowest === null || ACCESS_ORDER.indexOf(provider.access) < ACCESS_ORDER.indexOf(lowest)) {
+			lowest = provider.access;
+		}
+	}
+	return lowest;
+}
+
+// Where new chats in the folder start: following the parent folder, a computer
+// Buddy picks, one computer by its machine ID, or detached. Null until chosen.
+export const RUN_ON_INHERIT = 'inherit';
+export const RUN_ON_AUTOMATIC = 'automatic';
+export const RUN_ON_DETACHED = 'detached';
+
+export function runOnValue(draft: ProjectDraft): string | null {
+	if (draft.mode === 'unchosen') return null;
+	if (draft.mode === 'inherit') return RUN_ON_INHERIT;
+	if (draft.mode === 'chat') return RUN_ON_DETACHED;
+	if (draft.machineId === '') return RUN_ON_AUTOMATIC;
+	return draft.machineId;
+}
+
+/** The draft after choosing where new chats run; a folder choice already made is kept. */
+export function draftWithRunOn(draft: ProjectDraft, value: string): ProjectDraft {
+	if (value === RUN_ON_INHERIT) return { ...draft, mode: 'inherit' };
+	if (value === RUN_ON_DETACHED) return { ...draft, mode: 'chat' };
+	let machineId = value;
+	if (value === RUN_ON_AUTOMATIC) machineId = '';
+	let mode = draft.mode;
+	// Coming from no choice or detached, the AI chooses the folder until one is picked.
+	if (mode !== 'auto' && mode !== 'folder') mode = 'auto';
+	return { ...draft, mode, machineId };
+}
+
+export type ProjectSummary =
+	| { kind: 'inherit'; folderName: string }
+	| { kind: 'unset' }
+	| { kind: 'unchosen' }
+	| { kind: 'detached' }
+	| {
+			kind: 'set';
+			// The exact folder's last part, or null when the AI chooses.
+			folder: string | null;
+			// Null when Buddy picks the computer.
+			computer: ProjectFolderComputer | null;
+			access: SubscriptionAccess | '';
+	  };
+
+/** What the collapsed Project folder row says about a draft. */
+export function projectSummary(draft: ProjectDraft, project: FolderProject): ProjectSummary {
+	if (draft.mode === 'unchosen') return { kind: 'unchosen' };
+	if (draft.mode === 'chat') return { kind: 'detached' };
+	if (draft.mode === 'inherit') {
+		if (project.inherited) return { kind: 'inherit', folderName: project.inherited.folder_name };
+		return { kind: 'unset' };
+	}
+	let computer: ProjectFolderComputer | null = null;
+	if (draft.machineId) {
+		computer = project.computers.find((candidate) => candidate.machine_id === draft.machineId) ?? null;
+	}
+	let folder: string | null = null;
+	if (draft.mode === 'folder') {
+		let path = '';
+		if (draft.machineId) path = draft.paths[draft.machineId] ?? '';
+		if (!path) path = Object.values(draft.paths)[0] ?? '';
+		if (path) folder = lastSegment(path);
+	}
+	return { kind: 'set', folder, computer, access: draft.access };
+}
+
+// Why a draft can't be saved yet: a specific folder is wanted but not chosen.
+export type DraftProblem = { kind: 'needs_folder'; machineId: string } | null;
+
+export function draftProblem(draft: ProjectDraft): DraftProblem {
+	if (draft.mode !== 'folder') return null;
+	if (draft.machineId && !draft.paths[draft.machineId]) {
+		return { kind: 'needs_folder', machineId: draft.machineId };
+	}
+	if (Object.values(draft.paths).every((path) => !path)) {
+		return { kind: 'needs_folder', machineId: '' };
+	}
+	return null;
+}
+
+export const MAX_OFFERED_PER_COMPUTER = 5;
+
+/** The draft with one more folder offered on a computer; at most five, no repeats. */
+export function draftWithOffered(draft: ProjectDraft, machineId: string, path: string): ProjectDraft {
+	const current = draft.offered[machineId] ?? [];
+	if (current.includes(path) || current.length >= MAX_OFFERED_PER_COMPUTER) return draft;
+	return { ...draft, offered: { ...draft.offered, [machineId]: [...current, path] } };
+}
+
+export function draftWithoutOffered(
+	draft: ProjectDraft,
+	machineId: string,
+	path: string
+): ProjectDraft {
+	const remaining = (draft.offered[machineId] ?? []).filter((entry) => entry !== path);
+	const offered = { ...draft.offered };
+	if (remaining.length > 0) offered[machineId] = remaining;
+	else delete offered[machineId];
+	return { ...draft, offered };
 }
 
 export type SuggestionTools = 'claude' | 'codex' | 'both';
