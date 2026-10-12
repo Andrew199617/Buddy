@@ -10,7 +10,6 @@ import {
 
 const buildDirectory = process.env.BUDDY_UI_TEST_BUILD || resolve(workspace, 'build');
 const outputDirectory = resolve(workspace, 'local/tests/.qa/subscription-integration');
-const companionExpected = process.env.BUDDY_SUBSCRIPTION_TEST_COMPANION === '1';
 const selectedCases = new Set(
 	(process.argv.find((argument) => argument.startsWith('--only='))?.slice(7) || '')
 		.split(',')
@@ -885,7 +884,7 @@ async function runCase(browser, profile, name, mode, callback, role = 'admin') {
 	}
 	const fixtures = createFixtures(mode, role);
 	let session;
-	let result = { name: profile.name + '-' + name, passed: false, companionExpected };
+	let result = { name: profile.name + '-' + name, passed: false };
 	try {
 		session = await createSession(browser, {
 			mobile: profile.mobile,
@@ -1434,29 +1433,21 @@ async function usageNavigationCase(browser, profile) {
 		await page.locator('#buddy-sidebar-close').waitFor();
 		assert.equal(
 			await page.locator('#sidebar-companion-button').count(),
-			companionExpected ? 1 : 0
+			0,
+			'The Projects page link is gone; its tools are in each chat'
 		);
 		assert.equal(fixtures.count('POST'), 0, 'Browsing subscription settings initiates no login');
 		await page.locator('#buddy-sidebar-close').click();
 		await captureScreenshot(page, profile.name + '-subscription-navigation');
-		if (companionExpected) {
-			await page.locator('#chat-input').fill('');
-			await page.goto(origin + '/companion', { waitUntil: 'domcontentloaded' });
-			await page.getByLabel('Host address', { exact: true }).waitFor();
-			assert.equal(
-				await page.getByLabel('Host address', { exact: true }).inputValue(),
-				'http://127.0.0.1:8765'
-			);
-			assert.equal(
-				await page.getByRole('button', { name: 'Pair host', exact: true }).isDisabled(),
-				true
-			);
-			assert.equal(
-				fixtures.externalRequests.length,
-				0,
-				'Subscription identity grants no companion session'
-			);
-		}
+		// Old links to the Projects page go home.
+		await page.locator('#chat-input').fill('');
+		await page.goto(origin + '/companion', { waitUntil: 'domcontentloaded' });
+		await page.waitForURL((url) => url.pathname === '/');
+		assert.equal(
+			fixtures.externalRequests.length,
+			0,
+			'Subscription identity grants no computer session'
+		);
 	});
 }
 
