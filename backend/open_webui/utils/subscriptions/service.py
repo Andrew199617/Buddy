@@ -57,12 +57,12 @@ from open_webui.utils.subscriptions.common import (
     requested_effort,
 )
 from open_webui.utils.subscriptions.conversation import parse_messages
-from open_webui.utils.subscriptions import project_folders
+from open_webui.utils.subscriptions import folder_listing, project_folders
 from open_webui.utils.subscriptions.events import SubscriptionError
 from open_webui.utils.subscriptions.machines import (
     LOCAL_MACHINE_ID, LocalMachine, RemoteMachine, StartupCleanupUnconfirmedError, TunnelMachine,
 )
-from open_webui.utils.subscriptions.tunnel_hub import HUB
+from open_webui.utils.subscriptions.tunnel_hub import HUB, RunnerCallError
 from open_webui.utils.subscriptions.runner_transport import normalize_runner_url
 from open_webui.utils.subscriptions.streaming import collect_events, failure_events, stream_events
 
@@ -1467,6 +1467,79 @@ async def check_machine_folder(user, machine_id: str, path: str) -> str:
     if not await machine.path_exists(cleaned, 'dir'):
         raise SubscriptionError(f'{machine.name} has no folder at that path.')
     return cleaned
+
+
+# What each computer last said about folder browsing: 'on', 'off' or 'unsupported'.
+_folder_browsing: dict[tuple[str, str], str] = {}
+# Folders Claude Code and Codex worked in, per person, computer and revision, for a minute.
+FOLDER_SUGGESTIONS_CACHE_SECONDS = 60
+_folder_suggestions: dict[tuple[str, str, str], tuple[float, list]] = {}
+
+
+def _folder_browsing_refusal(error: RunnerCallError, key: tuple[str, str], machine_name: str) -> SubscriptionError:
+    """Turns the Runner's refusal into what the person can do about it, and remembers it."""
+    if error.status == 403:
+        _folder_browsing[key] = 'off'
+        return SubscriptionError(
+            f'Turn on Folder suggestions in the Buddy app on {machine_name}. You can still type a path.'
+        )
+    if error.status == 404:
+        _folder_browsing[key] = 'unsupported'
+        return SubscriptionError(f'Update the Buddy app on {machine_name} to browse its folders. You can still type a path.')
+    return error
+
+
+async def list_machine_folders(user, machine_id: str, path: str, show_hidden: bool, prefix: str) -> dict:
+    """Folder names in one folder of the person's computer, or its drives and places for an empty path."""
+    if not machine_id:
+        raise SubscriptionError('Choose a computer.')
+    machine = await get_machine(user.id, machine_id)
+    platform = await _machine_platform(user.id, machine_id)
+    listed = ''
+    if path:
+        listed = folder_listing.clean_browse_path(path, platform)
+    key = (user.id, machine_id)
+    try:
+        reply = await machine.list_folders(listed, show_hidden, (prefix or '')[:folder_listing.MAX_NAME_CHARS])
+    except RunnerCallError as error:
+        raise _folder_browsing_refusal(error, key, machine.name) from None
+    _folder_browsing[key] = 'on'
+    if not listed:
+        return folder_listing.checked_roots(reply, platform)
+    return folder_listing.checked_listing(reply, listed, platform)
+
+
+async def suggested_machine_folders(user, machine_id: str) -> dict:
+    """Folders Claude Code and Codex worked in on that computer: {state, folders}.
+
+    state is 'ok', 'off' (not allowed in the Buddy app there), 'offline', or
+    'unsupported' (no Buddy app, or an older one).
+    """
+    if not machine_id:
+        raise SubscriptionError('Choose a computer.')
+    machine = await get_machine(user.id, machine_id)
+    config = next((saved for saved in await _owned_machine_configs(user.id) if saved['id'] == machine_id), None)
+    if _folder_computer_kind(machine_id, config) != 'app':
+        return {'state': 'unsupported', 'folders': []}
+    if not HUB.is_online(machine_id):
+        return {'state': 'offline', 'folders': []}
+    revision = await _machine_revision(user.id, machine_id) or ''
+    cache_key = (user.id, machine_id, revision)
+    cached = _folder_suggestions.get(cache_key)
+    if cached is not None and time.monotonic() - cached[0] < FOLDER_SUGGESTIONS_CACHE_SECONDS:
+        return {'state': 'ok', 'folders': cached[1]}
+    key = (user.id, machine_id)
+    try:
+        reply = await machine.suggest_folders()
+    except RunnerCallError as error:
+        _folder_browsing_refusal(error, key, machine.name)
+        if error.status in (403, 404):
+            return {'state': _folder_browsing[key], 'folders': []}
+        raise
+    _folder_browsing[key] = 'on'
+    folders = folder_listing.checked_suggestions(reply, await _machine_platform(user.id, machine_id))
+    _folder_suggestions[cache_key] = (time.monotonic(), folders)
+    return {'state': 'ok', 'folders': folders}
 
 
 async def _readable_chat_folder(user, folder_id: str):
