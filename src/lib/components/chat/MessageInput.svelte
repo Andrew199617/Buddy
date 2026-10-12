@@ -2207,6 +2207,7 @@
 									editable={runTargetEditable}
 									providers={runTargetProviders}
 									thisPcMachineId={$thisPcMachineId}
+									touchLayout={mobileComposer}
 									onChange={onRunTargetChange}
 									onNewChatHere={onRunTargetNewChat}
 									onFocusComposer={() => focus()}

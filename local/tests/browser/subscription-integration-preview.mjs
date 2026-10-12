@@ -3120,6 +3120,16 @@ async function runTargetNewCase(browser, profile) {
 				);
 			}
 			await captureScreenshot(page, `run-target-new-${profile.name}`);
+			if (profile.mobile) {
+				// A phone turned sideways is wider than the phone breakpoint, but still a touch screen.
+				await page.setViewportSize({ width: 844, height: 390 });
+				await waitUntil(
+					async () => (await page.evaluate(() => window.innerWidth)) === 844,
+					'The page sees the wider screen'
+				);
+				assert.equal(await bar.locator('.buddy-run-target-summary').count(), 1);
+				assert.equal(await bar.locator('button.buddy-run-target-chip').count(), 0);
+			}
 		}
 	);
 }

@@ -16,7 +16,6 @@
 		type SubscriptionAccess,
 		type SubscriptionProviderId
 	} from '$lib/apis/subscriptions';
-	import { mobile } from '$lib/stores';
 	import Dropdown from '$lib/components/common/Dropdown.svelte';
 	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
 	import LockClosed from '$lib/components/icons/LockClosed.svelte';
@@ -42,6 +41,8 @@
 	// The plans behind the selected models; empty when a model that isn't a plan is selected.
 	export let providers: SubscriptionProviderId[] = [];
 	export let thisPcMachineId: string | null = null;
+	// The phone layout: one summary chip and a sheet. The composer turns it on for touch screens.
+	export let touchLayout = false;
 	export let onChange: (draft: RunTargetDraft) => void = () => {};
 	export let onNewChatHere: (details: ChatRunTargetDetails | null) => void = () => {};
 	export let onFocusComposer: () => void = () => {};
@@ -233,7 +234,7 @@
 	aria-label={$i18n.t('Where this chat runs')}
 >
 	{#if editable && draft}
-		{#if $mobile}
+		{#if touchLayout}
 			<button
 				type="button"
 				class="buddy-run-target-summary flex min-h-11 w-full min-w-0 items-center gap-2 rounded-xl px-3 text-start text-sm text-gray-700 dark:text-gray-200"
@@ -395,7 +396,7 @@
 			</Dropdown>
 		{/if}
 	{:else if details}
-		{#if $mobile}
+		{#if touchLayout}
 			<button
 				type="button"
 				class="buddy-run-target-summary flex min-h-11 w-full min-w-0 items-center gap-2 rounded-xl px-3 text-start text-sm text-gray-500 dark:text-gray-400"
