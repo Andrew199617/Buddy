@@ -15,6 +15,7 @@
 	} from '$lib/apis/subscriptions';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import { showSettings } from '$lib/stores';
+	import { accessGrantedMessage } from '$lib/components/admin/Settings/Connections/plan-access';
 	import PlanAccessRequest from './PlanAccessRequest.svelte';
 	import ProjectFolderPicker from './ProjectFolderPicker.svelte';
 	import { announceProjectFolderChange } from './project-folder-changes';
@@ -180,6 +181,14 @@
 	}
 
 	async function planRefused(plan: FolderPlan, access: FileAccess, reason: string) {
+		const now = project?.plans.find((candidate) => candidate.id === plan.id);
+		// The save can go through while its answer is lost; the reloaded plan shows it.
+		if (now && now.enable && now.access === access) {
+			const computerName = now.machine?.name ?? plan.machine?.name ?? '';
+			toast.success(accessGrantedMessage($i18n, plan.name, access, computerName));
+			await planAllowed();
+			return;
+		}
 		const message = refusalMessage(plan, access, reason);
 		// Closed, or the reload found the section has nothing to show (no access, folder gone).
 		if (destroyed || hidden || !project) {
