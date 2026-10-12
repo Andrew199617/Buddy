@@ -111,6 +111,8 @@ class Tunnel:
         self._register('paths.check', self._check_path)
         self._register('process.stop', self._stop_process)
         self._register('workspace.request', self._workspace_request)
+        self._register('folders.list', self._list_folders)
+        self._register('folders.suggest', self._suggest_folders)
 
     def _register(self, method: str, handler) -> None:
         self._methods[method] = handler
@@ -208,6 +210,15 @@ class Tunnel:
     async def _check_path(self, params: dict) -> dict:
         exists = await self._runner.check_path_exists(str(params.get('path') or ''), params.get('kind'))
         return {'exists': exists}
+
+    async def _list_folders(self, params: dict) -> dict:
+        path = params.get('path') or ''
+        if not isinstance(path, str):
+            raise RunnerError(400, 'Choose a folder by its full path.')
+        return await self._runner.list_folders(path, params.get('hidden') is True, str(params.get('prefix') or ''))
+
+    async def _suggest_folders(self, params: dict) -> dict:
+        return await self._runner.suggest_folders()
 
     async def _workspace_request(self, params: dict) -> dict:
         status, body = await self._runner.workspaces.relay(

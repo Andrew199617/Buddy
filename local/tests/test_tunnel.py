@@ -162,6 +162,36 @@ class TunnelEndToEndTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(SubscriptionError, 'took too long'):
                 await self.machine.path_exists('Z:\\asleep', 'dir')
 
+    async def test_folder_browsing_waits_for_the_app_switch(self):
+        connection = await self.hub.wait_connection('machine-1', 1)
+        self.assertTrue(self.runner.describe()['capabilities']['folderBrowsing'])
+        with self.assertRaises(Exception) as refused:
+            await connection.call('folders.list', {'path': str(self.state_dir)})
+        self.assertIn('Folder browsing is off', str(refused.exception))
+        self.runner.set_folder_browsing(True)
+        listing = await connection.call('folders.list', {'path': str(self.state_dir)})
+        self.assertEqual([entry['name'] for entry in listing['entries']], ['chat', 'tmp', 'workspace'])
+        roots = await connection.call('folders.list', {'path': ''})
+        self.assertTrue(roots['roots'])
+        self.assertEqual(roots['entries'], [])
+
+    async def test_folder_suggestions_come_from_cli_history(self):
+        project = self.state_dir.parent / (self.state_dir.name + '-project')
+        project.mkdir()
+        self.addCleanup(project.rmdir)
+        claude_home = self.state_dir / 'claude-home'
+        session = claude_home / 'projects' / 'p' / 'a.jsonl'
+        session.parent.mkdir(parents=True)
+        session.write_text(json.dumps({'cwd': str(project)}) + '\n', encoding='utf-8')
+        self.runner.set_folder_browsing(True)
+        connection = await self.hub.wait_connection('machine-1', 1)
+        homes = (claude_home, self.state_dir / 'none')
+        # The test folders sit in the temporary folder, which is normally left out.
+        with patch.object(runner_module.agent_history, 'default_homes', return_value=homes):
+            with patch.object(runner_module.agent_history, 'default_exclusions', return_value=[]):
+                result = await connection.call('folders.suggest', {})
+        self.assertEqual([folder['path'] for folder in result['folders']], [str(project)])
+
     async def test_a_process_runs_and_its_exit_confirms_cleanup(self):
         process = await self.machine.start_process(
             [sys.executable, '-c', 'import sys; print(sys.stdin.readline().strip().upper())'], str(self.state_dir)
