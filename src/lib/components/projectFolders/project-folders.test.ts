@@ -4,6 +4,7 @@ import type { FolderProject, ProjectFolderComputer } from '$lib/apis/subscriptio
 import {
 	chipState,
 	choiceFromDraft,
+	draftForSharing,
 	draftFromProject,
 	draftProblem,
 	draftWithOffered,
@@ -12,6 +13,7 @@ import {
 	effectiveChoice,
 	emptyDraft,
 	grantContaining,
+	instructionsShared,
 	joinSharedPath,
 	lastSegment,
 	lastUsedAgo,
@@ -85,6 +87,23 @@ describe('a folder whose instructions others can change', () => {
 		const chosen = project({ shared_instructions: true, own: choice('auto') });
 		expect(waitsForOwnChoice(chosen)).toBe(false);
 		expect(effectiveChoice(chosen).mode).toBe('auto');
+	});
+
+	it('counts instructions added in the folder dialog', () => {
+		const editable = project({ others_can_edit: true });
+		expect(instructionsShared(editable, true)).toBe(true);
+		expect(instructionsShared(editable, false)).toBe(false);
+		expect(instructionsShared(project(), true)).toBe(false);
+		// Without the dialog's instructions, the server's answer counts.
+		expect(instructionsShared(project({ shared_instructions: true }), null)).toBe(true);
+	});
+
+	it('stops following the parent while the instructions are shared', () => {
+		expect(draftForSharing(emptyDraft('inherit'), true).mode).toBe('unchosen');
+		expect(draftForSharing(emptyDraft('unchosen'), false).mode).toBe('inherit');
+		const chosen = { ...emptyDraft('auto'), machineId: 'pc-1' };
+		expect(draftForSharing(chosen, true)).toBe(chosen);
+		expect(draftForSharing(emptyDraft('chat'), false).mode).toBe('chat');
 	});
 });
 

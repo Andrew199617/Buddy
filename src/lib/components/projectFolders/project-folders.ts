@@ -23,6 +23,18 @@ export function waitsForOwnChoice(project: FolderProject): boolean {
 	return project.shared_instructions && project.own === null;
 }
 
+/**
+ * Whether the folder's instructions are ones others can change, with the instructions and
+ * files the folder dialog has now. Null: not known here, so what the server says counts.
+ */
+export function instructionsShared(
+	project: FolderProject,
+	addsInstructions: boolean | null
+): boolean {
+	if (addsInstructions === null) return project.shared_instructions;
+	return project.others_can_edit && addsInstructions;
+}
+
 /** The folder's own choice, else its parent's, else "Let the AI choose". */
 export function effectiveChoice(project: FolderProject): EffectiveChoice {
 	if (project.own) {
@@ -207,6 +219,13 @@ export function draftFromProject(project: FolderProject): ProjectDraft {
 function stillListed(computers: ProjectFolderComputer[], machineId: string): boolean {
 	if (!machineId || machineId === 'local') return true;
 	return computers.some((computer) => computer.machine_id === machineId);
+}
+
+/** Following the parent isn't offered while the instructions are shared: the person chooses. */
+export function draftForSharing(draft: ProjectDraft, shared: boolean): ProjectDraft {
+	if (shared && draft.mode === 'inherit') return { ...draft, mode: 'unchosen' };
+	if (!shared && draft.mode === 'unchosen') return { ...draft, mode: 'inherit' };
+	return draft;
 }
 
 export function copyDraft(draft: ProjectDraft): ProjectDraft {

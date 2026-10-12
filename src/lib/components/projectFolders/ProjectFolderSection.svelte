@@ -29,6 +29,7 @@
 		RUN_ON_INHERIT,
 		choiceFromDraft,
 		copyDraft,
+		draftForSharing,
 		draftFromProject,
 		draftProblem,
 		draftWithOffered,
@@ -36,6 +37,7 @@
 		draftWithRunOn,
 		emptyDraft,
 		focusWasLost,
+		instructionsShared,
 		planAccesses,
 		projectSummary,
 		runOnValue,
@@ -65,6 +67,9 @@
 	export let picking = false;
 	// Set once loaded, when this person may set where new chats run.
 	export let available = false;
+	// Whether the folder dialog gives the folder instructions or files; null where the
+	// section is shown without them, so the saved folder counts.
+	export let addsInstructions: boolean | null = null;
 
 	type Picker = { computer: ProjectFolderComputer; purpose: 'folder' | 'offered' };
 
@@ -82,6 +87,9 @@
 	$: idPrefix = folderId ?? 'new';
 	$: runOnId = `project-run-on-${idPrefix}`;
 	$: accessId = `project-access-${idPrefix}`;
+	// Instructions others can change: new chats wait for this person's own choice.
+	$: shared = project ? instructionsShared(project, addsInstructions) : false;
+	$: followSharing(shared);
 	$: dirty = !sameDraft(draft, saved);
 	$: picking = picker !== null;
 	$: available = !loading && !loadError && !hidden && project !== null;
@@ -90,7 +98,7 @@
 	$: chosenComputer = findComputer(project, draft.machineId);
 	$: choosingFolders = draft.mode === 'auto' || draft.mode === 'folder';
 	$: summary = describeSummary(project ? projectSummary(draft, project) : null, sharedAccess);
-	$: runOnOptions = project ? describeRunOn(project, $thisPcMachineId) : [];
+	$: runOnOptions = project ? describeRunOn(project, shared, $thisPcMachineId) : [];
 	$: accessOptions = describeAccess(plans, sharedAccess, chosenComputer);
 	// Following the plans, new chats start with each plan's own access.
 	$: mayStartFull = startsWith(draft.access, plans, 'full');
@@ -109,7 +117,18 @@
 		// Null: not allowed to use computers, or the folder is gone; nothing to choose here.
 		hidden = loaded === null;
 		project = loaded;
-		if (loaded) saved = draftFromProject(loaded);
+		if (loaded) {
+			saved = draftForSharing(
+				draftFromProject(loaded),
+				instructionsShared(loaded, addsInstructions)
+			);
+		}
+	}
+
+	/** Instructions added or removed in the folder dialog decide whether following the parent is offered. */
+	function followSharing(sharedNow: boolean) {
+		draft = draftForSharing(draft, sharedNow);
+		saved = draftForSharing(saved, sharedNow);
 	}
 
 	function startFromSaved() {
@@ -222,10 +241,14 @@
 		return parts.join(' · ');
 	}
 
-	function describeRunOn(current: FolderProject, thisPc: string | null): ChoiceOption[] {
+	function describeRunOn(
+		current: FolderProject,
+		sharedInstructions: boolean,
+		thisPc: string | null
+	): ChoiceOption[] {
 		const options: ChoiceOption[] = [];
 		// A folder whose instructions others can change needs its own choice.
-		if (!current.shared_instructions) {
+		if (!sharedInstructions) {
 			if (current.inherited) {
 				options.push({
 					value: RUN_ON_INHERIT,

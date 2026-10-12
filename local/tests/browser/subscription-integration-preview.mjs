@@ -358,6 +358,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		'folder-no-plans',
 		'folder-defaults',
 		'folder-create',
+		'folder-create-shared',
 		'folder-no-access',
 		'folder-browse',
 		...runTargetModes
@@ -449,7 +450,9 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			folder_id: '',
 			folder_name: '',
 			own: null,
-			inherited: { ...projectChoice, folder_name: 'Website' }
+			inherited: { ...projectChoice, folder_name: 'Website' },
+			// Someone else may edit Website, and so a folder made in it.
+			others_can_edit: mode === 'folder-create-shared'
 		};
 	}
 
@@ -738,6 +741,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		mode === 'folder-edit' ||
 		mode === 'folder-browse' ||
 		mode === 'folder-create' ||
+		mode === 'folder-create-shared' ||
 		mode === 'folder-no-access' ||
 		askingModes.has(mode)
 	) {
@@ -3306,6 +3310,107 @@ async function folderCreateCase(browser, profile) {
 	});
 }
 
+async function folderCreateSharedCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'folder-create-shared',
+		'folder-create-shared',
+		async ({ page }, fixtures) => {
+			await page.locator('button[aria-label="Folder options"]').click();
+			await page.getByRole('button', { name: 'Create Folder', exact: true }).click();
+			const dialog = page.locator('.modal').filter({ has: page.locator('#folder-form-new') });
+			await dialog.getByRole('heading', { name: 'New folder', exact: true }).waitFor();
+			await dialog.locator('#folder-name').fill('Shared notes');
+			const back = dialog.getByRole('button', { name: 'Back to folder', exact: true });
+			const projectRow = dialog.locator('#folder-form-new-row-project');
+			const notice = dialog.getByText(/^Someone else can change this folder’s instructions/);
+			const followOption = dialog
+				.locator('#project-run-on-new-list')
+				.getByRole('radio', { name: /^Same as “Website”/ });
+
+			async function openRunOnList() {
+				const trigger = dialog.locator('#project-run-on-new-trigger');
+				if (
+					(await trigger.count()) > 0 &&
+					(await trigger.getAttribute('aria-expanded')) !== 'true'
+				) {
+					await trigger.click();
+				}
+				await dialog.locator('#project-run-on-new-list').waitFor();
+			}
+
+			async function openProjectSettings() {
+				if (await projectRow.isVisible()) await projectRow.click();
+				await dialog.getByText('Run on', { exact: true }).waitFor();
+			}
+
+			async function leaveProjectSettings() {
+				if (profile.mobile) {
+					await back.click();
+					return;
+				}
+				// The list is open: closing it shrinks the centered dialog, after the click lands.
+				await projectRow.click();
+				assert.equal(
+					await projectRow.getAttribute('aria-expanded'),
+					'false',
+					'A click on the row with a list open reaches the row'
+				);
+			}
+
+			// With no instructions yet, the folder can follow Website.
+			await dialog.getByRole('button', { name: /^Project folder\s*Where the AI works/ }).click();
+			await dialog.getByText('Run on', { exact: true }).waitFor();
+			await openRunOnList();
+			assert.equal(await followOption.count(), 1);
+			assert.equal(await notice.count(), 0);
+			await leaveProjectSettings();
+
+			// Instructions someone else can change: this person chooses where chats run.
+			await dialog.getByRole('button', { name: /^Instructions\s*How chats behave/ }).click();
+			const instructions = dialog.getByRole('textbox', { name: 'Instructions', exact: true });
+			await instructions.fill('Be brief.');
+			await openProjectSettings();
+			await notice.waitFor();
+			await openRunOnList();
+			assert.equal(await followOption.count(), 0, 'Following Website is not offered');
+			assert.equal(
+				await dialog.locator('#project-run-on-new-list [aria-checked="true"]').count(),
+				0,
+				'Nothing is chosen yet'
+			);
+			assert.match(await projectRow.textContent(), /Waiting for your choice/);
+			await captureScreenshot(page, profile.name + '-folder-create-shared');
+			await leaveProjectSettings();
+
+			// Without them, following Website is back.
+			await instructions.fill('');
+			await openProjectSettings();
+			await openRunOnList();
+			await followOption.waitFor();
+			assert.equal(await notice.count(), 0);
+			await leaveProjectSettings();
+
+			// Made with the instructions and no choice: nothing is saved for the folder yet.
+			await instructions.fill('Be brief.');
+			await saveFolderSettings(dialog, 'Create');
+			await dialog.waitFor({ state: 'hidden' });
+			const created = fixtures.requests.filter(
+				(entry) => entry.method === 'POST' && entry.path === '/api/v1/folders'
+			);
+			assert.equal(created.length, 1);
+			assert.equal(created[0].body.data.system_prompt, 'Be brief.');
+			const saved = fixtures.requests.filter(
+				(entry) =>
+					entry.method === 'PUT' &&
+					entry.path === '/api/v1/subscriptions/folders/new-folder/project'
+			);
+			assert.equal(saved.length, 0);
+		}
+	);
+}
+
 /** Opens the folder's Edit folder dialog with its Project folder row open. */
 async function openFolderSettings(page) {
 	await page.locator('button[aria-label="Folder options"]').click();
@@ -3614,6 +3719,7 @@ try {
 		await folderEditCase(browser, profile);
 		await folderDialogCase(browser, profile);
 		await folderCreateCase(browser, profile);
+		await folderCreateSharedCase(browser, profile);
 		await folderCreateTopCase(browser, profile);
 		await folderDefaultsCase(browser, profile);
 		await folderNeedsFolderCase(browser, profile);

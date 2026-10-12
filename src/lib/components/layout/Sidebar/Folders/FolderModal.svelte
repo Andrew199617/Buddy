@@ -315,6 +315,12 @@
 		return available || Boolean(loadError);
 	}
 
+	// As the server counts it: a system prompt or knowledge files reach the folder's chats.
+	function folderAddsInstructions(form: FolderData): boolean {
+		if ((form.system_prompt ?? '').trim()) return true;
+		return (form.files ?? []).length > 0;
+	}
+
 	function shownOnMain(phone: boolean, current: Screen): boolean {
 		return !phone || current === 'main';
 	}
@@ -774,6 +780,7 @@
 								bind:loadError={projectLoadError}
 								bind:picking={projectPicking}
 								bind:available={projectAvailable}
+								addsInstructions={folderAddsInstructions(data)}
 							/>
 						</div>
 					{/if}
