@@ -37,7 +37,8 @@ from open_webui.utils.subscriptions.runner_transport import normalize_runner_url
 from open_webui.utils.subscriptions.events import SubscriptionError  # noqa: E402
 from open_webui.utils.subscriptions.machines import TunnelMachine  # noqa: E402
 from open_webui.utils.subscriptions.tunnel_hub import RunnerCallError, RunnerHub  # noqa: E402
-from open_webui.utils.subscriptions import computer_settings, folder_listing  # noqa: E402
+from open_webui.utils.subscriptions import computer_settings, folder_listing, run_targets  # noqa: E402
+from open_webui.utils.chat_id import is_saved_chat_id  # noqa: E402
 from test_project_folders import FakeChats, FakeFolders, load_project_folders  # noqa: E402
 
 # The instance owner: the user whose setup predates per-user machines. Most
@@ -176,6 +177,51 @@ class FakeRemoteMachine:
         self.closed += 1
 
 
+def load_run_target_model():
+    """The real row model, without the database module its file imports."""
+    from pydantic import BaseModel, ConfigDict
+
+    path = ROOT / 'backend' / 'open_webui' / 'models' / 'chat_run_targets.py'
+    tree = ast.parse(path.read_text(encoding='utf-8'))
+    nodes = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'ChatRunTargetModel']
+    namespace = {'__name__': 'chat_run_target_model_under_test', 'BaseModel': BaseModel, 'ConfigDict': ConfigDict,
+                 'Optional': Optional}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])), str(path), 'exec'), namespace)
+    return namespace['ChatRunTargetModel']
+
+
+ChatRunTargetModel = load_run_target_model()
+
+
+class MemoryRunTargets:
+    """Chat run targets kept in memory, with the table's rules: written once, newest last."""
+
+    def __init__(self):
+        self.rows = {}
+
+    async def get(self, chat_id, db=None):
+        return self.rows.get(chat_id)
+
+    async def insert_if_absent(self, target, db=None):
+        return self.rows.setdefault(target.chat_id, target)
+
+    async def last_for_user(self, user_id, db=None):
+        own = [row for row in self.rows.values() if row.user_id == user_id]
+        if not own:
+            return None
+        return max(own, key=lambda row: row.created_at)
+
+    async def recent_paths(self, user_id, limit=12, db=None):
+        own = [row for row in self.rows.values() if row.user_id == user_id and row.folder_mode == 'path']
+        return sorted(own, key=lambda row: row.created_at, reverse=True)[:limit]
+
+    async def copy_for_owner(self, source_chat_id, new_chat_id, user_id, db=None):
+        source = self.rows.get(source_chat_id)
+        if source is None or source.user_id != user_id:
+            return None
+        return await self.insert_if_absent(source.model_copy(update={'chat_id': new_chat_id, 'source': 'copy'}))
+
+
 class FakeHTTPException(Exception):
     def __init__(self, status_code, detail):
         super().__init__(detail)
@@ -188,9 +234,18 @@ def load_service(config, data_dir):
     module.__file__ = str(SUBSCRIPTIONS / 'service.py')
     # No chat folders unless a test adds some; the owner of a folder may read it.
     folder_readers = {}
+    chats = FakeChats()
     module.__dict__.update({
         'sys': sys,
-        'project_folders': load_project_folders(config, FakeFolders(), FakeChats(), folder_readers),
+        'project_folders': load_project_folders(config, FakeFolders(), chats, folder_readers),
+        'Chats': chats,
+        'ChatRunTargets': MemoryRunTargets(),
+        'ChatRunTargetModel': ChatRunTargetModel,
+        'SOURCE_BAR': 'bar',
+        'SOURCE_DEFAULT': 'default',
+        'SOURCE_REFUSED': 'refused',
+        'is_saved_chat_id': is_saved_chat_id,
+        'run_targets': run_targets,
         'asyncio': asyncio,
         'hashlib': hashlib,
         'hmac': hmac,

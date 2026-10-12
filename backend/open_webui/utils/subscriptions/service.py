@@ -36,9 +36,17 @@ from open_webui.env import DATA_DIR, UVICORN_WORKERS
 from open_webui.models.config import Config
 from open_webui.models.groups import Groups
 from open_webui.models.models import Models
+from open_webui.models.chat_run_targets import (
+    SOURCE_BAR,
+    SOURCE_DEFAULT,
+    SOURCE_REFUSED,
+    ChatRunTargetModel,
+    ChatRunTargets,
+)
+from open_webui.models.chats import Chats
 from open_webui.models.subscription_credentials import KIND_API_KEY, KIND_PLAN_TOKEN, SubscriptionCredentials
 from open_webui.models.users import Users
-from open_webui.utils.chat_id import CHANNEL_CHAT_ID_PREFIX
+from open_webui.utils.chat_id import CHANNEL_CHAT_ID_PREFIX, is_saved_chat_id
 from open_webui.utils.payload import apply_model_params_to_body_openai, apply_system_prompt_to_body
 from open_webui.utils.subscriptions.claude_code import ClaudeCodeProvider
 from open_webui.utils.subscriptions.codex import CodexProvider
@@ -57,7 +65,7 @@ from open_webui.utils.subscriptions.common import (
     requested_effort,
 )
 from open_webui.utils.subscriptions.conversation import parse_messages
-from open_webui.utils.subscriptions import computer_settings, folder_listing, project_folders
+from open_webui.utils.subscriptions import computer_settings, folder_listing, project_folders, run_targets
 from open_webui.utils.subscriptions.events import SubscriptionError
 from open_webui.utils.subscriptions.machines import (
     LOCAL_MACHINE_ID, LocalMachine, RemoteMachine, StartupCleanupUnconfirmedError, TunnelMachine,
@@ -1867,6 +1875,227 @@ async def _require_login_on(ref: ProviderRef, machine_id: str) -> None:
         return
     name = await _login_computer_name(ref, running_on)
     raise HTTPException(status_code=409, detail=f'Finish signing in on {name} first.')
+
+
+# --- Where chats run -----------------------------------------------------------------
+#
+# Each chat runs on one of the person's computers, in an exact folder or where
+# the AI chooses, or Detached. The choice is made once, when the chat starts,
+# and saved in chat_run_target; run_targets.py holds the rules.
+
+API_KEY_TARGET_MESSAGE = "Sign in to Buddy to choose where a chat runs; API keys can't."
+
+
+@dataclass(frozen=True)
+class _ChatFolderDefaults:
+    choice: 'run_targets.DefaultFolderChoice | None'
+    folder: Any
+    # The folder's instructions can be changed by someone else, and the person has no choice of their own.
+    shared_instructions: bool
+
+
+async def _chat_folder_defaults(user, folder_id) -> _ChatFolderDefaults:
+    folder = await project_folders.readable_folder(user.id, folder_id)
+    if folder is None:
+        return _ChatFolderDefaults(None, None, False)
+    own, inherited = await project_folders.resolve_folder(user.id, folder)
+    shared_instructions = own is None and await project_folders.has_shared_instructions(user.id, folder)
+    choice = own or inherited
+    if choice is None:
+        return _ChatFolderDefaults(None, folder, shared_instructions)
+    paths = {}
+    for machine_id, saved in choice.paths.items():
+        # A path chosen before its computer was set up again no longer counts.
+        if saved.revision == await _machine_revision(user.id, machine_id):
+            paths[machine_id] = saved.path
+    defaults = run_targets.DefaultFolderChoice(choice.mode, choice.machine_id, choice.access, paths)
+    return _ChatFolderDefaults(defaults, folder, shared_instructions)
+
+
+async def _ready_on(owner_id: str, machine_id: str) -> bool:
+    """A plan last reported being signed in on the computer."""
+    for provider_id in PROVIDER_IDS:
+        if uses_plan(status_cache.cached(_ref(owner_id, provider_id).on(machine_id)) or {}):
+            return True
+    return False
+
+
+async def _default_computers(owner_id: str) -> tuple['run_targets.DefaultComputer', ...]:
+    computers = []
+    if await _may_use_server_machine(owner_id):
+        computers.append(run_targets.DefaultComputer(LOCAL_MACHINE_ID, await _ready_on(owner_id, LOCAL_MACHINE_ID)))
+    for config in await _owned_machine_configs(owner_id):
+        ready = await _ready_on(owner_id, config['id'])
+        if config.get('kind') == MACHINE_KIND_RUNNER and not HUB.is_online(config['id']):
+            ready = False
+        computers.append(run_targets.DefaultComputer(config['id'], ready))
+    return tuple(computers)
+
+
+async def _plan_machine_id(owner_id: str, provider_id: str | None) -> str | None:
+    """The computer a plan ran on before chats chose their own: the given plan's, or an enabled one's."""
+    provider_ids = PROVIDER_IDS
+    if provider_id is not None:
+        provider_ids = (provider_id,)
+    for candidate in provider_ids:
+        settings = await _load_settings(_ref(owner_id, candidate))
+        if settings.machine_id and (settings.enable or provider_id is not None):
+            return settings.machine_id
+    return None
+
+
+async def _plan_access(owner_id: str, provider_id: str | None) -> str:
+    """The access new chats start with: the given plan's, or the lowest of the enabled plans'."""
+    if provider_id is not None:
+        return (await _load_settings(_ref(owner_id, provider_id))).access
+    access = None
+    for candidate in PROVIDER_IDS:
+        settings = await _load_settings(_ref(owner_id, candidate))
+        if not settings.enable:
+            continue
+        if access is None:
+            access = settings.access
+        else:
+            access = run_targets.lowest_access(access, settings.access)
+    return access or ACCESS_CHAT
+
+
+async def default_run_target(
+    user, folder_id, this_machine_id: str | None = None, provider_id: str | None = None,
+    started_before_targets: bool = False
+) -> 'run_targets.RunTargetDefault':
+    """Where a chat in this chat folder runs when nobody chose. Contacts no computer."""
+    folder_defaults = await _chat_folder_defaults(user, folder_id)
+    last_used = await ChatRunTargets.last_for_user(user.id)
+    last_used_machine_id = None
+    if last_used is not None:
+        last_used_machine_id = last_used.machine_id
+    inputs = run_targets.DefaultInputs(
+        folder_choice=folder_defaults.choice,
+        shared_instructions=folder_defaults.shared_instructions,
+        computers=await _default_computers(user.id),
+        this_machine_id=this_machine_id,
+        last_used_machine_id=last_used_machine_id,
+        plan_machine_id=await _plan_machine_id(user.id, provider_id),
+    )
+    return run_targets.choose_default(inputs, started_before_targets)
+
+
+def _detached_row(user, chat_id: str, source: str, note: str | None = None) -> ChatRunTargetModel:
+    return ChatRunTargetModel(
+        chat_id=chat_id,
+        user_id=user.id,
+        kind=run_targets.KIND_DETACHED,
+        folder_mode='none',
+        access=ACCESS_CHAT,
+        source=source,
+        note=note,
+        created_at=int(time.time()),
+    )
+
+
+async def _row_from_default(user, chat_id: str, default, provider_id: str | None) -> ChatRunTargetModel:
+    if default.kind == run_targets.KIND_DETACHED:
+        return _detached_row(user, chat_id, SOURCE_DEFAULT)
+    access = default.access
+    if access is None:
+        access = await _plan_access(user.id, provider_id)
+    return ChatRunTargetModel(
+        chat_id=chat_id,
+        user_id=user.id,
+        kind=run_targets.KIND_COMPUTER,
+        machine_id=default.machine_id,
+        machine_revision=await _machine_revision(user.id, default.machine_id),
+        folder_mode=default.folder_mode,
+        path=default.path,
+        access=access,
+        source=SOURCE_DEFAULT,
+        created_at=int(time.time()),
+    )
+
+
+class _RefusedTarget(Exception):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+async def _checked_computer(user, machine_id: str, expected_revision: str | None) -> str:
+    """The computer's current revision. Unknown computers and other people's are refused alike."""
+    if machine_id == LOCAL_MACHINE_ID:
+        if not await _may_use_server_machine(user.id):
+            raise _RefusedTarget(run_targets.REFUSED_SERVER_OFF)
+    elif machine_id not in {config['id'] for config in await _owned_machine_configs(user.id)}:
+        raise _RefusedTarget(run_targets.REFUSED_COMPUTER_REMOVED)
+    revision = await _machine_revision(user.id, machine_id)
+    if revision is None:
+        raise _RefusedTarget(run_targets.REFUSED_COMPUTER_REMOVED)
+    if expected_revision is not None and expected_revision != revision:
+        raise _RefusedTarget(run_targets.REFUSED_COMPUTER_RESET)
+    return revision
+
+
+async def _row_from_request(user, chat_id: str, raw, folder_id) -> ChatRunTargetModel:
+    """The bar's choice, checked without contacting any computer, so it works while one is offline."""
+    request = run_targets.parse_request(raw)
+    if request.kind == run_targets.KIND_DETACHED:
+        return _detached_row(user, chat_id, SOURCE_BAR)
+    revision = await _checked_computer(user, request.machine_id, request.expected_revision)
+    path = None
+    if request.folder.mode == run_targets.FOLDER_PATH:
+        platform = await _machine_platform(user.id, request.machine_id)
+        try:
+            path = project_folders.clean_project_path(request.folder.path, platform)
+        except SubscriptionError:
+            raise _RefusedTarget(run_targets.REFUSED_BAD_PATH)
+    acknowledged = None
+    if request.access != ACCESS_CHAT:
+        folder_defaults = await _chat_folder_defaults(user, folder_id)
+        if folder_defaults.shared_instructions:
+            if request.acknowledged_instructions_folder_id != folder_defaults.folder.id:
+                raise _RefusedTarget(run_targets.REFUSED_NEEDS_ACKNOWLEDGEMENT)
+            acknowledged = folder_defaults.folder.id
+    return ChatRunTargetModel(
+        chat_id=chat_id,
+        user_id=user.id,
+        kind=run_targets.KIND_COMPUTER,
+        machine_id=request.machine_id,
+        machine_revision=revision,
+        folder_mode=request.folder.mode,
+        path=path,
+        access=request.access,
+        acknowledged_instructions_folder_id=acknowledged,
+        source=SOURCE_BAR,
+        created_at=int(time.time()),
+    )
+
+
+async def bind_chat_target(user, chat_id: str, raw=None, provider_id: str | None = None):
+    """Save where a new chat runs: the bar's choice, checked, or the default when nobody chose.
+
+    A chat that already has a target keeps it. A choice that can't be used
+    makes the chat Detached and chat only, never anything more than asked.
+    Callers refuse a choice sent with an API key before creating the chat.
+    """
+    if not is_saved_chat_id(chat_id) or not await may_use_machines(user):
+        return None
+    if not await Chats.is_chat_owner(chat_id, user.id):
+        return None
+    existing = await ChatRunTargets.get(chat_id)
+    if existing is not None:
+        return existing
+    if raw is None:
+        folder_id = await Chats.get_chat_folder_id(chat_id, user.id)
+        default = await default_run_target(user, folder_id, provider_id=provider_id)
+        row = await _row_from_default(user, chat_id, default, provider_id)
+    else:
+        try:
+            row = await _row_from_request(user, chat_id, raw, await Chats.get_chat_folder_id(chat_id, user.id))
+        except _RefusedTarget as refused:
+            row = _detached_row(user, chat_id, SOURCE_REFUSED, refused.code)
+        except SubscriptionError:
+            row = _detached_row(user, chat_id, SOURCE_REFUSED, run_targets.REFUSED_BAD_REQUEST)
+    return await ChatRunTargets.insert_if_absent(row)
 
 
 async def start_login(
