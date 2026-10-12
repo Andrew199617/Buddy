@@ -44,11 +44,11 @@
 	const getReadDescription = (providerId: string) => {
 		if (providerId === 'codex') {
 			return $i18n.t(
-				"Can run read-only commands. Codex's read-only sandbox does not limit reads to the working folder, so it can read any file your account can. No edits."
+				"Can run read-only commands. Codex's read-only sandbox does not limit reads to the start folder, so it can read any file your account can. No edits."
 			);
 		}
 		return $i18n.t(
-			'Can read and search files and the web using CLI permissions on the selected computer. Reads are not restricted to the working folder by an OS sandbox. No edits or commands.'
+			'Can read and search files and the web using CLI permissions on the selected computer. Reads are not restricted to the start folder by an OS sandbox. No edits or commands.'
 		);
 	};
 
@@ -177,7 +177,7 @@
 				{#if machineId !== initialMachineId}
 					<p class="text-xs text-amber-700 dark:text-amber-400">
 						{$i18n.t(
-							'Changing machines disables this subscription and clears its access, working folder, and CLI path. Save, then explicitly enable it and choose access on the new machine.'
+							'Changing machines disables this subscription and clears its access, start folder, and CLI path. Save, then explicitly enable it and choose access on the new machine.'
 						)}
 					</p>
 				{/if}
@@ -222,7 +222,7 @@
 
 			<div class="flex flex-col gap-1">
 				<label class="text-xs text-gray-500" for="subscription-workspace">
-					{$i18n.t('Working folder')}
+					{$i18n.t('Start folder')}
 				</label>
 				<input
 					id="subscription-workspace"
@@ -235,7 +235,7 @@
 				/>
 				<p class="text-xs text-gray-400 dark:text-gray-600">
 					{$i18n.t(
-						'The working folder is CLI context, not a project or filesystem grant. Chat only uses an empty folder.'
+						'Where it starts for chats outside a chat folder, and in folders that let the AI choose. A chat folder with a specific project folder starts there instead. This is CLI context, not a project or filesystem grant. Chat only uses an empty folder.'
 					)}
 				</p>
 			</div>

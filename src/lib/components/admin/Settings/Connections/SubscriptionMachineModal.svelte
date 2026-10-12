@@ -383,7 +383,7 @@
 		{#if providersOnMachine.length}
 			<p>
 				{$i18n.t(
-					'These subscriptions run on it. Removing it turns them off, clears their access, working folder, and CLI path, and stops replies in progress:'
+					'These subscriptions run on it. Removing it turns them off, clears their access, start folder, and CLI path, and stops replies in progress:'
 				)}
 			</p>
 			<ul class="list-disc pl-5">
