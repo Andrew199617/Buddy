@@ -185,7 +185,8 @@ describe('file access', () => {
 		expect(fileAccessNeed(mixed)).toBe('allow');
 		expect(plansWithoutComputer(mixed).map((plan) => plan.id)).toEqual(['claude']);
 		// A Chat-only plan without a computer has nothing to open folders with anyway.
-		expect(plansWithoutComputer(project({ plans: [chatGptPlan] }))).toEqual([]);
+		const chatOnlyHomeless = { ...chatGptPlan, enable: true, machine: null };
+		expect(plansWithoutComputer(project({ plans: [chatOnlyHomeless] }))).toEqual([]);
 	});
 
 	it('needs a plan turned on when none is', () => {
