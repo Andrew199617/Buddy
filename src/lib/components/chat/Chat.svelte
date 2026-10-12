@@ -847,6 +847,11 @@
 		chatRunTarget = target;
 	}
 
+	/** The Project tab's "Check again" for the chat's own folder: is its computer online now? */
+	function recheckChatTargetComputer() {
+		void loadSavedChatRunTargetOptions(sidePanelFolderId);
+	}
+
 	/** Drops the open chat's target and any answer still on its way for it. */
 	function forgetChatRunTarget() {
 		chatRunTargetLoad += 1;
@@ -4882,6 +4887,7 @@
 						{codeInterpreterEnabled}
 						folderId={sidePanelFolderId}
 						chatTarget={projectChatTarget}
+						onChatTargetCheck={recheckChatTargetComputer}
 					/>
 				{/if}
 			</div>

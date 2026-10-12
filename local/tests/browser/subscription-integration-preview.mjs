@@ -591,6 +591,8 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	}
 
 	// --- Where chats run: the composer's bar -----------------------------------
+	// A bound chat opens with Work PC offline, until the case brings it online.
+	let workPcOnline = mode !== 'run-target-bound';
 	const runTargetComputer = {
 		machine_id: 'pc-1',
 		name: 'Work PC',
@@ -611,7 +613,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			allowed: true,
 			has_plans: true,
 			plan_access: { codex: 'full' },
-			computers: [runTargetComputer],
+			computers: [{ ...runTargetComputer, online: workPcOnline }],
 			recent: [{ machine_id: 'pc-1', path: 'C:\\code\\site', last_used: 1760000000 }],
 			chat_folder: null,
 			default: {
@@ -954,6 +956,9 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		sessionOptions,
 		projectSaves,
 		projectRelayClients,
+		bringWorkPcOnline: () => {
+			workPcOnline = true;
+		},
 		beforeNavigation: async (context) => {
 			await context.routeWebSocket('**/*', (socket) => {
 				webSocketRequests.push(socket.url());
@@ -3158,39 +3163,49 @@ async function runTargetNewCase(browser, profile) {
 }
 
 async function runTargetBoundCase(browser, profile) {
-	await runCase(browser, profile, 'run-target-bound', 'run-target-bound', async ({ page }) => {
-		const bar = runTargetBar(page);
-		await bar.waitFor();
+	await runCase(
+		browser,
+		profile,
+		'run-target-bound',
+		'run-target-bound',
+		async ({ page }, fixtures) => {
+			const bar = runTargetBar(page);
+			await bar.waitFor();
 
-		// The chat runs in an exact folder, so its Project tab opens that folder, with no Change.
-		await page
-			.locator('.buddy-chat-header')
-			.getByRole('button', { name: 'Controls', exact: true })
-			.click();
-		const panel = chatPanel(page, profile);
-		await panel.getByRole('button', { name: 'Project', exact: true }).click();
-		await panel.getByText('C:\\code\\site', { exact: true }).waitFor();
-		await panel.getByText('Work PC', { exact: true }).first().waitFor();
-		await panel.getByRole('button', { name: 'README.md', exact: true }).waitFor();
-		assert.equal(
-			await panel.getByRole('button', { name: 'Change', exact: true }).count(),
-			0,
-			'A started chat’s folder is not changed from its Project tab'
-		);
-		await panel.getByRole('button', { name: 'Close', exact: true }).first().click();
-
-		if (profile.mobile) {
-			await bar
-				.locator('.buddy-run-target-summary')
-				.filter({ hasText: 'Work PC · site · Full' })
+			// The chat runs in an exact folder, so its Project tab opens that folder, with no Change.
+			await page
+				.locator('.buddy-chat-header')
+				.getByRole('button', { name: 'Controls', exact: true })
 				.click();
-		} else {
-			await runTargetChip(bar, 'Work PC · site · Full').click();
+			const panel = chatPanel(page, profile);
+			await panel.getByRole('button', { name: 'Project', exact: true }).click();
+			await panel.getByText('C:\\code\\site', { exact: true }).waitFor();
+			await panel.getByText('Work PC', { exact: true }).first().waitFor();
+			// Check again asks about the chat's own computer, which is offline at first.
+			await panel.getByText(/Work PC is offline/).waitFor();
+			fixtures.bringWorkPcOnline();
+			await panel.getByRole('button', { name: 'Check again', exact: true }).click();
+			await panel.getByRole('button', { name: 'README.md', exact: true }).waitFor();
+			assert.equal(
+				await panel.getByRole('button', { name: 'Change', exact: true }).count(),
+				0,
+				'A started chat’s folder is not changed from its Project tab'
+			);
+			await panel.getByRole('button', { name: 'Close', exact: true }).first().click();
+
+			if (profile.mobile) {
+				await bar
+					.locator('.buddy-run-target-summary')
+					.filter({ hasText: 'Work PC · site · Full' })
+					.click();
+			} else {
+				await runTargetChip(bar, 'Work PC · site · Full').click();
+			}
+			await page.getByText('This chat runs on Work PC, in site, with Full access.').waitFor();
+			await page.getByRole('button', { name: 'New chat here' }).waitFor();
+			await captureScreenshot(page, `run-target-bound-${profile.name}`);
 		}
-		await page.getByText('This chat runs on Work PC, in site, with Full access.').waitFor();
-		await page.getByRole('button', { name: 'New chat here' }).waitFor();
-		await captureScreenshot(page, `run-target-bound-${profile.name}`);
-	});
+	);
 }
 
 async function folderBrowseCase(browser, profile) {
