@@ -1515,11 +1515,6 @@ async def user_offers_model(user, model_id: str) -> bool:
     return any(model['id'] == model_id for model in await get_user_subscription_models(user))
 
 
-async def get_subscription_models() -> list[dict]:
-    """Registry entries for every known subscription model, without refreshing anyone's."""
-    return [dict(model) for model in _catalog.values()]
-
-
 def _turn_access(settings: ProviderSettings, metadata: dict) -> str:
     """Tasks and channel replies run chat-only, whatever access the provider allows.
 

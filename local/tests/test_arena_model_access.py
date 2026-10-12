@@ -83,6 +83,16 @@ class ArenaModelAccessTests(unittest.IsolatedAsyncioTestCase):
         async def has_arena_access(user_id, **kwargs):
             return True
 
+        # Stand in for each user's own providers: in these fixtures the
+        # administrator owns every subscription model and other users none.
+        async def personalize_models(models, user):
+            if user.role != 'admin':
+                return []
+            return [dict(model) for model in models]
+
+        async def user_offers_model(user, model_id):
+            return user.role == 'admin'
+
         access_grants = SimpleNamespace(get_accessible_resource_ids=get_accessible_ids,
                                         has_access=has_model_access)
         models = SimpleNamespace(get_model_by_id=get_model_by_id)
@@ -109,10 +119,12 @@ class ArenaModelAccessTests(unittest.IsolatedAsyncioTestCase):
             'AccessGrants': access_grants,
             'Models': models,
             'has_access': has_arena_access,
+            'personalize_models': personalize_models,
+            'user_offers_model': user_offers_model,
         }
         execute_definitions(UTILS / 'access_control/__init__.py', {'has_base_model_access'},
                             self.models_namespace)
-        definitions = {'get_filtered_models', 'check_model_access'}
+        definitions = {'get_filtered_models', '_filter_by_access', 'check_model_access'}
         parsed = ast.parse((UTILS / 'models.py').read_text(encoding='utf-8'))
         if any(getattr(node, 'name', None) == 'get_arena_model_ids' for node in parsed.body):
             definitions.add('get_arena_model_ids')
