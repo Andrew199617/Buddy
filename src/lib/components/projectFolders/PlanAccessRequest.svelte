@@ -109,6 +109,14 @@
 		if (access === 'full') return fullAccessDescription($i18n);
 		return readFilesDescription($i18n, plan.id);
 	}
+
+	/** The question's details, read out with it when focus moves inside. */
+	function questionDetailIds(planId: string, access: FileAccess): string {
+		const ids = [`plan-access-what-${planId}`];
+		if (access === 'full') ids.push(`plan-access-warning-${planId}`);
+		ids.push(`plan-access-scope-${planId}`);
+		return ids.join(' ');
+	}
 </script>
 
 <div
@@ -139,7 +147,7 @@
 	<ul class="flex flex-col gap-2">
 		{#each plans as plan (plan.id)}
 			<li class="flex flex-col gap-1.5">
-				<div class="text-sm">
+				<div id="plan-access-plan-{plan.id}" class="text-sm">
 					{plan.name}
 					<span class="text-[0.6875rem] text-gray-500">
 						· {plan.machine?.name} · {$i18n.t('Chat only')}</span
@@ -151,19 +159,29 @@
 						class="flex flex-col gap-1.5 rounded-lg bg-gray-50 p-2.5 dark:bg-gray-850"
 						role="group"
 						aria-labelledby="plan-access-question-{plan.id}"
+						aria-describedby={questionDetailIds(plan.id, confirming.access)}
 					>
 						<p id="plan-access-question-{plan.id}" class="text-sm font-medium">
 							{question(plan, confirming.access, plan.machine.name)}
 						</p>
-						<p class="text-[0.6875rem] text-gray-600 dark:text-gray-300">
+						<p
+							id="plan-access-what-{plan.id}"
+							class="text-[0.6875rem] text-gray-600 dark:text-gray-300"
+						>
 							{description(plan, confirming.access)}
 						</p>
 						{#if confirming.access === 'full'}
-							<p class="text-[0.6875rem] text-amber-700 dark:text-amber-400">
+							<p
+								id="plan-access-warning-{plan.id}"
+								class="text-[0.6875rem] text-amber-700 dark:text-amber-400"
+							>
 								{fullAccessWarning($i18n)}
 							</p>
 						{/if}
-						<p class="text-[0.6875rem] text-gray-500 dark:text-gray-400">
+						<p
+							id="plan-access-scope-{plan.id}"
+							class="text-[0.6875rem] text-gray-500 dark:text-gray-400"
+						>
 							{$i18n.t(
 								'This applies to all your {{name}} chats, and its replies running now stop. You can change it later in Settings → Machines.',
 								{ name: plan.name }
@@ -198,6 +216,7 @@
 						<button
 							type="button"
 							id="plan-access-read-{plan.id}"
+							aria-describedby="plan-access-plan-{plan.id}"
 							class="min-h-11 rounded-lg border border-gray-100 px-3 text-xs font-medium hover:bg-gray-100 disabled:opacity-50 dark:border-gray-850 dark:hover:bg-gray-850 md:min-h-8"
 							disabled={saving}
 							on:click={() => ask(plan, 'read')}
@@ -207,6 +226,7 @@
 						<button
 							type="button"
 							id="plan-access-full-{plan.id}"
+							aria-describedby="plan-access-plan-{plan.id}"
 							class="min-h-11 rounded-lg border border-gray-100 px-3 text-xs font-medium hover:bg-gray-100 disabled:opacity-50 dark:border-gray-850 dark:hover:bg-gray-850 md:min-h-8"
 							disabled={saving}
 							on:click={() => ask(plan, 'full')}

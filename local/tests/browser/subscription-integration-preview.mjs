@@ -2970,8 +2970,20 @@ async function folderAllowCase(browser, profile) {
 		await request.waitFor();
 		assert.equal(await dialog.getByText('Let the AI choose', { exact: true }).count(), 0);
 
-		await request.getByRole('button', { name: 'Allow full access', exact: true }).click();
-		await request.getByText('Give Claude full access on Work PC?', { exact: true }).waitFor();
+		// Each button says which plan it changes, and the question carries its warning.
+		const allowFull = request.getByRole('button', { name: 'Allow full access', exact: true });
+		assert.equal(await allowFull.getAttribute('aria-describedby'), 'plan-access-plan-claude');
+		await allowFull.click();
+		const question = request.getByRole('group', {
+			name: 'Give Claude full access on Work PC?',
+			exact: true
+		});
+		await question.waitFor();
+		assert.deepEqual((await question.getAttribute('aria-describedby')).split(' '), [
+			'plan-access-what-claude',
+			'plan-access-warning-claude',
+			'plan-access-scope-claude'
+		]);
 		await request
 			.getByText(
 				'Buddy can then run commands on that computer as your account there, and so can anyone who controls this Buddy server.',
