@@ -10,7 +10,7 @@
 	import { grantContaining, lastSegment } from '$lib/components/projectFolders/project-folders';
 	import ProjectCommands from './ProjectCommands.svelte';
 	import ProjectFiles from './ProjectFiles.svelte';
-	import type { ProjectTarget } from './project-session';
+	import { isReadableGrant, type ProjectTarget } from './project-session';
 
 	const i18n: any = getContext('i18n');
 
@@ -63,10 +63,6 @@
 		return describeFailure(cause);
 	}
 
-	function isUsable(shared: CompanionGrant): boolean {
-		return shared.available !== false && shared.capabilities.read;
-	}
-
 	async function open() {
 		const opened = new RelayCompanionClient(target.computer.machine_id, localStorage.token);
 		client = opened;
@@ -76,7 +72,11 @@
 		try {
 			const grants = await opened.getGrants();
 			if (disposed || client !== opened) return;
-			const match = grantContaining(grants.filter(isUsable), target.path, target.computer.platform);
+			const match = grantContaining(
+				grants.filter(isReadableGrant),
+				target.path,
+				target.computer.platform
+			);
 			if (!match) {
 				phase = 'not_shared';
 				return;
