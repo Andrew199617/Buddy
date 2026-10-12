@@ -27,12 +27,14 @@ export type DesktopStatus = {
 	folders: string[];
 	allowEdits: boolean;
 	allowCommands: boolean;
+	// Missing in apps older than folder browsing.
+	allowFolderBrowsing?: boolean;
 	startAtLogin: boolean;
 	platform: string;
 	appVersion: string;
 };
 
-export type DesktopPermission = 'allowEdits' | 'allowCommands';
+export type DesktopPermission = 'allowEdits' | 'allowCommands' | 'allowFolderBrowsing';
 
 export type BuddyDesktop = {
 	getStatus(): Promise<DesktopStatus>;

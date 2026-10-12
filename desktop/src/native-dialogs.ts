@@ -30,6 +30,16 @@ function connectQuestion(serverUrl: string, accountName: string): MessageBoxOpti
 }
 
 function permissionQuestion(permission: DesktopPermission, accountName: string): MessageBoxOptions {
+	if (permission === 'allowFolderBrowsing') {
+		return {
+			title: 'Allow folder suggestions',
+			message: 'Let Buddy list folder names on this computer?',
+			detail:
+				'You can then pick project folders from the web and your phone, and Buddy suggests the ' +
+				'folders Claude Code and Codex worked in. Buddy sees folder names only, never file contents.',
+			buttons: ['Allow', 'Cancel']
+		};
+	}
 	if (permission === 'allowEdits') {
 		return {
 			title: 'Allow editing files',

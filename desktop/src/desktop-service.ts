@@ -171,6 +171,13 @@ export class DesktopService extends EventEmitter {
 			if (!confirmed) return this.getStatus();
 		}
 		this.settings[permission] = allowed;
+		if (permission === 'allowFolderBrowsing') {
+			// Changes in the running Runner, so no Claude or Codex turn stops.
+			this.saveSettings();
+			this.options.supervisor.setFolderBrowsing(allowed);
+			this.emitStatus();
+			return this.getStatus();
+		}
 		await this.applyLocalChange();
 		return this.getStatus();
 	}

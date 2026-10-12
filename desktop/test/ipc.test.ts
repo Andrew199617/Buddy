@@ -61,9 +61,11 @@ test('requests are checked before they reach the service', () => {
 	assert.deepEqual(calls, []);
 	ipc.call(BRIDGE_CHANNELS.connect, true, { enrollmentToken: 'bde1_token', name: 'Studio PC' });
 	ipc.call(BRIDGE_CHANNELS.setPermission, true, 'allowEdits', true);
+	ipc.call(BRIDGE_CHANNELS.setPermission, true, 'allowFolderBrowsing', true);
 	assert.deepEqual(calls, [
 		['connectThisPC', 'bde1_token', 'Studio PC'],
-		['setPermission', 'allowEdits', true]
+		['setPermission', 'allowEdits', true],
+		['setPermission', 'allowFolderBrowsing', true]
 	]);
 });
 
