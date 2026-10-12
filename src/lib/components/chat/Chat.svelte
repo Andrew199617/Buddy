@@ -466,8 +466,9 @@
 	let runTargetOptions: RunTargetOptions | null = null;
 	let runTargetDraft: RunTargetDraft | null = null;
 	let chatRunTarget: ChatRunTarget | null = null;
-	// Each load bumps this, so an older answer never replaces a newer one.
-	let runTargetLoad = 0;
+	// Each load bumps its counter, so an older answer never replaces a newer one.
+	let runTargetOptionsLoad = 0;
+	let chatRunTargetLoad = 0;
 	let runTargetProvidersKey = '';
 	let loadedChatIdProp = '';
 	let currentDraftKey = '';
@@ -794,12 +795,12 @@
 
 	/** What the bar offers here, and the draft a new chat starts with. */
 	async function loadRunTargetOptions(startNewDraft: boolean) {
-		const load = ++runTargetLoad;
+		const load = ++runTargetOptionsLoad;
 		const options = await getRunTargetOptions(localStorage.token, {
 			folderId: $selectedFolder?.id ?? null,
 			thisMachineId: get(thisPcMachineId)
 		}).catch(() => null);
-		if (load !== runTargetLoad) return;
+		if (load !== runTargetOptionsLoad) return;
 		runTargetOptions = options;
 		if (!options?.allowed || !options.default || history?.currentId) {
 			runTargetDraft = null;
@@ -818,11 +819,25 @@
 		}
 	}
 
+	/** Whether the bar shows for a saved chat, and its computers: the options in its own chat folder. */
+	async function loadSavedChatRunTargetOptions(folderId: string | null) {
+		const load = ++runTargetOptionsLoad;
+		const options = await getRunTargetOptions(localStorage.token, { folderId }).catch(() => null);
+		if (load !== runTargetOptionsLoad) return;
+		runTargetOptions = options;
+	}
+
 	async function loadChatRunTarget(id: string) {
-		const load = ++runTargetLoad;
+		const load = ++chatRunTargetLoad;
 		const target = await getChatRunTarget(localStorage.token, id).catch(() => null);
-		if (load !== runTargetLoad) return;
+		if (load !== chatRunTargetLoad) return;
 		chatRunTarget = target;
+	}
+
+	/** Drops the open chat's target and any answer still on its way for it. */
+	function forgetChatRunTarget() {
+		chatRunTargetLoad += 1;
+		chatRunTarget = null;
 	}
 
 	/** The first send of a new or temporary chat carries where it runs; a saved chat's is fixed. */
@@ -2327,7 +2342,7 @@
 		chatVariables = {};
 		taskIds = null;
 		chatTasks = [];
-		chatRunTarget = null;
+		forgetChatRunTarget();
 		runTargetDraft = null;
 		if (!embedded) void loadRunTargetOptions(true);
 
@@ -2465,17 +2480,11 @@
 			const chatContent = chat.chat;
 			chatVariables = chat?.variables ?? {};
 			runTargetDraft = null;
-			chatRunTarget = null;
+			forgetChatRunTarget();
 			// readOnly updates after this function; only the chat's owner sees where it runs.
 			if (!embedded && chat.user_id === $user?.id) {
 				// Options say whether the bar shows; the chat's target is what it shows.
-				void getRunTargetOptions(localStorage.token, { folderId: chat.folder_id ?? null })
-					.then((options) => {
-						runTargetOptions = options;
-					})
-					.catch(() => {
-						runTargetOptions = null;
-					});
+				void loadSavedChatRunTargetOptions(chat.folder_id ?? null);
 				void loadChatRunTarget($chatId);
 			}
 
