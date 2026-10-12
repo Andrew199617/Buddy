@@ -199,3 +199,79 @@ def load_or_create_key(key_file: Path, *, state_dir: Path | None = None) -> str:
         if error.errno in (errno.ELOOP, errno.ENOTDIR):
             raise ValueError('Runner key paths must not contain symbolic links or non-directory ancestors.') from error
         raise
+
+
+def _private_file_path(path: Path, state_dir: Path) -> tuple[Path, Path]:
+    path = Path(os.path.abspath(path))
+    state_dir = Path(os.path.abspath(state_dir))
+    if path.parent != state_dir:
+        raise ValueError('Private Runner files must be directly inside its state folder.')
+    return path, state_dir
+
+
+def read_private_text(path: Path, *, state_dir: Path) -> str:
+    """Read a private file from the state folder, with the key file's checks.
+
+    Raises FileNotFoundError when the file does not exist.
+    """
+    path, state_dir = _private_file_path(path, state_dir)
+    try:
+        with ExitStack() as resources:
+            if os.name == 'posix':
+                owner_id = os.geteuid()
+                directory = resources.enter_context(
+                    _open_posix_key_directory(state_dir, owner_id=owner_id, private=True)
+                )
+                flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, 'O_CLOEXEC', 0)
+                descriptor = os.open(path.name, flags, dir_fd=directory)
+                resources.callback(os.close, descriptor)
+                return _read_key_descriptor(descriptor, owner_id=owner_id)
+            resources.enter_context(_pin_windows_key_directory(state_dir, private=True))
+            pinned = resources.enter_context(PinnedPath(path.parent, path.name, file=True))
+            windows_key_acl.check_private(path, 'connection file', directory=False, descriptor=pinned.descriptor)
+            return _read_key_descriptor(pinned.descriptor)
+    except PinnedPathError as error:
+        raise ValueError(f'The Runner connection file path is unsafe: {error}') from error
+
+
+def write_private_text(path: Path, text: str, *, state_dir: Path) -> None:
+    """Replace a private file in the state folder; it is owner-only from its first moment."""
+    path, state_dir = _private_file_path(path, state_dir)
+    temporary_name = f'.{path.name}.{secrets.token_hex(8)}.tmp'
+    data = text.encode('utf-8')
+    try:
+        with ExitStack() as resources:
+            if os.name == 'posix':
+                owner_id = os.geteuid()
+                directory = resources.enter_context(
+                    _open_posix_key_directory(state_dir, owner_id=owner_id, private=True)
+                )
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, 'O_CLOEXEC', 0)
+                descriptor = os.open(temporary_name, flags, 0o600, dir_fd=directory)
+                try:
+                    _write_all(descriptor, data)
+                finally:
+                    os.close(descriptor)
+                os.replace(temporary_name, path.name, src_dir_fd=directory, dst_dir_fd=directory)
+                return
+            resources.enter_context(_pin_windows_key_directory(state_dir, private=True))
+            # Renaming a just-written file often fails on Windows while
+            # antivirus scans it, so the file is recreated in place. It is
+            # only written when a computer is connected, so a crash midway
+            # just means connecting it again.
+            path.unlink(missing_ok=True)
+            descriptor = windows_key_acl.create_private_file(path)
+            try:
+                _write_all(descriptor, data)
+            finally:
+                os.close(descriptor)
+    except PinnedPathError as error:
+        raise ValueError(f'The Runner connection file path is unsafe: {error}') from error
+
+
+def _write_all(descriptor: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.write(descriptor, view)
+        view = view[written:]
+    os.fsync(descriptor)

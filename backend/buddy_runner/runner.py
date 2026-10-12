@@ -635,6 +635,11 @@ def build_server_tls_context(certificate: Path | None, private_key: Path | None)
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] in ('run', 'enroll'):
+        # Connect mode, which the Buddy app uses; imported here because it builds on this module.
+        from buddy_runner.connect import main as connect_main
+
+        sys.exit(connect_main(sys.argv[1:]))
     parser = argparse.ArgumentParser(prog='buddy-runner', description='Run Claude Code and Codex for a Buddy server.')
     parser.add_argument('--host', default='127.0.0.1', help='Address to listen on (default: 127.0.0.1).')
     parser.add_argument('--port', type=int, default=DEFAULT_PORT)
