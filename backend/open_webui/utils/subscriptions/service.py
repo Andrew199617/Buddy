@@ -2108,6 +2108,17 @@ class _ChatFolderDefaults:
     folder: Any
     # The folder's instructions can be changed by someone else, and the person has no choice of their own.
     shared_instructions: bool
+    # More folders new chats here can pick from, per computer.
+    offered: dict = field(default_factory=dict)
+
+
+async def _current_paths(owner_id: str, saved_paths: dict) -> dict:
+    """Saved paths whose computer has not been set up again since they were chosen."""
+    current = {}
+    for machine_id, saved in saved_paths.items():
+        if saved.revision == await _machine_revision(owner_id, machine_id):
+            current[machine_id] = saved.path
+    return current
 
 
 async def _chat_folder_defaults(user, folder_id) -> _ChatFolderDefaults:
@@ -2119,13 +2130,15 @@ async def _chat_folder_defaults(user, folder_id) -> _ChatFolderDefaults:
     choice = own or inherited
     if choice is None:
         return _ChatFolderDefaults(None, folder, shared_instructions)
-    paths = {}
-    for machine_id, saved in choice.paths.items():
-        # A path chosen before its computer was set up again no longer counts.
-        if saved.revision == await _machine_revision(user.id, machine_id):
-            paths[machine_id] = saved.path
+    paths = await _current_paths(user.id, choice.paths)
+    offered = {}
+    for machine_id, entries in choice.offered.items():
+        revision = await _machine_revision(user.id, machine_id)
+        current = [saved.path for saved in entries if saved.revision == revision]
+        if current:
+            offered[machine_id] = current
     defaults = run_targets.DefaultFolderChoice(choice.mode, choice.machine_id, choice.access, paths)
-    return _ChatFolderDefaults(defaults, folder, shared_instructions)
+    return _ChatFolderDefaults(defaults, folder, shared_instructions, offered)
 
 
 async def _ready_on(owner_id: str, machine_id: str) -> bool:
@@ -2324,6 +2337,108 @@ async def bind_chat_target(
     folder_id = await Chats.get_chat_folder_id(chat_id, user.id)
     row = await _target_row(user, chat_id, raw, folder_id, provider_id, started_before_targets)
     return await ChatRunTargets.insert_if_absent(row)
+
+
+def _bar_plan_state(provider_status: dict | None, online: bool | None) -> str:
+    """A plan's state on one computer for the composer's bar, from what it last reported."""
+    if online is False:
+        return 'offline'
+    state = _sign_in_state(provider_status)
+    if state == 'not_checked':
+        return 'unknown'
+    if state == 'signed_out':
+        return 'sign_in'
+    return state
+
+
+def _describe_default(default) -> dict:
+    folder = None
+    if default.folder_mode == run_targets.FOLDER_PATH:
+        folder = {'mode': run_targets.FOLDER_PATH, 'path': default.path}
+    elif default.folder_mode == run_targets.FOLDER_AUTO:
+        folder = {'mode': run_targets.FOLDER_AUTO}
+    return {
+        'kind': default.kind,
+        'machine_id': default.machine_id,
+        'folder': folder,
+        # None means each plan's own access.
+        'access': default.access,
+        'from': default.came_from,
+        'access_locked': default.access_locked,
+    }
+
+
+async def run_target_options(user, folder_id=None, this_machine_id: str | None = None) -> dict:
+    """What the composer's bar offers for a new chat. Contacts no computer.
+
+    The person's computers with each plan's last known state there, recent
+    folders, the chat folder's defaults, and where the chat runs if nothing
+    is changed.
+    """
+    if not await may_use_machines(user):
+        return {'allowed': False, 'has_plans': False}
+    plan_access = {}
+    for provider_id in PROVIDER_IDS:
+        settings = await _load_settings(_ref(user.id, provider_id))
+        if settings.enable:
+            plan_access[provider_id] = settings.access
+    configs = {config['id']: config for config in await _owned_machine_configs(user.id)}
+    machine_ids = []
+    if await _may_use_server_machine(user.id):
+        machine_ids.append(LOCAL_MACHINE_ID)
+    machine_ids.extend(configs)
+    choices = await project_folders.load_choices(user.id)
+    computers = []
+    revisions = {}
+    for machine_id in machine_ids:
+        computer = await _describe_folder_computer(user.id, machine_id, configs.get(machine_id), choices)
+        if computer is None:
+            continue
+        revisions[machine_id] = await _machine_revision(user.id, machine_id)
+        computer['revision'] = revisions[machine_id]
+        providers = {}
+        for provider_id in plan_access:
+            provider_status = status_cache.cached(_ref(user.id, provider_id).on(machine_id))
+            providers[provider_id] = {
+                'state': _bar_plan_state(provider_status, computer['online']),
+                'message': (provider_status or {}).get('message'),
+            }
+        computer['providers'] = providers
+        computers.append(computer)
+
+    recent = []
+    for row in await ChatRunTargets.recent_paths(user.id):
+        # Only folders on computers still the person's, chosen since they were last set up.
+        if row.machine_id in revisions and row.machine_revision == revisions[row.machine_id]:
+            recent.append({'machine_id': row.machine_id, 'path': row.path, 'last_used': row.created_at})
+
+    folder_defaults = await _chat_folder_defaults(user, folder_id)
+    chat_folder = None
+    if folder_defaults.folder is not None:
+        chat_folder = {
+            'id': folder_defaults.folder.id,
+            'name': folder_defaults.folder.name,
+            'mode': None,
+            'paths': {},
+            'offered': folder_defaults.offered,
+            'shared_instructions': folder_defaults.shared_instructions,
+        }
+        if folder_defaults.choice is not None:
+            chat_folder['mode'] = folder_defaults.choice.mode
+            chat_folder['paths'] = folder_defaults.choice.paths
+
+    if this_machine_id not in revisions:
+        this_machine_id = None
+    default = await default_run_target(user, folder_id, this_machine_id=this_machine_id)
+    return {
+        'allowed': True,
+        'has_plans': bool(plan_access),
+        'plan_access': plan_access,
+        'computers': computers,
+        'recent': recent,
+        'chat_folder': chat_folder,
+        'default': _describe_default(default),
+    }
 
 
 async def start_login(

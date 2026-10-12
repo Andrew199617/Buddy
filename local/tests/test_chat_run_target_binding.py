@@ -27,7 +27,9 @@ def member_machine():
     return config
 
 
-class BindingTests(unittest.IsolatedAsyncioTestCase):
+class RunTargetTestCase(unittest.IsolatedAsyncioTestCase):
+    """Two of the owner's computers, someone else's, and a chat the owner started."""
+
     def setUp(self):
         self.config = MemoryConfig({
             'subscriptions.machines': [machine_config(), machine_config('runner-b', 'host-b'), member_machine()],
@@ -50,6 +52,8 @@ class BindingTests(unittest.IsolatedAsyncioTestCase):
         request.update(overrides)
         return request
 
+
+class BindingTests(RunTargetTestCase):
     async def test_a_new_chat_outside_chat_folders_runs_detached(self):
         row = await self.bind()
         self.assertEqual((row.kind, row.machine_id, row.access, row.source), ('detached', None, 'chat', 'default'))
@@ -116,6 +120,57 @@ class BindingTests(unittest.IsolatedAsyncioTestCase):
         acknowledged = await self.bind(self.computer(acknowledged_instructions_folder_id='team'), chat_id='chat-5')
         self.assertEqual((acknowledged.kind, acknowledged.access), ('computer', 'full'))
         self.assertEqual(acknowledged.acknowledged_instructions_folder_id, 'team')
+
+
+class OptionsTests(RunTargetTestCase):
+    """What the composer's bar offers for a new chat."""
+
+    async def test_options_list_the_persons_computers_with_each_plans_last_state(self):
+        on_b = self.service.ProviderRef(OWNER, 'claude').on('runner-b')
+        self.service.status_cache._entries[on_b] = self.service._CacheEntry(
+            {'installed': True, 'signed_in': False, 'message': 'Fixture signed out'}, 0
+        )
+        options = await self.service.run_target_options(OWNER_USER)
+        self.assertEqual((options['allowed'], options['has_plans'], options['plan_access']), (True, True, {'claude': 'full'}))
+        computers = {computer['machine_id']: computer for computer in options['computers']}
+        # Someone else's computer is never listed.
+        self.assertEqual(list(computers), ['local', 'runner-a', 'runner-b'])
+        self.assertEqual(computers['runner-b']['revision'], REVISION_B)
+        self.assertEqual(computers['runner-b']['providers']['claude'], {'state': 'sign_in', 'message': 'Fixture signed out'})
+        self.assertEqual(computers['runner-a']['providers']['claude']['state'], 'unknown')
+        # Outside chat folders a new chat runs Detached.
+        self.assertEqual(options['default']['kind'], 'detached')
+        self.assertIsNone(options['chat_folder'])
+
+    async def test_recent_folders_are_on_computers_not_set_up_again(self):
+        await self.bind(self.computer())
+        self.chats.add('chat-2', OWNER)
+        await self.bind(self.computer(folder={'mode': 'path', 'path': 'C:\\code\\api'}), 'chat-2')
+        self.config.values['subscriptions.machines'][1]['revision'] = 'fixture-revision-again'
+        options = await self.service.run_target_options(OWNER_USER)
+        self.assertEqual(options['recent'], [])
+        self.config.values['subscriptions.machines'][1]['revision'] = REVISION_B
+        options = await self.service.run_target_options(OWNER_USER)
+        self.assertCountEqual([entry['path'] for entry in options['recent']], ['C:\\code\\api', 'C:\\code\\site'])
+
+    async def test_options_in_a_chat_folder_carry_its_defaults(self):
+        self.folders.add('website', OWNER)
+        saved = {'runner-b': self.service.project_folders.SavedPath('C:\\code\\site', REVISION_B)}
+        offered = {'runner-b': [self.service.project_folders.SavedPath('C:\\code\\docs', REVISION_B)]}
+        await self.service.project_folders.save_choice(
+            OWNER, 'website', 'folder', saved, {'runner-a', 'runner-b'}, machine_id='runner-b', offered=offered
+        )
+        options = await self.service.run_target_options(OWNER_USER, 'website', this_machine_id='member-pc')
+        folder = options['chat_folder']
+        self.assertEqual((folder['id'], folder['mode'], folder['shared_instructions']), ('website', 'folder', False))
+        self.assertEqual(folder['paths'], {'runner-b': 'C:\\code\\site'})
+        self.assertEqual(folder['offered'], {'runner-b': ['C:\\code\\docs']})
+        self.assertEqual(options['default']['machine_id'], 'runner-b')
+        self.assertEqual(options['default']['folder'], {'mode': 'path', 'path': 'C:\\code\\site'})
+
+    async def test_a_person_who_may_not_use_computers_gets_nothing(self):
+        self.config.values['subscriptions.policy'] = {'user_machines': 'admins'}
+        self.assertEqual(await self.service.run_target_options(MEMBER_USER), {'allowed': False, 'has_plans': False})
 
 
 if __name__ == '__main__':
