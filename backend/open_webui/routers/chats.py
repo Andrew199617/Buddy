@@ -37,7 +37,7 @@ from open_webui.tasks import get_active_task_item_ids, get_response_streams_by_c
 from open_webui.utils.access_control import filter_allowed_access_grants, has_permission
 from open_webui.utils.access_control.folders import has_folder_write_access
 from open_webui.utils.auth import bearer_security, get_admin_user, get_current_user, get_verified_user
-from open_webui.utils.chat_agent import contents_for_owner
+from open_webui.utils.chat_agent import contents_for_owner, without_agent
 from open_webui.utils.chat_fork import build_fork_history
 from open_webui.utils.context_compaction import compact_chat_branch, get_chat_context_usage
 from open_webui.utils.misc import get_message_list
@@ -1379,6 +1379,9 @@ async def get_chat_by_id(
 
     if chat:
         data = ChatResponse.model_validate(chat, from_attributes=True).model_dump()
+        if chat.user_id != user.id:
+            # Only the person who chose a custom agent sees its instructions.
+            data['chat'] = without_agent(data['chat'])
         data = overlay_response_streams(
             data,
             await get_response_streams_by_chat_id(request.app.state.redis, id),

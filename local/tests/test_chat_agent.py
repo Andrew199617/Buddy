@@ -22,6 +22,17 @@ AGENT = {
 CHAT = {'title': 'Plan', 'params': {'system': 'Be brief.'}, 'history': {}, 'agent': AGENT}
 
 
+class WithoutAgentTests(unittest.TestCase):
+    def test_leaves_out_only_the_agent(self):
+        shared = chat_agent.without_agent(CHAT)
+        self.assertNotIn('agent', shared)
+        self.assertEqual(shared, {key: value for key, value in CHAT.items() if key != 'agent'})
+        self.assertEqual(CHAT['agent'], AGENT)
+
+    def test_passes_through_contents_that_are_not_a_dict(self):
+        self.assertIsNone(chat_agent.without_agent(None))
+
+
 class ContentsForOwnerTests(unittest.TestCase):
     def test_a_copy_of_ones_own_chat_keeps_its_agent(self):
         self.assertEqual(chat_agent.contents_for_owner(CHAT, 'owner', 'owner'), CHAT)
