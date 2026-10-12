@@ -208,7 +208,7 @@ class TunnelEndToEndTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RelayTests(unittest.IsolatedAsyncioTestCase):
-    """The Projects page relayed through Buddy to the computer's own workspace API."""
+    """The chat's Project tab, relayed through Buddy to the computer's own workspace API."""
 
     async def asyncSetUp(self):
         directory = tempfile.TemporaryDirectory(prefix='buddy-relay-test-')
