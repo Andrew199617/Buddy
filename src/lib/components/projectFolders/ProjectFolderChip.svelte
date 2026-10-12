@@ -5,6 +5,7 @@
 
 	import { getFolderProject, type FolderProject } from '$lib/apis/subscriptions';
 	import ProjectFolderModal from './ProjectFolderModal.svelte';
+	import { projectFolderChanges } from './project-folder-changes';
 	import { chipState } from './project-folders';
 
 	const i18n: any = getContext('i18n');
@@ -29,6 +30,11 @@
 
 	onMount(load);
 
+	// Saved here, in the folder's settings or from a chat's Project tab.
+	$: if ($projectFolderChanges.folderId === folderId && $projectFolderChanges.count > 0) {
+		void load();
+	}
+
 	// The fixed labels are translated; a computer and folder name are shown as they are.
 	function chipLabel(label: string): string {
 		if (label === 'Project folder needs attention')
@@ -40,7 +46,7 @@
 </script>
 
 {#if project && chip}
-	<ProjectFolderModal bind:show={showModal} {folderId} {folderName} onSaved={load} />
+	<ProjectFolderModal bind:show={showModal} {folderId} {folderName} />
 	<button
 		type="button"
 		class="inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full border px-3 text-xs md:min-h-7 {chip.tone ===

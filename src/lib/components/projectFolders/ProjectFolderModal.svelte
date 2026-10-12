@@ -13,7 +13,6 @@
 	export let show = false;
 	export let folderId: string;
 	export let folderName: string;
-	export let onSaved: () => void = () => {};
 
 	let section: ProjectFolderSection;
 	let saving = false;
@@ -32,7 +31,6 @@
 		saving = false;
 		if (!saved) return;
 		show = false;
-		onSaved();
 	}
 </script>
 

@@ -13,6 +13,7 @@
 	} from '$lib/apis/subscriptions';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import ProjectFolderPicker from './ProjectFolderPicker.svelte';
+	import { announceProjectFolderChange } from './project-folder-changes';
 	import {
 		anyFullAccess,
 		claudeReadHint,
@@ -119,6 +120,7 @@
 			}
 			saved = draftFromProject(project);
 			draft = { mode: saved.mode, paths: { ...saved.paths } };
+			announceProjectFolderChange(folderId);
 			return true;
 		} catch (cause) {
 			error = `${cause}`;

@@ -59,7 +59,6 @@
 	bind:show={showModal}
 	folderId={project.folder_id}
 	folderName={project.folder_name}
-	onSaved={onChanged}
 />
 
 <div class="flex h-full min-h-0 flex-col">
