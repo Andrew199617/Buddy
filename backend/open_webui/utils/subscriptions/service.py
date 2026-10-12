@@ -46,7 +46,7 @@ from open_webui.models.chat_run_targets import (
 from open_webui.models.chats import Chats
 from open_webui.models.subscription_credentials import KIND_API_KEY, KIND_PLAN_TOKEN, SubscriptionCredentials
 from open_webui.models.users import Users
-from open_webui.utils.chat_id import CHANNEL_CHAT_ID_PREFIX, is_saved_chat_id
+from open_webui.utils.chat_id import CHANNEL_CHAT_ID_PREFIX, is_saved_chat_id, is_temporary_chat_id
 from open_webui.utils.payload import apply_model_params_to_body_openai, apply_system_prompt_to_body
 from open_webui.utils.subscriptions.claude_code import ClaudeCodeProvider
 from open_webui.utils.subscriptions.codex import CodexProvider
@@ -1984,9 +1984,9 @@ async def _sign_in_settings(
     return on_computer
 
 
-async def _login_computer_name(ref: ProviderRef, machine_id: str) -> str:
+async def _computer_name(owner_id: str, machine_id: str) -> str:
     try:
-        return (await get_machine(ref.owner_id, machine_id)).name
+        return (await get_machine(owner_id, machine_id)).name
     except SubscriptionError:
         return 'another computer'
 
@@ -2010,7 +2010,7 @@ async def _require_login_on(ref: ProviderRef, machine_id: str) -> None:
         await provider.cancel_login()
         _login_computers.pop(ref, None)
         return
-    name = await _login_computer_name(ref, running_on)
+    name = await _computer_name(ref.owner_id, running_on)
     raise HTTPException(status_code=409, detail=f'Finish signing in on {name} first.')
 
 
@@ -2165,6 +2165,8 @@ async def _row_from_default(user, chat_id: str, default, provider_id: str | None
         path=default.path,
         access=access,
         source=SOURCE_DEFAULT,
+        # Where the default came from, such as the chat folder or the plan's own computer.
+        note=default.came_from,
         created_at=int(time.time()),
     )
 
@@ -2225,7 +2227,26 @@ async def _row_from_request(user, chat_id: str, raw, folder_id) -> ChatRunTarget
     )
 
 
-async def bind_chat_target(user, chat_id: str, raw=None, provider_id: str | None = None):
+async def _target_row(
+    user, chat_id: str, raw, folder_id, provider_id: str | None, started_before_targets: bool = False
+) -> ChatRunTargetModel:
+    """The target a chat starts with: the bar's choice, checked, or the default when nobody chose."""
+    if raw is None:
+        default = await default_run_target(
+            user, folder_id, provider_id=provider_id, started_before_targets=started_before_targets
+        )
+        return await _row_from_default(user, chat_id, default, provider_id)
+    try:
+        return await _row_from_request(user, chat_id, raw, folder_id)
+    except _RefusedTarget as refused:
+        return _detached_row(user, chat_id, SOURCE_REFUSED, refused.code)
+    except SubscriptionError:
+        return _detached_row(user, chat_id, SOURCE_REFUSED, run_targets.REFUSED_BAD_REQUEST)
+
+
+async def bind_chat_target(
+    user, chat_id: str, raw=None, provider_id: str | None = None, started_before_targets: bool = False
+):
     """Save where a new chat runs: the bar's choice, checked, or the default when nobody chose.
 
     A chat that already has a target keeps it. A choice that can't be used
@@ -2239,17 +2260,8 @@ async def bind_chat_target(user, chat_id: str, raw=None, provider_id: str | None
     existing = await ChatRunTargets.get(chat_id)
     if existing is not None:
         return existing
-    if raw is None:
-        folder_id = await Chats.get_chat_folder_id(chat_id, user.id)
-        default = await default_run_target(user, folder_id, provider_id=provider_id)
-        row = await _row_from_default(user, chat_id, default, provider_id)
-    else:
-        try:
-            row = await _row_from_request(user, chat_id, raw, await Chats.get_chat_folder_id(chat_id, user.id))
-        except _RefusedTarget as refused:
-            row = _detached_row(user, chat_id, SOURCE_REFUSED, refused.code)
-        except SubscriptionError:
-            row = _detached_row(user, chat_id, SOURCE_REFUSED, run_targets.REFUSED_BAD_REQUEST)
+    folder_id = await Chats.get_chat_folder_id(chat_id, user.id)
+    row = await _target_row(user, chat_id, raw, folder_id, provider_id, started_before_targets)
     return await ChatRunTargets.insert_if_absent(row)
 
 
@@ -3071,21 +3083,6 @@ async def user_offers_model(user, model_id: str) -> bool:
     return any(model['id'] == model_id for model in await get_user_subscription_models(user))
 
 
-def _turn_access(settings: ProviderSettings, metadata: dict) -> str:
-    """Tasks and channel replies run chat-only, whatever access the provider allows.
-
-    A channel reply's prompt holds every member's messages and its answer is
-    posted for every member to read, so it must not run tools or read files
-    on the user's machine.
-    """
-    if metadata.get('task'):
-        return ACCESS_CHAT
-    chat_id = metadata.get('chat_id')
-    if isinstance(chat_id, str) and chat_id.startswith(CHANNEL_CHAT_ID_PREFIX):
-        return ACCESS_CHAT
-    return settings.access
-
-
 def _require_plan(provider_id: str, provider_status: dict | None) -> None:
     """Start a turn only when the CLI is known to use a plan, so it never bills the API."""
     label = PROVIDER_LABELS[provider_id]
@@ -3165,31 +3162,130 @@ def _turn_model(machine_ref: MachineRef, model_id: str, subscription: dict) -> t
     return subscription['model'], [effort for effort in efforts if isinstance(effort, str) and effort]
 
 
-async def _turn_folder_choice(user, settings: ProviderSettings, metadata: dict, foreign_preset: bool):
-    """The chat folder's project folder choice, looked up only for turns that may use files.
+@dataclass(frozen=True)
+class _TurnTarget:
+    machine_id: str
+    access: str
+    folder_mode: str
+    path: str = ''
+    # Detached turns run chat only, on whichever computer is available.
+    detached: bool = False
+    # The chat's target it came from; turns outside chats have none.
+    row: ChatRunTargetModel | None = None
 
-    Tasks, channel replies and presets written by someone else stay chat-only,
-    so they never depend on a folder.
+
+DETACHED_NO_COMPUTER_MESSAGE = (
+    '{label} has no computer to run this chat on. Open the Buddy app on one of your computers, '
+    'or connect one in Settings → Machines.'
+)
+REMOVED_TARGET_MESSAGE = 'The computer this chat ran on was removed. Start a new chat to choose another.'
+SERVER_TARGET_MESSAGE = 'Buddy server is no longer available to your account. Start a new chat to run elsewhere.'
+RESET_TARGET_MESSAGE = '{name} was set up again after this chat started. Start a new chat to work there.'
+MISSING_FOLDER_MESSAGE = 'The folder this chat works in no longer exists on {name}. Start a new chat to choose another.'
+
+
+async def _detached_host(user, ref: ProviderRef, preferred: str | None = None) -> str:
+    """A computer for a Detached turn, which runs chat only.
+
+    The first reachable one where the plan last reported being signed in,
+    trying the preferred computer, the last one a chat used and the plan's
+    own computer first; otherwise the first reachable one.
     """
-    if foreign_preset or _turn_access(settings, metadata) == ACCESS_CHAT:
-        return None
-    return await project_folders.choice_for_turn(user.id, metadata)
+    settings = await _load_settings(ref)
+    computers = {computer.machine_id: computer for computer in await _plan_computers(ref, settings)}
+    candidates = []
+    if preferred:
+        candidates.append(preferred)
+    last_used = await ChatRunTargets.last_for_user(user.id)
+    if last_used is not None and last_used.machine_id:
+        candidates.append(last_used.machine_id)
+    candidates.extend(computers)
+    reachable = []
+    for machine_id in dict.fromkeys(candidates):
+        computer = computers.get(machine_id)
+        if computer is None or not computer.reachable:
+            continue
+        try:
+            _require_computer_cleanup(ref, machine_id)
+        except SubscriptionError:
+            continue
+        reachable.append(machine_id)
+    for machine_id in reachable:
+        if uses_plan(status_cache.cached(ref.on(machine_id)) or {}):
+            return machine_id
+    if reachable:
+        return reachable[0]
+    raise SubscriptionError(DETACHED_NO_COMPUTER_MESSAGE.format(label=PROVIDER_LABELS[ref.provider_id]))
 
 
-async def _turn_project_path(ref: ProviderRef, choice, access: str, machine) -> str:
-    """The exact folder this turn starts in, or '' when the chat folder lets the AI choose."""
-    if choice is None or access == ACCESS_CHAT or choice.mode != project_folders.MODE_FOLDER:
-        return ''
-    revision = await _machine_revision(ref.owner_id, machine.id)
-    return project_folders.turn_project_path(
-        choice, machine.id, machine.name, PROVIDER_LABELS[ref.provider_id], revision
-    )
+async def _row_turn_target(user, ref: ProviderRef, row: 'ChatRunTargetModel') -> _TurnTarget:
+    """Where a chat's turns run, as its target says, refused when its computer is gone or was set up again."""
+    if row.kind == run_targets.KIND_DETACHED:
+        return _TurnTarget(await _detached_host(user, ref), ACCESS_CHAT, 'none', detached=True, row=row)
+    if row.machine_id == LOCAL_MACHINE_ID and not await _may_use_server_machine(user.id):
+        raise SubscriptionError(SERVER_TARGET_MESSAGE)
+    revision = await _machine_revision(user.id, row.machine_id)
+    if revision is None:
+        raise SubscriptionError(REMOVED_TARGET_MESSAGE)
+    if row.machine_revision and revision != row.machine_revision:
+        raise SubscriptionError(RESET_TARGET_MESSAGE.format(name=await _computer_name(user.id, row.machine_id)))
+    return _TurnTarget(row.machine_id, row.access, row.folder_mode, row.path or '', row=row)
 
 
-async def _require_project_folder(machine, path: str, choice) -> None:
-    """Refuse rather than start somewhere else when the project folder is gone."""
+async def _detached_turn(user, ref: ProviderRef, preferred: str | None = None) -> _TurnTarget:
+    return _TurnTarget(await _detached_host(user, ref, preferred), ACCESS_CHAT, 'none', detached=True)
+
+
+async def _turn_target(user, ref: ProviderRef, metadata: dict) -> _TurnTarget:
+    """Where this turn runs. Contacts no computer."""
+    chat_id = metadata.get('chat_id')
+    if not chat_id:
+        # Outside chats, such as API calls without chat management: where the plan runs, as before.
+        settings = await _load_settings(ref)
+        return _TurnTarget(settings.machine_id, settings.access, run_targets.FOLDER_AUTO)
+    if not isinstance(chat_id, str) or chat_id.startswith(CHANNEL_CHAT_ID_PREFIX):
+        # Every member reads a channel reply's prompt and answer, so it runs chat only.
+        return await _detached_turn(user, ref)
+    if is_temporary_chat_id(chat_id):
+        # A temporary chat has no saved target; each turn carries the bar's choice.
+        raw = metadata.get(REQUESTED_RUN_TARGET_KEY)
+        row = await _target_row(user, chat_id, raw, metadata.get('folder_id'), ref.provider_id)
+        return await _row_turn_target(user, ref, row)
+    if not await Chats.is_chat_owner(chat_id, user.id):
+        # Someone else's chat, such as an admin answering in it: chat only, on the
+        # poster's own computers. The owner's target is never used.
+        return await _detached_turn(user, ref)
+    row = await ChatRunTargets.get(chat_id)
+    if metadata.get('task'):
+        # Titles, tags and follow-up suggestions run chat only, and never fix where a chat runs.
+        preferred = None
+        if row is not None:
+            preferred = row.machine_id
+        return await _detached_turn(user, ref, preferred)
+    if row is None:
+        row = await bind_chat_target(user, chat_id, None, ref.provider_id, started_before_targets=True)
+    if row is None:
+        return await _detached_turn(user, ref)
+    return await _row_turn_target(user, ref, row)
+
+
+async def _turn_access(user, target: _TurnTarget, metadata: dict, foreign_preset: bool) -> str:
+    """The target's access, lowered for turns that must run chat only."""
+    if target.detached or foreign_preset:
+        # A preset someone else wrote can't steer tools on the person's computer.
+        return ACCESS_CHAT
+    held = await project_folders.instructions_hold(user.id, metadata)
+    if held is not None:
+        acknowledged = target.row is not None and target.row.acknowledged_instructions_folder_id == held.folder_id
+        if not acknowledged:
+            return ACCESS_CHAT
+    return target.access
+
+
+async def _require_chat_folder(machine, path: str) -> None:
+    """Refuse rather than start somewhere else when the chat's folder is gone. The message never names the path."""
     if not await machine.path_exists(path, 'dir'):
-        raise SubscriptionError(project_folders.missing_project_folder_message(choice, machine.name))
+        raise SubscriptionError(MISSING_FOLDER_MESSAGE.format(name=machine.name))
 
 
 def _with_start_note(conversation, cwd: str):
@@ -3218,12 +3314,12 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
     is_task = bool(metadata.get('task'))
 
     try:
+        _require_single_worker()
+        target = await _turn_target(user, ref, metadata)
         async with _provider_lock(ref):
-            _require_single_worker()
-            settings = await _load_settings(ref)
-            settings = await _settings_for(ref, settings, settings.machine_id)
+            settings = await _settings_for(ref, await _load_settings(ref), target.machine_id)
             await _require_verified_machine(ref, settings)
-            _require_computer_cleanup(ref, settings.machine_id)
+            _require_computer_cleanup(ref, target.machine_id)
             generation = _provider_generations.get(ref, 0)
         if not settings.enable:
             raise SubscriptionError(
@@ -3231,24 +3327,25 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
             )
         # A status older than its TTL may predate a switch to API billing on
         # the machine, so a turn waits for a current one.
-        on_computer = ref.on(settings.machine_id)
+        on_computer = ref.on(target.machine_id)
         _require_plan(ref.provider_id, await status_cache.get(on_computer, serve_expired=False))
         cli_model, model_efforts = _turn_model(on_computer, model_id, subscription)
-        folder_choice = await _turn_folder_choice(user, settings, metadata, foreign_preset)
+        access = await _turn_access(user, target, metadata, foreign_preset)
         async with _provider_lock(ref):
             if generation != _provider_generations.get(ref, 0):
                 raise SubscriptionError('The provider machine changed; refresh before starting another turn.')
             machine = await _tracked(ref, settings)
-            access = _turn_access(settings, metadata)
-            if foreign_preset:
-                access = ACCESS_CHAT
-            if folder_choice is not None and folder_choice.mode == project_folders.MODE_CHAT:
-                # A chat folder can only lower access.
-                access = ACCESS_CHAT
-            project_path = await _turn_project_path(ref, folder_choice, access, machine)
+            project_path = ''
+            if access != ACCESS_CHAT and target.folder_mode == run_targets.FOLDER_PATH:
+                project_path = target.path
             cwd = await working_directory(settings, access, machine, project_path)
             conversation = parse_messages(payload.get('messages'))
-            lets_ai_choose = folder_choice is not None and folder_choice.mode == project_folders.MODE_AUTO
+            # Chats from before targets keep the prompt they started with.
+            lets_ai_choose = (
+                target.row is not None
+                and target.folder_mode == run_targets.FOLDER_AUTO
+                and target.row.note != run_targets.FROM_PLAN
+            )
             if access == ACCESS_FULL and lets_ai_choose:
                 conversation = _with_start_note(conversation, cwd)
             turn = TurnRequest(
@@ -3263,7 +3360,7 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
             )
         # Checked outside the provider lock, so a slow computer never holds it.
         if project_path:
-            await _require_project_folder(machine, project_path, folder_choice)
+            await _require_chat_folder(machine, project_path)
     except SubscriptionError as error:
         events = failure_events(str(error))
     else:
