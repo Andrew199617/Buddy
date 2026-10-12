@@ -1,7 +1,7 @@
 <script lang="ts">
 	// "Project folder" in a chat folder's settings: where Claude and ChatGPT
 	// work for chats in it. Each person chooses for themselves.
-	import { getContext, onMount } from 'svelte';
+	import { getContext, onMount, tick } from 'svelte';
 
 	import {
 		clearFolderProject,
@@ -84,10 +84,18 @@
 		return project?.own?.paths[machineId]?.problem ?? null;
 	}
 
+	async function closePicker() {
+		const machineId = pickingFor?.machine_id;
+		pickingFor = null;
+		await tick();
+		// Back where the person was: that computer's Change button.
+		if (machineId) document.getElementById(`project-folder-change-${machineId}`)?.focus();
+	}
+
 	function choosePath(path: string) {
 		if (!pickingFor) return;
 		draft = { mode: 'folder', paths: { ...draft.paths, [pickingFor.machine_id]: path } };
-		pickingFor = null;
+		void closePicker();
 	}
 
 	function setMode(mode: ProjectDraft['mode']) {
@@ -155,7 +163,7 @@
 			<ProjectFolderPicker
 				computer={pickingFor}
 				initialPath={draft.paths[pickingFor.machine_id] ?? ''}
-				onBack={() => (pickingFor = null)}
+				onBack={closePicker}
 				onPick={choosePath}
 			/>
 		{:else if noFilePlans}
@@ -179,6 +187,7 @@
 					>
 						<input
 							type="radio"
+							name="project-folder-mode-{folderId}"
 							class="mt-1"
 							checked={draft.mode === 'inherit'}
 							on:change={() => setMode('inherit')}
@@ -199,6 +208,7 @@
 				>
 					<input
 						type="radio"
+						name="project-folder-mode-{folderId}"
 						class="mt-1"
 						checked={draft.mode === 'auto'}
 						on:change={() => setMode('auto')}
@@ -217,6 +227,7 @@
 					<label class="flex min-h-11 cursor-pointer items-start gap-2 md:min-h-0">
 						<input
 							type="radio"
+							name="project-folder-mode-{folderId}"
 							class="mt-1"
 							checked={draft.mode === 'folder'}
 							on:change={() => setMode('folder')}
@@ -262,6 +273,7 @@
 									<button
 										type="button"
 										class="min-h-11 w-full shrink-0 rounded-lg px-3 text-xs font-medium hover:bg-gray-100 dark:hover:bg-gray-850 md:min-h-8 md:w-auto"
+										id="project-folder-change-{computer.machine_id}"
 										on:click={() => (pickingFor = computer)}
 									>
 										{#if draft.paths[computer.machine_id]}
@@ -281,6 +293,7 @@
 				>
 					<input
 						type="radio"
+						name="project-folder-mode-{folderId}"
 						class="mt-1"
 						checked={draft.mode === 'chat'}
 						on:change={() => setMode('chat')}

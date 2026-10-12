@@ -25,10 +25,13 @@
 	let resultIsError = false;
 	let canUseNativeDialog = false;
 	let pathInput: HTMLInputElement;
+	let backButton: HTMLButtonElement;
 
 	$: offline = computer.kind === 'app' && computer.online === false;
 
 	onMount(async () => {
+		// The picker replaced the button that opened it, so focus moves here.
+		backButton?.focus();
 		if (!desktop?.chooseProjectFolder) return;
 		try {
 			const status = await desktop.getStatus();
@@ -82,6 +85,7 @@
 		<button
 			type="button"
 			class="min-h-11 rounded-lg px-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-850 md:min-h-8"
+			bind:this={backButton}
 			on:click={onBack}
 		>
 			← {computer.name}
