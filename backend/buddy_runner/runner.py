@@ -30,12 +30,14 @@ import socket
 import ssl
 import sys
 import tempfile
+import time
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
+from buddy_runner import agent_history, folder_browser
 from buddy_runner.discovery import find_tool
 from buddy_runner.keys import load_or_create_key
 from buddy_runner.local_process import start_local_process
@@ -98,6 +100,10 @@ def _auth_middleware(key: str):
 
 # A sleeping or disconnected drive can take a long time to answer a path check.
 PATH_CHECK_SECONDS = 5
+# Listing folders and reading CLI history for the folder picker.
+FOLDER_LIST_SECONDS = 3
+FOLDER_SUGGEST_SECONDS = 2
+FOLDER_SUGGESTIONS_CACHE_SECONDS = 60
 
 
 class RunnerError(Exception):
@@ -151,8 +157,14 @@ def _valid_start_id(start: dict) -> str | None:
 
 
 class Runner:
-    def __init__(self, state_dir: Path, workspaces: WorkspaceCapabilities):
+    def __init__(self, state_dir: Path, workspaces: WorkspaceCapabilities, folder_browsing: bool = False):
         self.state_dir = state_dir
+        # Listing folder names and suggesting CLI folders, for picking where a
+        # chat works. Off until the person allows it in the Buddy app, which
+        # can change it while the Runner runs.
+        self.folder_browsing = folder_browsing
+        self._folder_calls = asyncio.Semaphore(2)
+        self._suggestions = None
         self.chat_dir = state_dir / 'chat'
         self.default_workspace = state_dir / 'workspace'
         self.temp_dir = state_dir / 'tmp'
@@ -193,6 +205,8 @@ class Runner:
             'capabilities': {
                 'directories': True, 'files': True, 'workspaces': True,
                 'terminals': True, 'pty': False, 'providerExecution': True,
+                # The calls exist; whether they are allowed shows in their answer.
+                'folderBrowsing': True,
             },
         }
 
@@ -210,6 +224,52 @@ class Runner:
             return await asyncio.wait_for(asyncio.to_thread(self.path_exists, path, kind), PATH_CHECK_SECONDS)
         except asyncio.TimeoutError:
             raise RunnerError(504, 'That drive took too long to answer. It may be asleep or disconnected.') from None
+
+    def set_folder_browsing(self, allowed: bool) -> None:
+        self.folder_browsing = allowed
+        self._suggestions = None
+
+    def _require_folder_browsing(self) -> None:
+        if not self.folder_browsing:
+            raise RunnerError(403, 'Folder browsing is off in the Buddy app on this computer.')
+
+    async def list_folders(self, path: str, show_hidden: bool, prefix: str) -> dict:
+        """Folder names in one folder, or the drives and places to start from when path is empty."""
+        self._require_folder_browsing()
+        async with self._folder_calls:
+            try:
+                if not path:
+                    roots = await asyncio.wait_for(asyncio.to_thread(folder_browser.list_roots), FOLDER_LIST_SECONDS)
+                    return {'path': '', 'roots': roots, 'entries': [], 'truncated': False}
+                deadline = time.monotonic() + FOLDER_LIST_SECONDS
+                listing = await asyncio.wait_for(
+                    asyncio.to_thread(folder_browser.list_folders, path, show_hidden, prefix, deadline),
+                    FOLDER_LIST_SECONDS + 1,
+                )
+            except asyncio.TimeoutError:
+                raise RunnerError(504, 'That folder took too long to list. It may be on a sleeping or network drive.') from None
+        log.info('Listed %d folders for Buddy', len(listing['entries']))
+        return listing
+
+    async def suggest_folders(self) -> dict:
+        """Folders Claude Code and Codex worked in here, kept for a minute."""
+        self._require_folder_browsing()
+        if self._suggestions is not None and time.monotonic() - self._suggestions[0] < FOLDER_SUGGESTIONS_CACHE_SECONDS:
+            return self._suggestions[1]
+        claude_home, codex_home = agent_history.default_homes()
+        exclusions = agent_history.default_exclusions(self.state_dir)
+        async with self._folder_calls:
+            deadline = time.monotonic() + FOLDER_SUGGEST_SECONDS
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(agent_history.suggest_folders, claude_home, codex_home, exclusions, deadline),
+                    FOLDER_SUGGEST_SECONDS + 2,
+                )
+            except asyncio.TimeoutError:
+                raise RunnerError(504, 'Looking through Claude Code and Codex history took too long.') from None
+        self._suggestions = (time.monotonic(), result)
+        log.info('Suggested %d folders for Buddy', len(result['folders']))
+        return result
 
     def at_process_limit(self) -> bool:
         return len(self.command_requests) + len(self.processes) >= 16

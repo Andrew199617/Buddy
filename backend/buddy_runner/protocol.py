@@ -12,7 +12,8 @@ Opening:
 Calls, Buddy → Runner, answered once each:
   ``call``   {id, method, params}
   ``result`` {id, ok: true, result} or {id, ok: false, error: {status, message}}
-  Methods: health, tools.find, paths.check, process.stop.
+  Methods: health, tools.find, paths.check, process.stop, workspace.request,
+  folders.list, folders.suggest.
 
 Process streams carry the same messages as a listen-mode Runner's process
 WebSocket, wrapped with a stream number ``s`` that Buddy chooses:
