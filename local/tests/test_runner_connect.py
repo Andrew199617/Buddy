@@ -8,8 +8,10 @@ import asyncio
 import contextlib
 import io
 import json
+import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -24,6 +26,20 @@ from buddy_runner.tunnel import PermanentDisconnect  # noqa: E402
 from buddy_runner.workspace_capabilities import WorkspaceCapabilities  # noqa: E402
 
 CONNECTION = {'server_url': 'https://buddy.example.com', 'machine_id': 'machine-1', 'credential': 'bdr1_fixture'}
+
+# A Runner process that Buddy refuses at once, as when the computer was removed.
+REMOVED_RUNNER = textwrap.dedent('''
+    import sys
+    sys.path.insert(0, sys.argv[1])
+    from buddy_runner import connect, protocol
+    from buddy_runner.tunnel import PermanentDisconnect
+
+    async def removed(*args, **kwargs):
+        raise PermanentDisconnect(protocol.CLOSE_UNKNOWN_MACHINE, 'removed')
+
+    connect.run_tunnel = removed
+    sys.exit(connect.main(['run', '--connection-stdin', '--state-dir', sys.argv[2]]))
+''')
 
 
 class ConnectionTests(unittest.TestCase):
@@ -99,14 +115,46 @@ class ServeTests(unittest.IsolatedAsyncioTestCase):
             on_status('connected', 'Fixture PC')
             await asyncio.Event().wait()
 
-        async def stop_at_once(stop):
+        def stop_at_once(stop):
             stop.set()
 
-        with patch.object(connect, 'run_tunnel', stays_connected), patch.object(connect, '_watch_stdin', stop_at_once):
+        with patch.object(connect, 'run_tunnel', stays_connected), patch.object(connect, '_start_stdin_reader', stop_at_once):
             exit_code, states = await self.serve_capturing(watch_stdin=True)
         self.assertEqual(exit_code, 0)
         self.assertEqual(states[-1], 'stopped')
         self.assertTrue(self.runner.closing)
+
+
+class StopCommandTests(unittest.TestCase):
+    def test_only_a_stop_command_stops(self):
+        self.assertTrue(connect._is_stop_command('{"command": "stop"}\n'))
+        for line in ('garbage\n', '[]\n', '{"command": "other"}\n'):
+            with self.subTest(line=line):
+                self.assertFalse(connect._is_stop_command(line))
+
+
+class RunnerProcessExitTests(unittest.TestCase):
+    def test_a_permanent_close_exits_while_the_app_keeps_stdin_open(self):
+        state = tempfile.TemporaryDirectory(prefix='buddy-runner-exit-')
+        self.addCleanup(state.cleanup)
+        child = subprocess.Popen(
+            [sys.executable, '-B', '-c', REMOVED_RUNNER, str(ROOT / 'backend'), state.name],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        # Like the Buddy app: send the connection and keep stdin open.
+        child.stdin.write(json.dumps(CONNECTION) + '\n')
+        child.stdin.flush()
+        try:
+            exit_code = child.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            exit_code = None
+            child.kill()
+        output, _ = child.communicate()
+        self.assertEqual(exit_code, connect.EXIT_REMOVED, 'The Runner kept running after Buddy removed this computer.')
+        self.assertIn('"removed"', output)
 
 
 if __name__ == '__main__':
