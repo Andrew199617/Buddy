@@ -285,6 +285,28 @@ class ResolveTests(unittest.IsolatedAsyncioTestCase):
         self.grants.share('work', 'member-1', 'write')
         self.assertEqual((await self.module.choice_for_turn('owner-1', turn)).mode, 'chat')
 
+    async def test_instructions_the_turn_received_count_even_if_removed_since(self):
+        # The middleware applied the prompt; it was cleared before the plan's turn looked.
+        turn = {'chat_id': 'temporary:x', 'folder_id': 'work', 'folder_instructions_id': 'work'}
+        self.assertEqual((await self.module.choice_for_turn('member-1', turn)).mode, 'chat')
+        await self.save('member-1', 'work', 'auto')
+        self.assertEqual((await self.module.choice_for_turn('member-1', turn)).mode, 'auto')
+
+    async def test_an_admin_given_instructions_from_a_folder_they_cannot_read_stays_chat_only(self):
+        turn = {'chat_id': 'temporary:x', 'folder_id': 'work', 'folder_instructions_id': 'work'}
+        choice = await self.module.choice_for_turn('admin-1', turn)
+        self.assertEqual((choice.folder_id, choice.mode), ('work', 'chat'))
+        self.assertIsNone(await self.module.choice_for_turn('admin-1', {'chat_id': 'temporary:x', 'folder_id': 'work'}))
+
+    async def test_a_folder_deeper_than_buddy_follows_counts_as_editable_by_others(self):
+        parent_id = None
+        for depth in range(self.module.MAX_PARENT_DEPTH + 1):
+            self.folders.add(f'deep-{depth}', name=f'Deep {depth}', parent_id=parent_id)
+            parent_id = f'deep-{depth}'
+        self.folders.rows[parent_id].data = {'system_prompt': 'Be brief.'}
+        choice = await self.module.choice_for_turn('owner-1', {'chat_id': 'temporary:x', 'folder_id': parent_id})
+        self.assertEqual(choice.mode, 'chat')
+
     async def test_a_folder_without_instructions_is_not_affected(self):
         self.folders.rows['work'].data = {'system_prompt': '   ', 'files': []}
         choice = await self.module.choice_for_turn('member-1', {'chat_id': 'temporary:x', 'folder_id': 'work'})

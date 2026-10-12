@@ -18,6 +18,7 @@ from open_webui.models.config import Config
 from open_webui.models.folders import Folders
 from open_webui.utils.access_control.folders import has_folder_access
 from open_webui.utils.chat_id import is_saved_chat_id
+from open_webui.utils.subscriptions.common import FOLDER_INSTRUCTIONS_KEY, folder_adds_instructions
 from open_webui.utils.subscriptions.events import SubscriptionError
 
 # "Let the AI choose": start in the plan's start folder; the agent finds the project.
@@ -305,22 +306,15 @@ async def resolve_folder(user_id: str, folder, choices: dict[str, FolderChoice] 
     return own, inherited
 
 
-def _adds_instructions(folder) -> bool:
-    """The chat folder adds a system prompt or knowledge files to its chats."""
-    data = folder.data or {}
-    prompt = data.get('system_prompt')
-    if isinstance(prompt, str) and prompt.strip():
-        return True
-    files = data.get('files')
-    return isinstance(files, list) and len(files) > 0
-
-
 async def _others_can_edit(user_id: str, folder) -> bool:
     """Someone besides this person owns the folder or one above it, or may edit one of them."""
     folder_ids = []
     seen = set()
     current = folder
-    while current is not None and current.id not in seen and len(folder_ids) < MAX_PARENT_DEPTH:
+    while current is not None and current.id not in seen:
+        if len(folder_ids) == MAX_PARENT_DEPTH:
+            # Deeper than Buddy follows: write access may come from a folder further up.
+            return True
         if current.user_id != user_id:
             return True
         seen.add(current.id)
@@ -345,9 +339,29 @@ async def has_shared_instructions(user_id: str, folder) -> bool:
     Like a preset written by someone else, those chats then stay chat-only
     until this person chooses the folder's project folder themselves.
     """
-    if not _adds_instructions(folder):
+    if not folder_adds_instructions(folder.data):
         return False
     return await _others_can_edit(user_id, folder)
+
+
+async def _held_back_by_received_instructions(user_id: str, metadata: dict, choices: dict) -> FolderChoice | None:
+    """Chat-only when the turn received a folder's instructions that someone else can change.
+
+    The middleware records the folder whose prompt or knowledge it applied, so
+    this holds even if that text was removed since, and for admins, who receive
+    it from folders they can't otherwise read. The person's own choice for that
+    folder lifts it.
+    """
+    folder_id = metadata.get(FOLDER_INSTRUCTIONS_KEY)
+    if not isinstance(folder_id, str) or not folder_id or folder_id in choices:
+        return None
+    folder = await Folders.get_folder_by_id(folder_id)
+    if folder is None:
+        # Deleted since; its text still reached this turn.
+        return FolderChoice(folder_id, MODE_CHAT)
+    if not await _others_can_edit(user_id, folder):
+        return None
+    return FolderChoice(folder.id, MODE_CHAT, folder_name=folder.name)
 
 
 async def choice_for_turn(user_id: str, metadata: dict) -> FolderChoice | None:
@@ -360,12 +374,16 @@ async def choice_for_turn(user_id: str, metadata: dict) -> FolderChoice | None:
         folder_id = await Chats.get_chat_folder_id(chat_id, user_id)
     else:
         folder_id = metadata.get('folder_id')
+    choices = await load_choices(user_id)
+    held_back = await _held_back_by_received_instructions(user_id, metadata, choices)
     folder = await readable_folder(user_id, folder_id)
     if folder is None:
-        return None
-    own, inherited = await resolve_folder(user_id, folder)
+        return held_back
+    own, inherited = await resolve_folder(user_id, folder, choices)
     if own is not None:
         return own
+    if held_back is not None:
+        return held_back
     if await has_shared_instructions(user_id, folder):
         return FolderChoice(folder.id, MODE_CHAT, folder_name=folder.name)
     if inherited is not None:

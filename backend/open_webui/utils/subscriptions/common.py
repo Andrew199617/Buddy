@@ -24,6 +24,22 @@ CREDENTIAL_PLAN_TOKEN = 'plan_token'
 CREDENTIAL_API_KEY = 'api_key'
 CREDENTIAL_MODES = (CREDENTIAL_MACHINE, CREDENTIAL_PLAN_TOKEN, CREDENTIAL_API_KEY)
 
+# Set by the chat middleware to the chat folder whose own system prompt or
+# knowledge files reached a turn. Built on the server, never taken from the request.
+FOLDER_INSTRUCTIONS_KEY = 'folder_instructions_id'
+
+
+def folder_adds_instructions(data) -> bool:
+    """A chat folder's data adds a system prompt or knowledge files to its chats."""
+    if not isinstance(data, dict):
+        return False
+    prompt = data.get('system_prompt')
+    if isinstance(prompt, str) and prompt.strip():
+        return True
+    files = data.get('files')
+    return isinstance(files, list) and len(files) > 0
+
+
 # Shown to the model in chat-only mode, ahead of the chat's own system prompt.
 CHAT_INSTRUCTIONS = (
     'You are chatting with the user in Buddy, their personal chat app. '
