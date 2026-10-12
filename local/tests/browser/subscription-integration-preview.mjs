@@ -481,6 +481,12 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		planConfigs.push(body);
 		const plan = folderPlans.find((candidate) => candidate.id === providerId);
 		assert.ok(plan, 'Only known plans change');
+		if (!plan.machine) {
+			return {
+				status: 409,
+				json: { detail: 'Verify the selected machine again, then refresh before trying again.' }
+			};
+		}
 		assert.deepEqual(Object.keys(body).sort(), [
 			'access',
 			'expected_machine_id',
@@ -912,6 +918,15 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		},
 		failNextProjectRead() {
 			failProjectRead = true;
+		},
+		// Work PC removed elsewhere: like the server, its plans turn off and only chat.
+		removeWorkPc() {
+			for (const plan of folderPlans) {
+				if (plan.machine?.id !== 'pc-1') continue;
+				plan.enable = false;
+				plan.access = 'chat';
+				plan.machine = null;
+			}
 		},
 		// A plan turned on elsewhere, such as in Settings → Machines.
 		turnOnPlan(id, access) {
@@ -3067,6 +3082,7 @@ async function folderAllowStaleCase(browser, profile) {
 			await request
 				.getByText('The selected machine changed. Refresh before trying again.', { exact: true })
 				.waitFor();
+			assert.equal(await activeElementId(page), 'plan-access-allow-claude', 'Focus is on Allow');
 			// The question stays open, and asking again confirms the computer as it is now.
 			await request.getByRole('button', { name: 'Allow', exact: true }).click();
 			await dialog.getByText('Let the AI choose', { exact: true }).waitFor();
@@ -3175,6 +3191,44 @@ async function folderAllowReloadErrorCase(browser, profile) {
 	);
 }
 
+async function folderAllowGoneCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'folder-allow-gone',
+		'folder-allow',
+		async ({ page }, fixtures) => {
+			const dialog = await openFolderSettings(page);
+			const request = dialog.getByRole('group', {
+				name: 'Let a plan work with files',
+				exact: true
+			});
+			await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
+			fixtures.removeWorkPc();
+			await request.getByRole('button', { name: 'Allow', exact: true }).click();
+
+			// Claude is no longer offered, so the section says why the Allow did not happen.
+			await dialog
+				.getByText(
+					'Claude was not given access: Verify the selected machine again, then refresh before trying again.',
+					{ exact: true }
+				)
+				.waitFor();
+			await request.waitFor({ state: 'detached' });
+			const openSettings = dialog.getByRole('button', {
+				name: 'Open Settings → Machines',
+				exact: true
+			});
+			await openSettings.waitFor();
+			assert.equal(
+				await openSettings.evaluate((button) => button === document.activeElement),
+				true,
+				'Focus stays in the section'
+			);
+		}
+	);
+}
+
 async function folderAllowHomelessCase(browser, profile) {
 	await runCase(
 		browser,
@@ -3275,6 +3329,7 @@ try {
 		await folderAllowBesideCase(browser, profile);
 		await folderAllowRaceCase(browser, profile);
 		await folderAllowReloadErrorCase(browser, profile);
+		await folderAllowGoneCase(browser, profile);
 		await folderAllowHomelessCase(browser, profile);
 		await folderNoPlansCase(browser, profile);
 		await cancellationCase(browser, profile, 'x');

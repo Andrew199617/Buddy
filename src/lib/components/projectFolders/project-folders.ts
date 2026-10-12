@@ -125,6 +125,12 @@ export function fileAccessNeed(project: FolderProject): FileAccessNeed {
 	return 'turn_on';
 }
 
+/** Whether keyboard focus fell to the page, because what had it was removed or disabled. */
+export function focusWasLost(): boolean {
+	const active = document.activeElement;
+	return !active || active === document.body || !active.isConnected;
+}
+
 export function pathPlaceholder(platform: string | null): string {
 	if (platform === 'win32') return 'C:\\Users\\you\\code\\project';
 	return '/home/you/code/project';

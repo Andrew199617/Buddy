@@ -11,6 +11,7 @@
 		fullAccessWarning,
 		readFilesDescription
 	} from '$lib/components/admin/Settings/Connections/plan-access';
+	import { focusWasLost } from './project-folders';
 
 	const i18n: any = getContext('i18n');
 
@@ -22,6 +23,8 @@
 	export let reload: () => Promise<void>;
 	// Called once a plan may use files and the plans were loaded again.
 	export let onAllowed: () => void = () => {};
+	// Called when an Allow was refused and, loaded again, the plan is no longer offered.
+	export let onRefused: (planName: string, reason: string) => void = () => {};
 	// Shown under the folder choices, because another plan already opens folders.
 	export let compact = false;
 
@@ -78,10 +81,7 @@
 				machine.revision
 			);
 		} catch (cause) {
-			error = `${cause}`;
-			// The plan may have changed elsewhere; the next try confirms what it is now.
-			await reload();
-			saving = false;
+			await refused(plan, `${cause}`);
 			return;
 		}
 		// The question stays, busy, until the plans show the change.
@@ -90,6 +90,22 @@
 		saving = false;
 		toast.success(allowedMessage(plan, access, machine.name));
 		onAllowed();
+	}
+
+	/** The plan may have changed elsewhere, so the plans load again before saying why. */
+	async function refused(plan: FolderPlan, reason: string) {
+		await reload();
+		await tick();
+		saving = false;
+		if (plans.some((candidate) => candidate.id === plan.id)) {
+			// Still offered: the question stays, and the next try confirms the plan as it is now.
+			error = reason;
+			await tick();
+			if (focusWasLost()) document.getElementById(`plan-access-allow-${plan.id}`)?.focus();
+			return;
+		}
+		confirming = null;
+		onRefused(plan.name, reason);
 	}
 
 	function question(plan: FolderPlan, access: FileAccess, computerName: string): string {
@@ -213,6 +229,7 @@
 							</button>
 							<button
 								type="button"
+								id="plan-access-allow-{plan.id}"
 								class="flex min-h-11 items-center justify-center gap-2 rounded-lg bg-black px-3 text-xs font-medium text-white disabled:opacity-50 dark:bg-white dark:text-black md:min-h-8"
 								disabled={saving}
 								on:click={allow}

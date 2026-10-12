@@ -22,6 +22,7 @@
 		claudeReadHint,
 		draftFromProject,
 		fileAccessNeed,
+		focusWasLost,
 		plansToAllow,
 		plansWithoutComputer,
 		sameDraft,
@@ -47,6 +48,8 @@
 	let pickingFor: ProjectFolderComputer | null = null;
 	// Why loading again after a plan change failed; what was loaded before still saves.
 	let refreshError = '';
+	// Why an Allow was refused, once that plan is no longer offered here.
+	let refusal = '';
 	let sectionElement: HTMLElement | null = null;
 
 	$: dirty = !sameDraft(draft, saved);
@@ -84,6 +87,7 @@
 
 	/** Loads again after a plan changed, keeping a choice the person has not saved yet. */
 	async function refresh() {
+		refusal = '';
 		let loaded: FolderProject | null;
 		try {
 			loaded = await getFolderProject(localStorage.token, folderId);
@@ -103,9 +107,7 @@
 	/** Puts keyboard focus back in the section when what had it was replaced. */
 	async function keepFocusInSection() {
 		await tick();
-		const active = document.activeElement;
-		if (active && active !== document.body && active.isConnected) return;
-		if (!sectionElement) return;
+		if (!focusWasLost() || !sectionElement) return;
 		const name = `project-folder-mode-${folderId}`;
 		const choices = Array.from(
 			sectionElement.querySelectorAll<HTMLInputElement>(`input[name="${name}"]`)
@@ -152,6 +154,14 @@
 		return $i18n.t(
 			'Some of your plans have no computer they can use. Choose one in Settings → Machines.'
 		);
+	}
+
+	async function planRefused(planName: string, reason: string) {
+		refusal = $i18n.t('{{name}} was not given access: {{reason}}', {
+			name: planName,
+			reason
+		});
+		await keepFocusInSection();
 	}
 
 	async function planAllowed() {
@@ -268,7 +278,12 @@
 			/>
 		{:else if need !== 'ready'}
 			{#if need === 'allow'}
-				<PlanAccessRequest plans={allowablePlans} reload={refresh} onAllowed={planAllowed} />
+				<PlanAccessRequest
+					plans={allowablePlans}
+					reload={refresh}
+					onAllowed={planAllowed}
+					onRefused={planRefused}
+				/>
 			{/if}
 			{#if need !== 'allow' || homelessPlans.length > 0}
 				<div class="flex flex-col gap-1.5">
@@ -450,10 +465,14 @@
 					plans={allowablePlans}
 					reload={refresh}
 					onAllowed={planAllowed}
+					onRefused={planRefused}
 				/>
 			{/if}
 		{/if}
 
+		{#if refusal}
+			<p role="alert" class="text-xs text-red-600 dark:text-red-400">{refusal}</p>
+		{/if}
 		{#if refreshError}
 			<p role="alert" class="text-xs text-red-600 dark:text-red-400">{refreshError}</p>
 		{/if}
