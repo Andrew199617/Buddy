@@ -207,6 +207,87 @@ class TunnelEndToEndTests(unittest.IsolatedAsyncioTestCase):
             await machine._connection(wait=0.1)
 
 
+class RelayTests(unittest.IsolatedAsyncioTestCase):
+    """The Projects page relayed through Buddy to the computer's own workspace API."""
+
+    async def asyncSetUp(self):
+        directory = tempfile.TemporaryDirectory(prefix='buddy-relay-test-')
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        self.project = root / 'project'
+        self.project.mkdir()
+        (self.project / 'notes.md').write_text('fixture notes', encoding='utf-8')
+        state = root / 'state'
+        self.runner = Runner(state, WorkspaceCapabilities(roots=[{'path': str(self.project)}]))
+        self.addAsyncCleanup(self.runner.close)
+        self.link = Link()
+        self.connection = RunnerConnection(
+            ServerSide(self.link), 'machine-1', 'owner-1', self.runner.workspaces.host['id'], self.runner.describe(),
+        )
+        self.tasks = [
+            asyncio.create_task(self.connection.serve()),
+            asyncio.create_task(Tunnel(RunnerSide(self.link), self.runner).serve()),
+        ]
+
+    async def asyncTearDown(self):
+        self.link.drop()
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+
+    async def relay(self, method, path, query=None, body=None, client_id='page-a'):
+        reply = await self.connection.call('workspace.request', {
+            'client_id': client_id, 'method': method, 'path': path, 'query': query or {}, 'body': body,
+        })
+        return reply['status'], reply['body']
+
+    async def grant_id(self):
+        status, body = await self.relay('GET', '/v1/grants')
+        self.assertEqual(status, 200)
+        return body['grants'][0]['id']
+
+    async def test_approved_folders_can_be_browsed_and_read(self):
+        grant_id = await self.grant_id()
+        status, listing = await self.relay('GET', '/v1/directories', {'grantId': grant_id, 'path': ''})
+        self.assertEqual(status, 200)
+        self.assertEqual([entry['name'] for entry in listing['entries']], ['notes.md'])
+        status, file = await self.relay('GET', '/v1/files', {'grantId': grant_id, 'path': 'notes.md'})
+        self.assertEqual((status, file['content']), (200, 'fixture notes'))
+
+    async def test_writes_and_commands_stay_refused_unless_approved_on_the_computer(self):
+        grant_id = await self.grant_id()
+        status, _ = await self.relay('PUT', '/v1/files', body={
+            'grantId': grant_id, 'path': 'notes.md', 'content': 'changed', 'overwrite': True,
+        })
+        self.assertEqual(status, 403)
+        self.assertEqual((self.project / 'notes.md').read_text(encoding='utf-8'), 'fixture notes')
+        status, created = await self.relay('POST', '/v1/workspaces', body={'grantId': grant_id, 'path': ''})
+        self.assertEqual(status, 200)
+        status, _ = await self.relay('POST', '/v1/terminals', body={'workspaceId': created['workspace']['id']})
+        self.assertEqual(status, 403)
+
+    async def test_pairing_and_malformed_requests_are_refused(self):
+        status, _ = await self.relay('POST', '/v1/pair', body={'code': 'AAAA'})
+        self.assertEqual(status, 404)
+        status, _ = await self.relay('GET', '/v1/grants', client_id='not valid!')
+        self.assertEqual(status, 400)
+        status, _ = await self.relay('PATCH', '/v1/grants')
+        self.assertEqual(status, 405)
+
+    async def test_each_page_keeps_its_own_workspaces(self):
+        grant_id = await self.grant_id()
+        await self.relay('POST', '/v1/workspaces', body={'grantId': grant_id, 'path': ''}, client_id='page-a')
+        _, mine = await self.relay('GET', '/v1/workspaces', client_id='page-a')
+        _, theirs = await self.relay('GET', '/v1/workspaces', client_id='page-b')
+        self.assertEqual(len(mine['workspaces']), 1)
+        self.assertEqual(theirs['workspaces'], [])
+
+    async def test_a_dropped_connection_ends_the_relayed_sessions(self):
+        await self.grant_id()
+        self.assertTrue(any(key.startswith('relay:') for key in self.runner.workspaces._sessions))
+        self.link.drop()
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+        self.assertFalse(any(key.startswith('relay:') for key in self.runner.workspaces._sessions))
+
+
 class StartupCleanupTests(unittest.IsolatedAsyncioTestCase):
     """A startup whose reply never came is cleaned up by its name."""
 

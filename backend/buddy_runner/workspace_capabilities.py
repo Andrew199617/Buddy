@@ -300,6 +300,38 @@ class _TerminalProcess(ChildProcess):
         self._terminal.append(item)
 
 
+RELAY_CLIENT_PATTERN = re.compile(r'[A-Za-z0-9_-]{1,64}')
+
+
+class WorkspaceCall:
+    """One workspace request, whichever way it arrived.
+
+    ``read_body`` returns the JSON object body; a listener reads it from the
+    HTTP request, a relayed request already carries it.
+    """
+
+    def __init__(self, method: str, path: str, query, read_body):
+        self.method = method
+        self.path = path
+        self.query = query
+        self.read_body = read_body
+
+
+def _error_reply(error: Exception) -> tuple[int, dict] | None:
+    """The status and JSON body for a failed workspace request, or None for an unexpected error."""
+    if isinstance(error, CapabilityError):
+        return error.status, {'error': str(error)}
+    if isinstance(error, (FileNotFoundError, NotADirectoryError)):
+        return 404, {'error': 'The requested file or directory does not exist.'}
+    if isinstance(error, PermissionError):
+        return 403, {'error': 'The host account cannot access this file or directory.'}
+    if isinstance(error, (UnicodeError, ValueError, TypeError)):
+        return 400, {'error': 'Invalid request.'}
+    if isinstance(error, OSError):
+        return 500, {'error': 'The host could not complete this request.'}
+    return None
+
+
 class WorkspaceCapabilities:
     """A memory-only host instance; construct and register before serving requests."""
 
@@ -525,10 +557,10 @@ class WorkspaceCapabilities:
             _fail(400, 'Provide a valid JSON object.')
         return body
 
-    async def _pair(self, request: web.Request, origin: str | None) -> dict:
+    async def _pair(self, call: WorkspaceCall, origin: str | None) -> dict:
         if self._pairing_used or _now_ms() >= self._pairing_expires_at or self._pairing_attempts >= 8:
             _fail(403, 'Pairing is unavailable. Ask the host operator for a fresh code.')
-        body = await self._body(request)
+        body = await call.read_body()
         self._pairing_attempts += 1
         if self._pairing_attempts > 8:
             _fail(403, 'Pairing is unavailable. Ask the host operator for a fresh code.')
@@ -584,10 +616,10 @@ class WorkspaceCapabilities:
                     entries.append({'name': entry.name, 'path': child_relative, 'type': kind})
         return entries
 
-    async def _file(self, request: web.Request, session: _Session) -> dict:
-        if request.method == 'GET':
-            grant = self._grant(request.query.get('grantId'))
-            pinned, relative = self._open_file(grant, request.query.get('path'), False)
+    async def _file(self, call: WorkspaceCall, session: _Session) -> dict:
+        if call.method == 'GET':
+            grant = self._grant(call.query.get('grantId'))
+            pinned, relative = self._open_file(grant, call.query.get('path'), False)
             try:
                 content = await self._read_in_thread(pinned)
                 pinned.current_stat()
@@ -595,7 +627,7 @@ class WorkspaceCapabilities:
                 return {'path': relative, 'content': content, 'version': _content_version(content)}
             finally:
                 pinned.close()
-        body = await self._body(request)
+        body = await call.read_body()
         grant = self._grant(body.get('grantId'))
         if not grant.write:
             _fail(403, 'File writing was not approved for this grant.')
@@ -790,17 +822,19 @@ class WorkspaceCapabilities:
             listed.append(metadata)
         return listed
 
-    async def _dispatch(self, request: web.Request, origin: str | None) -> dict:
-        path = request.path
-        method = request.method
-        if method == 'OPTIONS':
-            requested_method = request.headers.get('Access-Control-Request-Method')
-            if requested_method and requested_method not in ('GET', 'POST', 'PUT', 'DELETE'):
-                _fail(403, 'This CORS method is not allowed.')
-            headers = request.headers.get('Access-Control-Request-Headers', '').lower().split(',')
-            if any(header.strip() not in ('', 'authorization', 'content-type') for header in headers):
-                _fail(403, 'This CORS header is not allowed.')
-            return {'ok': True}
+    def _check_preflight(self, request: web.Request) -> dict:
+        requested_method = request.headers.get('Access-Control-Request-Method')
+        if requested_method and requested_method not in ('GET', 'POST', 'PUT', 'DELETE'):
+            _fail(403, 'This CORS method is not allowed.')
+        headers = request.headers.get('Access-Control-Request-Headers', '').lower().split(',')
+        if any(header.strip() not in ('', 'authorization', 'content-type') for header in headers):
+            _fail(403, 'This CORS header is not allowed.')
+        return {'ok': True}
+
+    async def _dispatch(self, call: WorkspaceCall, origin: str | None, authenticate) -> dict:
+        """Serve one request; ``authenticate`` returns the caller's session."""
+        path = call.path
+        method = call.method
         if method == 'GET' and path == '/v1/host':
             return {'host': self.host}
         if method == 'GET' and path == '/v1/capabilities':
@@ -810,20 +844,20 @@ class WorkspaceCapabilities:
                 'permissions': {'requiresPairing': True, 'grants': 'host-approved', 'commands': 'opt-in-os-account'},
             }
         if method == 'POST' and path == '/v1/pair':
-            return await self._pair(request, origin)
-        session = self._authenticate(request, origin)
+            return await self._pair(call, origin)
+        session = authenticate()
         if method == 'DELETE' and path == '/v1/session':
             await self._revoke_session(session)
             return {'revoked': True}
         if method == 'GET' and path == '/v1/grants':
             return {'grants': self.list_grants()}
         if method == 'GET' and path == '/v1/directories':
-            grant = self._grant(request.query.get('grantId'))
-            return await self._list_directory(grant, request.query.get('path', ''))
+            grant = self._grant(call.query.get('grantId'))
+            return await self._list_directory(grant, call.query.get('path', ''))
         if path == '/v1/files' and method in ('GET', 'PUT'):
-            return await self._file(request, session)
+            return await self._file(call, session)
         if method == 'POST' and path == '/v1/workspaces':
-            body = await self._body(request)
+            body = await call.read_body()
             grant = self._grant(body.get('grantId'))
             relative, absolute, value = self._resolve(grant, body.get('path'))
             if not stat.S_ISDIR(value.st_mode):
@@ -844,7 +878,7 @@ class WorkspaceCapabilities:
         if method == 'GET' and path == '/v1/workspaces':
             return {'workspaces': [workspace.public() for workspace in self._workspaces.values() if workspace.owner == session.key]}
         if method == 'POST' and path == '/v1/terminals':
-            body = await self._body(request)
+            body = await call.read_body()
             workspace = self._workspace(body.get('workspaceId'), session)
             grant = self._grant(workspace.grant_id)
             if not grant.execute:
@@ -870,7 +904,7 @@ class WorkspaceCapabilities:
                 self._terminals.pop(terminal.id, None)
                 return {'terminal': terminal.public()}
             if method == 'POST' and match[2]:
-                body = await self._body(request)
+                body = await call.read_body()
                 workspace = self._workspace(terminal.workspace_id, session)
                 return {'terminal': await self._run_command(terminal, workspace, body, session)}
         _fail(404, 'Companion endpoint not found.')
@@ -883,19 +917,18 @@ class WorkspaceCapabilities:
                 _fail(503, 'The execution host is shutting down.')
             is_host = request.method == 'GET' and request.path == '/v1/host'
             origin = self._origin(request, allow_missing=is_host)
-            body = await self._dispatch(request, origin)
+            if request.method == 'OPTIONS':
+                body = self._check_preflight(request)
+            else:
+                call = WorkspaceCall(request.method, request.path, request.query, lambda: self._body(request))
+                body = await self._dispatch(call, origin, lambda: self._authenticate(request, origin))
             response = web.json_response(body)
-        except CapabilityError as error:
-            response = web.json_response({'error': str(error)}, status=error.status)
-        except (FileNotFoundError, NotADirectoryError):
-            response = web.json_response({'error': 'The requested file or directory does not exist.'}, status=404)
-        except PermissionError:
-            response = web.json_response({'error': 'The host account cannot access this file or directory.'}, status=403)
-        except (UnicodeError, ValueError, TypeError):
-            response = web.json_response({'error': 'Invalid request.'}, status=400)
-        except OSError:
+        except Exception as error:
+            reply = _error_reply(error)
+            if reply is None:
+                raise
             # Still a JSON reply with CORS headers, so the page can show it.
-            response = web.json_response({'error': 'The host could not complete this request.'}, status=500)
+            response = web.json_response(reply[1], status=reply[0])
         response.headers['Cache-Control'] = 'no-store'
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['Vary'] = 'Origin'
@@ -906,8 +939,69 @@ class WorkspaceCapabilities:
             response.headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type'
         return response
 
+    def _relay_session(self, client_id) -> _Session:
+        """The session of one Buddy page relaying requests for the computer's owner.
+
+        The Buddy server checked who the owner is, so a relayed page needs no
+        pairing code. Grants, write and command approvals are checked as for
+        a paired browser, so the server can never widen them.
+        """
+        if not isinstance(client_id, str) or not RELAY_CLIENT_PATTERN.fullmatch(client_id):
+            _fail(400, 'A relayed request needs a client ID.')
+        key = f'relay:{client_id}'
+        session = self._sessions.get(key)
+        if session is None:
+            if len(self._sessions) + len(self._pending_sessions) >= MAX_SESSIONS:
+                _fail(429, 'The browser session limit was reached. Close another project view first.')
+            session = _Session(key, None, 0)
+            self._sessions[key] = session
+        # A relayed session lasts while it is used.
+        session.expires_at = _now_ms() + self.token_ttl_ms
+        return session
+
+    async def relay(self, client_id, method, path, query, body) -> tuple[int, dict]:
+        """Serve a request the Buddy server relayed; returns the status and JSON body."""
+        try:
+            if self._closing:
+                _fail(503, 'The execution host is shutting down.')
+            if not isinstance(method, str) or method not in ('GET', 'POST', 'PUT', 'DELETE'):
+                _fail(405, 'This method is not allowed.')
+            if not isinstance(path, str) or not path.startswith('/v1/') or path == '/v1/pair':
+                _fail(404, 'Companion endpoint not found.')
+            if not isinstance(query, dict) or not all(isinstance(value, str) for value in query.values()):
+                query = {}
+            session = self._relay_session(client_id)
+
+            async def read_body() -> dict:
+                if not isinstance(body, dict):
+                    _fail(400, 'Provide a valid JSON object.')
+                if len(json.dumps(body)) > BODY_BYTES:
+                    _fail(413, 'Request bodies are limited to 2 MiB.')
+                return body
+
+            call = WorkspaceCall(method, path, query, read_body)
+            return 200, await self._dispatch(call, None, lambda: session)
+        except Exception as error:
+            reply = _error_reply(error)
+            if reply is None:
+                raise
+            return reply
+
+    async def end_relay_sessions(self) -> None:
+        """Buddy's connection ended: stop every relayed page's terminals and forget its sessions."""
+        relayed = [session for key, session in self._sessions.items() if key.startswith('relay:')]
+        await _run_cleanup_batch(
+            [self._revoke_session(session) for session in relayed],
+            'Relayed session cleanup is pending; host disposal will be retried.',
+        )
+
     async def _start(self, app: web.Application) -> None:
-        self._sweeper = asyncio.create_task(self._sweep())
+        await self.start()
+
+    async def start(self) -> None:
+        """Expire idle sessions and terminals in the background; the listener and connect mode both call it."""
+        if self._sweeper is None:
+            self._sweeper = asyncio.create_task(self._sweep())
 
     async def _sweep(self) -> None:
         interval = max(10, min(1000, self.token_ttl_ms, self.session_idle_ms)) / 1000
