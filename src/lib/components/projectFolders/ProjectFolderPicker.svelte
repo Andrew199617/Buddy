@@ -7,7 +7,8 @@
 	import { checkMachineFolder, type ProjectFolderComputer } from '$lib/apis/subscriptions';
 	import { getDesktop } from '$lib/desktop/bridge';
 	import Spinner from '$lib/components/common/Spinner.svelte';
-	import SharedFolderBrowser from './SharedFolderBrowser.svelte';
+	import FolderBrowser from './FolderBrowser.svelte';
+	import { sharedFolderSource } from './folder-sources';
 	import { pathPlaceholder } from './project-folders';
 
 	const i18n: any = getContext('i18n');
@@ -113,10 +114,9 @@
 	{:else if computer.can_browse}
 		<section aria-label={$i18n.t('Shared folders')}>
 			<h4 class="mb-1 text-xs text-gray-600 dark:text-gray-400">{$i18n.t('Shared folders')}</h4>
-			<SharedFolderBrowser
-				machineId={computer.machine_id}
+			<FolderBrowser
+				source={sharedFolderSource(computer.machine_id, computer.platform)}
 				machineName={computer.name}
-				platform={computer.platform}
 				onPick={runCheck}
 			/>
 		</section>
