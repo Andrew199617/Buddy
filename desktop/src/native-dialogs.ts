@@ -35,9 +35,9 @@ function permissionQuestion(permission: DesktopPermission, accountName: string):
 			title: 'Allow editing files',
 			message: 'Let Buddy edit files in your shared folders?',
 			detail:
-				'The Projects page can then save changes to existing text files in the folders you ' +
-				'shared. Changing project files can also lead to running code, for example through ' +
-				'build scripts.',
+				"A chat's Project tab in Buddy can then save changes to existing text files in the " +
+				'folders you shared. Changing project files can also lead to running code, for example ' +
+				'through build scripts.',
 			buttons: ['Allow editing', 'Cancel']
 		};
 	}
@@ -45,8 +45,9 @@ function permissionQuestion(permission: DesktopPermission, accountName: string):
 		title: 'Allow running commands',
 		message: 'Let Buddy run commands on this computer?',
 		detail:
-			`Commands from the Projects page run as ${accountName}, starting in your shared ` +
-			'folders. A shared folder is not a sandbox: a command can reach anything your account can.',
+			`Commands from a chat's Project tab in Buddy run as ${accountName}, starting in your ` +
+			'shared folders. A shared folder is not a sandbox: a command can reach anything your ' +
+			'account can.',
 		buttons: ['Allow commands', 'Cancel']
 	};
 }
