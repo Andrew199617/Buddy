@@ -137,6 +137,12 @@ class PathRuleTests(unittest.TestCase):
                 with self.assertRaisesRegex(SubscriptionError, reason):
                     self.module.clean_project_path(path, platform)
 
+    def test_whole_drives_are_allowed_only_for_browsing(self):
+        self.assertEqual(self.module.clean_project_path('C:\\', 'win32', allow_drive_root=True), 'C:\\')
+        self.assertEqual(self.module.clean_project_path('/', 'linux', allow_drive_root=True), '/')
+        with self.assertRaisesRegex(SubscriptionError, 'not a whole drive'):
+            self.module.clean_project_path('C:\\', 'win32')
+
     def test_an_unknown_platform_names_both_kinds_of_example(self):
         with self.assertRaisesRegex(SubscriptionError, 'C:.*or /home'):
             self.module.clean_project_path('relative', None)
