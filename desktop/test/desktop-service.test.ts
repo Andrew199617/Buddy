@@ -40,6 +40,10 @@ class FakeSupervisor extends EventEmitter {
 	started: RunnerSettings[] = [];
 	stops = 0;
 	active = false;
+	browsing: boolean[] = [];
+	setFolderBrowsing(allowed: boolean) {
+		this.browsing.push(allowed);
+	}
 	start(settings: RunnerSettings) {
 		this.started.push(settings);
 		this.active = true;
@@ -149,6 +153,26 @@ test('allowing edits or commands asks first; turning them off does not', async (
 	assert.equal((await accepted.service.setPermission('allowEdits', false)).allowEdits, false);
 	assert.deepEqual(accepted.asked, ['allowCommands']);
 	assert.equal(accepted.settings.saved.allowCommands, true);
+});
+
+test('folder browsing asks first and changes without restarting the Runner', async () => {
+	const declined = setUp({ permission: false });
+	await declined.service.connectThisPC('bde1_token', 'PC');
+	assert.equal((await declined.service.setPermission('allowFolderBrowsing', true)).allowFolderBrowsing, false);
+	assert.deepEqual(declined.supervisor.browsing, []);
+
+	const { service, supervisor, settings, asked } = setUp({ permission: true });
+	await service.connectThisPC('bde1_token', 'PC');
+	const status = await service.setPermission('allowFolderBrowsing', true);
+	assert.equal(status.allowFolderBrowsing, true);
+	assert.equal(settings.saved.allowFolderBrowsing, true);
+	assert.deepEqual(asked, ['connect', 'allowFolderBrowsing']);
+	assert.deepEqual(supervisor.browsing, [true]);
+	assert.equal(supervisor.started.length, 1);
+	assert.equal(supervisor.stops, 0);
+	await service.setPermission('allowFolderBrowsing', false);
+	assert.deepEqual(supervisor.browsing, [true, false]);
+	assert.deepEqual(asked, ['connect', 'allowFolderBrowsing']);
 });
 
 test('a running Runner restarts with a newly shared folder', async () => {

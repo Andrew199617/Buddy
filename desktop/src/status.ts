@@ -27,8 +27,8 @@ export type DesktopStatus = {
 	appVersion: string;
 };
 
-export type DesktopPermission = 'allowEdits' | 'allowCommands';
+export type DesktopPermission = 'allowEdits' | 'allowCommands' | 'allowFolderBrowsing';
 
 export function isDesktopPermission(value: unknown): value is DesktopPermission {
-	return value === 'allowEdits' || value === 'allowCommands';
+	return value === 'allowEdits' || value === 'allowCommands' || value === 'allowFolderBrowsing';
 }
