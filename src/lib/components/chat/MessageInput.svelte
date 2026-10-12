@@ -724,6 +724,9 @@
 	let recording = false;
 	let composerFocused = false;
 	let composerMenuOpen = false;
+	// A run target bar menu holds the composer's focus on phones like other menus, but never
+	// expands the composer: that would move the bar out from under the pointer.
+	let runTargetMenuOpen = false;
 	let composerControlActive = false;
 	let coarsePointer = false;
 	$: mobileComposer = $mobile || coarsePointer;
@@ -781,7 +784,7 @@
 		let firstTapEditor: HTMLElement | null = null;
 
 		function reconcileComposerFocus(): void {
-			if (!mobileComposer || composerControlActive || composerMenuOpen) {
+			if (!mobileComposer || composerControlActive || composerMenuOpen || runTargetMenuOpen) {
 				return;
 			}
 			const activeElement = document.activeElement;
@@ -948,8 +951,11 @@
 		function updateComposerMenus(): void {
 			composerMenuOpen = Boolean(
 				form.querySelector(
-					'.buddy-composer [aria-expanded="true"], .owui-context-rail [aria-expanded="true"], .buddy-run-target-bar [aria-expanded="true"]'
+					'.buddy-composer [aria-expanded="true"], .owui-context-rail [aria-expanded="true"]'
 				)
+			);
+			runTargetMenuOpen = Boolean(
+				form.querySelector('.buddy-run-target-bar [aria-expanded="true"]')
 			);
 			reconcileComposerFocus();
 		}
@@ -983,7 +989,7 @@
 
 	function handleComposerFocusOut(event: FocusEvent): void {
 		// Composer controls own focus until their menu action has finished.
-		if (mobileComposer && (composerControlActive || composerMenuOpen)) {
+		if (mobileComposer && (composerControlActive || composerMenuOpen || runTargetMenuOpen)) {
 			return;
 		}
 		const container = event.currentTarget as HTMLElement;

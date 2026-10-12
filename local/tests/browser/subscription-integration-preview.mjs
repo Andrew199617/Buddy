@@ -3104,6 +3104,13 @@ async function runTargetNewCase(browser, profile) {
 				// A folder ChatGPT worked in, checked on the computer before it is used.
 				await page.getByRole('option', { name: /^api C:\\code\\api/ }).click();
 				await runTargetChip(bar, /^\s*api\s*$/).waitFor();
+				// Going from one open menu straight to another chip opens that one at once,
+				// since the composer stays put under the pointer.
+				await runTargetChip(bar, /^\s*api\s*$/).click();
+				await page.getByRole('option', { name: /^api C:\\code\\api/ }).waitFor();
+				await runTargetChip(bar, 'Full access').click();
+				await page.getByRole('menuitemradio', { name: /Read files/ }).waitFor();
+				await page.keyboard.press('Escape');
 				const checks = fixtures.requests.filter((request) =>
 					request.path.endsWith('/folders/check')
 				);
