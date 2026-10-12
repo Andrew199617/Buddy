@@ -169,9 +169,8 @@ def _parse_choices(value) -> dict[str, FolderChoice]:
             continue
         paths = {}
         if entry['mode'] == MODE_FOLDER:
+            # May be empty when its computers were removed; such a choice refuses turns.
             paths = _parse_paths(entry.get('paths'))
-            if not paths:
-                continue
         updated_at = entry.get('updated_at')
         if not isinstance(updated_at, int):
             updated_at = 0
@@ -205,15 +204,17 @@ async def _without_missing_folders(choices: dict[str, FolderChoice]) -> dict[str
 
 
 def _without_removed_computers(choices: dict[str, FolderChoice], machine_ids: set[str]) -> dict[str, FolderChoice]:
-    """Forget paths on computers the person no longer has; a folder left with none is forgotten too."""
+    """Forget paths on computers the person no longer has.
+
+    A folder left with none keeps its choice, so its chats keep refusing until
+    the person chooses again, instead of quietly starting somewhere else.
+    """
     kept = {}
     for folder_id, choice in choices.items():
-        if choice.mode != MODE_FOLDER:
-            kept[folder_id] = choice
-            continue
-        paths = {machine_id: saved for machine_id, saved in choice.paths.items() if machine_id in machine_ids}
-        if paths:
-            kept[folder_id] = FolderChoice(folder_id, choice.mode, paths, choice.updated_at)
+        if choice.mode == MODE_FOLDER:
+            paths = {machine_id: saved for machine_id, saved in choice.paths.items() if machine_id in machine_ids}
+            choice = FolderChoice(folder_id, choice.mode, paths, choice.updated_at)
+        kept[folder_id] = choice
     return kept
 
 
@@ -327,6 +328,11 @@ async def choice_for_turn(user_id: str, metadata: dict) -> FolderChoice | None:
 def turn_project_path(choice: FolderChoice, machine_id: str, machine_name: str, provider_label: str, revision) -> str:
     """The folder this turn starts in. Messages name the chat folder and computer, never the path:
     chat errors are stored and can end up in shared links."""
+    if not choice.paths:
+        raise SubscriptionError(
+            f'The project folder for “{choice.folder_name}” was on a computer you removed. Choose one again '
+            'in the folder\'s settings, or move this chat out of the folder.'
+        )
     saved = choice.paths.get(machine_id)
     if saved is None:
         raise SubscriptionError(

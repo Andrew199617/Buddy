@@ -168,7 +168,10 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         del self.folders.rows['notes']
         # pc-old is gone now, so "old" has no computer left.
         await self.module.save_choice('owner-1', 'website', 'chat', {}, {'pc-1'})
-        self.assertEqual(sorted(await self.module.load_choices('owner-1')), ['website'])
+        choices = await self.module.load_choices('owner-1')
+        self.assertEqual(sorted(choices), ['old', 'website'])
+        # It stays an exact folder with none left, so its chats keep refusing until chosen again.
+        self.assertEqual((choices['old'].mode, choices['old'].paths), ('folder', {}))
 
     async def test_each_person_keeps_their_own_choices(self):
         await self.module.save_choice('owner-1', 'website', 'chat', {}, set())
@@ -272,6 +275,11 @@ class ResolveTests(unittest.IsolatedAsyncioTestCase):
                     self.module.turn_project_path(choice, machine_id, 'Work PC', 'Claude', revision)
                 self.assertIn('Website', str(refused.exception))
                 self.assertNotIn('secret', str(refused.exception))
+
+    async def test_a_folder_whose_computers_were_removed_refuses_with_a_reason(self):
+        choice = self.module.FolderChoice('website', 'folder', {}, folder_name='Website')
+        with self.assertRaisesRegex(SubscriptionError, '“Website” was on a computer you removed'):
+            self.module.turn_project_path(choice, 'pc-1', 'Work PC', 'Claude', 'rev-1')
 
     async def test_recent_paths_are_newest_first_and_capped(self):
         choices = {}
