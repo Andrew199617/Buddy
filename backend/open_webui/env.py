@@ -883,6 +883,13 @@ OAUTH_CLIENT_INFO_ENCRYPTION_KEY = os.getenv('OAUTH_CLIENT_INFO_ENCRYPTION_KEY',
 
 OAUTH_SESSION_TOKEN_ENCRYPTION_KEY = os.getenv('OAUTH_SESSION_TOKEN_ENCRYPTION_KEY', WEBUI_SECRET_KEY)
 
+# Encrypts the Claude plan tokens and API keys users let Buddy keep for their machines.
+BUDDY_SUBSCRIPTION_SECRET_KEY = os.getenv('BUDDY_SUBSCRIPTION_SECRET_KEY', OAUTH_SESSION_TOKEN_ENCRYPTION_KEY)
+# Comma-separated earlier keys, still accepted for decryption while rotating.
+BUDDY_SUBSCRIPTION_OLD_SECRET_KEYS = [
+    key.strip() for key in os.getenv('BUDDY_SUBSCRIPTION_OLD_SECRET_KEYS', '').split(',') if key.strip()
+]
+
 # Maximum number of concurrent OAuth sessions per user per provider
 # This prevents unbounded session growth while allowing multi-device usage
 OAUTH_MAX_SESSIONS_PER_USER = int(os.getenv('OAUTH_MAX_SESSIONS_PER_USER', '10'))
