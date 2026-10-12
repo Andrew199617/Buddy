@@ -110,6 +110,14 @@
 
 	import CommandSuggestionList from './MessageInput/CommandSuggestionList.svelte';
 	import Knobs from '../icons/Knobs.svelte';
+	import RunTargetBar from './RunTarget/RunTargetBar.svelte';
+	import { planProvidersFor, type RunTargetDraft } from './RunTarget/run-target';
+	import { thisPcMachineId } from '$lib/desktop/this-pc';
+	import type {
+		ChatRunTarget,
+		ChatRunTargetDetails,
+		RunTargetOptions
+	} from '$lib/apis/subscriptions';
 	import ValvesModal from '../workspace/common/ValvesModal.svelte';
 	import Note from '../icons/Note.svelte';
 	import AskUserCard from './AskUserCard.svelte';
@@ -158,6 +166,16 @@
 			($models.find((model) => model.id === modelId)?.info?.meta?.chat_variables_schema?.fields
 				?.length ?? 0) > 0
 	);
+
+	// Where the chat runs, in a bar right above the message box; see chat/RunTarget/.
+	export let showRunTarget = false;
+	export let runTargetEditable = false;
+	export let runTargetOptions: RunTargetOptions | null = null;
+	export let runTargetDraft: RunTargetDraft | null = null;
+	export let runTarget: ChatRunTarget | null = null;
+	export let onRunTargetChange: (draft: RunTargetDraft) => void = () => {};
+	export let onRunTargetNewChat: (details: ChatRunTargetDetails | null) => void = () => {};
+	$: runTargetProviders = planProvidersFor(selectedModelIds, $models);
 
 	export let history;
 	export let taskIds: string[] | null = null;
@@ -824,7 +842,8 @@
 				return;
 			}
 
-			const composer = target.closest('.buddy-composer');
+			// The run target bar counts as part of the composer, so a tap on it keeps the composer open.
+			const composer = target.closest('.buddy-composer, .buddy-run-target-bar');
 			if (!composer || !form.contains(composer)) {
 				return;
 			}
@@ -919,7 +938,7 @@
 		function updateComposerMenus(): void {
 			composerMenuOpen = Boolean(
 				form.querySelector(
-					'.buddy-composer [aria-expanded="true"], .owui-context-rail [aria-expanded="true"]'
+					'.buddy-composer [aria-expanded="true"], .owui-context-rail [aria-expanded="true"], .buddy-run-target-bar [aria-expanded="true"]'
 				)
 			);
 			reconcileComposerFocus();
@@ -2161,6 +2180,23 @@
 								</div>
 							</div>
 						{/if}
+
+						<!-- Always rendered, so the composer below never moves when the bar appears. -->
+						<div class="buddy-run-target-slot flex min-w-0 items-center gap-1 empty:hidden">
+							{#if showRunTarget && runTargetOptions}
+								<RunTargetBar
+									options={runTargetOptions}
+									draft={runTargetDraft}
+									target={runTarget}
+									editable={runTargetEditable}
+									providers={runTargetProviders}
+									thisPcMachineId={$thisPcMachineId}
+									onChange={onRunTargetChange}
+									onNewChatHere={onRunTargetNewChat}
+									onFocusComposer={() => focus()}
+								/>
+							{/if}
+						</div>
 
 						<div
 							id="message-input-container"
