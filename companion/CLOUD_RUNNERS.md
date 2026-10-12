@@ -15,7 +15,7 @@ A cloud Runner is just another connected computer. The container runs the same
 `buddy-runner run` as the Buddy app and dials out to Buddy over the same
 WebSocket (see [connect mode](README.md#connect-mode-the-runner-dials-out-to-buddy)).
 Buddy already treats such a computer as the user's own: their models, their
-sign-in choice, their Projects relay, owner-only access. The new parts are who
+sign-in choice, the relay behind a chat's Project tab, owner-only access. The new parts are who
 creates the container and when it runs.
 
 | Piece                 | Today (your computer)                      | Cloud Runner                                    |
@@ -78,13 +78,28 @@ boundary than a shared kernel:
 ### Starting and stopping
 
 - **Idle stop.** The manager stops a container after a configurable time with
-  no running processes and no relayed Projects session.
-- **Start on demand.** When a chat turn or the Projects page needs a stopped
+  no running processes and no open Project tab session.
+- **Start on demand.** When a chat turn or a chat's Project tab needs a stopped
   cloud Runner, Buddy asks the manager to start it, shows "Starting your cloud
   computer…", and waits for the Runner to connect (up to about a minute)
   before running the turn.
 - **Removal.** Deleting the person (`forget_user`) or the administrator's
   **Remove** deletes the container and volume through the manager.
+
+### Project folders
+
+A cloud computer has no exact project folder to choose: everything in its
+volume is the person's own, so the AI chooses where to work there.
+
+- **Let the AI choose** starts in `/workspace`, the container's volume, and
+  the start note tells the model to find or create the project inside it.
+- **A specific folder** lists the person's own computers only, never the cloud
+  computer. A chat folder set to an exact folder on another computer refuses
+  on the cloud computer with the usual "has a project folder on another
+  computer" message, as on any computer without a folder.
+- **No files, just chat** works as everywhere else.
+- The chat's Project tab opens `/workspace`, shared in the container with
+  editing and commands allowed, since the container is the sandbox.
 
 ## Policy
 
@@ -115,8 +130,8 @@ records feed the invoices.
 ## Interface
 
 - **Settings → Machines**, when granted: a **Cloud computer** card with
-  Create, Start or Stop, status, this month's hours and a link to its
-  workspace in Projects.
+  Create, Start or Stop, status and this month's hours. Its workspace opens
+  in a chat's Project tab.
 - **Admin Settings → AI plans**: the policy above, and cloud Runners in **Everyone's
   computers**, marked as cloud, with their usage.
 
