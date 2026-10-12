@@ -101,11 +101,12 @@ export function createNativeDialogs(parentWindow: () => BrowserWindow | null, ac
 				properties: ['openDirectory']
 			}),
 
-		chooseProjectFolder: () =>
+		chooseProjectFolder: (defaultPath) =>
 			pickFolder(parentWindow(), {
 				title: 'Choose a project folder',
 				buttonLabel: 'Use folder',
-				properties: ['openDirectory']
+				properties: ['openDirectory'],
+				defaultPath
 			}),
 
 		confirmPermission: (permission) => ask(parentWindow(), permissionQuestion(permission, accountName))
