@@ -157,6 +157,16 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(project['own'])
         self.assertEqual((project['inherited']['folder_name'], project['inherited']['mode']), ('Work', 'chat'))
 
+    async def test_this_servers_folders_survive_the_policy_turning_it_off_for_a_while(self):
+        folders = self.service.project_folders
+        local = {'local': folders.SavedPath('/srv/site', 'local')}
+        await folders.save_choice(OWNER, 'website', 'folder', local, {'local'})
+        folders.Folders.add('notes', user_id=OWNER, name='Notes')
+        await self.service.save_policy({'server_machine': False})
+        await self.save(OWNER_USER, 'chat', folder_id='notes')
+        choices = await folders.load_choices(OWNER)
+        self.assertEqual(choices['website'].paths['local'].path, '/srv/site')
+
     async def test_a_deleted_users_choices_are_forgotten(self):
         await self.save(MEMBER_USER, 'chat')
         await self.service.forget_user(MEMBER)

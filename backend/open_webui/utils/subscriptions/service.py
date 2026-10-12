@@ -1448,9 +1448,13 @@ async def _machine_platform(owner_id: str, machine_id: str) -> str | None:
 
 
 async def _owned_machine_ids(owner_id: str) -> set[str]:
+    """The computers whose saved project folders are kept when a choice is saved.
+
+    This server is always kept: the policy may turn it off only for a while,
+    and turns check the policy themselves.
+    """
     machine_ids = {config['id'] for config in await _owned_machine_configs(owner_id)}
-    if await _may_use_server_machine(owner_id):
-        machine_ids.add(LOCAL_MACHINE_ID)
+    machine_ids.add(LOCAL_MACHINE_ID)
     return machine_ids
 
 
