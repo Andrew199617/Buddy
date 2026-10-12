@@ -362,8 +362,6 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	]);
 	// Modes that start from a folder choice with nothing picked yet.
 	const askingModes = new Set(['folder-no-plans', 'folder-defaults']);
-	// Modes where every plan that is on is Chat only.
-	const chatOnlyModes = new Set(['folder-allow', 'folder-allow-stale']);
 	const projectRelayBase = '/api/v1/runners/machines/pc-1/workspace';
 	const workPc = {
 		machine_id: 'pc-1',
@@ -395,54 +393,14 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	if (askingModes.has(mode)) {
 		projectChoice = { ...projectChoice, mode: 'auto', paths: {} };
 	}
-	// The person's plans as the folder settings see them, changed by plan config saves.
+	// The person's plans: whether each is on, and the access new chats start with.
 	const folderPlans = [
-		{
-			id: 'claude',
-			name: 'Claude',
-			enable: true,
-			access: chatOnlyModes.has(mode) ? 'chat' : 'full',
-			machine: { id: 'pc-1', name: 'Work PC', revision: 'rev-pc-1' }
-		},
-		{
-			id: 'codex',
-			name: 'ChatGPT',
-			enable: false,
-			access: 'chat',
-			machine: { id: 'local', name: 'This server', revision: 'local' }
-		}
+		{ id: 'claude', name: 'Claude', enable: true, access: 'full' },
+		{ id: 'codex', name: 'ChatGPT', enable: false, access: 'chat' }
 	];
 	if (mode === 'folder-no-plans') {
 		folderPlans[0].enable = false;
 	}
-	if (mode === 'folder-allow-homeless') {
-		// Claude has Full access on a This server the policy no longer allows;
-		// ChatGPT is on Work PC but only chats.
-		folderPlans[0].machine = null;
-		folderPlans[1].enable = true;
-		folderPlans[1].machine = { id: 'pc-1', name: 'Work PC', revision: 'rev-pc-1' };
-	}
-	if (mode === 'folder-allow-beside') {
-		// Claude already opens folders on Work PC; ChatGPT is on there but only chats.
-		folderPlans[1].enable = true;
-		folderPlans[1].machine = { id: 'pc-1', name: 'Work PC', revision: 'rev-pc-1' };
-	}
-	// In the stale case the page first sees Work PC from before it was set up again.
-	let showsOldRevision = mode === 'folder-allow-stale';
-	const planConfigs = [];
-	// The next read of the folder's project can be held open, or fail once.
-	let holdProjectRead = false;
-	let heldProjectRead = null;
-	let failProjectRead = false;
-	// The next plan config save can be held open, refused, or saved and then turned off.
-	let holdPlanConfig = false;
-	let heldPlanConfig = null;
-	let refusePlanConfig = '';
-	// The next save goes through but its answer is lost on the way back.
-	let losePlanConfigAnswer = '';
-	// Set when an administrator stops this person using computers.
-	let machinesRevoked = false;
-	let turnOffAfterPlanConfig = '';
 	const projectGrant = {
 		id: 'grant-code',
 		name: 'code',
@@ -465,12 +423,6 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	let projectTerminal = null;
 
 	function folderProject() {
-		const plans = folderPlans.map((plan) => {
-			if (plan.machine?.id === 'pc-1' && showsOldRevision) {
-				return { ...plan, machine: { ...plan.machine, revision: 'rev-pc-1-old' } };
-			}
-			return plan;
-		});
 		// Like the server: every computer, each with every plan that is on.
 		const providers = folderPlans
 			.filter((plan) => plan.enable)
@@ -483,54 +435,8 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			inherited: null,
 			shared_instructions: false,
 			has_plans: folderPlans.some((plan) => plan.enable),
-			plans,
 			computers
 		};
-	}
-
-	/** A plan's access saved from the folder settings, checked like the server checks it. */
-	function savePlanConfig(providerId, body) {
-		planConfigs.push(body);
-		const plan = folderPlans.find((candidate) => candidate.id === providerId);
-		assert.ok(plan, 'Only known plans change');
-		if (!plan.machine) {
-			return {
-				status: 409,
-				json: { detail: 'Verify the selected machine again, then refresh before trying again.' }
-			};
-		}
-		assert.deepEqual(Object.keys(body).sort(), [
-			'access',
-			'expected_machine_id',
-			'expected_machine_revision'
-		]);
-		assert.equal(body.expected_machine_id, plan.machine.id, 'The plan stays on its computer');
-		if (refusePlanConfig) {
-			const detail = refusePlanConfig;
-			refusePlanConfig = '';
-			return { status: 400, json: { detail } };
-		}
-		if (body.expected_machine_revision !== plan.machine.revision) {
-			showsOldRevision = false;
-			return {
-				status: 409,
-				json: { detail: 'The selected machine changed. Refresh before trying again.' }
-			};
-		}
-		plan.access = body.access;
-		if (losePlanConfigAnswer) {
-			const detail = losePlanConfigAnswer;
-			losePlanConfigAnswer = '';
-			return { status: 502, json: { detail } };
-		}
-		if (turnOffAfterPlanConfig) {
-			// Like the server when a running reply cannot be confirmed stopped.
-			const detail = turnOffAfterPlanConfig;
-			turnOffAfterPlanConfig = '';
-			plan.enable = false;
-			return { status: 400, json: { detail } };
-		}
-		return { id: plan.id, name: plan.name, settings: { enable: plan.enable, access: plan.access } };
 	}
 
 	function terminalFixture(status, output, exitCode = null) {
@@ -628,20 +534,6 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			};
 		} else if (path === '/api/v1/subscriptions/folders/website/project') {
 			requests.push({ method, path, body: request.postDataJSON() });
-			if (machinesRevoked) {
-				await route.fulfill({ status: 403, json: { detail: 'Synthetic machines not allowed' } });
-				return true;
-			}
-			if (method === 'GET' && failProjectRead) {
-				failProjectRead = false;
-				await route.fulfill({ status: 503, json: { detail: 'Synthetic project read failure' } });
-				return true;
-			}
-			if (method === 'GET' && holdProjectRead) {
-				holdProjectRead = false;
-				heldProjectRead = route;
-				return true;
-			}
 			if (method === 'PUT') {
 				const body = request.postDataJSON();
 				const paths = {};
@@ -664,22 +556,6 @@ function createFixtures(mode = 'normal', role = 'admin') {
 				};
 			}
 			reply = folderProject();
-		} else if (
-			/^\/api\/v1\/subscriptions\/(claude|codex)\/config$/.test(path) &&
-			method === 'POST'
-		) {
-			const body = request.postDataJSON();
-			requests.push({ method, path, body });
-			if (machinesRevoked) {
-				await route.fulfill({ status: 403, json: { detail: 'Synthetic machines not allowed' } });
-				return true;
-			}
-			if (holdPlanConfig) {
-				holdPlanConfig = false;
-				heldPlanConfig = { route, providerId: path.split('/')[4], body };
-				return true;
-			}
-			reply = savePlanConfig(path.split('/')[4], body);
 		} else if (
 			path === '/api/v1/subscriptions/machines/pc-1/folders/suggested' &&
 			method === 'GET'
@@ -1087,51 +963,6 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		sessionOptions,
 		projectSaves,
 		projectRelayClients,
-		planConfigs,
-		holdNextProjectRead() {
-			holdProjectRead = true;
-		},
-		hasHeldProjectRead: () => Boolean(heldProjectRead),
-		async releaseProjectRead() {
-			const held = heldProjectRead;
-			heldProjectRead = null;
-			await held.fulfill({ status: 200, json: folderProject() });
-		},
-		failNextProjectRead() {
-			failProjectRead = true;
-		},
-		holdNextPlanConfig() {
-			holdPlanConfig = true;
-		},
-		hasHeldPlanConfig: () => Boolean(heldPlanConfig),
-		async releasePlanConfig() {
-			const { route, providerId, body } = heldPlanConfig;
-			heldPlanConfig = null;
-			const reply = savePlanConfig(providerId, body);
-			if (typeof reply.status === 'number') await route.fulfill(reply);
-			else await route.fulfill({ status: 200, json: reply });
-		},
-		revokeMachines() {
-			machinesRevoked = true;
-		},
-		loseNextPlanConfigAnswer(detail) {
-			losePlanConfigAnswer = detail;
-		},
-		refuseNextPlanConfig(detail) {
-			refusePlanConfig = detail;
-		},
-		turnOffAfterNextPlanConfig(detail) {
-			turnOffAfterPlanConfig = detail;
-		},
-		// Work PC removed elsewhere: like the server, its plans turn off and only chat.
-		removeWorkPc() {
-			for (const plan of folderPlans) {
-				if (plan.machine?.id !== 'pc-1') continue;
-				plan.enable = false;
-				plan.access = 'chat';
-				plan.machine = null;
-			}
-		},
 		// A plan turned on elsewhere, such as in Settings → Machines.
 		turnOnPlan(id, access) {
 			const plan = folderPlans.find((candidate) => candidate.id === id);

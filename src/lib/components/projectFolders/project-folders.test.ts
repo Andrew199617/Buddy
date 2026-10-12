@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import type { FolderPlan, FolderProject, ProjectFolderComputer } from '$lib/apis/subscriptions';
+import type { FolderProject, ProjectFolderComputer } from '$lib/apis/subscriptions';
 import {
 	chipState,
-	claudeReadHint,
 	choiceFromDraft,
 	draftFromProject,
 	draftProblem,
@@ -12,7 +11,6 @@ import {
 	draftWithRunOn,
 	effectiveChoice,
 	emptyDraft,
-	fileAccessNeed,
 	grantContaining,
 	joinSharedPath,
 	lastSegment,
@@ -22,8 +20,6 @@ import {
 	planDefaultAccess,
 	projectSummary,
 	runOnValue,
-	plansToAllow,
-	plansWithoutComputer,
 	sameDraft,
 	suggestionTools,
 	waitsForOwnChoice
@@ -41,22 +37,6 @@ const workPc: ProjectFolderComputer = {
 	recent_paths: []
 };
 
-const claudePlan: FolderPlan = {
-	id: 'claude',
-	name: 'Claude',
-	enable: true,
-	access: 'full',
-	machine: { id: 'pc-1', name: 'Work PC', revision: 'rev-1' }
-};
-
-const chatGptPlan: FolderPlan = {
-	id: 'codex',
-	name: 'ChatGPT',
-	enable: false,
-	access: 'chat',
-	machine: null
-};
-
 function project(overrides: Partial<FolderProject> = {}): FolderProject {
 	return {
 		folder_id: 'website',
@@ -65,7 +45,6 @@ function project(overrides: Partial<FolderProject> = {}): FolderProject {
 		inherited: null,
 		shared_instructions: false,
 		has_plans: true,
-		plans: [claudePlan, chatGptPlan],
 		computers: [workPc],
 		...overrides
 	};
@@ -147,75 +126,6 @@ describe('the chip', () => {
 			tone: 'normal',
 			fromFolderName: 'Work'
 		});
-	});
-});
-
-describe('hints', () => {
-	it('warns that Read files keeps Claude inside its start folder', () => {
-		const reading = project({
-			computers: [{ ...workPc, providers: [{ id: 'claude', name: 'Claude', access: 'read' }] }]
-		});
-		expect(claudeReadHint(reading)).toBe(true);
-		expect(claudeReadHint(project())).toBe(false);
-	});
-});
-
-describe('file access', () => {
-	const chatOnlyClaude = { ...claudePlan, access: 'chat' as const };
-
-	it('is ready while a plan can open folders on some computer', () => {
-		expect(fileAccessNeed(project())).toBe('ready');
-		// A Chat-only plan beside it is still offered.
-		const mixed = project({
-			plans: [claudePlan, { ...chatGptPlan, enable: true, machine: claudePlan.machine }]
-		});
-		expect(fileAccessNeed(mixed)).toBe('ready');
-		expect(plansToAllow(mixed).map((plan) => plan.id)).toEqual(['codex']);
-	});
-
-	it('asks to allow a Chat-only plan that is on and has a computer', () => {
-		const chatOnly = project({ plans: [chatOnlyClaude, chatGptPlan], computers: [] });
-		expect(fileAccessNeed(chatOnly)).toBe('allow');
-		expect(plansToAllow(chatOnly)).toEqual([chatOnlyClaude]);
-	});
-
-	it('never offers a plan that is off or has no computer it can use', () => {
-		const off = { ...chatOnlyClaude, enable: false };
-		const homeless = { ...chatOnlyClaude, machine: null };
-		expect(plansToAllow(project({ plans: [off, homeless] }))).toEqual([]);
-	});
-
-	it('needs a computer when the plans that are on have none they can use', () => {
-		const homeless = project({
-			plans: [{ ...claudePlan, machine: null }, chatGptPlan],
-			computers: []
-		});
-		expect(fileAccessNeed(homeless)).toBe('computer');
-		expect(plansWithoutComputer(homeless).map((plan) => plan.id)).toEqual(['claude']);
-	});
-
-	it('names a plan with files but no computer beside one that can be allowed', () => {
-		const mixed = project({
-			plans: [
-				{ ...claudePlan, machine: null },
-				{ ...chatGptPlan, enable: true, machine: claudePlan.machine }
-			],
-			computers: []
-		});
-		expect(fileAccessNeed(mixed)).toBe('allow');
-		expect(plansWithoutComputer(mixed).map((plan) => plan.id)).toEqual(['claude']);
-		// A Chat-only plan without a computer has nothing to open folders with anyway.
-		const chatOnlyHomeless = { ...chatGptPlan, enable: true, machine: null };
-		expect(plansWithoutComputer(project({ plans: [chatOnlyHomeless] }))).toEqual([]);
-	});
-
-	it('needs a plan turned on when none is', () => {
-		const none = project({
-			has_plans: false,
-			plans: [{ ...claudePlan, enable: false }, chatGptPlan],
-			computers: []
-		});
-		expect(fileAccessNeed(none)).toBe('turn_on');
 	});
 });
 

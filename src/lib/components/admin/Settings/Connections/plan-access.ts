@@ -20,25 +20,6 @@ export function fullAccessDescription(i18n: Translator): string {
 	);
 }
 
-/** Said once a plan has the access the person allowed. */
-export function accessGrantedMessage(
-	i18n: Translator,
-	planName: string,
-	access: string,
-	computerName: string
-): string {
-	if (access === 'full') {
-		return i18n.t('{{name}} now has full access on {{computer}}.', {
-			name: planName,
-			computer: computerName
-		});
-	}
-	return i18n.t('{{name}} can now read files on {{computer}}.', {
-		name: planName,
-		computer: computerName
-	});
-}
-
 export function fullAccessWarning(i18n: Translator): string {
 	return i18n.t(
 		'Buddy can then run commands on that computer as your account there, and so can anyone who controls this Buddy server.'

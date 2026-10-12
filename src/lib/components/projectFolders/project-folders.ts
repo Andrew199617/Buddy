@@ -3,7 +3,6 @@
 // in the folder settings. No requests here.
 
 import type {
-	FolderPlan,
 	FolderProject,
 	FolderProjectChoice,
 	ProjectFolderChoice,
@@ -87,48 +86,6 @@ export function chipState(project: FolderProject): ChipState {
 	if (computer) label = `${computer.name} · ${label}`;
 	if (entries.length > 1) label = `${label} +${entries.length - 1}`;
 	return { label, tone: 'normal', fromFolderName };
-}
-
-/** With Read files, Claude reads only inside the folder it starts in. */
-export function claudeReadHint(project: FolderProject): boolean {
-	if (effectiveChoice(project).mode !== 'auto') return false;
-	return project.computers.some((computer) =>
-		computer.providers.some((provider) => provider.id === 'claude' && provider.access === 'read')
-	);
-}
-
-export function anyFullAccess(project: FolderProject): boolean {
-	return project.computers.some((computer) =>
-		computer.providers.some((provider) => provider.access === 'full')
-	);
-}
-
-// What a Chat-only plan can be allowed from the folder settings.
-export type FileAccess = 'read' | 'full';
-
-/** Plans that are on but Chat only, on a computer they can use: the folder's settings can let them use files. */
-export function plansToAllow(project: FolderProject): FolderPlan[] {
-	return project.plans.filter(
-		(plan) => plan.enable && plan.access === 'chat' && plan.machine !== null
-	);
-}
-
-/** Plans that are on and may use files, but have no computer they can use. */
-export function plansWithoutComputer(project: FolderProject): FolderPlan[] {
-	return project.plans.filter(
-		(plan) => plan.enable && plan.access !== 'chat' && plan.machine === null
-	);
-}
-
-// 'ready': some plan can open folders. Otherwise what is missing: a Chat-only
-// plan to 'allow', a 'computer' for the plans that are on, or a plan to 'turn_on'.
-export type FileAccessNeed = 'ready' | 'allow' | 'computer' | 'turn_on';
-
-export function fileAccessNeed(project: FolderProject): FileAccessNeed {
-	if (workingComputers(project).length > 0) return 'ready';
-	if (plansToAllow(project).length > 0) return 'allow';
-	if (project.has_plans) return 'computer';
-	return 'turn_on';
 }
 
 /** Whether keyboard focus fell to the page, because what had it was removed or disabled. */
@@ -360,7 +317,8 @@ export function projectSummary(draft: ProjectDraft, project: FolderProject): Pro
 	}
 	let computer: ProjectFolderComputer | null = null;
 	if (draft.machineId) {
-		computer = project.computers.find((candidate) => candidate.machine_id === draft.machineId) ?? null;
+		computer =
+			project.computers.find((candidate) => candidate.machine_id === draft.machineId) ?? null;
 	}
 	let folder: string | null = null;
 	if (draft.mode === 'folder') {
@@ -389,7 +347,11 @@ export function draftProblem(draft: ProjectDraft): DraftProblem {
 export const MAX_OFFERED_PER_COMPUTER = 5;
 
 /** The draft with one more folder offered on a computer; at most five, no repeats. */
-export function draftWithOffered(draft: ProjectDraft, machineId: string, path: string): ProjectDraft {
+export function draftWithOffered(
+	draft: ProjectDraft,
+	machineId: string,
+	path: string
+): ProjectDraft {
 	const current = draft.offered[machineId] ?? [];
 	if (current.includes(path) || current.length >= MAX_OFFERED_PER_COMPUTER) return draft;
 	return { ...draft, offered: { ...draft.offered, [machineId]: [...current, path] } };
