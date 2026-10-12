@@ -51,26 +51,37 @@ function permissionQuestion(permission: DesktopPermission, accountName: string):
 	};
 }
 
+async function pickFolder(
+	parent: BrowserWindow | null,
+	options: Electron.OpenDialogOptions
+): Promise<string | null> {
+	let result;
+	if (parent) {
+		result = await dialog.showOpenDialog(parent, options);
+	} else {
+		result = await dialog.showOpenDialog(options);
+	}
+	if (result.canceled || result.filePaths.length === 0) return null;
+	return result.filePaths[0];
+}
+
 export function createNativeDialogs(parentWindow: () => BrowserWindow | null, accountName: string): Dialogs {
 	return {
 		confirmConnect: (serverUrl, account) => ask(parentWindow(), connectQuestion(serverUrl, account)),
 
-		chooseFolder: async () => {
-			const parent = parentWindow();
-			const options: Electron.OpenDialogOptions = {
+		chooseFolder: () =>
+			pickFolder(parentWindow(), {
 				title: 'Share a folder with Buddy',
 				buttonLabel: 'Share folder',
 				properties: ['openDirectory']
-			};
-			let result;
-			if (parent) {
-				result = await dialog.showOpenDialog(parent, options);
-			} else {
-				result = await dialog.showOpenDialog(options);
-			}
-			if (result.canceled || result.filePaths.length === 0) return null;
-			return result.filePaths[0];
-		},
+			}),
+
+		chooseProjectFolder: () =>
+			pickFolder(parentWindow(), {
+				title: 'Choose a project folder',
+				buttonLabel: 'Use folder',
+				properties: ['openDirectory']
+			}),
 
 		confirmPermission: (permission) => ask(parentWindow(), permissionQuestion(permission, accountName))
 	};
