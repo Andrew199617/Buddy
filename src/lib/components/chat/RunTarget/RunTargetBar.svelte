@@ -33,7 +33,7 @@
 		type RunTargetDraft
 	} from './run-target';
 
-	const i18n = getContext('i18n');
+	const i18n: any = getContext('i18n');
 
 	export let options: RunTargetOptions;
 	export let draft: RunTargetDraft | null = null;

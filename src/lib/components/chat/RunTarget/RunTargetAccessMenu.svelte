@@ -10,7 +10,7 @@
 	import { showSettings } from '$lib/stores';
 	import { defaultAccess, folderLabel, type RunTargetDraft } from './run-target';
 
-	const i18n = getContext('i18n');
+	const i18n: any = getContext('i18n');
 
 	export let draft: RunTargetDraft;
 	export let options: RunTargetOptions;
