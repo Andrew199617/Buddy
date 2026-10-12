@@ -12,6 +12,7 @@ Routes:
   PATCH  /machines/{machine}       — rename one of the user's machines
   DELETE /machines/{machine}       — remove one of the user's machines
   GET    /admin/machines           — every user's machines, for administrators
+  DELETE /admin/machines/{machine} — remove anyone's machine
   GET    /admin/policy             — who may use machines, and which sign-ins are allowed
   POST   /admin/policy             — save that policy
   GET    /{provider}               — one provider (?refresh=true checks again)
@@ -198,6 +199,15 @@ async def delete_machine(machine_id: str, user=Depends(get_machine_session_user)
 
 @router.get('/admin/machines')
 async def get_all_machines(user=Depends(get_admin_user)):
+    return {'machines': await service.describe_all_machines()}
+
+
+@router.delete('/admin/machines/{machine_id}')
+async def admin_delete_machine(machine_id: str, user=Depends(get_admin_session_user)):
+    try:
+        await service.admin_delete_machine(machine_id)
+    except SubscriptionError as error:
+        raise _bad_request(error)
     return {'machines': await service.describe_all_machines()}
 
 

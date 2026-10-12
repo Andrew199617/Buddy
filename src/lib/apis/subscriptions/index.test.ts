@@ -178,4 +178,12 @@ describe('per-user machines and sign-ins', () => {
 		expect(request().options.method).toBe('POST');
 		expect(request().url.pathname).toBe('/api/v1/subscriptions/codex/credentials/machine');
 	});
+
+	it('lets an administrator remove anyone’s machine by its encoded ID', async () => {
+		const { deleteAnySubscriptionMachine } = await import('./index');
+		await deleteAnySubscriptionMachine('fixture-token', 'machine / A');
+		const { url, options } = request();
+		expect(options.method).toBe('DELETE');
+		expect(url.pathname).toBe('/api/v1/subscriptions/admin/machines/machine%20%2F%20A');
+	});
 });
