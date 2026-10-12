@@ -155,6 +155,15 @@ class ChatRunTargetTurnTests(unittest.IsolatedAsyncioTestCase):
         row = await self.service.ChatRunTargets.get('chat-old')
         self.assertEqual((row.machine_id, row.folder_mode, row.note), ('runner-a', 'auto', 'plan'))
 
+    async def test_a_chat_created_without_the_bar_after_targets_started_runs_detached(self):
+        # Such as an automation's chat: it gets the default like any new chat.
+        self.config.values['subscriptions.run_targets_started_at'] = 1000
+        self.chats.add('chat-automation', OWNER, created_at=2000)
+        await self.chat(metadata={'chat_id': 'chat-automation'})
+        self.assertEqual((self.turns[0].settings.access, self.turns[0].cwd), ('chat', CHAT_DIRECTORY))
+        row = await self.service.ChatRunTargets.get('chat-automation')
+        self.assertEqual((row.kind, row.source), ('detached', 'default'))
+
     async def test_a_chat_from_before_targets_in_a_folder_uses_the_folders_choice(self):
         saved = {'runner-a': self.service.project_folders.SavedPath(PROJECT, REVISION_A)}
         await self.service.project_folders.save_choice(OWNER, 'website', 'folder', saved, {'runner-a', 'runner-b'})

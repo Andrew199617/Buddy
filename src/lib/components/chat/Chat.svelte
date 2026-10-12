@@ -121,6 +121,7 @@
 	} from '$lib/apis/subscriptions';
 	import { thisPcMachineId } from '$lib/desktop/this-pc';
 	import { pendingRunTarget } from './RunTarget/pending';
+	import { chatProjectTarget } from './ProjectPanel/project-session';
 	import {
 		detailsFromDraft,
 		draftFromDefault,
@@ -465,8 +466,12 @@
 	let runTargetOptions: RunTargetOptions | null = null;
 	let runTargetDraft: RunTargetDraft | null = null;
 	let chatRunTarget: ChatRunTarget | null = null;
-	// Each load bumps this, so an older answer never replaces a newer one.
-	let runTargetLoad = 0;
+	// Each load bumps its counter, so an older answer never replaces a newer one.
+	let runTargetOptionsLoad = 0;
+	let chatRunTargetLoad = 0;
+	// True until the newest load answers, so the side panel waits for the chat's own folder.
+	let runTargetOptionsLoading = false;
+	let chatRunTargetLoading = false;
 	let runTargetProvidersKey = '';
 	let loadedChatIdProp = '';
 	let currentDraftKey = '';
@@ -791,14 +796,29 @@
 		runTargetDraft = refreshUntouched(runTargetDraft, runTargetOptions, providers);
 	}
 
+	// The Buddy app says which computer it runs on a moment after the page loads. A new
+	// chat's untouched choices then follow it, since its chat folder may prefer this PC.
+	let runTargetThisPc: string | null = null;
+
+	$: refreshRunTargetForThisPc($thisPcMachineId);
+
+	function refreshRunTargetForThisPc(machineId: string | null) {
+		if (machineId === runTargetThisPc) return;
+		runTargetThisPc = machineId;
+		if (embedded || history?.currentId || chatIdProp) return;
+		void loadRunTargetOptions(false);
+	}
+
 	/** What the bar offers here, and the draft a new chat starts with. */
 	async function loadRunTargetOptions(startNewDraft: boolean) {
-		const load = ++runTargetLoad;
+		const load = ++runTargetOptionsLoad;
+		runTargetOptionsLoading = true;
 		const options = await getRunTargetOptions(localStorage.token, {
 			folderId: $selectedFolder?.id ?? null,
-			thisMachineId: get(thisPcMachineId)
+			thisMachineId: $thisPcMachineId
 		}).catch(() => null);
-		if (load !== runTargetLoad) return;
+		if (load !== runTargetOptionsLoad) return;
+		runTargetOptionsLoading = false;
 		runTargetOptions = options;
 		if (!options?.allowed || !options.default || history?.currentId) {
 			runTargetDraft = null;
@@ -817,11 +837,35 @@
 		}
 	}
 
+	/** Whether the bar shows for a saved chat, and its computers: the options in its own chat folder. */
+	async function loadSavedChatRunTargetOptions(folderId: string | null) {
+		const load = ++runTargetOptionsLoad;
+		runTargetOptionsLoading = true;
+		const options = await getRunTargetOptions(localStorage.token, { folderId }).catch(() => null);
+		if (load !== runTargetOptionsLoad) return;
+		runTargetOptionsLoading = false;
+		runTargetOptions = options;
+	}
+
 	async function loadChatRunTarget(id: string) {
-		const load = ++runTargetLoad;
+		const load = ++chatRunTargetLoad;
+		chatRunTargetLoading = true;
 		const target = await getChatRunTarget(localStorage.token, id).catch(() => null);
-		if (load !== runTargetLoad) return;
+		if (load !== chatRunTargetLoad) return;
+		chatRunTargetLoading = false;
 		chatRunTarget = target;
+	}
+
+	/** The Project tab's "Check again" for the chat's own folder: is its computer online now? */
+	function recheckChatTargetComputer() {
+		void loadSavedChatRunTargetOptions(sidePanelFolderId);
+	}
+
+	/** Drops the open chat's target and any answer still on its way for it. */
+	function forgetChatRunTarget() {
+		chatRunTargetLoad += 1;
+		chatRunTargetLoading = false;
+		chatRunTarget = null;
 	}
 
 	/** The first send of a new or temporary chat carries where it runs; a saved chat's is fixed. */
@@ -840,7 +884,8 @@
 	/** "New chat here": a new chat in the same chat folder, starting where this one runs. */
 	async function newChatHere(details: ChatRunTargetDetails | null) {
 		if (details) pendingRunTarget.set(details);
-		const folderId = chat?.folder_id ?? null;
+		// The open chat's folder; `chat` can still be an earlier chat after one started in place.
+		const folderId = sidePanelFolderId;
 		if (!folderId) {
 			selectedFolder.set(null);
 			await goto('/');
@@ -868,6 +913,18 @@
 		if (target) return target;
 		if (!draft || !options || !currentHistory?.currentId) return null;
 		return { bound: true, ...detailsFromDraft(draft, options) };
+	}
+
+	// A chat that runs in an exact folder opens that folder in its Project tab.
+	$: projectChatTargetLoading = chatRunTargetLoading || runTargetOptionsLoading;
+	$: projectChatTarget = chatProjectTarget(
+		boundDetails(shownRunTarget),
+		runTargetOptions?.computers ?? []
+	);
+
+	function boundDetails(target: ChatRunTarget | null): ChatRunTargetDetails | null {
+		if (!target || !target.bound) return null;
+		return target;
 	}
 
 	const onSelectedModelIdsChange = () => {
@@ -2314,7 +2371,7 @@
 		chatVariables = {};
 		taskIds = null;
 		chatTasks = [];
-		chatRunTarget = null;
+		forgetChatRunTarget();
 		runTargetDraft = null;
 		if (!embedded) void loadRunTargetOptions(true);
 
@@ -2452,17 +2509,11 @@
 			const chatContent = chat.chat;
 			chatVariables = chat?.variables ?? {};
 			runTargetDraft = null;
-			chatRunTarget = null;
+			forgetChatRunTarget();
 			// readOnly updates after this function; only the chat's owner sees where it runs.
 			if (!embedded && chat.user_id === $user?.id) {
 				// Options say whether the bar shows; the chat's target is what it shows.
-				void getRunTargetOptions(localStorage.token, { folderId: chat.folder_id ?? null })
-					.then((options) => {
-						runTargetOptions = options;
-					})
-					.catch(() => {
-						runTargetOptions = null;
-					});
+				void loadSavedChatRunTargetOptions(chat.folder_id ?? null);
 				void loadChatRunTarget($chatId);
 			}
 
@@ -4846,6 +4897,9 @@
 						{eventTarget}
 						{codeInterpreterEnabled}
 						folderId={sidePanelFolderId}
+						chatTarget={projectChatTarget}
+						chatTargetLoading={projectChatTargetLoading}
+						onChatTargetCheck={recheckChatTargetComputer}
 					/>
 				{/if}
 			</div>

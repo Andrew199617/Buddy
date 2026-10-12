@@ -29,7 +29,7 @@
 	import { buildFolderSections, looksLikePath } from './folder-menu';
 	import { computerPlace, type RunTargetDraft } from './run-target';
 
-	const i18n = getContext('i18n');
+	const i18n: any = getContext('i18n');
 	const desktop = getDesktop();
 
 	export let options: RunTargetOptions;
@@ -42,8 +42,8 @@
 	export let onPick: (folder: RunTargetFolder, machineId: string) => void;
 
 	let query = '';
-	let suggestions: FolderSuggestion[] = prefetched ?? [];
-	let suggestionsLoaded = prefetched !== null;
+	let suggestions: FolderSuggestion[] = [];
+	let suggestionsLoaded = false;
 	let checking = false;
 	let problem = '';
 	let browsing = false;
@@ -61,6 +61,13 @@
 		platform: computer.platform
 	});
 	$: typedPath = looksLikePath(query, computer.platform) ? query.trim() : '';
+	// The bar's suggestions, also when they arrive after the menu opened.
+	$: if (prefetched) takeSuggestions(prefetched);
+
+	function takeSuggestions(found: FolderSuggestion[]) {
+		suggestions = found;
+		suggestionsLoaded = true;
+	}
 
 	function folderSource(target: RunTargetComputer) {
 		if (target.folders === 'on') return computerFolderSource(target.machine_id, target.platform);
@@ -87,9 +94,9 @@
 		}
 		try {
 			const found = await getSuggestedFolders(localStorage.token, computer.machine_id);
-			if (found.state === 'ok') suggestions = found.folders;
+			if (found.state === 'ok') takeSuggestions(found.folders);
 		} catch {
-			suggestions = [];
+			// Recent folders, typing and browsing still work.
 		} finally {
 			suggestionsLoaded = true;
 		}
@@ -179,7 +186,7 @@
 	<div class="flex flex-col gap-1 p-1">
 		<button
 			type="button"
-			class="min-h-9 self-start rounded-lg px-2 text-[0.8125rem] hover:bg-gray-50 dark:hover:bg-gray-800/60"
+			class="min-h-11 self-start rounded-lg px-2 text-[0.8125rem] hover:bg-gray-50 dark:hover:bg-gray-800/60 md:min-h-9"
 			on:click={() => (browsing = false)}
 		>
 			← {$i18n.t('Back')} · <bdi>{computerName(computer)}</bdi>
@@ -187,7 +194,7 @@
 		<FolderBrowser source={browseSource} machineName={computerName(computer)} onPick={pickPath} />
 	</div>
 {:else}
-	<div class="flex flex-col gap-0.5 p-1" role="listbox" aria-label={$i18n.t('Folder')}>
+	<div class="flex flex-col gap-0.5 p-1" role="group" aria-label={$i18n.t('Folder')}>
 		<input
 			bind:this={searchInput}
 			bind:value={query}
@@ -214,52 +221,95 @@
 				{$i18n.t('Checking on {{name}}…', { name: computerName(computer) })}
 			</div>
 		{/if}
-		{#if typedPath}
-			{@render folderRow(typedPath, $i18n.t('Use this path'), () => pickPath(typedPath))}
-		{/if}
-
-		{#if sections.inChatFolder.length > 0 && options.chat_folder}
-			<div class="px-2 pt-1 text-[0.625rem] uppercase tracking-wider text-gray-400">
-				{$i18n.t('In “{{folder}}”', { folder: options.chat_folder.name })}
-			</div>
-			{#each sections.inChatFolder as entry (entry.path)}
-				{@render folderRow(entry.path, entry.isDefault ? $i18n.t('Default') : '', () =>
-					pickPath(entry.path)
-				)}
-			{/each}
-		{/if}
-
-		{#if sections.recentHere.length > 0 || sections.recentElsewhere.length > 0}
-			<div class="px-2 pt-1 text-[0.625rem] uppercase tracking-wider text-gray-400">
-				{$i18n.t('Recent')}
-			</div>
-			{#each sections.recentHere as path (path)}
-				{@render folderRow(path, '', () => pickPath(path))}
-			{/each}
-			{#each sections.recentElsewhere as entry (`${entry.machineId}:${entry.path}`)}
-				{@render folderRow(
-					entry.path,
-					$i18n.t('On {{name}}', { name: nameOf(entry.machineId) }),
-					() => pickElsewhere(entry.machineId, entry.path)
-				)}
-			{/each}
-		{/if}
-
-		{#if computer.folders === 'on'}
-			<div class="px-2 pt-1 text-[0.625rem] uppercase tracking-wider text-gray-400">
-				{$i18n.t('From Claude Code and Codex')}
-			</div>
-			{#if !suggestionsLoaded}
-				<div class="mx-2 my-1 h-8 animate-pulse rounded-lg bg-gray-100 dark:bg-gray-800"></div>
-				<div class="mx-2 my-1 h-8 animate-pulse rounded-lg bg-gray-100 dark:bg-gray-800"></div>
-			{:else}
-				{#each sections.fromAgents as suggestion (suggestion.path)}
-					{@render folderRow(suggestion.path, suggestionDetail(suggestion), () =>
-						pickPath(suggestion.path)
-					)}
-				{/each}
+		<!-- Only folder choices are options; the search field and actions sit outside the list. -->
+		<div class="flex flex-col gap-0.5" role="listbox" aria-label={$i18n.t('Folders')}>
+			{#if typedPath}
+				{@render folderRow(typedPath, $i18n.t('Use this path'), () => pickPath(typedPath))}
 			{/if}
-		{/if}
+
+			{#if sections.inChatFolder.length > 0 && options.chat_folder}
+				{@const inFolderLabel = $i18n.t('In “{{folder}}”', { folder: options.chat_folder.name })}
+				<div class="flex flex-col gap-0.5" role="group" aria-label={inFolderLabel}>
+					<div
+						class="px-2 pt-1 text-[0.625rem] uppercase tracking-wider text-gray-400"
+						aria-hidden="true"
+					>
+						{inFolderLabel}
+					</div>
+					{#each sections.inChatFolder as entry (entry.path)}
+						{@render folderRow(entry.path, entry.isDefault ? $i18n.t('Default') : '', () =>
+							pickPath(entry.path)
+						)}
+					{/each}
+				</div>
+			{/if}
+
+			{#if sections.recentHere.length > 0 || sections.recentElsewhere.length > 0}
+				<div class="flex flex-col gap-0.5" role="group" aria-label={$i18n.t('Recent')}>
+					<div
+						class="px-2 pt-1 text-[0.625rem] uppercase tracking-wider text-gray-400"
+						aria-hidden="true"
+					>
+						{$i18n.t('Recent')}
+					</div>
+					{#each sections.recentHere as path (path)}
+						{@render folderRow(path, '', () => pickPath(path))}
+					{/each}
+					{#each sections.recentElsewhere as entry (`${entry.machineId}:${entry.path}`)}
+						{@render folderRow(
+							entry.path,
+							$i18n.t('On {{name}}', { name: nameOf(entry.machineId) }),
+							() => pickElsewhere(entry.machineId, entry.path)
+						)}
+					{/each}
+				</div>
+			{/if}
+
+			{#if computer.folders === 'on'}
+				<div
+					class="flex flex-col gap-0.5"
+					role="group"
+					aria-label={$i18n.t('From Claude Code and Codex')}
+					aria-busy={!suggestionsLoaded}
+				>
+					<div
+						class="px-2 pt-1 text-[0.625rem] uppercase tracking-wider text-gray-400"
+						aria-hidden="true"
+					>
+						{$i18n.t('From Claude Code and Codex')}
+					</div>
+					{#if !suggestionsLoaded}
+						<div
+							class="mx-2 my-1 h-8 animate-pulse rounded-lg bg-gray-100 dark:bg-gray-800"
+							aria-hidden="true"
+						></div>
+						<div
+							class="mx-2 my-1 h-8 animate-pulse rounded-lg bg-gray-100 dark:bg-gray-800"
+							aria-hidden="true"
+						></div>
+					{:else}
+						{#each sections.fromAgents as suggestion (suggestion.path)}
+							{@render folderRow(suggestion.path, suggestionDetail(suggestion), () =>
+								pickPath(suggestion.path)
+							)}
+						{/each}
+					{/if}
+				</div>
+			{/if}
+
+			<button
+				type="button"
+				role="option"
+				aria-selected={draft.folder?.mode === 'auto'}
+				class="flex min-h-11 flex-col items-start justify-center rounded-lg px-2 text-start hover:bg-gray-50 dark:hover:bg-gray-800/60 md:min-h-9"
+				on:click={() => onPick({ mode: 'auto' }, computer.machine_id)}
+			>
+				<span class="text-[0.8125rem]">{$i18n.t('Let the AI choose')}</span>
+				<span class="text-[0.6875rem] text-gray-500 dark:text-gray-400">
+					{$i18n.t('Starts in its start folder on {{name}}', { name: computerName(computer) })}
+				</span>
+			</button>
+		</div>
 
 		{#if noFolders && suggestionsLoaded && !typedPath}
 			<p class="px-2 py-1 text-xs text-gray-500 dark:text-gray-400">
@@ -287,17 +337,5 @@
 				{$i18n.t('Browse {{name}}…', { name: computerName(computer) })}
 			</button>
 		{/if}
-		<button
-			type="button"
-			role="option"
-			aria-selected={draft.folder?.mode === 'auto'}
-			class="flex min-h-11 flex-col items-start justify-center rounded-lg px-2 text-start hover:bg-gray-50 dark:hover:bg-gray-800/60 md:min-h-9"
-			on:click={() => onPick({ mode: 'auto' }, computer.machine_id)}
-		>
-			<span class="text-[0.8125rem]">{$i18n.t('Let the AI choose')}</span>
-			<span class="text-[0.6875rem] text-gray-500 dark:text-gray-400">
-				{$i18n.t('Starts in its start folder on {{name}}', { name: computerName(computer) })}
-			</span>
-		</button>
 	</div>
 {/if}

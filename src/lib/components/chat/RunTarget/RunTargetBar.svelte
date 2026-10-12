@@ -16,7 +16,6 @@
 		type SubscriptionAccess,
 		type SubscriptionProviderId
 	} from '$lib/apis/subscriptions';
-	import { mobile } from '$lib/stores';
 	import Dropdown from '$lib/components/common/Dropdown.svelte';
 	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
 	import LockClosed from '$lib/components/icons/LockClosed.svelte';
@@ -33,7 +32,7 @@
 		type RunTargetDraft
 	} from './run-target';
 
-	const i18n = getContext('i18n');
+	const i18n: any = getContext('i18n');
 
 	export let options: RunTargetOptions;
 	export let draft: RunTargetDraft | null = null;
@@ -42,6 +41,8 @@
 	// The plans behind the selected models; empty when a model that isn't a plan is selected.
 	export let providers: SubscriptionProviderId[] = [];
 	export let thisPcMachineId: string | null = null;
+	// The phone layout: one summary chip and a sheet. The composer turns it on for touch screens.
+	export let touchLayout = false;
 	export let onChange: (draft: RunTargetDraft) => void = () => {};
 	export let onNewChatHere: (details: ChatRunTargetDetails | null) => void = () => {};
 	export let onFocusComposer: () => void = () => {};
@@ -54,6 +55,8 @@
 	// Fresh checks made when the person picks a computer, by computer and plan.
 	let freshStates: Record<string, Partial<Record<SubscriptionProviderId, RunTargetPlanState>>> = {};
 	let suggestionsByComputer: Record<string, FolderSuggestion[]> = {};
+	// Computers whose suggestions are on their way, so each is asked once at a time.
+	const prefetching = new Set<string>();
 
 	$: details = targetDetails(target);
 	$: forPlansOnly = providers.length === 0;
@@ -90,15 +93,17 @@
 	async function prefetchSuggestions(computer: RunTargetComputer) {
 		const machineId = computer.machine_id;
 		if (computer.folders !== 'on' || suggestionsByComputer[machineId]) return;
-		suggestionsByComputer[machineId] = [];
+		if (prefetching.has(machineId)) return;
+		prefetching.add(machineId);
 		try {
 			const found = await getSuggestedFolders(localStorage.token, machineId);
 			if (found.state === 'ok') {
 				suggestionsByComputer = { ...suggestionsByComputer, [machineId]: found.folders };
 			}
 		} catch {
-			// The menu loads them again when it opens.
-			delete suggestionsByComputer[machineId];
+			// The menu asks again when it opens.
+		} finally {
+			prefetching.delete(machineId);
 		}
 	}
 
@@ -229,7 +234,7 @@
 	aria-label={$i18n.t('Where this chat runs')}
 >
 	{#if editable && draft}
-		{#if $mobile}
+		{#if touchLayout}
 			<button
 				type="button"
 				class="buddy-run-target-summary flex min-h-11 w-full min-w-0 items-center gap-2 rounded-xl px-3 text-start text-sm text-gray-700 dark:text-gray-200"
@@ -250,6 +255,7 @@
 					{providers}
 					{thisPcMachineId}
 					{stateFor}
+					inMenu={false}
 					onPick={pickComputer}
 					onClose={() => (showSheet = false)}
 				/>
@@ -258,6 +264,7 @@
 					{options}
 					{providers}
 					{computerName}
+					inMenu={false}
 					onPick={pickAccess}
 					onAcknowledge={acknowledge}
 					onClose={() => (showSheet = false)}
@@ -290,12 +297,7 @@
 				composerMenu="run-target"
 				visualViewportAware
 			>
-				<button
-					type="button"
-					class={chipClass}
-					aria-haspopup="listbox"
-					aria-expanded={showComputer}
-				>
+				<button type="button" class={chipClass} aria-haspopup="menu" aria-expanded={showComputer}>
 					{#if !selectedReady}
 						<span class="size-1.5 shrink-0 rounded-full bg-amber-500" aria-hidden="true"></span>
 					{/if}
@@ -327,11 +329,13 @@
 					preserveComposerFocus
 					composerMenu="run-target"
 					visualViewportAware
+					contentRole="dialog"
+					contentLabel={$i18n.t('Folder')}
 				>
 					<button
 						type="button"
 						class={chipClass}
-						aria-haspopup="listbox"
+						aria-haspopup="dialog"
 						aria-expanded={showFolder}
 						title={folderHelp?.kind === 'path' ? folderHelp.path : undefined}
 					>
@@ -367,7 +371,7 @@
 				composerMenu="run-target"
 				visualViewportAware
 			>
-				<button type="button" class={chipClass} aria-haspopup="listbox" aria-expanded={showAccess}>
+				<button type="button" class={chipClass} aria-haspopup="menu" aria-expanded={showAccess}>
 					{#if options.chat_folder?.shared_instructions && draft.acknowledgedFolderId === null && draft.kind === 'computer'}
 						<LockClosed className="size-3 shrink-0" />
 					{/if}
@@ -391,7 +395,7 @@
 			</Dropdown>
 		{/if}
 	{:else if details}
-		{#if $mobile}
+		{#if touchLayout}
 			<button
 				type="button"
 				class="buddy-run-target-summary flex min-h-11 w-full min-w-0 items-center gap-2 rounded-xl px-3 text-start text-sm text-gray-500 dark:text-gray-400"
@@ -416,6 +420,8 @@
 				preserveComposerFocus
 				composerMenu="run-target"
 				visualViewportAware
+				contentRole="dialog"
+				contentLabel={$i18n.t('Where this chat runs')}
 			>
 				<button
 					type="button"

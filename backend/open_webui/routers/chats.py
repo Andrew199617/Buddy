@@ -12,7 +12,6 @@ from open_webui.events import EVENTS, publish_event
 from open_webui.internal.db import get_async_session
 from open_webui.models.access_grants import AccessGrants
 from open_webui.models.chat_messages import ChatMessages
-from open_webui.models.chat_run_targets import ChatRunTargets
 from open_webui.models.chats import (
     AggregateChatStats,
     ChatBody,
@@ -42,7 +41,12 @@ from open_webui.utils.chat_fork import build_fork_history
 from open_webui.utils.context_compaction import compact_chat_branch, get_chat_context_usage
 from open_webui.utils.misc import get_message_list
 from open_webui.utils.models import get_all_models
-from open_webui.utils.subscriptions.service import API_KEY_TARGET_MESSAGE, bind_chat_target
+from open_webui.utils.subscriptions.service import (
+    API_KEY_TARGET_MESSAGE,
+    bind_chat_target,
+    bind_imported_chat,
+    copy_chat_target,
+)
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -860,6 +864,9 @@ async def import_chats(
 
     try:
         chats = await Chats.import_chats(user.id, form_data.chats, db=db)
+        # Imported chats keep their dates but start like new chats, not where chats from before targets ran.
+        for chat in chats:
+            await bind_imported_chat(user, chat.id)
         await publish_event(
             request,
             EVENTS.CHAT_IMPORTED,
@@ -1810,7 +1817,7 @@ async def fork_chat_by_id(
         fork = await Chats.toggle_chat_pinned_by_id(fork.id, db=db) or fork
 
     # A fork runs where the chat it came from runs.
-    await ChatRunTargets.copy_for_owner(chat.id, fork.id, user.id, db=db)
+    await copy_chat_target(user, chat.id, fork.id)
 
     await publish_event(
         request,
@@ -1860,7 +1867,7 @@ async def clone_chat_by_id(
         if chats:
             chat = chats[0]
             # A clone of the person's own chat runs where that chat runs.
-            await ChatRunTargets.copy_for_owner(id, chat.id, user.id, db=db)
+            await copy_chat_target(user, id, chat.id)
             await publish_event(
                 request,
                 EVENTS.CHAT_CLONED,

@@ -2128,6 +2128,37 @@ async def _stop_for_sign_in(ref: ProviderRef, settings: ProviderSettings, machin
 API_KEY_TARGET_MESSAGE = "Sign in to Buddy to choose where a chat runs; API keys can't."
 # A temporary chat has no saved target; its turns carry the bar's choice under this metadata key.
 REQUESTED_RUN_TARGET_KEY = 'requested_run_target'
+# When Buddy first ran with chat targets. Chats created before it keep running where their plan ran.
+RUN_TARGETS_STARTED_CONFIG_KEY = 'subscriptions.run_targets_started_at'
+
+_run_targets_started_at: int | None = None
+
+
+async def mark_run_targets_started() -> int:
+    """When chats started having targets: saved the first time Buddy starts with them, then kept."""
+    global _run_targets_started_at
+    if _run_targets_started_at is not None:
+        return _run_targets_started_at
+    stored = await Config.get(RUN_TARGETS_STARTED_CONFIG_KEY)
+    if isinstance(stored, int) and not isinstance(stored, bool) and stored > 0:
+        _run_targets_started_at = stored
+        return stored
+    started_at = int(time.time())
+    await Config.upsert({RUN_TARGETS_STARTED_CONFIG_KEY: started_at})
+    _run_targets_started_at = started_at
+    return started_at
+
+
+async def _started_before_targets(user, chat_id: str) -> bool:
+    """Whether the person's chat is older than chat targets, so its first turn binds where its plan ran.
+
+    Chats Buddy creates without the bar, such as automations, are newer and get
+    the default like any new chat.
+    """
+    created_at = await Chats.get_chat_created_at(chat_id, user.id)
+    if created_at is None:
+        return False
+    return created_at < await mark_run_targets_started()
 
 
 @dataclass(frozen=True)
@@ -2367,6 +2398,59 @@ async def bind_chat_target(
     return await ChatRunTargets.insert_if_absent(row)
 
 
+async def copy_chat_target(user, source_chat_id: str, new_chat_id: str):
+    """A fork or clone of the person's own chat runs where that chat runs, or where its next turn would bind it.
+
+    A copy of a chat from before targets is newer than targets itself, so it is
+    bound now, the way its source would be. Otherwise an unbound copy gets the
+    default on its first turn, like its source.
+    """
+    copied = await ChatRunTargets.copy_for_owner(source_chat_id, new_chat_id, user.id)
+    if copied is not None:
+        return copied
+    if not await Chats.is_chat_owner(source_chat_id, user.id):
+        return None
+    if not await _started_before_targets(user, source_chat_id):
+        return None
+    provider_id = await _chat_provider(user, source_chat_id)
+    return await bind_chat_target(user, new_chat_id, None, provider_id, started_before_targets=True)
+
+
+async def bind_imported_chat(user, chat_id: str):
+    """An imported chat keeps its old date but starts like a new chat.
+
+    Its row is saved even while its owner may not use computers, so its date
+    never makes it look like a chat from before targets later.
+    """
+    row = await bind_chat_target(user, chat_id)
+    if row is not None:
+        return row
+    if not is_saved_chat_id(chat_id) or not await Chats.is_chat_owner(chat_id, user.id):
+        return None
+    return await ChatRunTargets.insert_if_absent(_detached_row(user, chat_id, SOURCE_DEFAULT))
+
+
+def _provider_for_model_id(model_id) -> str | None:
+    """The plan behind one of Buddy's own plan model ids, such as 'claude-code.opus'."""
+    if not isinstance(model_id, str):
+        return None
+    for provider_id, prefix in MODEL_ID_PREFIXES.items():
+        if model_id.startswith(f'{prefix}.'):
+            return provider_id
+    return None
+
+
+async def _chat_provider(user, chat_id: str) -> str | None:
+    """The plan of the chat's first model, when it is one of Buddy's own plan models."""
+    chat = await Chats.get_chat_by_id_and_user_id(chat_id, user.id)
+    if chat is None or not isinstance(chat.chat, dict):
+        return None
+    models = chat.chat.get('models')
+    if not isinstance(models, list) or not models:
+        return None
+    return _provider_for_model_id(models[0])
+
+
 def _bar_plan_state(provider_status: dict | None, online: bool | None) -> str:
     """A plan's state on one computer for the composer's bar, from what it last reported."""
     if online is False:
@@ -2547,10 +2631,14 @@ async def describe_chat_run_target(user, chat_id: str) -> dict:
     row = await ChatRunTargets.get(chat_id)
     if row is not None:
         return {'bound': True, **await _describe_target_row(user, row)}
-    # A chat from before targets: its next turn binds where its plan ran.
+    # Not bound yet: its next turn binds where its plan ran if it is older than targets, else the default.
     folder_id = await Chats.get_chat_folder_id(chat_id, user.id)
-    default = await default_run_target(user, folder_id, started_before_targets=True)
-    would_bind = await _row_from_default(user, chat_id, default, None)
+    started_before_targets = await _started_before_targets(user, chat_id)
+    provider_id = await _chat_provider(user, chat_id)
+    default = await default_run_target(
+        user, folder_id, provider_id=provider_id, started_before_targets=started_before_targets
+    )
+    would_bind = await _row_from_default(user, chat_id, default, provider_id)
     return {'bound': False, 'would_bind': await _describe_target_row(user, would_bind)}
 
 
@@ -3552,7 +3640,10 @@ async def _turn_target(user, ref: ProviderRef, metadata: dict) -> _TurnTarget:
             preferred = row.machine_id
         return await _detached_turn(user, ref, preferred)
     if row is None:
-        row = await bind_chat_target(user, chat_id, None, ref.provider_id, started_before_targets=True)
+        started_before_targets = await _started_before_targets(user, chat_id)
+        row = await bind_chat_target(
+            user, chat_id, None, ref.provider_id, started_before_targets=started_before_targets
+        )
     if row is None:
         return await _detached_turn(user, ref)
     return await _row_turn_target(user, ref, row)

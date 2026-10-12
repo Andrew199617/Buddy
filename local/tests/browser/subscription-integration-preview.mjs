@@ -222,6 +222,14 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			};
 			provider.models = [];
 		}
+		if (mode === 'computer-sign-in') {
+			// Claude is on and signed in on this server, but not yet on computer A.
+			provider.settings.enable = true;
+			provider.computers = [
+				{ machine_id: 'local', name: 'This server', online: true, state: 'ready' },
+				{ machine_id: 'runner-a', name: 'Synthetic computer A', online: true, state: 'signed_out' }
+			];
+		}
 		return provider;
 	}
 
@@ -604,6 +612,10 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			method === 'GET'
 		) {
 			requests.push({ method, path });
+			if (mode === 'run-target-new') {
+				// Slow enough that the bar's folder menu opens before the suggestions arrive.
+				await new Promise((resolve) => setTimeout(resolve, 600));
+			}
 			const day = 86400;
 			reply = {
 				state: 'ok',
@@ -657,6 +669,8 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	}
 
 	// --- Where chats run: the composer's bar -----------------------------------
+	// A bound chat opens with Work PC offline, until the case brings it online.
+	let workPcOnline = mode !== 'run-target-bound';
 	const runTargetComputer = {
 		machine_id: 'pc-1',
 		name: 'Work PC',
@@ -677,7 +691,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			allowed: true,
 			has_plans: true,
 			plan_access: { codex: 'full' },
-			computers: [runTargetComputer],
+			computers: [{ ...runTargetComputer, online: workPcOnline }],
 			recent: [{ machine_id: 'pc-1', path: 'C:\\code\\site', last_used: 1760000000 }],
 			chat_folder: null,
 			default: {
@@ -819,7 +833,26 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			return;
 		}
 		const providerId = path.split('/')[4];
-		if (providerId === 'claude' || providerId === 'codex') {
+		let chosenMachineId = null;
+		// A plan's settings name the computer it runs on; only sign-in actions name a chosen computer.
+		if (!path.endsWith('/config')) {
+			chosenMachineId = body?.machine_id ?? url.searchParams.get('machine_id');
+		}
+		if ((providerId === 'claude' || providerId === 'codex') && chosenMachineId) {
+			// A sign-in action on a chosen computer names it, with the revision the page showed.
+			const chosen = machines.find((machine) => machine.id === chosenMachineId);
+			assert.ok(chosen, 'A chosen computer is one of the person’s');
+			assert.equal(
+				recordedRequest.expectedMachineId,
+				null,
+				'A chosen computer is not the plan’s guard'
+			);
+			assert.equal(
+				recordedRequest.expectedMachineRevision,
+				chosen.revision ?? 'local',
+				'A chosen computer carries its revision'
+			);
+		} else if (providerId === 'claude' || providerId === 'codex') {
 			const recovering = recoversMissingMachine(recordedRequest, providerId);
 			assert.equal(
 				typeof recordedRequest.expectedMachineId,
@@ -1014,6 +1047,9 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			const plan = folderPlans.find((candidate) => candidate.id === id);
 			plan.enable = true;
 			plan.access = access;
+		},
+		bringWorkPcOnline: () => {
+			workPcOnline = true;
 		},
 		beforeNavigation: async (context) => {
 			await context.routeWebSocket('**/*', (socket) => {
@@ -1884,11 +1920,14 @@ async function permissionCase(browser, profile) {
 					.count(),
 				0
 			);
-			assert.equal(
-				fixtures.requests.filter((request) => request.path.startsWith('/api/v1/subscriptions'))
-					.length,
-				0
+			// The chat page asks where its chat runs; nothing else about plans is asked.
+			const planRequests = fixtures.requests.filter(
+				(request) =>
+					request.path.startsWith('/api/v1/subscriptions') &&
+					!request.path.startsWith('/api/v1/subscriptions/run-target/') &&
+					!request.path.endsWith('/run-target')
 			);
+			assert.equal(planRequests.length, 0);
 			await setSettings(page, false);
 			await page.locator('#chat-input').click();
 			await waitUntil(
@@ -2730,7 +2769,7 @@ async function permissionDisclosureCase(browser, profile) {
 			.waitFor();
 		await dialog
 			.getByText(
-				'CLI permissions apply on the selected computer. Model sign-in does not create project or file API grants.',
+				'New chats start with this, and each chat can choose its own above the message box. Model sign-in does not create project or file API grants.',
 				{ exact: true }
 			)
 			.waitFor();
@@ -3587,6 +3626,36 @@ async function folderNoPlansCase(browser, profile) {
 	);
 }
 
+async function computerSignInCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'computer-sign-in',
+		'computer-sign-in',
+		async ({ page }, fixtures) => {
+			await setSettings(page, PROVIDERS_TAB);
+			const row = page
+				.getByRole('list', { name: 'Plans on Synthetic computer A' })
+				.getByRole('listitem')
+				.filter({ hasText: 'Claude' });
+			assert.match(await row.innerText(), /Not signed in/);
+			await row.getByRole('button', { name: 'Sign in here', exact: true }).click();
+			await loginDialog(page).waitFor();
+			await startLogin(page);
+			await waitUntil(() => fixtures.count('POST') === 1, 'One sign-in starts');
+			const start = fixtures.requests.find(
+				(request) =>
+					request.method === 'POST' && request.path === '/api/v1/subscriptions/claude/login'
+			);
+			// The chosen computer is named apart from the plan's own computer.
+			assert.equal(start.body.machine_id, 'runner-a');
+			assert.equal(start.body.expected_machine_revision, 'fixture-revision-a-1');
+			assert.equal(start.body.expected_machine_id, undefined);
+			await captureScreenshot(page, `computer-sign-in-${profile.name}`);
+		}
+	);
+}
+
 function runTargetBar(page) {
 	return page.locator('[role="group"][aria-label="Where this chat runs"]');
 }
@@ -3626,6 +3695,21 @@ async function runTargetNewCase(browser, profile) {
 					async () => /Work PC · site · Full/.test(await summary.innerText()),
 					'The summary shows the computer, folder and access'
 				);
+				// The sheet keeps focus inside while open and gives it back when it closes.
+				await summary.click();
+				await sheet.waitFor();
+				for (let press = 0; press < 30; press += 1) await page.keyboard.press('Tab');
+				assert.equal(
+					await sheet.evaluate((node) => node.contains(document.activeElement)),
+					true,
+					'Tab stays inside the sheet'
+				);
+				await sheet.getByRole('button', { name: 'Done', exact: true }).click();
+				await sheet.waitFor({ state: 'hidden' });
+				await waitUntil(
+					() => summary.evaluate((node) => node === document.activeElement),
+					'Focus returns to the summary chip'
+				);
 			} else {
 				await runTargetChip(bar, 'Detached').click();
 				await page.getByRole('menuitemradio', { name: /Work PC/ }).click();
@@ -3637,6 +3721,21 @@ async function runTargetNewCase(browser, profile) {
 				// A folder ChatGPT worked in, checked on the computer before it is used.
 				await page.getByRole('option', { name: /^api C:\\code\\api/ }).click();
 				await runTargetChip(bar, /^\s*api\s*$/).waitFor();
+				// Going from one open menu straight to another chip opens that one at once,
+				// since the composer stays put under the pointer.
+				await runTargetChip(bar, /^\s*api\s*$/).click();
+				await page.getByRole('option', { name: /^api C:\\code\\api/ }).waitFor();
+				const folderPopup = page.getByRole('dialog', { name: 'Folder', exact: true });
+				assert.equal(
+					await folderPopup
+						.locator('[role="listbox"] :is(button, input):not([role="option"])')
+						.count(),
+					0,
+					'The folder list holds only folder options'
+				);
+				await runTargetChip(bar, 'Full access').click();
+				await page.getByRole('menuitemradio', { name: /Read files/ }).waitFor();
+				await page.keyboard.press('Escape');
 				const checks = fixtures.requests.filter((request) =>
 					request.path.endsWith('/folders/check')
 				);
@@ -3646,26 +3745,64 @@ async function runTargetNewCase(browser, profile) {
 				);
 			}
 			await captureScreenshot(page, `run-target-new-${profile.name}`);
+			if (profile.mobile) {
+				// A phone turned sideways is wider than the phone breakpoint, but still a touch screen.
+				await page.setViewportSize({ width: 844, height: 390 });
+				await waitUntil(
+					async () => (await page.evaluate(() => window.innerWidth)) === 844,
+					'The page sees the wider screen'
+				);
+				assert.equal(await bar.locator('.buddy-run-target-summary').count(), 1);
+				assert.equal(await bar.locator('button.buddy-run-target-chip').count(), 0);
+			}
 		}
 	);
 }
 
 async function runTargetBoundCase(browser, profile) {
-	await runCase(browser, profile, 'run-target-bound', 'run-target-bound', async ({ page }) => {
-		const bar = runTargetBar(page);
-		await bar.waitFor();
-		if (profile.mobile) {
-			await bar
-				.locator('.buddy-run-target-summary')
-				.filter({ hasText: 'Work PC · site · Full' })
+	await runCase(
+		browser,
+		profile,
+		'run-target-bound',
+		'run-target-bound',
+		async ({ page }, fixtures) => {
+			const bar = runTargetBar(page);
+			await bar.waitFor();
+
+			// The chat runs in an exact folder, so its Project tab opens that folder, with no Change.
+			await page
+				.locator('.buddy-chat-header')
+				.getByRole('button', { name: 'Controls', exact: true })
 				.click();
-		} else {
-			await runTargetChip(bar, 'Work PC · site · Full').click();
+			const panel = chatPanel(page, profile);
+			await panel.getByRole('button', { name: 'Project', exact: true }).click();
+			await panel.getByText('C:\\code\\site', { exact: true }).waitFor();
+			await panel.getByText('Work PC', { exact: true }).first().waitFor();
+			// Check again asks about the chat's own computer, which is offline at first.
+			await panel.getByText(/Work PC is offline/).waitFor();
+			fixtures.bringWorkPcOnline();
+			await panel.getByRole('button', { name: 'Check again', exact: true }).click();
+			await panel.getByRole('button', { name: 'README.md', exact: true }).waitFor();
+			assert.equal(
+				await panel.getByRole('button', { name: 'Change', exact: true }).count(),
+				0,
+				'A started chat’s folder is not changed from its Project tab'
+			);
+			await panel.getByRole('button', { name: 'Close', exact: true }).first().click();
+
+			if (profile.mobile) {
+				await bar
+					.locator('.buddy-run-target-summary')
+					.filter({ hasText: 'Work PC · site · Full' })
+					.click();
+			} else {
+				await runTargetChip(bar, 'Work PC · site · Full').click();
+			}
+			await page.getByText('This chat runs on Work PC, in site, with Full access.').waitFor();
+			await page.getByRole('button', { name: 'New chat here' }).waitFor();
+			await captureScreenshot(page, `run-target-bound-${profile.name}`);
 		}
-		await page.getByText('This chat runs on Work PC, in site, with Full access.').waitFor();
-		await page.getByRole('button', { name: 'New chat here' }).waitFor();
-		await captureScreenshot(page, `run-target-bound-${profile.name}`);
-	});
+	);
 }
 
 async function folderBrowseCase(browser, profile) {
@@ -3728,6 +3865,7 @@ try {
 		await folderBrowseCase(browser, profile);
 		await runTargetNewCase(browser, profile);
 		await runTargetBoundCase(browser, profile);
+		await computerSignInCase(browser, profile);
 		await cancellationCase(browser, profile, 'x');
 		await cancellationCase(browser, profile, 'escape');
 		await cancellationCase(browser, profile, 'backdrop');

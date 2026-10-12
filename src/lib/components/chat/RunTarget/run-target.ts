@@ -83,6 +83,43 @@ function computerById(
 	return options.computers?.find((computer) => computer.machine_id === machineId) ?? null;
 }
 
+/**
+ * The access a new chat on a computer starts with: the chat folder's, else the plans' own,
+ * and chat only while the chat folder's shared instructions are not acknowledged.
+ */
+function startingAccess(
+	options: RunTargetOptions,
+	providers: SubscriptionProviderId[],
+	acknowledgedFolderId: string | null
+): SubscriptionAccess {
+	let access = defaultAccess(options, providers);
+	const chosen = options.default;
+	if (chosen?.kind === 'computer' && chosen.access !== null) access = chosen.access;
+	if (chosen?.access_locked && acknowledgedFolderId === null) access = 'chat';
+	return access;
+}
+
+/** A computer's folder when the person hasn't picked one: the default's, the chat folder's, or AI chooses. */
+function startingFolder(options: RunTargetOptions, machineId: string): RunTargetFolder {
+	const chosen = options.default;
+	if (chosen?.kind === 'computer' && chosen.machine_id === machineId && chosen.folder) {
+		return chosen.folder;
+	}
+	const folderDefault = options.chat_folder?.paths?.[machineId];
+	if (folderDefault) return { mode: 'path', path: folderDefault };
+	return { mode: 'auto' };
+}
+
+/** An acknowledgement counts only for the chat folder it was given in. */
+function acknowledgementFor(
+	options: RunTargetOptions,
+	acknowledgedFolderId: string | null
+): string | null {
+	if (acknowledgedFolderId === null) return null;
+	if (options.chat_folder?.id !== acknowledgedFolderId) return null;
+	return acknowledgedFolderId;
+}
+
 function detachedDraft(touched: RunTargetDraft['touched']): RunTargetDraft {
 	return {
 		kind: 'detached',
@@ -104,38 +141,45 @@ export function draftFromDefault(
 	const chosen = options.default;
 	const computer = computerById(options, chosen?.machine_id ?? null);
 	if (!chosen || chosen.kind === 'detached' || !computer) return detachedDraft(untouched);
-	let access = chosen.access;
-	if (access === null) access = defaultAccess(options, providers);
-	if (chosen.access_locked) access = 'chat';
 	return {
 		kind: 'computer',
 		machineId: computer.machine_id,
 		expectedRevision: computer.revision,
 		folder: chosen.folder ?? { mode: 'auto' },
-		access,
+		access: startingAccess(options, providers, null),
 		acknowledgedFolderId: null,
 		touched: untouched
 	};
 }
 
-/** Defaults again for the fields the person hasn't changed, after the chat folder or model changed. */
+/**
+ * Defaults again for the fields the person hasn't changed, after the chat folder or model
+ * changed. A folder they picked stays while the computer does; an access they picked stays.
+ */
 export function refreshUntouched(
 	draft: RunTargetDraft,
 	options: RunTargetOptions,
 	providers: SubscriptionProviderId[]
 ): RunTargetDraft {
-	const fresh = draftFromDefault(options, providers);
-	if (!draft.touched.computer) {
-		return { ...fresh, touched: draft.touched };
+	const touched = draft.touched;
+	let kind = draft.kind;
+	let machineId = draft.machineId;
+	let expectedRevision = draft.expectedRevision;
+	if (!touched.computer) {
+		const fresh = draftFromDefault(options, providers);
+		kind = fresh.kind;
+		machineId = fresh.machineId;
+		expectedRevision = fresh.expectedRevision;
 	}
-	const next = { ...draft };
-	if (!draft.touched.folder && next.kind === 'computer' && fresh.machineId === next.machineId) {
-		next.folder = fresh.folder;
-	}
-	if (!draft.touched.access && next.kind === 'computer') {
-		next.access = defaultAccess(options, providers);
-	}
-	return next;
+	if (kind === 'detached' || !machineId) return detachedDraft(touched);
+
+	const acknowledgedFolderId = acknowledgementFor(options, draft.acknowledgedFolderId);
+	let folder = startingFolder(options, machineId);
+	if (touched.folder && draft.folder && draft.machineId === machineId) folder = draft.folder;
+	let access = startingAccess(options, providers, acknowledgedFolderId);
+	if (touched.access && draft.kind === 'computer') access = draft.access;
+	if (options.default?.access_locked && acknowledgedFolderId === null) access = 'chat';
+	return { kind, machineId, expectedRevision, folder, access, acknowledgedFolderId, touched };
 }
 
 /** The draft after picking a computer: its folder resets to that computer's default, or to AI chooses. */
@@ -148,15 +192,13 @@ export function chooseComputer(
 	const touched = { ...draft.touched, computer: true };
 	const computer = computerById(options, machineId);
 	if (!computer) return detachedDraft(touched);
-	let folder: RunTargetFolder = { mode: 'auto' };
-	const folderDefault = options.chat_folder?.paths?.[computer.machine_id];
-	if (folderDefault) folder = { mode: 'path', path: folderDefault };
+	let folder = startingFolder(options, computer.machine_id);
 	if (draft.folder?.mode === 'path' && draft.machineId === computer.machine_id) {
 		folder = draft.folder;
 	}
 	let access = draft.access;
 	if (draft.kind === 'detached' && !draft.touched.access) {
-		access = defaultAccess(options, providers);
+		access = startingAccess(options, providers, draft.acknowledgedFolderId);
 	}
 	if (options.default?.access_locked && draft.acknowledgedFolderId === null) access = 'chat';
 	return {

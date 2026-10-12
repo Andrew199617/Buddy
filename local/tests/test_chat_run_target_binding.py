@@ -95,6 +95,38 @@ class BindingTests(RunTargetTestCase):
                 row = await self.bind(request, chat_id)
                 self.assertEqual((row.kind, row.access, row.source, row.note), ('detached', 'chat', 'refused', note))
 
+    async def test_a_copy_runs_where_its_source_runs_or_would(self):
+        newer = 10**12
+        await self.bind(self.computer())
+        self.chats.add('fork-1', OWNER, created_at=newer)
+        copied = await self.service.copy_chat_target(OWNER_USER, 'chat-1', 'fork-1')
+        self.assertEqual((copied.machine_id, copied.source), ('runner-b', 'copy'))
+        # A copy of a chat from before targets binds where that chat's next turn would.
+        self.chats.add('chat-old', OWNER, models=['claude-code.fixture-model'])
+        self.chats.add('fork-2', OWNER, created_at=newer)
+        copied = await self.service.copy_chat_target(OWNER_USER, 'chat-old', 'fork-2')
+        self.assertEqual((copied.machine_id, copied.folder_mode, copied.access), ('runner-a', 'auto', 'full'))
+        # A copy of a newer chat that has no target yet waits for its own first turn, like its source.
+        self.chats.add('chat-new', OWNER, created_at=newer)
+        self.chats.add('fork-3', OWNER, created_at=newer)
+        self.assertIsNone(await self.service.copy_chat_target(OWNER_USER, 'chat-new', 'fork-3'))
+        # Nothing comes from someone else's chat.
+        self.chats.add('theirs', MEMBER)
+        self.chats.add('fork-4', OWNER, created_at=newer)
+        self.assertIsNone(await self.service.copy_chat_target(OWNER_USER, 'theirs', 'fork-4'))
+        self.assertNotIn('fork-3', self.targets.rows)
+        self.assertNotIn('fork-4', self.targets.rows)
+
+    async def test_an_imported_chat_starts_like_a_new_chat_whatever_its_date(self):
+        row = await self.service.bind_imported_chat(OWNER_USER, 'chat-1')
+        self.assertEqual((row.kind, row.source), ('detached', 'default'))
+        # Saved even while its owner may not use computers, so its old date never counts later.
+        self.config.values['subscriptions.policy'] = {'user_machines': 'admins'}
+        self.chats.add('imported-1', MEMBER)
+        row = await self.service.bind_imported_chat(MEMBER_USER, 'imported-1')
+        self.assertEqual((row.kind, row.access, row.source), ('detached', 'chat', 'default'))
+        self.assertIsNone(await self.service.bind_imported_chat(MEMBER_USER, 'chat-1'))
+
     async def test_only_the_owner_of_a_saved_chat_binds_it(self):
         self.assertIsNone(await self.bind(self.computer(), user=MEMBER_USER))
         self.assertIsNone(await self.bind(self.computer(), chat_id='temporary:session-1'))
@@ -227,6 +259,27 @@ class ChatTargetTests(RunTargetTestCase):
         self.assertFalse(described['bound'])
         self.assertEqual((described['would_bind']['machine_id'], described['would_bind']['folder_mode']), ('runner-a', 'auto'))
         self.assertEqual(self.targets.rows, {})
+
+    async def test_a_newer_chat_not_bound_yet_shows_the_default(self):
+        self.config.values['subscriptions.run_targets_started_at'] = 1000
+        self.chats.add('chat-new', OWNER, created_at=2000)
+        described = await self.service.describe_chat_run_target(OWNER_USER, 'chat-new')
+        self.assertFalse(described['bound'])
+        self.assertEqual(described['would_bind']['kind'], 'detached')
+
+    async def test_the_time_targets_started_is_saved_once(self):
+        first = await self.service.mark_run_targets_started()
+        self.assertEqual(self.config.values['subscriptions.run_targets_started_at'], first)
+        self.config.values['subscriptions.run_targets_started_at'] = first + 50
+        self.assertEqual(await self.service.mark_run_targets_started(), first)
+        reloaded = load_service(self.config, ROOT / 'unused-run-target-data')
+        self.assertEqual(await reloaded.mark_run_targets_started(), first + 50)
+
+    async def test_a_chat_not_bound_yet_shows_its_own_plans_computer_and_access(self):
+        self.config.values['subscriptions.codex'] = {'enable': True, 'access': 'read', 'machine_id': 'runner-b'}
+        self.chats.add('chat-codex', OWNER, models=['codex.fixture-model'])
+        would_bind = (await self.service.describe_chat_run_target(OWNER_USER, 'chat-codex'))['would_bind']
+        self.assertEqual((would_bind['machine_id'], would_bind['access']), ('runner-b', 'read'))
 
     async def test_only_the_owner_sees_a_chats_target(self):
         await self.bind(self.computer())

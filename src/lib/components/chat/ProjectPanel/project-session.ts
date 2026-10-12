@@ -3,7 +3,12 @@
 // No requests here.
 
 import { CompanionError, type CompanionTerminal } from '$lib/apis/companion';
-import type { FolderProject, ProjectFolderComputer } from '$lib/apis/subscriptions';
+import type {
+	ChatRunTargetDetails,
+	FolderProject,
+	ProjectFolderComputer,
+	RunTargetComputer
+} from '$lib/apis/subscriptions';
 import { effectiveChoice } from '$lib/components/projectFolders/project-folders';
 
 export type ProjectTarget = {
@@ -24,6 +29,26 @@ export function projectTargets(project: FolderProject): ProjectTarget[] {
 		targets.push({ computer, path: saved.path, chooseAgain: saved.problem !== null });
 	}
 	return targets;
+}
+
+/**
+ * The exact folder a started chat works in, as its Project tab opens it. Null when the chat
+ * runs Detached or lets the AI choose; the tab then shows the chat folder's project folder.
+ */
+export function chatProjectTarget(
+	details: ChatRunTargetDetails | null,
+	computers: RunTargetComputer[]
+): ProjectTarget | null {
+	if (!details || details.kind !== 'computer' || details.folder_mode !== 'path' || !details.path) {
+		return null;
+	}
+	const computer = computers.find((candidate) => candidate.machine_id === details.machine_id);
+	if (!computer) return null;
+	return {
+		computer: { ...computer, providers: [] },
+		path: details.path,
+		chooseAgain: details.problem === 'reset'
+	};
 }
 
 /** Puts a computer that runs a plan first, since that is where chats work. */

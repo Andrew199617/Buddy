@@ -173,7 +173,9 @@
 			</div>
 
 			<fieldset class="flex flex-col gap-1.5">
-				<legend class="mb-1 text-xs text-gray-500">{$i18n.t('What the model can do')}</legend>
+				<legend class="mb-1 text-xs text-gray-500">
+					{$i18n.t('Default access for new chats')}
+				</legend>
 				{#each accessOptions as option}
 					<label
 						class="flex cursor-pointer gap-2.5 rounded-xl border px-3 py-2 transition {access ===
@@ -202,7 +204,7 @@
 				{/if}
 				<p class="text-xs text-gray-400 dark:text-gray-600">
 					{$i18n.t(
-						'CLI permissions apply on the selected computer. Model sign-in does not create project or file API grants.'
+						'New chats start with this, and each chat can choose its own above the message box. Model sign-in does not create project or file API grants.'
 					)}
 				</p>
 			</fieldset>

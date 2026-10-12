@@ -37,6 +37,9 @@
 	export let composerMenu = 'dropdown';
 	/** Plus and Tools use an adaptive, frosted menu on mobile. */
 	export let mobileActionMenu = false;
+	// The popup's role, for popups that are not menus, such as a dialog with a search field.
+	export let contentRole = 'menu';
+	export let contentLabel = '';
 
 	let triggerEl: HTMLElement | null = null;
 	let contentEl: HTMLElement | null = null;
@@ -611,7 +614,8 @@
 		data-composer-anchor={mobileActionMenu ? 'trigger' : undefined}
 		class={contentClass}
 		class:buddy-action-menu={mobileActionMenu}
-		role="menu"
+		role={contentRole}
+		aria-label={contentLabel || undefined}
 		tabindex="-1"
 		style:max-height={resolvedMaxHeight}
 		style:overflow-y="auto"
