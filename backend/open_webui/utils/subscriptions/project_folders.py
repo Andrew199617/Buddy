@@ -11,11 +11,9 @@ import time
 from dataclasses import dataclass, field, replace
 
 from open_webui.models.access_grants import AccessGrants
-from open_webui.models.chats import Chats
 from open_webui.models.config import Config
 from open_webui.models.folders import Folders
 from open_webui.utils.access_control.folders import has_folder_access
-from open_webui.utils.chat_id import is_saved_chat_id
 from open_webui.utils.subscriptions.common import ACCESS_LEVELS, FOLDER_INSTRUCTIONS_KEY, folder_adds_instructions
 from open_webui.utils.subscriptions.events import SubscriptionError
 from open_webui.utils.subscriptions.project_paths import MAX_PATH_CHARS, clean_project_path  # noqa: F401
@@ -410,63 +408,6 @@ async def instructions_hold(user_id: str, metadata: dict) -> FolderChoice | None
     themselves.
     """
     return await _held_back_by_received_instructions(user_id, metadata, await load_choices(user_id))
-
-
-async def choice_for_turn(user_id: str, metadata: dict) -> FolderChoice | None:
-    """The project folder choice for the chat a turn belongs to, or None outside chat folders.
-
-    A chat folder with no choice of its own or from a parent lets the AI choose.
-    """
-    chat_id = metadata.get('chat_id')
-    if is_saved_chat_id(chat_id):
-        folder_id = await Chats.get_chat_folder_id(chat_id, user_id)
-    else:
-        folder_id = metadata.get('folder_id')
-    choices = await load_choices(user_id)
-    held_back = await _held_back_by_received_instructions(user_id, metadata, choices)
-    folder = await readable_folder(user_id, folder_id)
-    if folder is None:
-        return held_back
-    own, inherited = await resolve_folder(user_id, folder, choices)
-    if own is not None:
-        return own
-    if held_back is not None:
-        return held_back
-    if await has_shared_instructions(user_id, folder):
-        return FolderChoice(folder.id, MODE_CHAT, folder_name=folder.name)
-    if inherited is not None:
-        return inherited
-    return FolderChoice(folder.id, MODE_AUTO, folder_name=folder.name)
-
-
-def turn_project_path(choice: FolderChoice, machine_id: str, machine_name: str, provider_label: str, revision) -> str:
-    """The folder this turn starts in. Messages name the chat folder and computer, never the path:
-    chat errors are stored and can end up in shared links."""
-    if not choice.paths:
-        raise SubscriptionError(
-            f'The project folder for “{choice.folder_name}” was on a computer you removed. Choose one again '
-            'in the folder\'s settings, or move this chat out of the folder.'
-        )
-    saved = choice.paths.get(machine_id)
-    if saved is None:
-        raise SubscriptionError(
-            f'The chat folder “{choice.folder_name}” has a project folder on another computer, not on '
-            f'{machine_name} where {provider_label} runs. Choose one for {machine_name} in the folder\'s '
-            f'settings, or change where {provider_label} runs in Settings → Machines.'
-        )
-    if saved.revision != revision:
-        raise SubscriptionError(
-            f'{machine_name} was set up again after the project folder for “{choice.folder_name}” was '
-            'chosen. Choose it again in the folder\'s settings.'
-        )
-    return saved.path
-
-
-def missing_project_folder_message(choice: FolderChoice, machine_name: str) -> str:
-    return (
-        f'The project folder for “{choice.folder_name}” no longer exists on {machine_name}. '
-        'Choose another in the folder\'s settings, or move this chat out of the folder.'
-    )
 
 
 def recent_paths(choices: dict[str, FolderChoice], machine_id: str, revision) -> list[str]:
