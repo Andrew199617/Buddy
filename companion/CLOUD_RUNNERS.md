@@ -18,13 +18,13 @@ Buddy already treats such a computer as the user's own: their models, their
 sign-in choice, their Projects relay, owner-only access. The new parts are who
 creates the container and when it runs.
 
-| Piece | Today (your computer) | Cloud Runner |
-| --- | --- | --- |
-| Machine record | `subscriptions.machines`, `kind: 'runner'` | Same list, `kind: 'cloud'` |
-| Who starts the Runner | The Buddy app | The cloud manager |
-| Credential | Enrolled by the app, kept with DPAPI | Enrolled by the container, kept in its volume |
-| Shared folders | Chosen in the app | The container's own workspace volume only |
-| Commands | Allowed in the app | Allowed by policy; the container is the sandbox |
+| Piece                 | Today (your computer)                      | Cloud Runner                                    |
+| --------------------- | ------------------------------------------ | ----------------------------------------------- |
+| Machine record        | `subscriptions.machines`, `kind: 'runner'` | Same list, `kind: 'cloud'`                      |
+| Who starts the Runner | The Buddy app                              | The cloud manager                               |
+| Credential            | Enrolled by the app, kept with DPAPI       | Enrolled by the container, kept in its volume   |
+| Shared folders        | Chosen in the app                          | The container's own workspace volume only       |
+| Commands              | Allowed in the app                         | Allowed by policy; the container is the sandbox |
 
 ## Parts
 
@@ -43,13 +43,13 @@ A small service that owns the container platform's credentials. Buddy itself
 never gets the Docker socket or cloud keys; it calls the manager with its own
 token.
 
-| Call | Does |
-| --- | --- |
+| Call                                          | Does                                                                                          |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `POST /runners` `{user_id, enrollment_token}` | Creates the volume and container; hands the single-use enrollment token to the container once |
-| `POST /runners/{id}/start`, `/stop` | Starts or stops the container; the volume stays |
-| `DELETE /runners/{id}` | Removes the container and its volume |
-| `GET /runners/{id}` | State, image version, last start and stop |
-| `GET /usage?since=` | Metering records (see below) |
+| `POST /runners/{id}/start`, `/stop`           | Starts or stops the container; the volume stays                                               |
+| `DELETE /runners/{id}`                        | Removes the container and its volume                                                          |
+| `GET /runners/{id}`                           | State, image version, last start and stop                                                     |
+| `GET /usage?since=`                           | Metering records (see below)                                                                  |
 
 Enrolling reuses `create_enrollment` and `redeem_enrollment`: Buddy asks for a
 60-second token for the person, passes it to the manager, and the container

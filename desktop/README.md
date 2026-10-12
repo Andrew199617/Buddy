@@ -55,11 +55,11 @@ $env:BUDDY_DESKTOP_PYTHON = "..\.venv\Scripts\python.exe"   # runs backend\buddy
 npm start
 ```
 
-| Variable | Use |
-| --- | --- |
-| `BUDDY_DESKTOP_PYTHON` | Python that runs the repository's Runner in development |
-| `BUDDY_DESKTOP_RUNNER` | A `buddy-runner.exe` to use instead, such as one from `build-runner.ps1` |
-| `BUDDY_DESKTOP_USER_DATA` | A throwaway data folder (development only) |
+| Variable                  | Use                                                                      |
+| ------------------------- | ------------------------------------------------------------------------ |
+| `BUDDY_DESKTOP_PYTHON`    | Python that runs the repository's Runner in development                  |
+| `BUDDY_DESKTOP_RUNNER`    | A `buddy-runner.exe` to use instead, such as one from `build-runner.ps1` |
+| `BUDDY_DESKTOP_USER_DATA` | A throwaway data folder (development only)                               |
 
 ## Test
 
