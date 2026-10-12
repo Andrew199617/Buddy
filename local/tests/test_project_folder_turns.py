@@ -56,12 +56,12 @@ class ProjectFolderTurnTests(unittest.IsolatedAsyncioTestCase):
             return payload['model'], payload, False
 
         self.service._apply_preset = own_preset
-        ref = self.service.ProviderRef(OWNER, 'claude')
-        self.service.status_cache._entries[ref] = self.service._CacheEntry(
+        on_runner_a = self.service.ProviderRef(OWNER, 'claude').on('runner-a')
+        self.service.status_cache._entries[on_runner_a] = self.service._CacheEntry(
             {'installed': True, 'signed_in': True, 'api_billing': False}, time.monotonic() + 60
         )
         model = types.SimpleNamespace(key='fixture-model', value='fixture-model', name='Fixture', description='', efforts=[])
-        self.service.models_cache._entries[ref] = self.service._CacheEntry([model], time.monotonic() + 60)
+        self.service.models_cache._entries[on_runner_a] = self.service._CacheEntry([model], time.monotonic() + 60)
 
         folders = self.service.project_folders
         folders.Folders.add('website', user_id=OWNER, name='Website')

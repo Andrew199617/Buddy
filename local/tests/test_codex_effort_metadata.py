@@ -137,7 +137,7 @@ class CodexEffortMetadataTests(unittest.IsolatedAsyncioTestCase):
             return payload['model'], payload, False
 
         service._apply_preset = no_database_preset
-        service.status_cache._entries[service.ProviderRef(OWNER, 'codex')] = service._CacheEntry(
+        service.status_cache._entries[service.ProviderRef(OWNER, 'codex').on('local')] = service._CacheEntry(
             {'installed': True, 'signed_in': True, 'api_billing': False}, time.monotonic() + 60,
         )
         model_id = 'codex.fixture-model'

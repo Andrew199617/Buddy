@@ -396,8 +396,10 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
 
         for provider in self.providers.values():
             provider.observe_cleanup = observe_committed_reset
-        self.service.status_cache._entries[self.service.ProviderRef(OWNER, 'claude')] = object()
-        self.service.models_cache._entries[self.service.ProviderRef(OWNER, 'codex')] = object()
+        claude_on_a = self.service.ProviderRef(OWNER, 'claude').on('runner-a')
+        codex_on_b = self.service.ProviderRef(OWNER, 'codex').on('runner-b')
+        self.service.status_cache._entries[claude_on_a] = object()
+        self.service.models_cache._entries[codex_on_b] = object()
 
         await self.service.delete_machine(OWNER, 'runner-a')
 
@@ -410,8 +412,8 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cached['runner-a'].closed, 1)
         self.assertEqual(self.cached['runner-b'].closed, 0)
         self.assertNotIn('runner-a', self.service._remote_machines)
-        self.assertNotIn(self.service.ProviderRef(OWNER, 'claude'), self.service.status_cache._entries)
-        self.assertNotIn(self.service.ProviderRef(OWNER, 'codex'), self.service.models_cache._entries)
+        self.assertNotIn(claude_on_a, self.service.status_cache._entries)
+        self.assertNotIn(codex_on_b, self.service.models_cache._entries)
         for provider_id in self.providers:
             settings = await self.service.get_settings(OWNER, provider_id)
             self.assertEqual(settings.machine_id, 'runner-a')
