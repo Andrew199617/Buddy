@@ -1,5 +1,5 @@
 <script context="module" lang="ts">
-	let savedTab: 'controls' | 'files' | 'overview' = 'controls';
+	let savedTab: 'controls' | 'files' | 'project' | 'overview' = 'controls';
 </script>
 
 <script lang="ts">
@@ -25,6 +25,7 @@
 	import Drawer from '../common/Drawer.svelte';
 	import ResizableSidePanel from '../common/ResizableSidePanel.svelte';
 	import { isSavedChatId } from '$lib/utils/chatId';
+	import { getFolderProject, type FolderProject } from '$lib/apis/subscriptions';
 
 	const i18n: Writable<I18n> = getContext('i18n');
 
@@ -46,6 +47,9 @@
 	function importOverview() {
 		return import('./Overview.svelte');
 	}
+	function importProjectPanel() {
+		return import('./ProjectPanel/ProjectPanel.svelte');
+	}
 
 	const callOverlayFeature = createLazyComponent(importCallOverlay);
 	const artifactsFeature = createLazyComponent(importArtifacts);
@@ -53,6 +57,7 @@
 	const fileNavFeature = createLazyComponent(importFileNav);
 	const pyodideFileNavFeature = createLazyComponent(importPyodideFileNav);
 	const overviewFeature = createLazyComponent(importOverview);
+	const projectFeature = createLazyComponent(importProjectPanel);
 
 	export let history;
 	export let models = [];
@@ -71,6 +76,8 @@
 	export let modelId;
 
 	export let codeInterpreterEnabled = false;
+	// The chat folder this chat is in, for its Project tab.
+	export let folderId: string | null = null;
 
 	let largeScreen = false;
 	let dragged = false;
@@ -109,9 +116,36 @@
 		(codeInterpreterEnabled && $config?.code?.interpreter_engine !== 'jupyter');
 	$: showOverviewTab = hasMessages;
 
+	// The chat folder's project folder, loaded when the panel opens. Hidden without plans.
+	let folderProject: FolderProject | null = null;
+	let folderProjectFor: string | null = null;
+
+	async function loadFolderProject(id: string | null) {
+		if (id === folderProjectFor) return;
+		folderProjectFor = id;
+		folderProject = null;
+		if (!id) return;
+		try {
+			const loaded = await getFolderProject(localStorage.token, id);
+			if (folderProjectFor !== id) return;
+			if (loaded.has_plans) folderProject = loaded;
+		} catch {
+			// Not allowed to use computers, or the folder is gone: no Project tab.
+		}
+	}
+
+	function reloadFolderProject() {
+		folderProjectFor = null;
+		void loadFolderProject(folderId);
+	}
+
+	$: if ($showControls) void loadFolderProject(folderId);
+	$: showProjectTab = folderProject !== null;
+
 	// Tab fallback: if active tab becomes hidden, switch to next available
 	$: if (!showOverviewTab && activeTab === 'overview') activeTab = 'controls';
 	$: if (!showFilesTab && activeTab === 'files') activeTab = 'controls';
+	$: if (!showProjectTab && activeTab === 'project') activeTab = 'controls';
 	$: if (!showControlsTab && activeTab === 'controls') {
 		if (showFilesTab) activeTab = 'files';
 		else if (showOverviewTab) activeTab = 'overview';
@@ -225,6 +259,8 @@
 			void artifactsFeature.load();
 		} else if (activeTab === 'overview') {
 			void overviewFeature.load();
+		} else if (activeTab === 'project') {
+			void projectFeature.load();
 		} else if (activeTab === 'files' && terminalFilesAvailable && $selectedTerminalId) {
 			void fileNavFeature.load();
 		} else if (activeTab === 'files' && codeInterpreterEnabled) {
@@ -319,6 +355,17 @@
 										{$i18n.t('Files')}
 									</button>
 								{/if}
+								{#if showProjectTab}
+									<button
+										class="px-2.5 py-1 text-sm rounded-lg transition whitespace-nowrap {activeTab ===
+										'project'
+											? 'bg-gray-100/40 dark:bg-gray-800/25 font-normal text-gray-700 dark:text-gray-200'
+											: 'text-gray-500 dark:text-gray-400 hover:bg-gray-100/30 dark:hover:bg-gray-800/20 hover:text-gray-600 dark:hover:text-gray-300'}"
+										on:click={() => (activeTab = 'project')}
+									>
+										{$i18n.t('Project')}
+									</button>
+								{/if}
 								{#if showOverviewTab}
 									<button
 										class="px-2.5 py-1 text-sm rounded-lg transition whitespace-nowrap {activeTab ===
@@ -386,6 +433,21 @@
 										onClose={closeFeaturePanel}
 									/>
 								{/if}
+							{:else if activeTab === 'project' && folderProject}
+								{#if $projectFeature.component}
+									<svelte:component
+										this={$projectFeature.component}
+										project={folderProject}
+										onChanged={reloadFolderProject}
+									/>
+								{:else}
+									<LazyFeatureStatus
+										feature={$i18n.t('Project')}
+										error={$projectFeature.error}
+										onRetry={projectFeature.load}
+										onClose={closeFeaturePanel}
+									/>
+								{/if}
 							{:else if activeTab === 'files' && codeInterpreterEnabled}
 								{#if $pyodideFileNavFeature.component}
 									<svelte:component this={$pyodideFileNavFeature.component} />
@@ -421,7 +483,8 @@
 			<div
 				class="w-full {specialPanel && !$showCallOverlay
 					? ' '
-					: 'bg-white dark:bg-gray-900'} z-40 pointer-events-auto {activeTab === 'files'
+					: 'bg-white dark:bg-gray-900'} z-40 pointer-events-auto {activeTab === 'files' ||
+				activeTab === 'project'
 					? ''
 					: 'overflow-y-auto'} scrollbar-hidden"
 				id="controls-container"
@@ -498,6 +561,17 @@
 										{$i18n.t('Files')}
 									</button>
 								{/if}
+								{#if showProjectTab}
+									<button
+										class="px-2.5 py-1 text-sm rounded-lg transition whitespace-nowrap {activeTab ===
+										'project'
+											? 'bg-gray-100/40 dark:bg-gray-800/25 font-normal text-gray-700 dark:text-gray-200'
+											: 'text-gray-500 dark:text-gray-400 hover:bg-gray-100/30 dark:hover:bg-gray-800/20 hover:text-gray-600 dark:hover:text-gray-300'}"
+										on:click={() => (activeTab = 'project')}
+									>
+										{$i18n.t('Project')}
+									</button>
+								{/if}
 								{#if showOverviewTab}
 									<button
 										class="px-2.5 py-1 text-sm rounded-lg transition whitespace-nowrap {activeTab ===
@@ -567,6 +641,21 @@
 										feature={$i18n.t('Files')}
 										error={$fileNavFeature.error}
 										onRetry={fileNavFeature.load}
+										onClose={closeFeaturePanel}
+									/>
+								{/if}
+							{:else if activeTab === 'project' && folderProject}
+								{#if $projectFeature.component}
+									<svelte:component
+										this={$projectFeature.component}
+										project={folderProject}
+										onChanged={reloadFolderProject}
+									/>
+								{:else}
+									<LazyFeatureStatus
+										feature={$i18n.t('Project')}
+										error={$projectFeature.error}
+										onRetry={projectFeature.load}
 										onClose={closeFeaturePanel}
 									/>
 								{/if}

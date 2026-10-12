@@ -386,6 +386,11 @@
 	let contextCompactionToastId = null;
 
 	let chat = null;
+	// The chat folder this chat is in, for the side panel's Project tab.
+	$: sidePanelFolderId =
+		(chat as { folder_id?: string | null } | null)?.folder_id ??
+		($selectedFolder as { id?: string } | null)?.id ??
+		null;
 	let tags = [];
 
 	// Read-only when viewing someone else's chat (e.g. via shared folder access)
@@ -4678,6 +4683,7 @@
 						{showMessage}
 						{eventTarget}
 						{codeInterpreterEnabled}
+						folderId={sidePanelFolderId}
 					/>
 				{/if}
 			</div>
