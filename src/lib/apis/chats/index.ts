@@ -72,7 +72,9 @@ export const createNewChat = async (
 	token: string,
 	chat: object,
 	folderId: string | null,
-	variables: object | null = null
+	variables: object | null = null,
+	// Where the chat runs, from the composer's bar.
+	runTarget: object | null = null
 ) => {
 	let error = null;
 
@@ -86,6 +88,7 @@ export const createNewChat = async (
 		body: JSON.stringify({
 			chat: chat,
 			...(variables !== null ? { variables } : {}),
+			...(runTarget !== null ? { run_target: runTarget } : {}),
 			folder_id: folderId ?? null
 		})
 	})

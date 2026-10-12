@@ -246,6 +246,45 @@ describe('per-user machines and sign-ins', () => {
 		);
 	});
 
+	it('asks for the bar’s options with the folder and this computer in the query', async () => {
+		const { getRunTargetOptions } = await import('./index');
+		await getRunTargetOptions('fixture-token', { folderId: 'folder / 1', thisMachineId: 'pc 1' });
+		const { url, options } = request();
+		expect(options.method).toBe('GET');
+		expect(url.pathname).toBe('/api/v1/subscriptions/run-target/options');
+		expect(url.searchParams.get('folder_id')).toBe('folder / 1');
+		expect(url.searchParams.get('this_machine_id')).toBe('pc 1');
+		fetchMock.mockClear();
+		await getRunTargetOptions('fixture-token');
+		expect(request().url.search).toBe('');
+	});
+
+	it('checks one plan on one computer by query', async () => {
+		const { getRunTargetReadiness } = await import('./index');
+		await getRunTargetReadiness('fixture-token', 'codex', 'pc / 1');
+		const { url } = request();
+		expect(url.pathname).toBe('/api/v1/subscriptions/run-target/readiness');
+		expect(url.searchParams.get('provider')).toBe('codex');
+		expect(url.searchParams.get('machine_id')).toBe('pc / 1');
+	});
+
+	it('tells a chat that isn’t the person’s apart from a failed lookup', async () => {
+		const { getChatRunTarget } = await import('./index');
+		fetchMock.mockResolvedValueOnce({
+			ok: false,
+			status: 404,
+			json: async () => ({ detail: 'No' })
+		});
+		await expect(getChatRunTarget('fixture-token', 'chat / 1')).resolves.toBeNull();
+		expect(request().url.pathname).toBe('/api/v1/subscriptions/chats/chat%20%2F%201/run-target');
+		fetchMock.mockResolvedValueOnce({
+			ok: false,
+			status: 500,
+			json: async () => ({ detail: 'Down' })
+		});
+		await expect(getChatRunTarget('fixture-token', 'chat-1')).rejects.toBe('Down');
+	});
+
 	it('lets an administrator remove anyone’s machine by its encoded ID', async () => {
 		const { deleteAnySubscriptionMachine } = await import('./index');
 		await deleteAnySubscriptionMachine('fixture-token', 'machine / A');
