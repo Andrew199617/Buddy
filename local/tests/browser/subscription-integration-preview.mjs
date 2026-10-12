@@ -350,7 +350,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	}
 
 	// --- Chat folders' project folders and the chat's Project tab -------------
-	const projectModes = new Set(['project-tab', 'folder-chip', 'folder-edit']);
+	const projectModes = new Set(['project-tab', 'folder-chip', 'folder-edit', 'folder-browse']);
 	const projectRelayBase = '/api/v1/runners/machines/pc-1/workspace';
 	const workPc = {
 		machine_id: 'pc-1',
@@ -359,8 +359,17 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		online: true,
 		platform: 'win32',
 		can_browse: true,
+		folders: 'on',
 		providers: [{ id: 'claude', name: 'Claude', access: 'full' }],
 		recent_paths: ['C:\\code\\site']
+	};
+	// Folders on Work PC, for browsing its whole disk.
+	const workPcFolders = {
+		'C:\\': [{ name: 'code', path: 'C:\\code', hidden: false, link: false, selectable: true }],
+		'C:\\code': [
+			{ name: 'docs', path: 'C:\\code\\docs', hidden: false, link: false, selectable: true },
+			{ name: 'site', path: 'C:\\code\\site', hidden: false, link: false, selectable: true }
+		]
 	};
 	let projectChoice = {
 		folder_id: 'website',
@@ -505,6 +514,45 @@ function createFixtures(mode = 'normal', role = 'admin') {
 				projectChoice = { folder_id: 'website', folder_name: 'Website', mode: body.mode, paths };
 			}
 			reply = folderProject();
+		} else if (
+			path === '/api/v1/subscriptions/machines/pc-1/folders/suggested' &&
+			method === 'GET'
+		) {
+			requests.push({ method, path });
+			const day = 86400;
+			reply = {
+				state: 'ok',
+				folders: [
+					{
+						path: 'C:\\code\\api',
+						sources: ['claude', 'codex'],
+						last_used: Math.floor(Date.now() / 1000 / day) * day - 2 * day
+					}
+				]
+			};
+		} else if (path === '/api/v1/subscriptions/machines/pc-1/folders' && method === 'GET') {
+			const listed = url.searchParams.get('path') || '';
+			requests.push({ method, path, listed });
+			if (!listed) {
+				reply = {
+					path: '',
+					parent: null,
+					roots: [{ name: 'C:', path: 'C:\\', kind: 'drive' }],
+					entries: [],
+					truncated: false
+				};
+			} else {
+				assert.ok(workPcFolders[listed], 'Browsing asks only for folders it was shown');
+				let parent = null;
+				if (listed === 'C:\\code') parent = 'C:\\';
+				reply = {
+					path: listed,
+					parent,
+					roots: [],
+					entries: workPcFolders[listed],
+					truncated: false
+				};
+			}
 		} else if (path === '/api/v1/subscriptions/machines/pc-1/folders/check' && method === 'POST') {
 			const body = request.postDataJSON();
 			requests.push({ method, path, body });
@@ -525,8 +573,9 @@ function createFixtures(mode = 'normal', role = 'admin') {
 
 	let sessionOptions = {};
 	if (mode === 'project-tab') sessionOptions = { folderId: 'website' };
-	if (mode === 'folder-chip' || mode === 'folder-edit')
+	if (mode === 'folder-chip' || mode === 'folder-edit' || mode === 'folder-browse') {
 		sessionOptions = { path: '/folders/website' };
+	}
 
 	async function routeRequest(route) {
 		const request = route.request();
@@ -2853,6 +2902,40 @@ async function folderEditCase(browser, profile) {
 	});
 }
 
+async function folderBrowseCase(browser, profile) {
+	await runCase(browser, profile, 'folder-browse', 'folder-browse', async ({ page }, fixtures) => {
+		await page.locator('button[aria-label="Folder options"]').click();
+		await page.getByRole('button', { name: 'Edit', exact: true }).click();
+		const dialog = page.locator('.modal').filter({ hasText: 'Project folder' });
+
+		// A folder Claude Code and Codex worked in, suggested by the computer.
+		await dialog.getByRole('button', { name: 'Change', exact: true }).click();
+		const suggestion = dialog.getByRole('button', { name: /^api C:\\code\\api/ });
+		await suggestion.waitFor();
+		assert.match(await suggestion.innerText(), /Claude Code and Codex · 2 days ago/);
+		await suggestion.click();
+		await dialog.getByText('C:\\code\\api', { exact: true }).waitFor();
+
+		// Any folder on the computer, not only shared ones.
+		await dialog.getByRole('button', { name: 'Change', exact: true }).click();
+		await dialog.getByRole('button', { name: 'Browse Work PC…', exact: true }).click();
+		await dialog.getByRole('button', { name: 'C:', exact: true }).click();
+		await dialog.getByText('Choose a folder, not a whole drive.', { exact: true }).waitFor();
+		await dialog.getByRole('button', { name: 'code', exact: true }).click();
+		await dialog.getByRole('button', { name: 'Use “code”', exact: true }).click();
+		await dialog.getByText('C:\\code', { exact: true }).waitFor();
+		await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+		await dialog.waitFor({ state: 'hidden' });
+		const saved = fixtures.requests.filter((request) => request.method === 'PUT');
+		assert.deepEqual(saved[0].body, { mode: 'folder', paths: { 'pc-1': 'C:\\code' } });
+		const listed = fixtures.requests.filter((request) => request.listed !== undefined);
+		assert.deepEqual(
+			listed.map((request) => request.listed),
+			['', 'C:\\', 'C:\\code']
+		);
+	});
+}
+
 const { chromium } = await import(process.env.BUDDY_PLAYWRIGHT_MODULE || 'playwright');
 mkdirSync(outputDirectory, { recursive: true });
 const browser = await chromium.launch({ headless: true });
@@ -2864,6 +2947,7 @@ try {
 		await projectTabCase(browser, profile);
 		await folderChipCase(browser, profile);
 		await folderEditCase(browser, profile);
+		await folderBrowseCase(browser, profile);
 		await cancellationCase(browser, profile, 'x');
 		await cancellationCase(browser, profile, 'escape');
 		await cancellationCase(browser, profile, 'backdrop');
