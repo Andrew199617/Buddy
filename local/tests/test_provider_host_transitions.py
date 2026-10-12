@@ -1265,6 +1265,33 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
             await self.service.start_login(OWNER, 'claude', 'browser', machine_id='')
         self.assertEqual(self.providers['claude'].calls, [])
 
+    async def test_the_description_says_where_the_plan_is_signed_in(self):
+        ref = self.service.ProviderRef(OWNER, 'claude')
+        self.service.status_cache._entries[ref.on('runner-b')] = self.service._CacheEntry(
+            {'installed': True, 'signed_in': False, 'message': 'Fixture signed out'}, time.monotonic() + 60
+        )
+        described = await self.service.describe_provider(OWNER, 'claude')
+        self.assertEqual(described['computers'], [
+            {'machine_id': 'runner-a', 'name': 'Test runner-a', 'online': True, 'state': 'ready'},
+            {'machine_id': 'local', 'name': self.service.LOCAL_MACHINE.name, 'online': True, 'state': 'not_checked'},
+            {
+                'machine_id': 'runner-b', 'name': 'Test runner-b', 'online': True, 'state': 'signed_out',
+                'message': 'Fixture signed out'
+            },
+        ])
+        self.assertIsNone(described['login_machine_id'])
+        statuses = [call for call in self.providers['claude'].calls if call[0] == 'status']
+        self.assertEqual(statuses, [('status', 'runner-a', 'runner-a')])
+
+        # Checking again asks every computer that can be reached.
+        self.providers['claude'].calls.clear()
+        described = await self.service.describe_provider(OWNER, 'claude', fresh=True)
+        statuses = [call for call in self.providers['claude'].calls if call[0] == 'status']
+        self.assertCountEqual(statuses, [
+            ('status', 'runner-a', 'runner-a'), ('status', 'local', 'local'), ('status', 'runner-b', 'runner-b')
+        ])
+        self.assertEqual([computer['state'] for computer in described['computers']], ['ready', 'ready', 'ready'])
+
     async def test_status_is_cached_for_each_computer_and_forgotten_for_all(self):
         ref = self.service.ProviderRef(OWNER, 'claude')
         on_a = ref.on('runner-a')
