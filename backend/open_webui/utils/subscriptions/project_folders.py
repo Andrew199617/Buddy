@@ -267,7 +267,10 @@ async def resolve_folder(user_id: str, folder, choices: dict[str, FolderChoice] 
     """This person's own choice for the folder, and the one it would follow from a parent folder.
 
     Returns (own, inherited); each is None when absent. Only this person's
-    entries are read, never anyone else's.
+    entries are read, never anyone else's. Inheriting stops at a parent the
+    person can't read, and at a parent with another owner: subfolders always
+    belong to their parent's owner, so such a link comes from someone moving
+    their own folder under it, and must not pull in this person's choice.
     """
     if choices is None:
         choices = await load_choices(user_id)
@@ -282,7 +285,9 @@ async def resolve_folder(user_id: str, folder, choices: dict[str, FolderChoice] 
         seen.add(parent_id)
         depth += 1
         parent = await Folders.get_folder_by_id(parent_id)
-        if parent is None:
+        if parent is None or parent.user_id != folder.user_id:
+            break
+        if not await has_folder_access(user_id, parent, 'read', None):
             break
         entry = choices.get(parent.id)
         if entry is not None:

@@ -224,6 +224,22 @@ class ResolveTests(unittest.IsolatedAsyncioTestCase):
         # The member has no choice of their own, so the AI chooses for them.
         self.assertEqual((choice.mode, choice.paths), ('auto', {}))
 
+    async def test_a_parent_with_another_owner_is_never_followed(self):
+        # member-1 moves their own folder under owner-1's folder and shares it with owner-1.
+        await self.save('owner-1', 'work', 'folder', {'pc-1': self.SavedPath('C:\\private', 'rev-1')})
+        self.folders.add('planted', user_id='member-1', name='Planted', parent_id='work')
+        self.readers['planted'] = {'owner-1'}
+        choice = await self.module.choice_for_turn('owner-1', {'chat_id': 'temporary:x', 'folder_id': 'planted'})
+        self.assertEqual((choice.folder_id, choice.mode, choice.paths), ('planted', 'auto', {}))
+
+    async def test_a_parent_the_person_can_no_longer_read_is_not_followed(self):
+        await self.save('member-1', 'work', 'chat')
+        # The member can still read the subfolder, but no longer its parent.
+        self.readers['website'] = {'member-1'}
+        self.readers['work'] = set()
+        own, inherited = await self.module.resolve_folder('member-1', self.folders.rows['website'])
+        self.assertEqual((own, inherited), (None, None))
+
     async def test_chats_outside_folders_have_no_choice(self):
         self.assertIsNone(await self.module.choice_for_turn('owner-1', {'chat_id': 'temporary:x'}))
 
