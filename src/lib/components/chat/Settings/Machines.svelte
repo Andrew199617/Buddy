@@ -7,7 +7,8 @@
 		getSubscriptions,
 		renameSubscriptionMachine,
 		type SubscriptionMachine,
-		type SubscriptionProvider
+		type SubscriptionProvider,
+		type SubscriptionPublicPolicy
 	} from '$lib/apis/subscriptions';
 	import { createRunnerEnrollment } from '$lib/apis/runners';
 	import { getDesktop, type DesktopStatus } from '$lib/desktop/bridge';
@@ -26,7 +27,11 @@
 	let allowed = true;
 	let providers: SubscriptionProvider[] = [];
 	let machines: SubscriptionMachine[] = [];
-	let policy = { plan_sign_in: true, api_keys: true };
+	let policy: SubscriptionPublicPolicy = {
+		plan_sign_in: true,
+		api_keys: true,
+		desktop_download_url: ''
+	};
 	let desktopStatus: DesktopStatus | null = null;
 	let stopWatchingDesktop: (() => void) | null = null;
 	let disposed = false;
@@ -153,6 +158,21 @@
 					<p class="mt-1 text-[0.6875rem] leading-relaxed text-gray-500 dark:text-gray-400">
 						{$i18n.t('settings.personal.machines.connect.description')}
 					</p>
+					{#if policy.desktop_download_url}
+						<div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+							<a
+								class="inline-flex min-h-11 items-center rounded-xl bg-gray-900 px-4 text-sm font-medium text-white dark:bg-white dark:text-gray-900 md:min-h-9"
+								href={policy.desktop_download_url}
+								target="_blank"
+								rel="noopener noreferrer"
+							>
+								{$i18n.t('Get Buddy for Windows')}
+							</a>
+							<span class="text-[0.6875rem] text-gray-500 dark:text-gray-400">
+								{$i18n.t('Mac: coming soon')}
+							</span>
+						</div>
+					{/if}
 				</section>
 			{/if}
 
