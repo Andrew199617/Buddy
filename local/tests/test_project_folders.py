@@ -67,13 +67,20 @@ class FakeChats:
         self.folders = {}
         self.owned = set()
         self.created = {}
+        self.models = {}
 
-    def add(self, chat_id, user_id, folder_id=None, created_at=1):
+    def add(self, chat_id, user_id, folder_id=None, created_at=1, models=None):
         """A chat; by default created long ago, before chats had targets."""
         self.owned.add((chat_id, user_id))
         self.created[(chat_id, user_id)] = created_at
+        self.models[(chat_id, user_id)] = list(models or [])
         if folder_id is not None:
             self.folders[(chat_id, user_id)] = folder_id
+
+    async def get_chat_by_id_and_user_id(self, chat_id, user_id, db=None):
+        if (chat_id, user_id) not in self.owned:
+            return None
+        return types.SimpleNamespace(id=chat_id, chat={'models': self.models[(chat_id, user_id)]})
 
     async def get_chat_folder_id(self, chat_id, user_id, db=None):
         return self.folders.get((chat_id, user_id))
