@@ -15,6 +15,10 @@ Routes:
   DELETE /admin/machines/{machine} — remove anyone's machine
   GET    /admin/policy             — who may use machines, and which sign-ins are allowed
   POST   /admin/policy             — save that policy
+  POST   /machines/{machine}/folders/check — check that a folder exists on one of the user's computers
+  GET    /folders/{folder}/project — the user's project folder for a chat folder, and their computers
+  PUT    /folders/{folder}/project — choose it: let the AI choose, an exact folder per computer, or no files
+  DELETE /folders/{folder}/project — forget it, so the chat folder follows its parent again
   GET    /{provider}               — one provider (?refresh=true checks again)
   POST   /{provider}/config        — save enable, access, workspace, CLI path, machine
   POST   /{provider}/login         — start signing in (browser or device code)
@@ -241,6 +245,47 @@ async def _policy_response() -> dict:
         'desktop_download_url': policy.desktop_download_url,
         'owner_id': await service.server_owner_id(),
     }
+
+
+class FolderCheckForm(BaseModel):
+    model_config = {'extra': 'forbid'}
+    path: str
+
+
+class FolderProjectForm(BaseModel):
+    model_config = {'extra': 'forbid'}
+    mode: Literal['auto', 'folder', 'chat']
+    # Machine ID to folder path; only for mode 'folder'.
+    paths: dict[str, str] = {}
+
+
+@router.post('/machines/{machine_id}/folders/check')
+async def check_folder_on_machine(machine_id: str, form_data: FolderCheckForm, user=Depends(get_machine_session_user)):
+    try:
+        return {'path': await service.check_machine_folder(user, machine_id, form_data.path)}
+    except SubscriptionError as error:
+        raise _bad_request(error)
+
+
+@router.get('/folders/{folder_id}/project')
+async def get_folder_project(folder_id: str, user=Depends(get_machine_user)):
+    return await service.describe_folder_project(user, folder_id)
+
+
+@router.put('/folders/{folder_id}/project')
+async def save_folder_project(folder_id: str, form_data: FolderProjectForm, user=Depends(get_machine_session_user)):
+    try:
+        return await service.save_folder_project(user, folder_id, form_data.mode, form_data.paths)
+    except SubscriptionError as error:
+        raise _bad_request(error)
+
+
+@router.delete('/folders/{folder_id}/project')
+async def clear_folder_project(folder_id: str, user=Depends(get_machine_session_user)):
+    try:
+        return await service.clear_folder_project(user, folder_id)
+    except SubscriptionError as error:
+        raise _bad_request(error)
 
 
 @router.get('/{provider_id}')

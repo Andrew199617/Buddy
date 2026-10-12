@@ -37,6 +37,7 @@ from open_webui.utils.subscriptions.runner_transport import normalize_runner_url
 from open_webui.utils.subscriptions.events import SubscriptionError  # noqa: E402
 from open_webui.utils.subscriptions.machines import TunnelMachine  # noqa: E402
 from open_webui.utils.subscriptions.tunnel_hub import RunnerHub  # noqa: E402
+from test_project_folders import FakeChats, FakeFolders, load_project_folders  # noqa: E402
 
 # The instance owner: the user whose setup predates per-user machines. Most
 # tests act as this user, whose settings keep the original config keys.
@@ -184,7 +185,11 @@ def load_service(config, data_dir):
     """Keep production function bodies; replace only import-bound dependencies."""
     module = types.ModuleType('subscription_machine_service_under_test')
     module.__file__ = str(SUBSCRIPTIONS / 'service.py')
+    # No chat folders unless a test adds some; the owner of a folder may read it.
+    folder_readers = {}
     module.__dict__.update({
+        'sys': sys,
+        'project_folders': load_project_folders(config, FakeFolders(), FakeChats(), folder_readers),
         'asyncio': asyncio,
         'hashlib': hashlib,
         'hmac': hmac,

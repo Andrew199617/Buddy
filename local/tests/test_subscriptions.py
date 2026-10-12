@@ -1453,6 +1453,10 @@ def load_subscription_service(data_dir: Path, config: StandInConfig):
             apply_model_params_to_body_openai=None,
             apply_system_prompt_to_body=None,
         ),
+        # Project folders read chat folders; these tests use none.
+        'open_webui.models.chats': types.SimpleNamespace(Chats=None),
+        'open_webui.models.folders': types.SimpleNamespace(Folders=None),
+        'open_webui.utils.access_control.folders': types.SimpleNamespace(has_folder_access=None),
     }
     service_path = ROOT_DIR / 'backend' / 'open_webui' / 'utils' / 'subscriptions' / 'service.py'
     spec = importlib.util.spec_from_file_location('subscription_service_under_test', service_path)
