@@ -55,7 +55,6 @@ export type SubscriptionMachine = {
 	// False when Buddy has no Runner key for this machine, as after a config import.
 	has_key?: boolean;
 	// Explicit browser address; the backend URL may not be reachable from a browser.
-	browser_url?: string | null;
 	host?: { id: string; name: string; platform: string; version: string };
 	capabilities?: SubscriptionMachineCapabilities;
 	// 'runner' for a computer connected through the Buddy app.
@@ -184,7 +183,7 @@ export const getSubscriptions = async (
 
 export const saveSubscriptionMachine = async (
 	token: string,
-	machine: { id?: string; name: string; url: string; key?: string; browser_url?: string | null }
+	machine: { id?: string; name: string; url: string; key?: string }
 ): Promise<{ machine: SubscriptionMachine; machines: SubscriptionMachine[] }> => {
 	return subscriptionRequest(token, '/machines', 'POST', machine);
 };
@@ -198,14 +197,9 @@ export const getSubscriptionMachines = async (
 export const verifySubscriptionMachine = async (
 	token: string,
 	url: string,
-	key: string,
-	browserUrl?: string
+	key: string
 ): Promise<SubscriptionMachineInfo> => {
-	return subscriptionRequest(token, '/machines/verify', 'POST', {
-		url,
-		key,
-		browser_url: browserUrl
-	});
+	return subscriptionRequest(token, '/machines/verify', 'POST', { url, key });
 };
 
 export const renameSubscriptionMachine = async (
