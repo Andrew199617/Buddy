@@ -67,7 +67,9 @@
 	let loginGeneration = 0;
 	let loginOwner: LoginOwner | null = null;
 	let disposed = false;
-	let cancellation: Promise<void> | null = null;
+	// Cancellations on their way, one per plan and computer, since this dialog can sign in on
+	// several computers one after another.
+	const cancellations = new Map<string, Promise<void>>();
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
 	let pollInFlight = false;
 	$: busy = $pendingProviderActions[provider.id] > 0;
@@ -129,11 +131,11 @@
 
 	const cancelWaitingLogin = (owner = loginOwner): Promise<void> => {
 		if (!owner) return Promise.resolve();
-		if (cancellation) {
-			return cancellation;
-		}
+		const key = `${owner.providerId}:${owner.machineId}`;
+		const pending = cancellations.get(key);
+		if (pending) return pending;
 		const finishAction = beginProviderAction(owner.providerId);
-		cancellation = cancelSubscriptionLogin(
+		const cancelled = cancelSubscriptionLogin(
 			localStorage.token,
 			owner.providerId,
 			expectedMachineFor(owner),
@@ -144,9 +146,10 @@
 			.catch(() => {})
 			.finally(() => {
 				finishAction();
-				cancellation = null;
+				cancellations.delete(key);
 			});
-		return cancellation;
+		cancellations.set(key, cancelled);
+		return cancelled;
 	};
 
 	const dismissLogin = () => {
