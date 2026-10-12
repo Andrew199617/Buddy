@@ -147,6 +147,7 @@ function mockChat(options = {}) {
 		pinned: false,
 		active: false,
 		current_message_id: reply.id,
+		folder_id: options.folderId ?? null,
 		chat: {
 			title: 'A little room to think',
 			models: [model.id],
