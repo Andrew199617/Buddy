@@ -61,6 +61,8 @@
 	// Loaded separately: the first check starts the Claude Code and Codex CLIs.
 	let subscriptionProviders: SubscriptionProvider[] | null = null;
 	let subscriptionMachines: SubscriptionMachine[] = [];
+	// Computers connected through the Buddy app are listed under everyone's computers instead.
+	$: addressMachines = subscriptionMachines.filter((machine) => machine.kind !== 'runner');
 	let subscriptionsError = '';
 	let showMachineModal = false;
 	let editedMachine: SubscriptionMachine | null = null;
@@ -486,7 +488,7 @@
 							</Tooltip>
 						</div>
 						<div class="flex flex-col gap-1">
-							{#each subscriptionMachines as machine (machine.id)}
+							{#each addressMachines as machine (machine.id)}
 								<div class="flex items-center justify-between gap-2">
 									<div class="min-w-0">
 										<span class="text-sm">{machine.name}</span>
