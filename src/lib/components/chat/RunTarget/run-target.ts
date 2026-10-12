@@ -151,11 +151,13 @@ export function chooseComputer(
 	let folder: RunTargetFolder = { mode: 'auto' };
 	const folderDefault = options.chat_folder?.paths?.[computer.machine_id];
 	if (folderDefault) folder = { mode: 'path', path: folderDefault };
-	if (draft.folder?.mode === 'path' && draft.machineId === computer.machine_id)
+	if (draft.folder?.mode === 'path' && draft.machineId === computer.machine_id) {
 		folder = draft.folder;
+	}
 	let access = draft.access;
-	if (draft.kind === 'detached' && !draft.touched.access)
+	if (draft.kind === 'detached' && !draft.touched.access) {
 		access = defaultAccess(options, providers);
+	}
 	if (options.default?.access_locked && draft.acknowledgedFolderId === null) access = 'chat';
 	return {
 		...draft,
