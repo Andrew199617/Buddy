@@ -60,7 +60,13 @@ class FakeSupervisor extends EventEmitter {
 	}
 }
 
-type Answers = { connect?: boolean; folder?: string | null; projectFolder?: string | null; permission?: boolean };
+type Answers = {
+	connect?: boolean;
+	browseFolders?: boolean;
+	folder?: string | null;
+	projectFolder?: string | null;
+	permission?: boolean;
+};
 
 function setUp(answers: Answers = {}, initial: Partial<DesktopSettings> = {}) {
 	const settings = new MemorySettings(initial);
@@ -72,7 +78,7 @@ function setUp(answers: Answers = {}, initial: Partial<DesktopSettings> = {}) {
 	const dialogs: Dialogs = {
 		confirmConnect: async () => {
 			asked.push('connect');
-			return answers.connect ?? true;
+			return { connect: answers.connect ?? true, allowFolderBrowsing: answers.browseFolders ?? false };
 		},
 		chooseFolder: async () => {
 			asked.push('folder');
@@ -128,6 +134,18 @@ test('connecting stores the credential and starts the Runner with local choices'
 	assert.equal(status.machineId, 'machine-1');
 	// The page's status never carries the credential.
 	assert.equal(JSON.stringify(status).includes('bdr1_secret'), false);
+});
+
+test('the connect question can allow folder browsing in the same step', async () => {
+	const ticked = setUp({ browseFolders: true });
+	await ticked.service.connectThisPC('bde1_token', 'PC');
+	assert.equal(ticked.settings.saved.allowFolderBrowsing, true);
+	assert.equal(ticked.supervisor.started[0].allowFolderBrowsing, true);
+
+	const unticked = setUp({ browseFolders: false });
+	await unticked.service.connectThisPC('bde1_token', 'PC');
+	assert.equal(unticked.settings.saved.allowFolderBrowsing, false);
+	assert.equal(unticked.supervisor.started[0].allowFolderBrowsing, false);
 });
 
 test('a malformed token is refused before asking', async () => {

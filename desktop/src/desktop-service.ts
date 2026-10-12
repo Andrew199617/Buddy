@@ -10,8 +10,11 @@ import type { DesktopConnectionState, DesktopPermission, DesktopStatus } from '.
 // decisions that widen access (connecting, sharing a folder, allowing edits or
 // commands) are made by the person in the app's own dialogs.
 
+// The answer to the connect question, with its folder browsing checkbox.
+export type ConnectAnswer = { connect: boolean; allowFolderBrowsing: boolean };
+
 export type Dialogs = {
-	confirmConnect(serverUrl: string, accountName: string): Promise<boolean>;
+	confirmConnect(serverUrl: string, accountName: string): Promise<ConnectAnswer>;
 	chooseFolder(): Promise<string | null>;
 	chooseProjectFolder(): Promise<string | null>;
 	confirmPermission(permission: DesktopPermission): Promise<boolean>;
@@ -103,8 +106,8 @@ export class DesktopService extends EventEmitter {
 		if (this.settings.machine) return this.getStatus();
 		if (this.connecting) throw new Error('This computer is already connecting.');
 		if (!ENROLLMENT_TOKEN.test(token)) throw new Error('Buddy sent an invalid connection request.');
-		const confirmed = await this.options.dialogs.confirmConnect(serverUrl, this.options.accountName);
-		if (!confirmed) return this.getStatus();
+		const answer = await this.options.dialogs.confirmConnect(serverUrl, this.options.accountName);
+		if (!answer.connect) return this.getStatus();
 
 		this.connecting = true;
 		this.emitStatus();
@@ -117,6 +120,7 @@ export class DesktopService extends EventEmitter {
 			const enrolled = await this.options.enroll(serverUrl, token, host);
 			this.options.credentials.write(enrolled.credential);
 			this.settings.machine = { id: enrolled.machineId, name: enrolled.name };
+			this.settings.allowFolderBrowsing = answer.allowFolderBrowsing;
 			this.saveSettings();
 			this.ending = null;
 		} finally {
