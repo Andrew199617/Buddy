@@ -741,7 +741,11 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			return;
 		}
 		const providerId = path.split('/')[4];
-		const chosenMachineId = body?.machine_id ?? url.searchParams.get('machine_id');
+		let chosenMachineId = null;
+		// A plan's settings name the computer it runs on; only sign-in actions name a chosen computer.
+		if (!path.endsWith('/config')) {
+			chosenMachineId = body?.machine_id ?? url.searchParams.get('machine_id');
+		}
 		if ((providerId === 'claude' || providerId === 'codex') && chosenMachineId) {
 			// A sign-in action on a chosen computer names it, with the revision the page showed.
 			const chosen = machines.find((machine) => machine.id === chosenMachineId);
