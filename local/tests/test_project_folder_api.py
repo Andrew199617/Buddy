@@ -174,6 +174,19 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
         choices = await folders.load_choices(OWNER)
         self.assertEqual(choices['website'].paths['local'].path, '/srv/site')
 
+    async def test_other_paths_can_change_while_this_server_is_turned_off(self):
+        folders = self.service.project_folders
+        paths = {
+            'local': folders.SavedPath('/srv/site', 'local'),
+            'pc-1': folders.SavedPath('C:\\code\\site', 'fixture-revision'),
+        }
+        await folders.save_choice(OWNER, 'website', 'folder', paths, {'local', 'pc-1'})
+        await self.service.save_policy({'server_machine': False})
+        await self.save(OWNER_USER, 'folder', {'local': '/srv/site', 'pc-1': 'C:\\code\\docs'})
+        choice = (await folders.load_choices(OWNER))['website']
+        self.assertEqual(choice.paths['local'].path, '/srv/site')
+        self.assertEqual(choice.paths['pc-1'].path, 'C:\\code\\docs')
+
     async def test_a_deleted_users_choices_are_forgotten(self):
         await self.save(MEMBER_USER, 'chat')
         await self.service.forget_user(MEMBER)
