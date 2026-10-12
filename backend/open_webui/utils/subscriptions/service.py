@@ -1549,6 +1549,24 @@ async def _readable_chat_folder(user, folder_id: str):
     return folder
 
 
+def _folder_browsing_state(owner_id: str, machine_id: str, kind: str, online: bool | None, config: dict | None) -> str:
+    """Whether that computer's folders can be browsed: 'on', 'off', 'offline' or 'unsupported'.
+
+    Only the Buddy app can list folders. Whether the person allowed it there is
+    learned from its answer, since the app can change it at any time.
+    """
+    if kind != 'app':
+        return 'unsupported'
+    capabilities = (config or {}).get('capabilities') or {}
+    if capabilities.get('folderBrowsing') is not True:
+        return 'unsupported'
+    if not online:
+        return 'offline'
+    if _folder_browsing.get((owner_id, machine_id)) == 'off':
+        return 'off'
+    return 'on'
+
+
 async def _describe_folder_computer(owner_id: str, machine_id: str, config: dict | None, choices: dict) -> dict | None:
     kind = _folder_computer_kind(machine_id, config)
     online = None
@@ -1574,6 +1592,7 @@ async def _describe_folder_computer(owner_id: str, machine_id: str, config: dict
         'online': online,
         'platform': await _machine_platform(owner_id, machine_id),
         'can_browse': can_browse,
+        'folders': _folder_browsing_state(owner_id, machine_id, kind, online, config),
         'recent_paths': project_folders.recent_paths(choices, machine_id, revision),
     }
 
