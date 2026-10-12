@@ -18,6 +18,7 @@
 	let section: ProjectFolderSection;
 	let saving = false;
 	let error = '';
+	let loadError = '';
 
 	async function save() {
 		saving = true;
@@ -46,7 +47,7 @@
 		</div>
 
 		{#if show}
-			<ProjectFolderSection bind:this={section} {folderId} bind:error />
+			<ProjectFolderSection bind:this={section} {folderId} bind:error bind:loadError />
 		{/if}
 
 		<div
@@ -62,7 +63,7 @@
 			<button
 				type="button"
 				class="flex min-h-11 items-center gap-2 rounded-full bg-black px-4 text-sm text-white disabled:opacity-50 dark:bg-white dark:text-black md:min-h-8"
-				disabled={saving}
+				disabled={saving || loadError !== ''}
 				on:click={save}
 			>
 				{$i18n.t('Save')}

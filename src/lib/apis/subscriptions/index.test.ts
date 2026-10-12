@@ -159,6 +159,20 @@ describe('per-user machines and sign-ins', () => {
 		expect(JSON.parse(options.body)).toEqual({ key: 'sk-fixture' });
 	});
 
+	it('tells a project folder that is not available apart from a failed lookup', async () => {
+		const { getFolderProject } = await import('./index');
+		for (const status of [403, 404]) {
+			fetchMock.mockResolvedValueOnce({ ok: false, status, json: async () => ({ detail: 'No' }) });
+			await expect(getFolderProject('fixture-token', 'website')).resolves.toBeNull();
+		}
+		fetchMock.mockResolvedValueOnce({
+			ok: false,
+			status: 500,
+			json: async () => ({ detail: 'Buddy restarted' })
+		});
+		await expect(getFolderProject('fixture-token', 'website')).rejects.toBe('Buddy restarted');
+	});
+
 	it('stores the Claude token under Claude only', async () => {
 		const { saveClaudePlanToken } = await import('./index');
 		await saveClaudePlanToken('fixture-token', 'sk-ant-oat01-fixture');
