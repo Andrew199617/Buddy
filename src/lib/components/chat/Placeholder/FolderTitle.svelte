@@ -38,17 +38,12 @@
 	export let onDelete: Function = (folderId) => {};
 
 	let showFolderModal = false;
-	// Bumped after the folder is edited, so the project folder chip reloads.
-	let projectRevision = 0;
 	let showCreateSubFolderModal = false;
 	let showShareModal = false;
 	let showDeleteConfirm = false;
 	let deleteFolderContents = true;
 
 	const updateHandler = async ({ name, meta, data }) => {
-		// The dialog saved the project folder before calling this.
-		projectRevision += 1;
-
 		if (name === '') {
 			toast.error($i18n.t('Folder name cannot be empty.'));
 			return;
@@ -284,7 +279,7 @@
 	</div>
 
 	<div class="-mt-1 mb-3 flex w-full px-6 @md:max-w-3xl">
-		{#key `${folder.id}:${projectRevision}`}
+		{#key folder.id}
 			<ProjectFolderChip folderId={folder.id} folderName={folder.name} />
 		{/key}
 	</div>

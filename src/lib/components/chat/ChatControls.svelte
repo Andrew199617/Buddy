@@ -27,6 +27,7 @@
 	import { isSavedChatId } from '$lib/utils/chatId';
 	import { getFolderProject, type FolderProject } from '$lib/apis/subscriptions';
 	import { KeptProjectPanel, showKeptPanel } from './ProjectPanel/kept-panel';
+	import { projectFolderChanges } from '$lib/components/projectFolders/project-folder-changes';
 
 	const i18n: Writable<I18n> = getContext('i18n');
 
@@ -159,6 +160,10 @@
 	}
 
 	$: refreshFolderProject(folderId, $showControls);
+	// Saved from the folder page or its settings while this chat is open.
+	$: if ($projectFolderChanges.folderId === folderId && $projectFolderChanges.count > 0) {
+		reloadFolderProject();
+	}
 	$: showProjectTab = folderProject !== null;
 
 	// The Project tab's panel starts the first time the tab shows, then lives as
