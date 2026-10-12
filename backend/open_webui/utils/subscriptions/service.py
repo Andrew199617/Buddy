@@ -2370,6 +2370,27 @@ async def bind_chat_target(
     return await ChatRunTargets.insert_if_absent(row)
 
 
+def _provider_for_model_id(model_id) -> str | None:
+    """The plan behind one of Buddy's own plan model ids, such as 'claude-code.opus'."""
+    if not isinstance(model_id, str):
+        return None
+    for provider_id, prefix in MODEL_ID_PREFIXES.items():
+        if model_id.startswith(f'{prefix}.'):
+            return provider_id
+    return None
+
+
+async def _chat_provider(user, chat_id: str) -> str | None:
+    """The plan of the chat's first model, when it is one of Buddy's own plan models."""
+    chat = await Chats.get_chat_by_id_and_user_id(chat_id, user.id)
+    if chat is None or not isinstance(chat.chat, dict):
+        return None
+    models = chat.chat.get('models')
+    if not isinstance(models, list) or not models:
+        return None
+    return _provider_for_model_id(models[0])
+
+
 def _bar_plan_state(provider_status: dict | None, online: bool | None) -> str:
     """A plan's state on one computer for the composer's bar, from what it last reported."""
     if online is False:
@@ -2553,8 +2574,11 @@ async def describe_chat_run_target(user, chat_id: str) -> dict:
     # Not bound yet: its next turn binds where its plan ran if it is older than targets, else the default.
     folder_id = await Chats.get_chat_folder_id(chat_id, user.id)
     started_before_targets = await _started_before_targets(user, chat_id)
-    default = await default_run_target(user, folder_id, started_before_targets=started_before_targets)
-    would_bind = await _row_from_default(user, chat_id, default, None)
+    provider_id = await _chat_provider(user, chat_id)
+    default = await default_run_target(
+        user, folder_id, provider_id=provider_id, started_before_targets=started_before_targets
+    )
+    would_bind = await _row_from_default(user, chat_id, default, provider_id)
     return {'bound': False, 'would_bind': await _describe_target_row(user, would_bind)}
 
 

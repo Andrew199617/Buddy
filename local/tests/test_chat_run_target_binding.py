@@ -243,6 +243,12 @@ class ChatTargetTests(RunTargetTestCase):
         reloaded = load_service(self.config, ROOT / 'unused-run-target-data')
         self.assertEqual(await reloaded.mark_run_targets_started(), first + 50)
 
+    async def test_a_chat_not_bound_yet_shows_its_own_plans_computer_and_access(self):
+        self.config.values['subscriptions.codex'] = {'enable': True, 'access': 'read', 'machine_id': 'runner-b'}
+        self.chats.add('chat-codex', OWNER, models=['codex.fixture-model'])
+        would_bind = (await self.service.describe_chat_run_target(OWNER_USER, 'chat-codex'))['would_bind']
+        self.assertEqual((would_bind['machine_id'], would_bind['access']), ('runner-b', 'read'))
+
     async def test_only_the_owner_sees_a_chats_target(self):
         await self.bind(self.computer())
         for user, chat_id in ((MEMBER_USER, 'chat-1'), (OWNER_USER, 'temporary:x'), (OWNER_USER, 'missing-chat')):
