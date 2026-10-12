@@ -272,6 +272,36 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(project['own'])
         self.assertEqual((project['inherited']['folder_name'], project['inherited']['mode']), ('Work', 'chat'))
 
+    # --- A folder about to be created ---------------------------------------------
+
+    async def test_a_new_subfolder_starts_from_its_parents_choice(self):
+        await self.save(OWNER_USER, 'folder', {'pc-1': 'C:\\code\\site'})
+        project = await self.service.describe_new_folder_project(OWNER_USER, 'website')
+        self.assertEqual((project['folder_id'], project['own'], project['shared_instructions']), ('', None, False))
+        inherited = project['inherited']
+        self.assertEqual((inherited['folder_name'], inherited['mode']), ('Website', 'folder'))
+        self.assertEqual(inherited['paths']['pc-1']['path'], 'C:\\code\\site')
+        self.assertEqual(self.computer(project)['name'], 'Test pc-1')
+        self.assertEqual(self.machine.path_checks, [('C:\\code\\site', 'dir')])
+
+    async def test_a_new_subfolder_follows_what_its_parent_follows(self):
+        self.service.project_folders.Folders.add('work', user_id=OWNER, name='Work')
+        self.service.project_folders.Folders.rows['website'].parent_id = 'work'
+        await self.save(OWNER_USER, 'chat', folder_id='work')
+        project = await self.service.describe_new_folder_project(OWNER_USER, 'website')
+        self.assertEqual((project['inherited']['folder_name'], project['inherited']['mode']), ('Work', 'chat'))
+
+    async def test_a_new_top_level_folder_starts_with_no_choice(self):
+        project = await self.service.describe_new_folder_project(OWNER_USER, None)
+        self.assertEqual((project['own'], project['inherited']), (None, None))
+        self.assertTrue(project['has_plans'])
+        self.assertEqual(self.computer(project)['machine_id'], 'pc-1')
+
+    async def test_a_new_folder_under_a_folder_you_cannot_read_is_not_found(self):
+        with self.assertRaises(self.service.HTTPException) as refused:
+            await self.service.describe_new_folder_project(OUTSIDER_USER, 'website')
+        self.assertEqual(refused.exception.status_code, 404)
+
     async def test_this_servers_folders_survive_the_policy_turning_it_off_for_a_while(self):
         folders = self.service.project_folders
         local = {'local': folders.SavedPath('/srv/site', 'local')}

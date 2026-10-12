@@ -1946,6 +1946,26 @@ async def describe_folder_project(user, folder_id: str) -> dict:
     folder = await _readable_chat_folder(user, folder_id)
     choices = await project_folders.load_choices(user.id)
     own, inherited = await project_folders.resolve_folder(user.id, folder, choices)
+    # Instructions someone else can change keep chats chat-only until the person chooses here.
+    shared_instructions = await project_folders.has_shared_instructions(user.id, folder)
+    return await _describe_project(user, folder.id, folder.name, own, inherited, shared_instructions, choices)
+
+
+async def describe_new_folder_project(user, parent_id: str | None) -> dict:
+    """What a chat folder about to be created starts with: its parent's choice, if any,
+    and the computers it can be on. Contacts no computer."""
+    choices = await project_folders.load_choices(user.id)
+    inherited = None
+    if parent_id:
+        parent = await _readable_chat_folder(user, parent_id)
+        parent_own, parent_inherited = await project_folders.resolve_folder(user.id, parent, choices)
+        inherited = parent_own or parent_inherited
+    # A new folder has no instructions of its own yet.
+    return await _describe_project(user, '', '', None, inherited, False, choices)
+
+
+async def _describe_project(user, folder_id: str, folder_name: str, own, inherited, shared_instructions: bool,
+                            choices: dict) -> dict:
     named_machine_ids = set()
     for choice in (own, inherited):
         if choice is not None:
@@ -1961,12 +1981,11 @@ async def describe_folder_project(user, folder_id: str) -> dict:
         if (await _load_settings(ProviderRef(user.id, provider_id))).enable:
             has_plans = True
     return {
-        'folder_id': folder.id,
-        'folder_name': folder.name,
+        'folder_id': folder_id,
+        'folder_name': folder_name,
         'own': _describe_folder_choice(own, revisions),
         'inherited': _describe_folder_choice(inherited, revisions),
-        # Instructions someone else can change keep chats chat-only until the person chooses here.
-        'shared_instructions': await project_folders.has_shared_instructions(user.id, folder),
+        'shared_instructions': shared_instructions,
         'has_plans': has_plans,
         'plans': await _folder_plans(user),
         'computers': await _folder_computers(user, choices, named_machine_ids),

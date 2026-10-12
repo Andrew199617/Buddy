@@ -521,6 +521,22 @@ export const getFolderProject = async (
 	return readSubscriptionResponse(response);
 };
 
+/**
+ * What a chat folder about to be created starts with: its parent's choice and
+ * the computers it can be on. Null when the person may not use computers (403)
+ * or can't read the parent (404). Other failures throw.
+ */
+export const getNewFolderProject = async (
+	token: string,
+	parentId: string | null
+): Promise<FolderProject | null> => {
+	let path = '/new-folder/project';
+	if (parentId) path = `${path}?parent_id=${encodeURIComponent(parentId)}`;
+	const response = await sendSubscriptionRequest(token, path, 'GET');
+	if (response.status === 403 || response.status === 404) return null;
+	return readSubscriptionResponse(response);
+};
+
 export const saveFolderProject = async (
 	token: string,
 	folderId: string,
