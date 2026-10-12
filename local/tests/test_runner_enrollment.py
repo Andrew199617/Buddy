@@ -207,6 +207,16 @@ class RunnerEnrollmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.closed_with[0], protocol.CLOSE_REPLACED)
         self.assertEqual(self.service.HUB.connection(enrollment['machine_id']).instance_id, 'instance-b')
 
+    async def test_projects_relay_only_to_the_owners_online_computer(self):
+        enrollment = await self.enroll()
+        with self.assertRaisesRegex(self.service.SubscriptionError, 'offline'):
+            await self.service.relay_connection(MEMBER, enrollment['machine_id'])
+        await self.connect(self.hello(enrollment))
+        connection = await self.service.relay_connection(MEMBER, enrollment['machine_id'])
+        self.assertEqual(connection.machine_id, enrollment['machine_id'])
+        with self.assertRaisesRegex(self.service.SubscriptionError, 'no longer exists'):
+            await self.service.relay_connection(OWNER, enrollment['machine_id'])
+
     async def test_renaming_changes_only_the_name(self):
         enrollment = await self.enroll()
         await self.service.rename_machine(MEMBER, enrollment['machine_id'], '  Studio PC  ')
