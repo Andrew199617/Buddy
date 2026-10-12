@@ -3027,7 +3027,7 @@ async function folderEditCase(browser, profile) {
 			'Enter in the path picker does not submit the dialog'
 		);
 		assert.equal(fixtures.requests.filter((request) => request.method === 'PUT').length, 0);
-		await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+		await saveFolderSettings(dialog);
 		await dialog.waitFor({ state: 'hidden' });
 		const saved = fixtures.requests.filter((request) => request.method === 'PUT');
 		assert.deepEqual(saved[0].body, {
@@ -3062,17 +3062,46 @@ async function folderDialogCase(browser, profile) {
 				(await projectRow.textContent()).includes('site · Automatic · Plan default (Full access)'),
 			'The row sums up the project folder'
 		);
-		assert.equal(await projectRow.getAttribute('aria-expanded'), 'false');
 		assert.equal(await dialog.getByText('Run on', { exact: true }).isVisible(), false);
 		await captureScreenshot(page, profile.name + '-folder-dialog');
 
 		const knowledgeRow = dialog.getByRole('button', { name: /^Knowledge/ });
 		assert.match(await knowledgeRow.textContent(), /None yet/);
-		await knowledgeRow.click();
-		await dialog.getByText('Select Knowledge', { exact: true }).waitFor();
-		await projectRow.click();
-		await dialog.getByText('Run on', { exact: true }).waitFor();
+		const back = dialog.getByRole('button', { name: 'Back to folder', exact: true });
+		if (profile.mobile) {
+			// Phones open each row on its own screen; Back and Escape return to the folder.
+			await knowledgeRow.click();
+			await dialog.getByText('Select Knowledge', { exact: true }).waitFor();
+			assert.equal(await activeElementId(page), 'folder-form-website-back', 'Back is focused');
+			await back.click();
+			assert.equal(await activeElementId(page), 'folder-form-website-row-knowledge');
+			await projectRow.click();
+			await dialog.getByText('Run on', { exact: true }).waitFor();
+			await page.keyboard.press('Escape');
+			await dialog.locator('#folder-name').waitFor();
+			assert.equal(await dialog.isVisible(), true, 'Escape leaves the screen, not the dialog');
+			await captureScreenshot(page, profile.name + '-folder-dialog-main');
+		} else {
+			assert.equal(await projectRow.getAttribute('aria-expanded'), 'false');
+			await knowledgeRow.click();
+			await dialog.getByText('Select Knowledge', { exact: true }).waitFor();
+			await projectRow.click();
+			await dialog.getByText('Run on', { exact: true }).waitFor();
+			// Escape closes the folder picker before the dialog.
+			await dialog.getByRole('button', { name: 'Change', exact: true }).click();
+			await dialog.getByLabel('Folder path', { exact: true }).waitFor();
+			await page.keyboard.press('Escape');
+			await dialog.getByText('Run on', { exact: true }).waitFor();
+			assert.equal(await dialog.isVisible(), true, 'Escape closes the picker, not the dialog');
+		}
 	});
+}
+
+/** Saves the folder dialog; on phones Save is on the folder's own screen. */
+async function saveFolderSettings(dialog) {
+	const back = dialog.getByRole('button', { name: 'Back to folder', exact: true });
+	if (await back.isVisible()) await back.click();
+	await dialog.getByRole('button', { name: 'Save', exact: true }).click();
 }
 
 /** Opens the folder's Edit folder dialog with its Project folder row open. */
@@ -3128,7 +3157,7 @@ async function folderDefaultsCase(browser, profile) {
 			assert.equal(fixtures.requests.filter((entry) => entry.method === 'PUT').length, 0);
 			await captureScreenshot(page, profile.name + '-folder-defaults');
 
-			await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+			await saveFolderSettings(dialog);
 			await dialog.waitFor({ state: 'hidden' });
 			const saved = fixtures.requests.filter((request) => request.method === 'PUT');
 			assert.deepEqual(saved[0].body, {
@@ -3302,7 +3331,7 @@ async function folderBrowseCase(browser, profile) {
 		await dialog.getByRole('button', { name: 'code', exact: true }).click();
 		await dialog.getByRole('button', { name: 'Use “code”', exact: true }).click();
 		await dialog.getByText('C:\\code', { exact: true }).waitFor();
-		await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+		await saveFolderSettings(dialog);
 		await dialog.waitFor({ state: 'hidden' });
 		const saved = fixtures.requests.filter((request) => request.method === 'PUT');
 		assert.deepEqual(saved[0].body, {
