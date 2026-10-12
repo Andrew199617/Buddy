@@ -116,43 +116,70 @@
 		(codeInterpreterEnabled && $config?.code?.interpreter_engine !== 'jupyter');
 	$: showOverviewTab = hasMessages;
 
-	// The chat folder's project folder, loaded when the panel opens. Hidden without plans.
+	// The chat folder's project folder, for the Project tab. Hidden without plans.
 	let folderProject: FolderProject | null = null;
 	let folderProjectFor: string | null = null;
+	// While it loads, a selected Project tab stays selected instead of falling back.
+	let folderProjectLoading = folderId !== null;
+	let folderProjectRequest = 0;
 
 	async function loadFolderProject(id: string | null) {
-		if (id === folderProjectFor) return;
-		folderProjectFor = id;
-		folderProject = null;
-		if (!id) return;
+		const request = ++folderProjectRequest;
+		if (id !== folderProjectFor) {
+			// Another chat folder: show nothing until its project folder arrives.
+			folderProjectFor = id;
+			folderProject = null;
+		}
+		if (!id) {
+			folderProjectLoading = false;
+			return;
+		}
+		folderProjectLoading = true;
 		try {
 			const loaded = await getFolderProject(localStorage.token, id);
-			if (folderProjectFor !== id) return;
+			if (request !== folderProjectRequest) return;
+			folderProject = null;
 			if (loaded?.has_plans) folderProject = loaded;
 		} catch {
-			// Not allowed to use computers, or the folder is gone: no Project tab.
+			// Keeps what is shown; opening the panel again retries.
+		} finally {
+			if (request === folderProjectRequest) folderProjectLoading = false;
 		}
 	}
 
 	function reloadFolderProject() {
-		folderProjectFor = null;
 		void loadFolderProject(folderId);
 	}
 
-	$: if ($showControls) void loadFolderProject(folderId);
+	// Loads for each chat folder, and again each time the panel opens, so a plan
+	// added or a folder changed elsewhere shows up.
+	function refreshFolderProject(id: string | null, panelOpen: boolean) {
+		if (id !== folderProjectFor || panelOpen) void loadFolderProject(id);
+	}
+
+	$: refreshFolderProject(folderId, $showControls);
 	$: showProjectTab = folderProject !== null;
 
 	// Tab fallback: if active tab becomes hidden, switch to next available
 	$: if (!showOverviewTab && activeTab === 'overview') activeTab = 'controls';
 	$: if (!showFilesTab && activeTab === 'files') activeTab = 'controls';
-	$: if (!showProjectTab && activeTab === 'project') activeTab = 'controls';
+	$: if (!showProjectTab && !folderProjectLoading && activeTab === 'project') {
+		activeTab = 'controls';
+	}
 	$: if (!showControlsTab && activeTab === 'controls') {
 		if (showFilesTab) activeTab = 'files';
+		else if (showProjectTab) activeTab = 'project';
 		else if (showOverviewTab) activeTab = 'overview';
 	}
 
 	// Auto-close if there are no visible tabs
-	$: if (!showControlsTab && !showFilesTab && !showOverviewTab) {
+	$: if (
+		!showControlsTab &&
+		!showFilesTab &&
+		!showOverviewTab &&
+		!showProjectTab &&
+		!folderProjectLoading
+	) {
 		showControls.set(false);
 	}
 
