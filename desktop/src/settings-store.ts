@@ -9,10 +9,19 @@ export type DesktopSettings = {
 	folders: string[];
 	allowEdits: boolean;
 	allowCommands: boolean;
+	// Lets Buddy list folder names here and suggest folders Claude Code and Codex worked in.
+	allowFolderBrowsing: boolean;
 };
 
 export function defaultSettings(): DesktopSettings {
-	return { serverUrl: null, machine: null, folders: [], allowEdits: false, allowCommands: false };
+	return {
+		serverUrl: null,
+		machine: null,
+		folders: [],
+		allowEdits: false,
+		allowCommands: false,
+		allowFolderBrowsing: false
+	};
 }
 
 function readMachine(value: unknown): DesktopSettings['machine'] {
@@ -44,7 +53,8 @@ export function parseSettings(text: string): DesktopSettings {
 		machine: readMachine(saved.machine),
 		folders: readFolders(saved.folders),
 		allowEdits: saved.allowEdits === true,
-		allowCommands: saved.allowCommands === true
+		allowCommands: saved.allowCommands === true,
+		allowFolderBrowsing: saved.allowFolderBrowsing === true
 	};
 }
 

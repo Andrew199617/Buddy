@@ -31,6 +31,7 @@ export type RunnerSettings = {
 	folders: string[];
 	allowEdits: boolean;
 	allowCommands: boolean;
+	allowFolderBrowsing: boolean;
 };
 
 export type SpawnRunner = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
@@ -73,6 +74,7 @@ export function runnerArguments(launch: RunnerLaunch, settings: RunnerSettings, 
 	for (const folder of settings.folders) args.push('--root', folder);
 	if (settings.allowEdits) args.push('--write');
 	if (settings.allowCommands) args.push('--allow-host-execution');
+	if (settings.allowFolderBrowsing) args.push('--browse-folders');
 	return args;
 }
 
@@ -110,6 +112,15 @@ export class RunnerSupervisor extends EventEmitter {
 		this.settings = settings;
 		this.failures = 0;
 		this.spawnChild();
+	}
+
+	/**
+	 * Turns folder browsing on or off in the running Runner, without restarting
+	 * it, so no Claude or Codex turn stops. A restart later keeps the choice.
+	 */
+	setFolderBrowsing(allowed: boolean): void {
+		if (this.settings) this.settings = { ...this.settings, allowFolderBrowsing: allowed };
+		this.child?.stdin?.write(`${JSON.stringify({ command: 'folder_browsing', allowed })}\n`);
 	}
 
 	/** Asks the Runner to stop its commands and say goodbye to Buddy, then waits for it. */
