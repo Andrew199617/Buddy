@@ -21,7 +21,28 @@
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 
 	export let selectedItems = [];
+	// Screens that show this on a phone of its own can ask for 44px tap targets there.
+	export let phoneTouchTargets = false;
 	const i18n = getContext('i18n');
+
+	const PHONE_TOUCH_TARGET = 'max-md:min-h-11 max-md:min-w-11 max-md:text-sm';
+
+	function touchTarget(wanted: boolean): string {
+		if (!wanted) return '';
+		return PHONE_TOUCH_TARGET;
+	}
+
+	// The remove button grows from 16px to the full target on phones.
+	function removeButtonSize(wanted: boolean): string {
+		if (!wanted) return 'size-4';
+		return 'size-4 max-md:size-11';
+	}
+
+	// Phones have the width for the whole name once the target is taller.
+	function fileItemWidth(wanted: boolean): string {
+		if (!wanted) return 'max-w-56';
+		return 'max-w-56 max-md:max-w-full';
+	}
 
 	let loaded = false;
 
@@ -198,7 +219,9 @@
 							}}
 						>
 							<div
-								class="flex min-w-0 items-center bg-transparent text-xs text-gray-500 outline-hidden hover:underline dark:text-gray-400"
+								class="flex min-w-0 items-center bg-transparent text-xs text-gray-500 outline-hidden hover:underline dark:text-gray-400 {touchTarget(
+									phoneTouchTargets
+								)}"
 							>
 								<span class="truncate">{$i18n.t('Select Knowledge')}</span>
 							</div>
@@ -207,7 +230,9 @@
 
 					{#if $user?.role === 'admin' || $user?.permissions?.chat?.file_upload}
 						<button
-							class="self-center bg-transparent text-xs text-gray-500 hover:underline dark:text-gray-400"
+							class="self-center bg-transparent text-xs text-gray-500 hover:underline dark:text-gray-400 {touchTarget(
+								phoneTouchTargets
+							)}"
 							type="button"
 							aria-label={$i18n.t('Upload Files')}
 							on:click={() => {
@@ -228,11 +253,13 @@
 				{#each selectedItems as file, fileIdx}
 					<Tooltip content={file.description || file.name || file.id}>
 						<div
-							class="flex max-w-56 items-center gap-1.5 py-0.5 pr-2 text-xs text-gray-700 dark:text-gray-200"
+							class="flex {fileItemWidth(
+								phoneTouchTargets
+							)} items-center gap-1.5 py-0.5 pr-2 text-xs text-gray-700 dark:text-gray-200"
 						>
 							<button
 								type="button"
-								class="flex min-w-0 items-center gap-1.5"
+								class="flex min-w-0 items-center gap-1.5 {touchTarget(phoneTouchTargets)}"
 								aria-label={$i18n.t('Edit')}
 								on:click={() => {
 									selectedItemIdx = fileIdx;
@@ -268,7 +295,9 @@
 
 							<button
 								type="button"
-								class="flex size-4 shrink-0 items-center justify-center text-gray-400 dark:text-gray-500"
+								class="flex {removeButtonSize(
+									phoneTouchTargets
+								)} shrink-0 items-center justify-center text-gray-400 dark:text-gray-500"
 								aria-label={$i18n.t('Remove File')}
 								on:click={() => {
 									selectedItems = selectedItems.filter((_, idx) => idx !== fileIdx);
@@ -282,7 +311,9 @@
 
 				<button
 					type="button"
-					class="py-0.5 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+					class="py-0.5 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 {touchTarget(
+						phoneTouchTargets
+					)}"
 					on:click={() => {
 						selectedItems = [];
 					}}

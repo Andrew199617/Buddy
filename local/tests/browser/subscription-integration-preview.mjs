@@ -3112,8 +3112,17 @@ async function folderDialogCase(browser, profile) {
 		if (profile.mobile) {
 			// Phones open each row on its own screen; Back and Escape return to the folder.
 			await knowledgeRow.click();
-			await dialog.getByText('Select Knowledge', { exact: true }).waitFor();
+			const selectKnowledge = dialog.getByText('Select Knowledge', { exact: true });
+			await selectKnowledge.waitFor();
 			assert.equal(await activeElementId(page), 'folder-form-website-back', 'Back is focused');
+			// The Knowledge controls are full touch targets on their own screen.
+			const selectBox = await selectKnowledge.locator('..').boundingBox();
+			assert.ok(selectBox && selectBox.height >= 44, 'Select Knowledge is a full touch target');
+			const upload = dialog.getByRole('button', { name: 'Upload Files', exact: true });
+			if (await upload.isVisible()) {
+				const uploadBox = await upload.boundingBox();
+				assert.ok(uploadBox && uploadBox.height >= 44, 'Upload is a full touch target');
+			}
 			await back.click();
 			assert.equal(await activeElementId(page), 'folder-form-website-row-knowledge');
 			await projectRow.click();

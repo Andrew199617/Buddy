@@ -690,7 +690,7 @@
 						hidden={!partShown('knowledge', edit, revealed) ||
 							!panelShown($mobile, screen, 'knowledge', knowledgeOpen)}
 					>
-						<Knowledge bind:selectedItems={data.files}>
+						<Knowledge bind:selectedItems={data.files} phoneTouchTargets>
 							<span slot="label" class="sr-only">{$i18n.t('Knowledge')}</span>
 						</Knowledge>
 					</div>
