@@ -1371,6 +1371,14 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(again['saved'])
         self.assertEqual(again['cli_paths']['claude'], '')
 
+    async def test_the_plan_form_cant_change_paths_a_computer_now_keeps_itself(self):
+        await self.service.save_computer_settings(OWNER, 'runner-a', REVISION_A, '', {})
+        with self.assertRaisesRegex(self.service.SubscriptionError, 'its own start folder'):
+            await self.service.save_settings(OWNER, 'claude', {'cli_path': ''}, 'runner-a', REVISION_A)
+        # Other settings still save.
+        saved = await self.service.save_settings(OWNER, 'claude', {'access': 'read'}, 'runner-a', REVISION_A)
+        self.assertEqual(saved.access, 'read')
+
     async def test_saving_computer_settings_needs_the_revision_the_page_showed(self):
         await self.assert_conflict(
             self.service.save_computer_settings(OWNER, 'runner-b', REVISION_A, '', {})
