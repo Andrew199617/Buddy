@@ -95,6 +95,28 @@ class BindingTests(RunTargetTestCase):
                 row = await self.bind(request, chat_id)
                 self.assertEqual((row.kind, row.access, row.source, row.note), ('detached', 'chat', 'refused', note))
 
+    async def test_a_copy_runs_where_its_source_runs_or_would(self):
+        newer = 10**12
+        await self.bind(self.computer())
+        self.chats.add('fork-1', OWNER, created_at=newer)
+        copied = await self.service.copy_chat_target(OWNER_USER, 'chat-1', 'fork-1')
+        self.assertEqual((copied.machine_id, copied.source), ('runner-b', 'copy'))
+        # A copy of a chat from before targets binds where that chat's next turn would.
+        self.chats.add('chat-old', OWNER, models=['claude-code.fixture-model'])
+        self.chats.add('fork-2', OWNER, created_at=newer)
+        copied = await self.service.copy_chat_target(OWNER_USER, 'chat-old', 'fork-2')
+        self.assertEqual((copied.machine_id, copied.folder_mode, copied.access), ('runner-a', 'auto', 'full'))
+        # A copy of a newer chat that has no target yet waits for its own first turn, like its source.
+        self.chats.add('chat-new', OWNER, created_at=newer)
+        self.chats.add('fork-3', OWNER, created_at=newer)
+        self.assertIsNone(await self.service.copy_chat_target(OWNER_USER, 'chat-new', 'fork-3'))
+        # Nothing comes from someone else's chat.
+        self.chats.add('theirs', MEMBER)
+        self.chats.add('fork-4', OWNER, created_at=newer)
+        self.assertIsNone(await self.service.copy_chat_target(OWNER_USER, 'theirs', 'fork-4'))
+        self.assertNotIn('fork-3', self.targets.rows)
+        self.assertNotIn('fork-4', self.targets.rows)
+
     async def test_only_the_owner_of_a_saved_chat_binds_it(self):
         self.assertIsNone(await self.bind(self.computer(), user=MEMBER_USER))
         self.assertIsNone(await self.bind(self.computer(), chat_id='temporary:session-1'))
