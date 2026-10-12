@@ -25,6 +25,9 @@
 
 	let open = false;
 	let container: HTMLElement;
+	// Set while a press inside is under way: Safari doesn't focus a clicked button, so
+	// focus leaving then doesn't mean the person left the picker.
+	let pressInside = false;
 
 	$: current = options.find((option) => option.value === value) ?? null;
 	$: listShown = stacked || open;
@@ -76,10 +79,34 @@
 	}
 
 	function onFocusOut(event: FocusEvent) {
-		if (stacked || !open) return;
+		if (stacked || !open || pressInside) return;
 		const next = event.relatedTarget as Node | null;
 		if (next && container.contains(next)) return;
 		open = false;
+	}
+
+	function onPressStart(event: PointerEvent) {
+		if (container?.contains(event.target as Node)) {
+			pressInside = true;
+			return;
+		}
+		// A press anywhere else closes the list.
+		if (!stacked) open = false;
+	}
+
+	function onPressEnd() {
+		pressInside = false;
+	}
+
+	async function closeOnEscape(event: KeyboardEvent) {
+		if (stacked || !open || event.key !== 'Escape') return;
+		if (!container?.contains(document.activeElement)) return;
+		// Only the list closes, not the dialog around it.
+		event.stopPropagation();
+		event.preventDefault();
+		open = false;
+		await tick();
+		document.getElementById(`${id}-trigger`)?.focus();
 	}
 
 	function tileClass(option: ChoiceOption): string {
@@ -111,6 +138,12 @@
 		return classes.join(' ');
 	}
 </script>
+
+<svelte:window
+	on:keydown|capture={closeOnEscape}
+	on:pointerdown|capture={onPressStart}
+	on:pointerup|capture={onPressEnd}
+/>
 
 <div bind:this={container} class="flex flex-col gap-1.5" on:focusout={onFocusOut}>
 	<span id="{id}-label" class="text-xs font-medium text-gray-800 dark:text-gray-100">{label}</span>
@@ -144,7 +177,9 @@
 				</span>
 				<span id="{id}-current" class="flex min-w-0 flex-1 flex-col">
 					<span class="text-sm font-medium text-gray-900 dark:text-gray-100">{current.name}</span>
-					<span class="text-xs {descriptionClass(current)}">{current.description}</span>
+					<span class="text-xs [overflow-wrap:anywhere] {descriptionClass(current)}"
+						>{current.description}</span
+					>
 				</span>
 			{:else}
 				<span id="{id}-current" class="min-w-0 flex-1 text-sm text-gray-600 dark:text-gray-400">
@@ -203,7 +238,9 @@
 					</span>
 					<span class="flex min-w-0 flex-1 flex-col">
 						<span class="text-sm font-medium text-gray-900 dark:text-gray-100">{option.name}</span>
-						<span class="text-xs {descriptionClass(option)}">{option.description}</span>
+						<span class="text-xs [overflow-wrap:anywhere] {descriptionClass(option)}"
+							>{option.description}</span
+						>
 					</span>
 					{#if option.value === value}
 						<svg

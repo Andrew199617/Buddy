@@ -3133,6 +3133,16 @@ async function folderDialogCase(browser, profile) {
 			await captureScreenshot(page, profile.name + '-folder-dialog-main');
 		} else {
 			assert.equal(await projectRow.getAttribute('aria-expanded'), 'false');
+			// Escape in an open list closes just the list.
+			await projectRow.click();
+			const runOn = dialog.locator('#project-run-on-website-trigger');
+			await runOn.click();
+			await dialog.locator('#project-run-on-website-list').waitFor();
+			await page.keyboard.press('Escape');
+			await dialog.locator('#project-run-on-website-list').waitFor({ state: 'detached' });
+			assert.equal(await activeElementId(page), 'project-run-on-website-trigger');
+			assert.equal(await dialog.isVisible(), true, 'Escape closed the list, not the dialog');
+			await projectRow.click();
 			await knowledgeRow.click();
 			await dialog.getByText('Select Knowledge', { exact: true }).waitFor();
 			await projectRow.click();
