@@ -181,7 +181,8 @@
 
 	async function planRefused(plan: FolderPlan, access: FileAccess, reason: string) {
 		const message = refusalMessage(plan, access, reason);
-		if (destroyed) {
+		// Closed, or the reload found the section has nothing to show (no access, folder gone).
+		if (destroyed || hidden || !project) {
 			toast.error(message);
 			return;
 		}

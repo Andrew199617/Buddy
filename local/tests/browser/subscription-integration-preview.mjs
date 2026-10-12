@@ -432,6 +432,8 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	let holdPlanConfig = false;
 	let heldPlanConfig = null;
 	let refusePlanConfig = '';
+	// Set when an administrator stops this person using computers.
+	let machinesRevoked = false;
 	let turnOffAfterPlanConfig = '';
 	const projectGrant = {
 		id: 'grant-code',
@@ -616,6 +618,10 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			};
 		} else if (path === '/api/v1/subscriptions/folders/website/project') {
 			requests.push({ method, path, body: request.postDataJSON() });
+			if (machinesRevoked) {
+				await route.fulfill({ status: 403, json: { detail: 'Synthetic machines not allowed' } });
+				return true;
+			}
 			if (method === 'GET' && failProjectRead) {
 				failProjectRead = false;
 				await route.fulfill({ status: 503, json: { detail: 'Synthetic project read failure' } });
@@ -641,6 +647,10 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		) {
 			const body = request.postDataJSON();
 			requests.push({ method, path, body });
+			if (machinesRevoked) {
+				await route.fulfill({ status: 403, json: { detail: 'Synthetic machines not allowed' } });
+				return true;
+			}
 			if (holdPlanConfig) {
 				holdPlanConfig = false;
 				heldPlanConfig = { route, providerId: path.split('/')[4], body };
@@ -951,6 +961,9 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			const reply = savePlanConfig(providerId, body);
 			if (typeof reply.status === 'number') await route.fulfill(reply);
 			else await route.fulfill({ status: 200, json: reply });
+		},
+		revokeMachines() {
+			machinesRevoked = true;
 		},
 		refuseNextPlanConfig(detail) {
 			refusePlanConfig = detail;
@@ -3376,6 +3389,31 @@ async function folderAllowClosedCase(browser, profile) {
 	);
 }
 
+async function folderAllowRevokedCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'folder-allow-revoked',
+		'folder-allow',
+		async ({ page }, fixtures) => {
+			const dialog = await openFolderSettings(page);
+			const request = dialog.getByRole('group', {
+				name: 'Let a plan work with files',
+				exact: true
+			});
+			await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
+			// An administrator stops this person using computers meanwhile.
+			fixtures.revokeMachines();
+			await request.getByRole('button', { name: 'Allow', exact: true }).click();
+			// The section goes, so the reason comes as a toast.
+			await page
+				.getByText('Claude was not given access: Synthetic machines not allowed', { exact: true })
+				.waitFor();
+			await page.locator('#project-folder-heading').waitFor({ state: 'detached' });
+		}
+	);
+}
+
 async function folderAllowHomelessCase(browser, profile) {
 	await runCase(
 		browser,
@@ -3480,6 +3518,7 @@ try {
 		await folderAllowHiddenRefusalCase(browser, profile);
 		await folderAllowTurnedOffCase(browser, profile);
 		await folderAllowClosedCase(browser, profile);
+		await folderAllowRevokedCase(browser, profile);
 		await folderAllowHomelessCase(browser, profile);
 		await folderNoPlansCase(browser, profile);
 		await cancellationCase(browser, profile, 'x');
