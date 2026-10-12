@@ -2,7 +2,7 @@
 // long as they like. It runs Detached, and compacts its older messages once it grows past a
 // threshold. Its id is kept in the person's settings, so every device opens the same chat.
 
-import { createNewChat, getChatById } from '$lib/apis/chats';
+import { chatExists, createNewChat } from '$lib/apis/chats';
 import { updateUserSettings } from '$lib/apis/users';
 
 // Older messages are summarised once the chat's context grows past this many tokens.
@@ -16,13 +16,13 @@ type MainChatDependencies = {
 	onSaved: (mainChatId: string) => void;
 };
 
-/** The main chat's id: the saved one while it still exists, otherwise a new one, saved for next time. */
+/**
+ * The main chat's id: the saved one while it still exists, otherwise a new one, saved for next
+ * time. A failed check throws instead, so a brief outage never replaces the saved main chat.
+ */
 export async function ensureMainChat(dependencies: MainChatDependencies): Promise<string> {
 	const { token, mainChatId, modelIds, title, onSaved } = dependencies;
-	if (mainChatId) {
-		const existing = await getChatById(token, mainChatId).catch(() => null);
-		if (existing) return mainChatId;
-	}
+	if (mainChatId && (await chatExists(token, mainChatId))) return mainChatId;
 	const created = await createNewChat(
 		token,
 		{
