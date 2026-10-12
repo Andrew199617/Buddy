@@ -19,6 +19,7 @@
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import EyeSlash from '$lib/components/icons/EyeSlash.svelte';
 	import MessageInput from './MessageInput.svelte';
+	import type { ChatAgent } from './ProjectAgents/chat-agent';
 	import FolderPlaceholder from './Placeholder/FolderPlaceholder.svelte';
 	import FolderTitle from './Placeholder/FolderTitle.svelte';
 
@@ -42,6 +43,10 @@
 	export let selectedSkillIds = [];
 	export let selectedFilterIds = [];
 	export let pendingOAuthTools = [];
+
+	export let agentFolderId: string | null = null;
+	export let selectedAgent: ChatAgent | null = null;
+	export let onAgentChange: (agent: ChatAgent | null) => void = () => {};
 
 	export let showCommands = false;
 
@@ -161,6 +166,9 @@
 				bind:selectedToolIds
 				bind:selectedSkillIds
 				bind:selectedFilterIds
+				{agentFolderId}
+				{selectedAgent}
+				{onAgentChange}
 				bind:imageGenerationEnabled
 				bind:codeInterpreterEnabled
 				bind:webSearchEnabled
