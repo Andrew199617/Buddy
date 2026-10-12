@@ -284,6 +284,7 @@
 			{/if}
 			<Dropdown
 				bind:show={showComputer}
+				side="top"
 				align="start"
 				preserveComposerFocus
 				composerMenu="run-target"
@@ -321,6 +322,7 @@
 			{#if selectedComputer}
 				<Dropdown
 					bind:show={showFolder}
+					side="top"
 					align="start"
 					preserveComposerFocus
 					composerMenu="run-target"
@@ -359,6 +361,7 @@
 			{/if}
 			<Dropdown
 				bind:show={showAccess}
+				side="top"
 				align="start"
 				preserveComposerFocus
 				composerMenu="run-target"
@@ -408,6 +411,7 @@
 		{:else}
 			<Dropdown
 				bind:show={showInfo}
+				side="top"
 				align="start"
 				preserveComposerFocus
 				composerMenu="run-target"
