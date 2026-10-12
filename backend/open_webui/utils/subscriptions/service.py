@@ -1957,7 +1957,7 @@ async def _sign_in_settings(
     """
     if machine_id is None:
         await _check_expected_machine(ref.owner_id, settings, expected_machine_id, expected_machine_revision, mutation)
-        return settings
+        return await _settings_for(ref, settings, settings.machine_id)
     if not machine_id:
         raise SubscriptionError(NO_MACHINE_MESSAGE)
     on_computer = await _settings_for(ref, settings, machine_id)
@@ -1972,15 +1972,43 @@ async def _login_computer_name(ref: ProviderRef, machine_id: str) -> str:
         return 'another computer'
 
 
+async def _computer_still_usable(owner_id: str, machine_id: str) -> bool:
+    if machine_id == LOCAL_MACHINE_ID:
+        return await _may_use_server_machine(owner_id)
+    return await _machine_revision(owner_id, machine_id) is not None
+
+
 async def _require_login_on(ref: ProviderRef, machine_id: str) -> None:
     """A code or cancel for one computer never reaches a sign-in still waiting on another."""
     running_on = _login_computers.get(ref)
     if running_on is None or running_on == machine_id:
         return
-    if (await get_provider(ref)).login_state().get('state') != 'waiting':
+    provider = await get_provider(ref)
+    if provider.login_state().get('state') != 'waiting':
+        return
+    if not await _computer_still_usable(ref.owner_id, running_on):
+        # Its computer was removed or turned off, so nothing can finish it.
+        await provider.cancel_login()
+        _login_computers.pop(ref, None)
         return
     name = await _login_computer_name(ref, running_on)
     raise HTTPException(status_code=409, detail=f'Finish signing in on {name} first.')
+
+
+async def _stop_for_sign_in(ref: ProviderRef, settings: ProviderSettings, machine_id: str) -> None:
+    """Before signing in or out on a computer, stop the work the change affects.
+
+    On the plan's own computer that is the whole plan, as before. On another
+    computer it is only that computer's work. A sign-in still waiting
+    elsewhere is cancelled too: a provider signs in on one computer at a time.
+    """
+    if machine_id == settings.machine_id:
+        await _quiesce_provider(ref)
+        return
+    await _quiesce_computer(ref, machine_id)
+    if ref in _login_computers:
+        await (await get_provider(ref)).cancel_login()
+        _login_computers.pop(ref, None)
 
 
 # --- Where chats run -----------------------------------------------------------------
@@ -2217,7 +2245,7 @@ async def start_login(
         on_computer = await _sign_in_settings(
             ref, settings, machine_id, expected_machine_id, expected_machine_revision, mutation=True
         )
-        await _quiesce_provider(ref)
+        await _stop_for_sign_in(ref, settings, on_computer.machine_id)
         machine = await _tracked(ref, on_computer)
         login = await (await get_provider(ref)).start_login(on_computer, machine, method)
         _login_computers[ref] = on_computer.machine_id
@@ -2283,7 +2311,12 @@ async def cancel_login(
             ref, settings, machine_id, expected_machine_id, expected_machine_revision, mutation=True
         )
         await _require_login_on(ref, on_computer.machine_id)
-        await _quiesce_provider(ref)
+        if on_computer.machine_id == settings.machine_id:
+            await _quiesce_provider(ref)
+        else:
+            # Only the sign-in stops; chats on that computer keep running.
+            await (await get_provider(ref)).cancel_login()
+            _login_computers.pop(ref, None)
         return {'state': 'idle'}
 
 
@@ -2298,15 +2331,17 @@ async def logout(
         on_computer = await _sign_in_settings(
             ref, settings, machine_id, expected_machine_id, expected_machine_revision, mutation=True
         )
-        await _quiesce_provider(ref)
         credential_mode = await _load_credential_mode(ref)
         if credential_mode != CREDENTIAL_MACHINE:
-            # The token or key is Buddy's to forget. The computer's own CLI
-            # sign-in is not touched.
+            # The token or key is Buddy's to forget, and every computer uses
+            # it, so the whole plan stops. The computer's own CLI sign-in is
+            # not touched.
+            await _quiesce_provider(ref)
             await SubscriptionCredentials.delete(owner_id, provider_id, credential_mode)
             await Config.upsert({await _credential_mode_key(ref): CREDENTIAL_MACHINE})
             invalidate(ref)
             return
+        await _stop_for_sign_in(ref, settings, on_computer.machine_id)
         machine = await _tracked(ref, on_computer)
         try:
             await (await get_provider(ref)).logout(on_computer, machine)

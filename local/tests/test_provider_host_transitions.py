@@ -1255,6 +1255,45 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         await self.service.logout(OWNER, 'claude', expected_machine_revision=REVISION_B, machine_id='runner-b')
         self.assertIn(('logout', 'runner-b', 'runner-b'), self.providers['claude'].calls)
 
+    async def test_signing_in_or_out_on_another_computer_leaves_the_plans_own_computer_running(self):
+        claude = self.service.ProviderRef(OWNER, 'claude')
+        on_plan_computer = self.service._tracking_machine(claude, self.machines['runner-a'])
+        kept = await on_plan_computer.start_process(['fixture-turn'], 'fixture-cwd')
+        generation = self.service._provider_generations.get(claude, 0)
+        await self.service.start_login(OWNER, 'claude', 'browser', expected_machine_revision=REVISION_B, machine_id='runner-b')
+        await self.service.cancel_login(OWNER, 'claude', expected_machine_revision=REVISION_B, machine_id='runner-b')
+        await self.service.logout(OWNER, 'claude', expected_machine_revision=REVISION_B, machine_id='runner-b')
+        self.assertEqual(kept.kill_count, 0)
+        self.assertTrue(on_plan_computer.valid)
+        self.assertEqual(self.service._provider_generations.get(claude, 0), generation)
+        self.assertIn(('logout', 'runner-b', 'runner-b'), self.providers['claude'].calls)
+        # On the plan's own computer, signing out still stops the whole plan.
+        await self.service.logout(OWNER, 'claude', 'runner-a', REVISION_A)
+        self.assertGreaterEqual(kept.kill_count, 1)
+
+    async def test_a_sign_in_left_on_a_removed_computer_no_longer_blocks_codes(self):
+        claude = self.service.ProviderRef(OWNER, 'claude')
+        self.providers['claude'].login_state = lambda: {'state': 'waiting'}
+        self.service._login_computers[claude] = 'removed-pc'
+        finished = await self.service.submit_login_code(
+            OWNER, 'claude', 'fixture-code', expected_machine_revision=REVISION_A, machine_id='runner-a'
+        )
+        self.assertEqual(finished, {'state': 'success'})
+        self.assertNotIn(claude, self.service._login_computers)
+
+    async def test_signing_in_on_the_plans_computer_uses_its_saved_cli_path(self):
+        await self.service.save_computer_settings(OWNER, 'runner-a', REVISION_A, '', {'claude': 'C:\\tools\\claude.exe'})
+        observed = []
+        original = self.providers['claude'].start_login
+
+        async def record_settings(settings, machine, method):
+            observed.append(settings.cli_path)
+            return await original(settings, machine, method)
+
+        self.providers['claude'].start_login = record_settings
+        await self.service.start_login(OWNER, 'claude', 'browser', 'runner-a', REVISION_A)
+        self.assertEqual(observed, ['C:\\tools\\claude.exe'])
+
     async def test_signing_in_on_a_computer_needs_one_of_yours_at_its_current_revision(self):
         for machine_id, revision in (('runner-b', REVISION_A), ('missing-pc', REVISION_B), ('runner-b', None)):
             with self.subTest(machine_id=machine_id, revision=revision):
