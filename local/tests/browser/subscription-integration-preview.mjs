@@ -3015,9 +3015,7 @@ async function folderChipCase(browser, profile) {
 
 async function folderEditCase(browser, profile) {
 	await runCase(browser, profile, 'folder-edit', 'folder-edit', async ({ page }, fixtures) => {
-		await page.locator('button[aria-label="Folder options"]').click();
-		await page.getByRole('button', { name: 'Edit', exact: true }).click();
-		const dialog = page.locator('.modal').filter({ hasText: 'Project folder' });
+		const dialog = await openFolderSettings(page);
 		await dialog.getByRole('button', { name: 'Change', exact: true }).click();
 		const pathInput = dialog.getByLabel('Folder path', { exact: true });
 		await pathInput.fill('C:\\code\\docs');
@@ -3045,11 +3043,46 @@ async function folderEditCase(browser, profile) {
 	});
 }
 
+async function folderDialogCase(browser, profile) {
+	await runCase(browser, profile, 'folder-dialog', 'folder-edit', async ({ page }) => {
+		await page.locator('button[aria-label="Folder options"]').click();
+		await page.getByRole('button', { name: 'Edit', exact: true }).click();
+		const dialog = page.locator('.modal').filter({ hasText: 'Project folder' });
+		await dialog.getByRole('heading', { name: 'Edit folder', exact: true }).waitFor();
+		assert.equal(
+			await dialog.locator('#folder-name').inputValue(),
+			'Website',
+			'The name is ready to edit'
+		);
+
+		// Both rows start closed; the Project folder row sums up the folder's defaults.
+		const projectRow = dialog.getByRole('button', { name: /^Project folder/ });
+		await waitUntil(
+			async () =>
+				(await projectRow.textContent()).includes('site · Automatic · Plan default (Full access)'),
+			'The row sums up the project folder'
+		);
+		assert.equal(await projectRow.getAttribute('aria-expanded'), 'false');
+		assert.equal(await dialog.getByText('Run on', { exact: true }).isVisible(), false);
+		await captureScreenshot(page, profile.name + '-folder-dialog');
+
+		const knowledgeRow = dialog.getByRole('button', { name: /^Knowledge/ });
+		assert.match(await knowledgeRow.textContent(), /None yet/);
+		await knowledgeRow.click();
+		await dialog.getByText('Select Knowledge', { exact: true }).waitFor();
+		await projectRow.click();
+		await dialog.getByText('Run on', { exact: true }).waitFor();
+	});
+}
+
+/** Opens the folder's Edit folder dialog with its Project folder row open. */
 async function openFolderSettings(page) {
 	await page.locator('button[aria-label="Folder options"]').click();
 	await page.getByRole('button', { name: 'Edit', exact: true }).click();
 	const dialog = page.locator('.modal').filter({ hasText: 'Project folder' });
 	await dialog.waitFor();
+	const projectRow = dialog.getByRole('button', { name: /^Project folder/ });
+	if ((await projectRow.getAttribute('aria-expanded')) !== 'true') await projectRow.click();
 	return dialog;
 }
 
@@ -3251,9 +3284,7 @@ async function runTargetBoundCase(browser, profile) {
 
 async function folderBrowseCase(browser, profile) {
 	await runCase(browser, profile, 'folder-browse', 'folder-browse', async ({ page }, fixtures) => {
-		await page.locator('button[aria-label="Folder options"]').click();
-		await page.getByRole('button', { name: 'Edit', exact: true }).click();
-		const dialog = page.locator('.modal').filter({ hasText: 'Project folder' });
+		const dialog = await openFolderSettings(page);
 
 		// A folder Claude Code and Codex worked in, suggested by the computer.
 		await dialog.getByRole('button', { name: 'Change', exact: true }).click();
@@ -3300,6 +3331,7 @@ try {
 		await projectTabCase(browser, profile);
 		await folderChipCase(browser, profile);
 		await folderEditCase(browser, profile);
+		await folderDialogCase(browser, profile);
 		await folderDefaultsCase(browser, profile);
 		await folderNoPlansCase(browser, profile);
 		await folderBrowseCase(browser, profile);

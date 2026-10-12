@@ -1,13 +1,13 @@
 <script lang="ts">
-	import { getContext, createEventDispatcher, onMount, tick } from 'svelte';
+	// Create Folder / Edit Folder: a name and background image, instructions,
+	// and two quiet rows that open in place: Knowledge and the Project folder.
+	import { getContext, tick } from 'svelte';
 
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import XMark from '../icons/XMark.svelte';
 
 	import { toast } from 'svelte-sonner';
-	import { page } from '$app/stores';
-	import { goto } from '$app/navigation';
 	import { user, config } from '$lib/stores';
 
 	import Textarea from '$lib/components/common/Textarea.svelte';
@@ -35,6 +35,16 @@
 
 	let loading = false;
 	let projectSection: ProjectFolderSection;
+	let knowledgeOpen = false;
+	let projectOpen = false;
+	let projectSummary = '';
+	let projectError = '';
+
+	$: canEditInstructions =
+		$user?.role === 'admin' || ($user?.permissions?.chat?.system_prompt ?? true);
+	$: knowledgeCount = (data?.files ?? []).length;
+	// A save the project folder refused shows its reason where the choice is made.
+	$: if (projectError) projectOpen = true;
 
 	const submitHandler = async () => {
 		loading = true;
@@ -73,17 +83,19 @@
 	};
 
 	const init = async () => {
+		knowledgeOpen = false;
+		projectOpen = false;
 		if (folderId) {
 			folder = await getFolderById(localStorage.token, folderId).catch((error) => {
 				toast.error(`${error}`);
 				return null;
 			});
 
-			name = folder.name;
-			meta = folder.meta || {
+			name = folder?.name ?? '';
+			meta = folder?.meta || {
 				background_image_url: null
 			};
-			data = folder.data || {
+			data = folder?.data || {
 				system_prompt: '',
 				files: []
 			};
@@ -100,6 +112,46 @@
 			input.select();
 		}
 	};
+
+	function chooseBackgroundImage() {
+		document.getElementById('folder-background-image-input')?.click();
+	}
+
+	function removeBackgroundImage() {
+		meta.background_image_url = null;
+	}
+
+	function readBackgroundImage(event: Event) {
+		const input = event.target as HTMLInputElement;
+		const file = input.files?.[0];
+		const accepted = ['image/gif', 'image/webp', 'image/jpeg', 'image/png'];
+		if (!file || !accepted.includes(file.type)) {
+			// Clear the input so the same file can be tried again.
+			input.value = '';
+			return;
+		}
+		const reader = new FileReader();
+		reader.onload = (loaded) => {
+			meta.background_image_url = `${loaded.target?.result}`;
+		};
+		reader.readAsDataURL(file);
+	}
+
+	function imageTileStyle(url: string | null): string {
+		if (!url) return '';
+		return `background-image: url(${url})`;
+	}
+
+	function imageTileLabel(url: string | null): string {
+		if (url) return $i18n.t('Change background image');
+		return $i18n.t('Add background image');
+	}
+
+	function knowledgeSummary(count: number): string {
+		if (count === 0) return $i18n.t('None yet');
+		if (count === 1) return $i18n.t('1 source');
+		return $i18n.t('{{count}} sources', { count });
+	}
 
 	$: if (show) {
 		init();
@@ -118,169 +170,261 @@
 </script>
 
 <Modal size="md" bind:show>
-	<div>
-		<div class=" flex justify-between dark:text-gray-300 px-4 pt-3 pb-1">
-			<div class=" text-sm self-center">
+	<div class="flex flex-col text-gray-900 dark:text-gray-100">
+		<div class="flex items-center justify-between gap-2 pt-5 pr-5 pb-1 pl-7">
+			<h2 class="text-[1.0625rem] font-semibold">
 				{#if edit}
-					{$i18n.t('Edit Folder')}
+					{$i18n.t('Edit folder')}
 				{:else}
-					{$i18n.t('Create Folder')}
+					{$i18n.t('New folder')}
 				{/if}
-			</div>
+			</h2>
 			<button
+				type="button"
 				aria-label={$i18n.t('Close')}
-				class="self-center rounded-lg p-1 text-gray-500 transition hover:bg-gray-50 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+				class="flex size-11 items-center justify-center rounded-xl text-gray-600 transition hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-850 md:size-10"
 				on:click={() => {
 					show = false;
 				}}
 			>
-				<XMark className={'size-4'} />
+				<XMark className={'size-[18px]'} />
 			</button>
 		</div>
 
-		<div class="flex flex-col md:flex-row w-full px-4 pb-4 md:space-x-4 dark:text-gray-200">
-			<div class=" flex flex-col w-full sm:flex-row sm:justify-center sm:space-x-6">
-				<form
-					class="flex flex-col w-full"
-					on:submit|preventDefault={() => {
-						submitHandler();
-					}}
-				>
-					<div class="flex flex-col w-full mt-1">
-						<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Folder Name')}</div>
+		<form
+			class="flex flex-col"
+			on:submit|preventDefault={() => {
+				submitHandler();
+			}}
+		>
+			<div class="flex flex-col gap-5 px-7 pt-3">
+				<input
+					id="folder-background-image-input"
+					type="file"
+					hidden
+					accept="image/*"
+					on:change={readBackgroundImage}
+				/>
 
-						<div class="flex-1">
+				<div class="flex flex-col gap-1.5">
+					<div class="flex items-center gap-3.5">
+						<button
+							type="button"
+							class="flex size-[52px] shrink-0 items-center justify-center overflow-hidden rounded-[14px] border border-dashed border-gray-300 bg-gray-50 bg-cover bg-center text-gray-600 transition hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-850 dark:text-gray-400"
+							style={imageTileStyle(meta?.background_image_url)}
+							aria-label={imageTileLabel(meta?.background_image_url)}
+							on:click={chooseBackgroundImage}
+						>
+							{#if !meta?.background_image_url}
+								<svg
+									aria-hidden="true"
+									class="size-5"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="1.8"
+									stroke-linecap="round"
+									stroke-linejoin="round"
+								>
+									<rect x="3" y="4" width="18" height="16" rx="3" />
+									<circle cx="9" cy="10" r="1.6" />
+									<path d="M21 16l-5-5-8 9" />
+								</svg>
+							{/if}
+						</button>
+						<label class="flex min-w-0 flex-1 flex-col gap-1">
+							<span class="text-xs text-gray-600 dark:text-gray-400">{$i18n.t('Name')}</span>
 							<input
 								id="folder-name"
-								class="w-full text-sm bg-transparent placeholder:text-gray-300 dark:placeholder:text-gray-700 outline-hidden"
+								class="w-full border-b-[1.5px] border-gray-200 bg-transparent pt-0.5 pb-2 text-xl font-medium outline-hidden placeholder:text-gray-400 focus:border-gray-900 dark:border-gray-800 dark:placeholder:text-gray-600 dark:focus:border-gray-100 md:text-[1.375rem]"
 								type="text"
 								bind:value={name}
-								placeholder={$i18n.t('Enter folder name')}
+								placeholder={$i18n.t('Folder name')}
 								autocomplete="off"
 							/>
-						</div>
+						</label>
 					</div>
-
-					<input
-						id="folder-background-image-input"
-						type="file"
-						hidden
-						accept="image/*"
-						on:change={(e) => {
-							const inputFiles = e.target.files;
-
-							let reader = new FileReader();
-							reader.onload = (event) => {
-								let originalImageUrl = `${event.target.result}`;
-								meta.background_image_url = originalImageUrl;
-							};
-
-							if (
-								inputFiles &&
-								inputFiles.length > 0 &&
-								['image/gif', 'image/webp', 'image/jpeg', 'image/png'].includes(
-									inputFiles[0]['type']
-								)
-							) {
-								reader.readAsDataURL(inputFiles[0]);
-							} else {
-								console.log(`Unsupported File Type '${inputFiles[0]['type']}'.`);
-
-								// clear the input
-								e.target.value = '';
-							}
-						}}
-					/>
-
-					<div class="flex justify-between w-full mt-1 items-center">
-						<div class="text-xs text-gray-500">{$i18n.t('Folder Background Image')}</div>
-
-						<div class="">
-							<button
-								aria-labelledby="chat-background-label background-image-url-state"
-								class="p-1 px-3 text-xs flex rounded-sm transition"
-								on:click={() => {
-									if (meta?.background_image_url !== null) {
-										meta.background_image_url = null;
-									} else {
-										const input = document.getElementById('folder-background-image-input');
-										if (input) {
-											input.click();
-										}
-									}
-								}}
-								type="button"
-							>
-								<span class="ml-2 self-center" id="background-image-url-state"
-									>{(meta?.background_image_url ?? null) === null
-										? $i18n.t('Upload')
-										: $i18n.t('Reset')}</span
-								>
-							</button>
-						</div>
-					</div>
-
-					<hr class=" border-gray-50 dark:border-gray-850/30 my-2.5 w-full" />
-
-					{#if $user?.role === 'admin' || ($user?.permissions.chat?.system_prompt ?? true)}
-						<div class="my-1">
-							<div class="mb-2 text-xs text-gray-500">{$i18n.t('System Prompt')}</div>
-							<div>
-								<Textarea
-									className=" text-sm w-full bg-transparent outline-hidden "
-									placeholder={$i18n.t(
-										'Write your model system prompt content here\ne.g.) You are Mario from Super Mario Bros, acting as an assistant.'
-									)}
-									maxSize={200}
-									bind:value={data.system_prompt}
-								/>
-							</div>
-						</div>
+					{#if meta?.background_image_url}
+						<button
+							type="button"
+							class="min-h-11 self-start rounded-lg px-2 text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-850 md:min-h-8"
+							on:click={removeBackgroundImage}
+						>
+							{$i18n.t('Remove background image')}
+						</button>
 					{/if}
+				</div>
 
-					<div class="my-2">
+				{#if canEditInstructions}
+					<div class="flex flex-col gap-2">
+						<span id="folder-instructions-label" class="text-sm font-medium">
+							{$i18n.t('Instructions')}
+						</span>
+						<Textarea
+							className="w-full rounded-[14px] border border-gray-200 bg-gray-50 px-3.5 py-3 text-base leading-relaxed outline-hidden placeholder:text-gray-400 dark:border-gray-800 dark:bg-gray-850 dark:placeholder:text-gray-600 md:text-sm"
+							ariaLabel={$i18n.t('Instructions')}
+							placeholder={$i18n.t(
+								'How should chats in this folder behave? For example: answer as a friendly code reviewer.'
+							)}
+							rows={3}
+							minSize={92}
+							maxSize={200}
+							bind:value={data.system_prompt}
+						/>
+					</div>
+				{/if}
+
+				<div class="flex flex-col border-t border-gray-100 dark:border-gray-850">
+					<button
+						type="button"
+						class="flex min-h-[60px] w-full items-center gap-3.5 border-b border-gray-100 py-3.5 text-left dark:border-gray-850"
+						aria-expanded={knowledgeOpen}
+						aria-controls="folder-knowledge-panel"
+						on:click={() => (knowledgeOpen = !knowledgeOpen)}
+					>
+						<span
+							class="flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-gray-100 text-gray-700 dark:bg-gray-850 dark:text-gray-300"
+						>
+							<svg
+								aria-hidden="true"
+								class="size-[18px]"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="1.8"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+							>
+								<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z" />
+								<path d="M4 21V5" />
+								<path d="M9 8h6" />
+							</svg>
+						</span>
+						<span class="flex min-w-0 flex-1 flex-col gap-0.5">
+							<span class="text-sm font-medium">{$i18n.t('Knowledge')}</span>
+							<span class="text-[0.8125rem] text-gray-600 dark:text-gray-400">
+								{knowledgeSummary(knowledgeCount)}
+							</span>
+						</span>
+						<svg
+							aria-hidden="true"
+							class="size-[18px] shrink-0 text-gray-500 transition {knowledgeOpen
+								? 'rotate-180'
+								: ''}"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						>
+							<path d="M6 9l6 6 6-6" />
+						</svg>
+					</button>
+					<div
+						id="folder-knowledge-panel"
+						class="border-b border-gray-100 pt-1 pb-4 pl-[50px] dark:border-gray-850"
+						hidden={!knowledgeOpen}
+					>
 						<Knowledge bind:selectedItems={data.files}>
-							<div slot="label">
-								<div class="flex w-full justify-between">
-									<div class=" text-xs text-gray-500">
-										{$i18n.t('Knowledge')}
-									</div>
-								</div>
-							</div>
+							<span slot="label" class="sr-only">{$i18n.t('Knowledge')}</span>
 						</Knowledge>
 					</div>
 
 					{#if edit && folderId}
-						<hr class=" border-gray-50 dark:border-gray-850/30 my-2.5 w-full" />
-						<h3 id="folder-project-heading-{folderId}" class="mb-2 text-xs text-gray-500">
-							{$i18n.t('Project folder')}
-						</h3>
-						<ProjectFolderSection
-							bind:this={projectSection}
-							{folderId}
-							labelledBy="folder-project-heading-{folderId}"
-						/>
-					{/if}
-
-					<div class="flex justify-end pt-3 text-sm font-normal gap-1.5">
 						<button
-							class="px-3.5 py-1.5 text-sm font-normal bg-black hover:bg-gray-950 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full flex flex-row space-x-1 items-center {loading
-								? ' cursor-not-allowed'
-								: ''}"
-							type="submit"
-							disabled={loading}
+							type="button"
+							class="flex min-h-[60px] w-full items-center gap-3.5 border-b border-gray-100 py-3.5 text-left dark:border-gray-850"
+							aria-expanded={projectOpen}
+							aria-controls="folder-project-panel-{folderId}"
+							on:click={() => (projectOpen = !projectOpen)}
 						>
-							{$i18n.t('Save')}
-
-							{#if loading}
-								<div class="ml-2 self-center">
-									<Spinner />
-								</div>
-							{/if}
+							<span
+								class="flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-gray-100 text-gray-700 dark:bg-gray-850 dark:text-gray-300"
+							>
+								<svg
+									aria-hidden="true"
+									class="size-[18px]"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="1.8"
+									stroke-linecap="round"
+									stroke-linejoin="round"
+								>
+									<path
+										d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+									/>
+									<path d="M9 12l2 2-2 2" />
+									<path d="M13 16h3" />
+								</svg>
+							</span>
+							<span class="flex min-w-0 flex-1 flex-col gap-0.5">
+								<span id="folder-project-heading-{folderId}" class="text-sm font-medium">
+									{$i18n.t('Project folder')}
+								</span>
+								<span class="truncate text-[0.8125rem] text-gray-600 dark:text-gray-400">
+									{projectSummary}
+								</span>
+							</span>
+							<svg
+								aria-hidden="true"
+								class="size-[18px] shrink-0 text-gray-500 transition {projectOpen
+									? 'rotate-180'
+									: ''}"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+							>
+								<path d="M6 9l6 6 6-6" />
+							</svg>
 						</button>
-					</div>
-				</form>
+						<!-- Kept mounted while closed, so the summary and an unsaved choice stay. -->
+						<div
+							id="folder-project-panel-{folderId}"
+							class="pt-1 pb-4 pl-[50px]"
+							hidden={!projectOpen}
+						>
+							<ProjectFolderSection
+								bind:this={projectSection}
+								{folderId}
+								labelledBy="folder-project-heading-{folderId}"
+								bind:summary={projectSummary}
+								bind:error={projectError}
+							/>
+						</div>
+					{/if}
+				</div>
 			</div>
-		</div>
+
+			<div class="flex justify-end gap-2 px-6 pt-5 pb-6">
+				<button
+					type="button"
+					class="h-11 rounded-full px-[18px] text-sm font-medium text-gray-700 transition hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-850"
+					on:click={() => {
+						show = false;
+					}}
+				>
+					{$i18n.t('Cancel')}
+				</button>
+				<button
+					class="flex h-11 items-center gap-2 rounded-full bg-gray-900 px-6 text-sm font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white"
+					type="submit"
+					disabled={loading}
+				>
+					{#if edit}
+						{$i18n.t('Save')}
+					{:else}
+						{$i18n.t('Create')}
+					{/if}
+					{#if loading}
+						<Spinner className="size-4" />
+					{/if}
+				</button>
+			</div>
+		</form>
 	</div>
 </Modal>
