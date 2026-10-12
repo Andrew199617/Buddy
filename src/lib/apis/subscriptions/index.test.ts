@@ -222,6 +222,30 @@ describe('per-user machines and sign-ins', () => {
 		expect(JSON.parse(options.body)).toEqual({ path: 'C:\\code\\site' });
 	});
 
+	it('lists a computer’s folders with the path in the query, never the URL path', async () => {
+		const { listMachineFolders, getSuggestedFolders } = await import('./index');
+		await listMachineFolders('fixture-token', 'pc / 1', {
+			path: 'C:\\code',
+			hidden: true,
+			prefix: 'si'
+		});
+		const { url, options } = request();
+		expect(options.method).toBe('GET');
+		expect(url.pathname).toBe('/api/v1/subscriptions/machines/pc%20%2F%201/folders');
+		expect(url.searchParams.get('path')).toBe('C:\\code');
+		expect(url.searchParams.get('hidden')).toBe('true');
+		expect(url.searchParams.get('prefix')).toBe('si');
+		fetchMock.mockClear();
+		await listMachineFolders('fixture-token', 'pc-1');
+		expect(request().url.searchParams.get('path')).toBe('');
+		expect(request().url.searchParams.get('hidden')).toBe('false');
+		fetchMock.mockClear();
+		await getSuggestedFolders('fixture-token', 'pc / 1');
+		expect(request().url.pathname).toBe(
+			'/api/v1/subscriptions/machines/pc%20%2F%201/folders/suggested'
+		);
+	});
+
 	it('lets an administrator remove anyone’s machine by its encoded ID', async () => {
 		const { deleteAnySubscriptionMachine } = await import('./index');
 		await deleteAnySubscriptionMachine('fixture-token', 'machine / A');

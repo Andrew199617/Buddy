@@ -487,3 +487,64 @@ export const checkMachineFolder = async (
 		}
 	);
 };
+
+// Browsing a computer's folders to choose where a chat works. Folder names
+// only; the server checks every name and builds each path itself.
+
+export type FolderEntry = {
+	name: string;
+	path: string;
+	hidden: boolean;
+	// A symlink or junction to another folder.
+	link: boolean;
+	// False for a folder that can't be a project folder, such as a whole drive.
+	selectable: boolean;
+};
+
+export type FolderRoot = {
+	name: string;
+	path: string;
+	kind: 'drive' | 'remote_drive' | 'removable' | 'place';
+};
+
+export type FolderListing = {
+	// '' for the drives and places to start from.
+	path: string;
+	parent: string | null;
+	roots: FolderRoot[];
+	entries: FolderEntry[];
+	truncated: boolean;
+};
+
+export type FolderSuggestion = {
+	path: string;
+	sources: ('claude' | 'codex')[];
+	// Seconds since 1970, rounded down to the day.
+	last_used: number;
+};
+
+export type FolderSuggestions = {
+	// 'off': not allowed in the Buddy app there; 'unsupported': no Buddy app, or an older one.
+	state: 'ok' | 'off' | 'offline' | 'unsupported';
+	folders: FolderSuggestion[];
+};
+
+export const listMachineFolders = async (
+	token: string,
+	machineId: string,
+	options: { path?: string; hidden?: boolean; prefix?: string } = {}
+): Promise<FolderListing> => {
+	const query = new URLSearchParams({
+		path: options.path ?? '',
+		hidden: String(options.hidden === true),
+		prefix: options.prefix ?? ''
+	});
+	return subscriptionRequest(token, `/machines/${encodeURIComponent(machineId)}/folders?${query}`);
+};
+
+export const getSuggestedFolders = async (
+	token: string,
+	machineId: string
+): Promise<FolderSuggestions> => {
+	return subscriptionRequest(token, `/machines/${encodeURIComponent(machineId)}/folders/suggested`);
+};
