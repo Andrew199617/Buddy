@@ -37,6 +37,7 @@ from open_webui.tasks import get_active_task_item_ids, get_response_streams_by_c
 from open_webui.utils.access_control import filter_allowed_access_grants, has_permission
 from open_webui.utils.access_control.folders import has_folder_write_access
 from open_webui.utils.auth import bearer_security, get_admin_user, get_current_user, get_verified_user
+from open_webui.utils.chat_agent import contents_for_owner
 from open_webui.utils.chat_fork import build_fork_history
 from open_webui.utils.context_compaction import compact_chat_branch, get_chat_context_usage
 from open_webui.utils.misc import get_message_list
@@ -847,8 +848,13 @@ async def import_chats(
 ):
     await require_chat_import_permission(request, user, db)
 
+    # A file may come from anyone, so its chats start without a custom agent.
+    imported = [
+        form.model_copy(update={'chat': contents_for_owner(form.chat, None, user.id)}) for form in form_data.chats
+    ]
+
     try:
-        chats = await Chats.import_chats(user.id, form_data.chats, db=db)
+        chats = await Chats.import_chats(user.id, imported, db=db)
         await publish_event(
             request,
             EVENTS.CHAT_IMPORTED,
@@ -1904,8 +1910,9 @@ async def clone_shared_chat_by_id(
                 detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
             )
 
+    # Someone else's custom agent never comes along.
     updated_chat = {
-        **chat.chat,
+        **contents_for_owner(chat.chat, chat.user_id, user.id),
         'originalChatId': chat.id,
         'branchPointMessageId': chat.chat['history']['currentId'],
         'title': f'Clone of {chat.title}',
