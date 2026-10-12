@@ -19,7 +19,7 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT_DIR / 'backend'))
 
 from buddy_runner import discovery  # noqa: E402
-from test_subscription_machines import OWNER, FakeGroups, FakeUsers, owner_providers  # noqa: E402
+from test_subscription_machines import OWNER, FakeGroups, FakeUsers, MemoryCredentials, owner_providers  # noqa: E402
 from buddy_runner import runner  # noqa: E402
 from open_webui.utils.subscriptions import claude_code, codex, streaming  # noqa: E402
 from open_webui.utils.subscriptions.common import (  # noqa: E402
@@ -1446,6 +1446,9 @@ def load_subscription_service(data_dir: Path, config: StandInConfig):
         'open_webui.models.models': types.SimpleNamespace(Models=None),
         'open_webui.models.users': types.SimpleNamespace(Users=FakeUsers()),
         'open_webui.models.groups': types.SimpleNamespace(Groups=FakeGroups()),
+        'open_webui.models.subscription_credentials': types.SimpleNamespace(
+            KIND_API_KEY='api_key', KIND_PLAN_TOKEN='plan_token', SubscriptionCredentials=MemoryCredentials(),
+        ),
         'open_webui.utils.payload': types.SimpleNamespace(
             apply_model_params_to_body_openai=None,
             apply_system_prompt_to_body=None,
