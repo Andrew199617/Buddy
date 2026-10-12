@@ -13,6 +13,8 @@
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import XMark from '$lib/components/icons/XMark.svelte';
 
+	import { fullAccessDescription, fullAccessWarning, readFilesDescription } from './plan-access';
+
 	const i18n: any = getContext('i18n');
 
 	export let show = false;
@@ -41,17 +43,6 @@
 	const inputClass =
 		'w-full rounded-xl bg-gray-50 px-3 py-2 text-sm outline-hidden dark:bg-gray-850 placeholder:text-gray-300 dark:placeholder:text-gray-700';
 
-	const getReadDescription = (providerId: string) => {
-		if (providerId === 'codex') {
-			return $i18n.t(
-				"Can run read-only commands. Codex's read-only sandbox does not limit reads to the start folder, so it can read any file your account can. No edits."
-			);
-		}
-		return $i18n.t(
-			'Can read and search files and the web using CLI permissions on the selected computer. Reads are not restricted to the start folder by an OS sandbox. No edits or commands.'
-		);
-	};
-
 	$: accessOptions = [
 		{
 			value: 'chat',
@@ -61,14 +52,12 @@
 		{
 			value: 'read',
 			label: $i18n.t('Read files'),
-			description: getReadDescription(provider.id)
+			description: readFilesDescription($i18n, provider.id)
 		},
 		{
 			value: 'full',
 			label: $i18n.t('Full access'),
-			description: $i18n.t(
-				'Can edit files and run terminal commands on the machine as you, without asking first.'
-			)
+			description: fullAccessDescription($i18n)
 		}
 	];
 
@@ -208,9 +197,7 @@
 				{/each}
 				{#if access === 'full'}
 					<p class="text-xs text-amber-700 dark:text-amber-400">
-						{$i18n.t(
-							'Buddy can then run commands on that computer as your account there, and so can anyone who controls this Buddy server.'
-						)}
+						{fullAccessWarning($i18n)}
 					</p>
 				{/if}
 				<p class="text-xs text-gray-400 dark:text-gray-600">
