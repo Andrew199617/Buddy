@@ -78,6 +78,9 @@
 		terminalGeneration += 1;
 		stopPolling();
 		terminal = null;
+		// Requests from the old session no longer clear their own busy flags.
+		running = false;
+		stopping = false;
 		runUnconfirmed = false;
 		stopUnconfirmed = false;
 		pollFailures = 0;
@@ -259,7 +262,7 @@
 					{ name: computerName }
 				)}
 			</p>
-			<label class="flex min-h-11 cursor-pointer items-start gap-2 text-xs md:min-h-0">
+			<label class="flex min-h-11 cursor-pointer items-center gap-2 text-xs md:min-h-0">
 				<input type="checkbox" class="mt-0.5" bind:checked={accepted} disabled={busy} />
 				<span
 					>{$i18n.t('I understand. Let me run commands on {{name}}.', { name: computerName })}</span
