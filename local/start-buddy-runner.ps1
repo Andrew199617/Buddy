@@ -5,7 +5,7 @@
 # into Docker. With -TlsCertificate the Runner answers only HTTPS, on loopback
 # too; see companion\TLS_SETUP.md for the Projects page. The Runner key is
 # created in %USERPROFILE%\.buddy-runner\key on first start; paste it into Buddy
-# under Admin Settings → Connections → Subscriptions → Machines. Where
+# under Admin Settings → AI plans → Your Runner addresses. Where
 # PowerShell scripts are disabled, run start-buddy-runner.cmd with the same
 # parameters.
 param(

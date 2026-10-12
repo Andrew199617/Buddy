@@ -125,7 +125,7 @@
 			}
 			if (!disposed && machines) {
 				Promise.resolve(onChanged(machines)).catch(() => {
-					// Registry reload errors are presented by the current Connections page.
+					// Registry reload errors are presented by the AI plans tab that opened this dialog.
 				});
 			}
 		});
