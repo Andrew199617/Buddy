@@ -283,7 +283,7 @@
 		{/if}
 	</div>
 
-	<div class="-mt-1 mb-3 w-full px-6 @md:max-w-3xl">
+	<div class="-mt-1 mb-3 flex w-full px-6 @md:max-w-3xl">
 		{#key `${folder.id}:${projectRevision}`}
 			<ProjectFolderChip folderId={folder.id} folderName={folder.name} />
 		{/key}

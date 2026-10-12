@@ -42,10 +42,10 @@
 	<ProjectFolderModal bind:show={showModal} {folderId} {folderName} onSaved={load} />
 	<button
 		type="button"
-		class="inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full px-3 text-xs md:min-h-7 {chip.tone ===
+		class="inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full border px-3 text-xs md:min-h-7 {chip.tone ===
 		'attention'
-			? 'bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300'
-			: 'bg-gray-50 text-gray-600 dark:bg-gray-850 dark:text-gray-300'}"
+			? 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300'
+			: 'border-gray-200 bg-white text-gray-600 dark:border-gray-800 dark:bg-gray-850 dark:text-gray-300'}"
 		title={chip.fromFolderName
 			? $i18n.t('From “{{name}}”', { name: chip.fromFolderName })
 			: undefined}
