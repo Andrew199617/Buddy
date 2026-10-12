@@ -8,8 +8,32 @@ export type SubscriptionSettings = {
 	access: SubscriptionAccess;
 	workspace: string;
 	cli_path: string;
-	// 'local' (this server) or the id of a Buddy Runner machine.
+	// One of the user's computers, 'local' (this server, for the instance owner), or '' before one is chosen.
 	machine_id: string;
+};
+
+// How a provider signs in: the computer's own CLI sign-in, a one-year Claude token, or an API key.
+export type SubscriptionCredentialMode = 'machine' | 'plan_token' | 'api_key';
+
+// What Buddy shows about a stored token or key; never the secret itself.
+export type StoredSubscriptionCredential = {
+	fingerprint?: string | null;
+	expires_at?: number | null;
+	expires_soon?: boolean;
+};
+
+export type SubscriptionCredential = {
+	mode: SubscriptionCredentialMode;
+	stored: { plan_token?: StoredSubscriptionCredential; api_key?: StoredSubscriptionCredential };
+};
+
+export type SubscriptionPolicy = {
+	user_machines: 'all' | 'groups' | 'admins';
+	machine_group_ids: string[];
+	plan_sign_in: boolean;
+	api_keys: boolean;
+	server_machine: boolean;
+	owner_id?: string | null;
 };
 
 export type SubscriptionMachine = {
@@ -25,6 +49,13 @@ export type SubscriptionMachine = {
 	browser_url?: string | null;
 	host?: { id: string; name: string; platform: string; version: string };
 	capabilities?: SubscriptionMachineCapabilities;
+	// 'runner' for a computer connected through the Buddy app.
+	kind?: 'runner';
+	online?: boolean;
+	created_at?: number;
+	last_seen_at?: number;
+	// Only in the administrators' list of every user's machines.
+	owner_id?: string | null;
 };
 
 export type SubscriptionMachineCapabilities = {
@@ -58,7 +89,9 @@ export type SubscriptionStatus = {
 	checking?: boolean;
 	installed?: boolean;
 	signed_in?: boolean;
+	// The sign-in does not match the one chosen for this provider, so turns are refused.
 	api_billing?: boolean;
+	billing?: 'plan' | 'api_key';
 	cli_path?: string;
 	version?: string;
 	message?: string;
@@ -93,12 +126,13 @@ export type SubscriptionProvider = {
 	models: { id: string; name: string }[];
 	machine: { id: string; name: string; revision?: string };
 	default_workspace: string;
+	credential?: SubscriptionCredential;
 };
 
 const subscriptionRequest = async (
 	token: string,
 	path: string,
-	method: 'GET' | 'POST' | 'DELETE' = 'GET',
+	method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'GET',
 	body?: object
 ) => {
 	const response = await fetch(`${WEBUI_API_BASE_URL}/subscriptions${path}`, {
@@ -129,7 +163,12 @@ const withExpectedMachine = (path: string, machineId?: string, machineRevision?:
 
 export const getSubscriptions = async (
 	token: string
-): Promise<{ providers: SubscriptionProvider[]; machines: SubscriptionMachine[] }> => {
+): Promise<{
+	allowed: boolean;
+	providers: SubscriptionProvider[];
+	machines: SubscriptionMachine[];
+	policy: { plan_sign_in: boolean; api_keys: boolean };
+}> => {
 	return subscriptionRequest(token, '/');
 };
 
@@ -157,6 +196,14 @@ export const verifySubscriptionMachine = async (
 		key,
 		browser_url: browserUrl
 	});
+};
+
+export const renameSubscriptionMachine = async (
+	token: string,
+	machineId: string,
+	name: string
+): Promise<{ machines: SubscriptionMachine[] }> => {
+	return subscriptionRequest(token, `/machines/${encodeURIComponent(machineId)}`, 'PATCH', { name });
 };
 
 export const deleteSubscriptionMachine = async (
@@ -261,4 +308,51 @@ export const logoutSubscription = async (
 		withExpectedMachine(`/${providerId}/logout`, expectedMachineId, expectedMachineRevision),
 		'POST'
 	);
+};
+
+export const saveSubscriptionApiKey = async (
+	token: string,
+	providerId: SubscriptionProviderId,
+	key: string
+): Promise<SubscriptionProvider> => {
+	return subscriptionRequest(token, `/${providerId}/credentials/api_key`, 'PUT', { key });
+};
+
+export const saveClaudePlanToken = async (
+	token: string,
+	planToken: string
+): Promise<SubscriptionProvider> => {
+	return subscriptionRequest(token, '/claude/credentials/plan_token', 'PUT', { token: planToken });
+};
+
+export const deleteSubscriptionCredential = async (
+	token: string,
+	providerId: SubscriptionProviderId,
+	kind: 'plan_token' | 'api_key'
+): Promise<SubscriptionProvider> => {
+	return subscriptionRequest(token, `/${providerId}/credentials/${kind}`, 'DELETE');
+};
+
+export const useMachineSignIn = async (
+	token: string,
+	providerId: SubscriptionProviderId
+): Promise<SubscriptionProvider> => {
+	return subscriptionRequest(token, `/${providerId}/credentials/machine`, 'POST');
+};
+
+export const getAllSubscriptionMachines = async (
+	token: string
+): Promise<{ machines: SubscriptionMachine[] }> => {
+	return subscriptionRequest(token, '/admin/machines');
+};
+
+export const getSubscriptionPolicy = async (token: string): Promise<SubscriptionPolicy> => {
+	return subscriptionRequest(token, '/admin/policy');
+};
+
+export const saveSubscriptionPolicy = async (
+	token: string,
+	policy: Partial<SubscriptionPolicy>
+): Promise<SubscriptionPolicy> => {
+	return subscriptionRequest(token, '/admin/policy', 'POST', policy);
 };
