@@ -2370,6 +2370,24 @@ async def bind_chat_target(
     return await ChatRunTargets.insert_if_absent(row)
 
 
+async def copy_chat_target(user, source_chat_id: str, new_chat_id: str):
+    """A fork or clone of the person's own chat runs where that chat runs, or where its next turn would bind it.
+
+    A copy of a chat from before targets is newer than targets itself, so it is
+    bound now, the way its source would be. Otherwise an unbound copy gets the
+    default on its first turn, like its source.
+    """
+    copied = await ChatRunTargets.copy_for_owner(source_chat_id, new_chat_id, user.id)
+    if copied is not None:
+        return copied
+    if not await Chats.is_chat_owner(source_chat_id, user.id):
+        return None
+    if not await _started_before_targets(user, source_chat_id):
+        return None
+    provider_id = await _chat_provider(user, source_chat_id)
+    return await bind_chat_target(user, new_chat_id, None, provider_id, started_before_targets=True)
+
+
 def _provider_for_model_id(model_id) -> str | None:
     """The plan behind one of Buddy's own plan model ids, such as 'claude-code.opus'."""
     if not isinstance(model_id, str):
