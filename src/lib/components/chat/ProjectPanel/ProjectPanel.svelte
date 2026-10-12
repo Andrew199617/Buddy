@@ -140,6 +140,13 @@
 					{ name: target.computer.name }
 				)}
 			</p>
+		{:else if problem === 'not_browsable'}
+			<p class="px-3 text-xs text-gray-600 dark:text-gray-300">
+				{$i18n.t(
+					'Browsing and commands here work only on computers connected with the Buddy app, so not on {{name}}. Claude and ChatGPT still work in this folder.',
+					{ name: target.computer.name }
+				)}
+			</p>
 		{:else if problem === 'offline'}
 			<div class="flex flex-col gap-2 px-3 text-xs text-gray-600 dark:text-gray-300">
 				<p>
