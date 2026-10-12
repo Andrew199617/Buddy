@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'backend'))
 from open_webui.utils.subscriptions import runner
-from open_webui.utils.subscriptions import windows_key_acl as acl
+from buddy_runner import windows_key_acl as acl
 
 
 OWNER_ID = 1000
