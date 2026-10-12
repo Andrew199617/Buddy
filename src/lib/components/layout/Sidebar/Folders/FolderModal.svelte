@@ -14,21 +14,32 @@
 	import Knowledge from '$lib/components/workspace/Models/Knowledge.svelte';
 	import ProjectFolderSection from '$lib/components/projectFolders/ProjectFolderSection.svelte';
 	import { getFolderById } from '$lib/apis/folders';
-	const i18n = getContext('i18n');
+	const i18n: any = getContext('i18n');
+
+	type FolderForm = {
+		name: string;
+		meta: FolderMeta;
+		data: FolderData;
+		parent_id?: string | null;
+	};
+	// Kept whole on save: they also hold settings set elsewhere, like the folder's icon.
+	type FolderMeta = { background_image_url: string | null; [key: string]: unknown };
+	type FolderData = { system_prompt: string; files: any[]; [key: string]: unknown };
 
 	export let show = false;
-	export let onSubmit: Function = (e) => {};
+	// Saves the folder; when creating, resolves to the new folder, or null if none was made.
+	export let onSubmit: (form: FolderForm) => unknown = () => null;
 
 	export let folderId = null;
 	export let parentId = null;
 	export let edit = false;
 
-	let folder = null;
+	let folder: { name?: string; meta?: FolderMeta; data?: FolderData } | null = null;
 	let name = '';
-	let meta = {
+	let meta: FolderMeta = {
 		background_image_url: null
 	};
-	let data = {
+	let data: FolderData = {
 		system_prompt: '',
 		files: []
 	};
@@ -106,7 +117,8 @@
 			loading = false;
 			return;
 		}
-		if (!edit && result?.id) await saveNewFolderProject(result.id);
+		const created = result as { id?: string } | null;
+		if (!edit && created?.id) await saveNewFolderProject(created.id);
 		show = false;
 		loading = false;
 	};
