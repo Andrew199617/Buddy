@@ -28,6 +28,7 @@
 	import OllamaConnection from './Connections/OllamaConnection.svelte';
 	import SubscriptionConnection from './Connections/SubscriptionConnection.svelte';
 	import SubscriptionMachineModal from './Connections/SubscriptionMachineModal.svelte';
+	import SubscriptionPolicy from './Connections/SubscriptionPolicy.svelte';
 	import AdminSettingRow from './AdminSettingRow.svelte';
 	import AdminSettingSection from './AdminSettingSection.svelte';
 
@@ -447,9 +448,14 @@
 			<AdminSettingSection title={$i18n.t('Subscriptions')}>
 				<p class="-mt-1 text-[0.6875rem] text-gray-400 dark:text-gray-600">
 					{$i18n.t(
-						'Chat with your Claude and ChatGPT plans through the official Claude Code and Codex apps. Usage counts against your plan limits, not API billing. Only administrators can use these models.'
+						'Each person chats through the official Claude Code and Codex apps, on their own plan or API key and on computers they connect with the Buddy app. Only they can use their models. Your own are in Settings → Machines.'
 					)}
 				</p>
+
+				<div>
+					<div class="mb-1.5 text-xs text-gray-600 dark:text-gray-400">{$i18n.t('Policy')}</div>
+					<SubscriptionPolicy />
+				</div>
 
 				{#if subscriptionsError}
 					<p role="alert" class="text-xs text-red-600 dark:text-red-400">{subscriptionsError}</p>
@@ -458,7 +464,7 @@
 					<div>
 						<div class="mb-1.5 flex items-center justify-between gap-4">
 							<div class="text-xs text-gray-600 dark:text-gray-400">
-								{$i18n.t('Machines')}
+								{$i18n.t('Your Runner addresses (older setup)')}
 							</div>
 							<Tooltip content={$i18n.t('Add machine')}>
 								<button
