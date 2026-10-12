@@ -343,13 +343,17 @@ async def resolve_folder(user_id: str, folder, choices: dict[str, FolderChoice] 
     return own, inherited
 
 
-async def _others_can_edit(user_id: str, folder) -> bool:
-    """Someone besides this person owns the folder or one above it, or may edit one of them."""
+async def others_can_edit(user_id: str, folder, levels_below: int = 0) -> bool:
+    """Someone besides this person owns the folder or one above it, or may edit one of them.
+
+    levels_below counts folders under it that the answer is for, such as one about to be
+    created, so the depth Buddy follows is the same as once they exist.
+    """
     folder_ids = []
     seen = set()
     current = folder
     while current is not None and current.id not in seen:
-        if len(folder_ids) == MAX_PARENT_DEPTH:
+        if len(folder_ids) + levels_below == MAX_PARENT_DEPTH:
             # Deeper than Buddy follows: write access may come from a folder further up.
             return True
         if current.user_id != user_id:
@@ -378,7 +382,7 @@ async def has_shared_instructions(user_id: str, folder) -> bool:
     """
     if not folder_adds_instructions(folder.data):
         return False
-    return await _others_can_edit(user_id, folder)
+    return await others_can_edit(user_id, folder)
 
 
 async def _held_back_by_received_instructions(user_id: str, metadata: dict, choices: dict) -> FolderChoice | None:
@@ -396,7 +400,7 @@ async def _held_back_by_received_instructions(user_id: str, metadata: dict, choi
     if folder is None:
         # Deleted since; its text still reached this turn.
         return FolderChoice(folder_id, MODE_CHAT)
-    if not await _others_can_edit(user_id, folder):
+    if not await others_can_edit(user_id, folder):
         return None
     return FolderChoice(folder.id, MODE_CHAT, folder_name=folder.name)
 

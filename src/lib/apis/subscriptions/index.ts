@@ -490,6 +490,9 @@ export type FolderProject = {
 	// The folder adds instructions others can change, so its chats stay chat-only
 	// until this person makes their own choice for it.
 	shared_instructions: boolean;
+	// Someone else may edit the folder (for one being created, its parent), so
+	// instructions added to it would be shared too.
+	others_can_edit: boolean;
 	has_plans: boolean;
 	computers: ProjectFolderComputer[];
 };

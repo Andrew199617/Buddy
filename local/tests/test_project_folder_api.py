@@ -198,6 +198,13 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(member_view['shared_instructions'])
         self.assertFalse(owner_view['shared_instructions'])
 
+    async def test_whether_others_can_edit_is_reported_without_instructions(self):
+        # Instructions added in the folder dialog would be shared, so the dialog needs to know.
+        member_view = await self.service.describe_folder_project(MEMBER_USER, 'website')
+        owner_view = await self.service.describe_folder_project(OWNER_USER, 'website')
+        self.assertEqual((member_view['shared_instructions'], member_view['others_can_edit']), (False, True))
+        self.assertFalse(owner_view['others_can_edit'])
+
     async def test_a_member_of_a_shared_folder_chooses_for_themselves_only(self):
         await self.save(MEMBER_USER, 'folder', {'member-pc': 'D:\\member\\site'})
         member_view = await self.service.describe_folder_project(MEMBER_USER, 'website')
@@ -233,9 +240,15 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
         project = await self.service.describe_new_folder_project(OWNER_USER, 'website')
         self.assertEqual((project['inherited']['folder_name'], project['inherited']['mode']), ('Work', 'chat'))
 
+    async def test_a_new_subfolder_can_be_edited_by_whoever_edits_its_parent(self):
+        member_view = await self.service.describe_new_folder_project(MEMBER_USER, 'website')
+        owner_view = await self.service.describe_new_folder_project(OWNER_USER, 'website')
+        self.assertTrue(member_view['others_can_edit'])
+        self.assertFalse(owner_view['others_can_edit'])
+
     async def test_a_new_top_level_folder_starts_with_no_choice(self):
         project = await self.service.describe_new_folder_project(OWNER_USER, None)
-        self.assertEqual((project['own'], project['inherited']), (None, None))
+        self.assertEqual((project['own'], project['inherited'], project['others_can_edit']), (None, None, False))
         self.assertTrue(project['has_plans'])
         self.assertEqual(self.computer(project)['machine_id'], 'pc-1')
 

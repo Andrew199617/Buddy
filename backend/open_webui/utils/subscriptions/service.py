@@ -1912,7 +1912,11 @@ async def describe_folder_project(user, folder_id: str) -> dict:
     own, inherited = await project_folders.resolve_folder(user.id, folder, choices)
     # Instructions someone else can change keep chats chat-only until the person chooses here.
     shared_instructions = await project_folders.has_shared_instructions(user.id, folder)
-    return await _describe_project(user, folder.id, folder.name, own, inherited, shared_instructions, choices)
+    # Instructions added in the folder dialog would be shared too.
+    editable_by_others = await project_folders.others_can_edit(user.id, folder)
+    return await _describe_project(
+        user, folder.id, folder.name, own, inherited, shared_instructions, editable_by_others, choices
+    )
 
 
 async def describe_new_folder_project(user, parent_id: str | None) -> dict:
@@ -1920,16 +1924,20 @@ async def describe_new_folder_project(user, parent_id: str | None) -> dict:
     and the computers it can be on. Contacts no computer."""
     choices = await project_folders.load_choices(user.id)
     inherited = None
+    # A new top-level folder is this person's alone until they share it.
+    editable_by_others = False
     if parent_id:
         parent = await _readable_chat_folder(user, parent_id)
         parent_own, parent_inherited = await project_folders.resolve_folder(user.id, parent, choices)
         inherited = parent_own or parent_inherited
+        # Whoever may edit the parent may edit a folder created in it.
+        editable_by_others = await project_folders.others_can_edit(user.id, parent, levels_below=1)
     # A new folder has no instructions of its own yet.
-    return await _describe_project(user, '', '', None, inherited, False, choices)
+    return await _describe_project(user, '', '', None, inherited, False, editable_by_others, choices)
 
 
 async def _describe_project(user, folder_id: str, folder_name: str, own, inherited, shared_instructions: bool,
-                            choices: dict) -> dict:
+                            editable_by_others: bool, choices: dict) -> dict:
     named_machine_ids = set()
     for choice in (own, inherited):
         if choice is not None:
@@ -1950,6 +1958,7 @@ async def _describe_project(user, folder_id: str, folder_name: str, own, inherit
         'own': _describe_folder_choice(own, revisions),
         'inherited': _describe_folder_choice(inherited, revisions),
         'shared_instructions': shared_instructions,
+        'others_can_edit': editable_by_others,
         'has_plans': has_plans,
         'computers': await _folder_computers(user, choices, named_machine_ids),
     }

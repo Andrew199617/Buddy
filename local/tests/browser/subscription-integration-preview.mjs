@@ -436,6 +436,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			own: projectChoice,
 			inherited: null,
 			shared_instructions: false,
+			others_can_edit: false,
 			has_plans: folderPlans.some((plan) => plan.enable),
 			computers
 		};
