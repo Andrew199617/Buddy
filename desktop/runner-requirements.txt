@@ -1,0 +1,4 @@
+# What build-runner.ps1 installs to freeze backend/buddy_runner into buddy-runner.exe.
+# Keep aiohttp in step with backend/requirements.txt.
+aiohttp==3.13.5
+pyinstaller==6.22.3

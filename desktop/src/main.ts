@@ -59,6 +59,10 @@ function runnerLaunch(): RunnerLaunch {
 	if (app.isPackaged) {
 		return { command: path.join(process.resourcesPath, 'runner', 'buddy-runner.exe'), args: [] };
 	}
+	// To try a build from build-runner.ps1 without packaging the app.
+	if (process.env.BUDDY_DESKTOP_RUNNER) {
+		return { command: process.env.BUDDY_DESKTOP_RUNNER, args: [] };
+	}
 	const backend = path.join(__dirname, '..', '..', '..', 'backend');
 	return {
 		command: process.env.BUDDY_DESKTOP_PYTHON || 'python',
