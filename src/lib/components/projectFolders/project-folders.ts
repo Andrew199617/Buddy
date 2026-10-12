@@ -1,5 +1,6 @@
 // What a chat folder's project folder choice means, for the folder dialog, the
-// folder page chip and the chat's project panel. No requests here.
+// folder page chip and the chat's project panel, and where keyboard focus goes
+// in the folder settings. No requests here.
 
 import type {
 	FolderPlan,

@@ -247,8 +247,8 @@
 				if (mode === 'folder') paths = draft.paths;
 				project = await saveFolderProject(localStorage.token, folderId, { mode, paths });
 			}
-			saved = draftFromProject(project);
-			draft = { mode: saved.mode, paths: { ...saved.paths } };
+			showProject(project);
+			startFromSaved();
 			announceProjectFolderChange(folderId);
 			return true;
 		} catch (cause) {
