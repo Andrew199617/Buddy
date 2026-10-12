@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'backend'))
-from buddy_runner import runner
+from buddy_runner import keys
 from buddy_runner import windows_key_acl as acl
 
 
@@ -78,7 +78,7 @@ class RunnerKeyMetadataTests(unittest.TestCase):
     def test_synthetic_trusted_ancestors_and_sticky_tmp_are_accepted(self):
         for owner, mode in ((OWNER_ID, 0o755), (0, 0o755), (0, 0o1777), (OWNER_ID, 0o1777)):
             with self.subTest(owner=owner, mode=oct(mode)):
-                runner._validate_key_directory(
+                keys._validate_key_directory(
                     metadata(stat.S_IFDIR | mode, owner=owner), owner_id=OWNER_ID,
                 )
 
@@ -94,10 +94,10 @@ class RunnerKeyMetadataTests(unittest.TestCase):
         }
         for name, information in cases.items():
             with self.subTest(name=name), self.assertRaises(ValueError):
-                runner._validate_key_directory(information, owner_id=OWNER_ID)
+                keys._validate_key_directory(information, owner_id=OWNER_ID)
 
     def test_synthetic_private_state_requires_current_owner_and_exact_0700(self):
-        runner._validate_key_directory(
+        keys._validate_key_directory(
             metadata(stat.S_IFDIR | 0o700), owner_id=OWNER_ID, private=True,
         )
         cases = {
@@ -110,10 +110,10 @@ class RunnerKeyMetadataTests(unittest.TestCase):
         }
         for name, information in cases.items():
             with self.subTest(name=name), self.assertRaises(ValueError):
-                runner._validate_key_directory(information, owner_id=OWNER_ID, private=True)
+                keys._validate_key_directory(information, owner_id=OWNER_ID, private=True)
 
     def test_synthetic_private_regular_key_is_accepted(self):
-        runner._validate_key_file(metadata(stat.S_IFREG | 0o600), owner_id=OWNER_ID)
+        keys._validate_key_file(metadata(stat.S_IFREG | 0o600), owner_id=OWNER_ID)
 
     def test_synthetic_key_rejects_unsafe_owner_mode_type_links_and_reparse(self):
         cases = {
@@ -134,7 +134,7 @@ class RunnerKeyMetadataTests(unittest.TestCase):
         }
         for name, information in cases.items():
             with self.subTest(name=name), self.assertRaises(ValueError):
-                runner._validate_key_file(information, owner_id=OWNER_ID)
+                keys._validate_key_file(information, owner_id=OWNER_ID)
 
 
 class WindowsKeyAccessPolicyTests(unittest.TestCase):
@@ -216,11 +216,11 @@ class TemporaryKeyTests(unittest.TestCase):
 
 class RunnerKeyFileTests(TemporaryKeyTests):
     def test_native_creates_and_reuses_one_key_without_overwrite(self):
-        created = runner.load_or_create_key(self.key_file)
+        created = keys.load_or_create_key(self.key_file)
         self.assertTrue(created)
         self.assertEqual(self.key_file.read_text(encoding='utf-8'), created)
         before = self.key_file.stat()
-        self.assertEqual(runner.load_or_create_key(self.key_file), created)
+        self.assertEqual(keys.load_or_create_key(self.key_file), created)
         after = self.key_file.stat()
         self.assertEqual((before.st_dev, before.st_ino), (after.st_dev, after.st_ino))
         self.assertEqual(before.st_mtime_ns, after.st_mtime_ns)
@@ -228,14 +228,14 @@ class RunnerKeyFileTests(TemporaryKeyTests):
     def test_native_reuses_fixture_key_unchanged(self):
         self.prepare_state()
         write_fixture(self.key_file)
-        self.assertEqual(runner.load_or_create_key(self.key_file), FIXTURE_KEY)
+        self.assertEqual(keys.load_or_create_key(self.key_file), FIXTURE_KEY)
         self.assertEqual(self.key_file.read_text(encoding='utf-8'), FIXTURE_KEY)
 
     def test_native_empty_key_is_rejected_without_regeneration(self):
         self.prepare_state()
         write_fixture(self.key_file, '')
         with self.assertRaises(ValueError):
-            runner.load_or_create_key(self.key_file)
+            keys.load_or_create_key(self.key_file)
         self.assertEqual(self.key_file.read_bytes(), b'')
 
     def test_native_oversized_key_is_rejected_without_truncation_or_regeneration(self):
@@ -246,14 +246,14 @@ class RunnerKeyFileTests(TemporaryKeyTests):
                 fixture = FIXTURE_KEY + suffix
                 write_fixture(key_file, fixture)
                 with self.assertRaises(ValueError):
-                    runner.load_or_create_key(key_file)
+                    keys.load_or_create_key(key_file)
                 self.assertEqual(key_file.read_text(encoding='utf-8'), fixture)
 
     def test_native_directory_key_is_rejected_without_overwrite(self):
         self.prepare_state()
         self.key_file.mkdir(mode=0o700)
         with self.assertRaises((ValueError, OSError)):
-            runner.load_or_create_key(self.key_file)
+            keys.load_or_create_key(self.key_file)
         self.assertTrue(self.key_file.is_dir())
 
     def test_native_hardlinked_key_is_rejected_without_read_or_overwrite(self):
@@ -266,7 +266,7 @@ class RunnerKeyFileTests(TemporaryKeyTests):
             self.skipTest(f'This host cannot create disposable hardlink fixtures: {error}')
         self.assertEqual(self.key_file.stat().st_nlink, 2)
         with self.assertRaises((ValueError, OSError)):
-            runner.load_or_create_key(self.key_file)
+            keys.load_or_create_key(self.key_file)
         self.assertEqual(target.read_text(encoding='utf-8'), FIXTURE_KEY)
         self.assertEqual(self.key_file.read_text(encoding='utf-8'), FIXTURE_KEY)
 
@@ -276,7 +276,7 @@ class RunnerKeyFileTests(TemporaryKeyTests):
         write_fixture(target)
         self.create_symlink(self.key_file, target)
         with self.assertRaises((ValueError, OSError)):
-            runner.load_or_create_key(self.key_file)
+            keys.load_or_create_key(self.key_file)
         self.assertTrue(self.key_file.is_symlink())
         self.assertEqual(target.read_text(encoding='utf-8'), FIXTURE_KEY)
 
@@ -286,13 +286,13 @@ class RunnerKeyFileTests(TemporaryKeyTests):
         write_fixture(target / 'key')
         self.create_symlink(self.state, target, directory=True)
         with self.assertRaises((ValueError, OSError)):
-            runner.load_or_create_key(self.key_file)
+            keys.load_or_create_key(self.key_file)
         self.assertEqual((target / 'key').read_text(encoding='utf-8'), FIXTURE_KEY)
 
     def test_native_competing_exclusive_creation_reuses_valid_winner(self):
         self.prepare_state()
         original_open = os.open
-        original_create = getattr(runner.windows_key_acl, 'create_private_file', None)
+        original_create = getattr(keys.windows_key_acl, 'create_private_file', None)
         competed = False
 
         def competing_open(path, flags, mode=0o777, **options):
@@ -315,11 +315,11 @@ class RunnerKeyFileTests(TemporaryKeyTests):
             return original_create(path)
 
         if os.name == 'nt':
-            competition = patch.object(runner.windows_key_acl, 'create_private_file', side_effect=competing_create)
+            competition = patch.object(keys.windows_key_acl, 'create_private_file', side_effect=competing_create)
         else:
-            competition = patch.object(runner.os, 'open', side_effect=competing_open)
+            competition = patch.object(keys.os, 'open', side_effect=competing_open)
         with competition:
-            self.assertEqual(runner.load_or_create_key(self.key_file), FIXTURE_KEY)
+            self.assertEqual(keys.load_or_create_key(self.key_file), FIXTURE_KEY)
         self.assertTrue(competed)
         self.assertEqual(self.key_file.read_text(encoding='utf-8'), FIXTURE_KEY)
 
@@ -329,7 +329,7 @@ class RunnerKeyFileTests(TemporaryKeyTests):
         key_file = custom / 'provider-key'
         write_fixture(key_file)
         self.assertEqual(
-            runner.load_or_create_key(key_file, state_dir=self.state), FIXTURE_KEY,
+            keys.load_or_create_key(key_file, state_dir=self.state), FIXTURE_KEY,
         )
         self.assertTrue(self.state.is_dir())
 
@@ -345,7 +345,7 @@ class RunnerKeyFileTests(TemporaryKeyTests):
         )
         try:
             with self.assertRaises(ValueError):
-                runner.load_or_create_key(self.key_file)
+                keys.load_or_create_key(self.key_file)
             self.assertEqual(target_key.read_text(encoding='utf-8'), FIXTURE_KEY)
         finally:
             # Remove only the disposable junction; never recurse into its target.
@@ -354,7 +354,7 @@ class RunnerKeyFileTests(TemporaryKeyTests):
     @unittest.skipUnless(os.name == 'nt', 'Windows no-delete sharing semantics are unavailable on POSIX')
     def test_windows_pins_prevent_parent_and_ancestor_rename_during_key_creation(self):
         self.prepare_state()
-        original_create = runner.windows_key_acl.create_private_file
+        original_create = keys.windows_key_acl.create_private_file
         attempted = False
         moved_state = self.base / 'moved-state'
         moved_base = self.base.with_name(self.base.name + '-moved')
@@ -372,8 +372,8 @@ class RunnerKeyFileTests(TemporaryKeyTests):
                                 destination.rename(source)
             return original_create(path)
 
-        with patch.object(runner.windows_key_acl, 'create_private_file', side_effect=pinned_create):
-            created = runner.load_or_create_key(self.key_file)
+        with patch.object(keys.windows_key_acl, 'create_private_file', side_effect=pinned_create):
+            created = keys.load_or_create_key(self.key_file)
         self.assertTrue(attempted)
         self.assertEqual(self.key_file.read_text(encoding='utf-8'), created)
         self.assertFalse(moved_state.exists())
@@ -396,8 +396,8 @@ class WindowsRunnerKeyAccessTests(TemporaryKeyTests):
         shared.mkdir()
         grant_access(shared, f'*{AUTHENTICATED_USERS}:(OI)(CI)M')
         key_file = shared / 'new-parent' / 'state' / 'key'
-        created = runner.load_or_create_key(key_file)
-        self.assertEqual(runner.load_or_create_key(key_file), created)
+        created = keys.load_or_create_key(key_file)
+        self.assertEqual(keys.load_or_create_key(key_file), created)
         for path in (key_file.parent.parent, key_file.parent, key_file):
             with self.subTest(path=path.name):
                 self.assertNotIn(AUTHENTICATED_USERS, self.entry_sids(path))
@@ -406,9 +406,9 @@ class WindowsRunnerKeyAccessTests(TemporaryKeyTests):
         self.prepare_state()
         write_fixture(self.key_file)
         grant_access(self.state, f'*{USERS}:(OI)(CI)R')
-        with patch.object(runner.os, 'fdopen', side_effect=AssertionError('A shared key must not be read')):
+        with patch.object(keys.os, 'fdopen', side_effect=AssertionError('A shared key must not be read')):
             with self.assertRaises(ValueError) as refused:
-                runner.load_or_create_key(self.key_file)
+                keys.load_or_create_key(self.key_file)
         message = str(refused.exception)
         self.assertIn(f'state folder {self.state}', message)
         self.assertIn(USERS, self.entry_sids(self.state))
@@ -416,21 +416,21 @@ class WindowsRunnerKeyAccessTests(TemporaryKeyTests):
         # The command in the message is enough to make the folder usable.
         self.run_suggested_fix(message)
         self.assertNotIn(USERS, self.entry_sids(self.state))
-        self.assertEqual(runner.load_or_create_key(self.key_file), FIXTURE_KEY)
+        self.assertEqual(keys.load_or_create_key(self.key_file), FIXTURE_KEY)
 
     def test_windows_key_shared_with_another_account_is_refused_before_read(self):
         self.prepare_state()
         write_fixture(self.key_file)
         grant_access(self.key_file, f'*{USERS}:R')
-        with patch.object(runner.os, 'fdopen', side_effect=AssertionError('A shared key must not be read')):
+        with patch.object(keys.os, 'fdopen', side_effect=AssertionError('A shared key must not be read')):
             with self.assertRaises(ValueError) as refused:
-                runner.load_or_create_key(self.key_file)
+                keys.load_or_create_key(self.key_file)
         message = str(refused.exception)
         self.assertIn(f'key {self.key_file}', message)
         self.assertNotIn('(OI)(CI)', message)
         self.assertIn(USERS, self.entry_sids(self.key_file))
         self.run_suggested_fix(message)
-        self.assertEqual(runner.load_or_create_key(self.key_file), FIXTURE_KEY)
+        self.assertEqual(keys.load_or_create_key(self.key_file), FIXTURE_KEY)
 
     def test_windows_key_folder_may_be_readable_but_not_changeable_by_others(self):
         custom = self.base / 'custom'
@@ -438,10 +438,10 @@ class WindowsRunnerKeyAccessTests(TemporaryKeyTests):
         grant_access(custom, f'*{USERS}:R')
         key_file = custom / 'provider-key'
         write_fixture(key_file)
-        self.assertEqual(runner.load_or_create_key(key_file, state_dir=self.state), FIXTURE_KEY)
+        self.assertEqual(keys.load_or_create_key(key_file, state_dir=self.state), FIXTURE_KEY)
         grant_access(custom, f'*{AUTHENTICATED_USERS}:M')
         with self.assertRaises(ValueError) as refused:
-            runner.load_or_create_key(key_file, state_dir=self.state)
+            keys.load_or_create_key(key_file, state_dir=self.state)
         self.assertIn(f'key folder {custom} can be changed', str(refused.exception))
         self.assertEqual(key_file.read_text(encoding='utf-8'), FIXTURE_KEY)
 
@@ -471,7 +471,7 @@ class WindowsRunnerKeyAccessTests(TemporaryKeyTests):
         self.run_suggested_fix(str(state_refused.exception))
         self.assertEqual(self.entry_sids(state), {user_sid})
         acl.check_private(state, 'state folder', directory=True)
-        self.assertEqual(runner.load_or_create_key(key_file), FIXTURE_KEY)
+        self.assertEqual(keys.load_or_create_key(key_file), FIXTURE_KEY)
 
 
 @unittest.skipUnless(os.name == 'posix', 'Native POSIX ownership and mode semantics are unavailable on Windows')
@@ -480,7 +480,7 @@ class PosixRunnerKeyTests(TemporaryKeyTests):
         key_file = self.base / 'new-parent' / 'private-state' / 'key'
         previous = os.umask(0)
         try:
-            runner.load_or_create_key(key_file)
+            keys.load_or_create_key(key_file)
         finally:
             os.umask(previous)
         self.assertEqual(stat.S_IMODE(key_file.stat().st_mode), 0o600)
@@ -492,7 +492,7 @@ class PosixRunnerKeyTests(TemporaryKeyTests):
         write_fixture(self.key_file)
         self.state.chmod(0o755)
         with self.assertRaises(ValueError):
-            runner.load_or_create_key(self.key_file)
+            keys.load_or_create_key(self.key_file)
         self.assertEqual(stat.S_IMODE(self.state.stat().st_mode), 0o755)
         self.assertEqual(self.key_file.read_text(encoding='utf-8'), FIXTURE_KEY)
 
@@ -500,9 +500,9 @@ class PosixRunnerKeyTests(TemporaryKeyTests):
         self.prepare_state()
         write_fixture(self.key_file)
         self.key_file.chmod(0o644)
-        with patch.object(runner.os, 'fdopen', side_effect=AssertionError('Invalid key metadata must not be read')):
+        with patch.object(keys.os, 'fdopen', side_effect=AssertionError('Invalid key metadata must not be read')):
             with self.assertRaises(ValueError):
-                runner.load_or_create_key(self.key_file)
+                keys.load_or_create_key(self.key_file)
         self.assertEqual(stat.S_IMODE(self.key_file.stat().st_mode), 0o644)
         self.assertEqual(self.key_file.read_text(encoding='utf-8'), FIXTURE_KEY)
 
@@ -515,7 +515,7 @@ class PosixRunnerKeyTests(TemporaryKeyTests):
         write_fixture(key_file)
         shared.chmod(0o777)
         with self.assertRaises(ValueError):
-            runner.load_or_create_key(key_file)
+            keys.load_or_create_key(key_file)
         self.assertEqual(stat.S_IMODE(shared.stat().st_mode), 0o777)
         self.assertEqual(key_file.read_text(encoding='utf-8'), FIXTURE_KEY)
 
@@ -523,7 +523,7 @@ class PosixRunnerKeyTests(TemporaryKeyTests):
         self.prepare_state()
         os.mkfifo(self.key_file, 0o600)
         with self.assertRaises(ValueError):
-            runner.load_or_create_key(self.key_file)
+            keys.load_or_create_key(self.key_file)
         self.assertTrue(stat.S_ISFIFO(self.key_file.stat().st_mode))
 
     def test_posix_custom_key_parent_may_be_0755_but_state_stays_private(self):
@@ -532,7 +532,7 @@ class PosixRunnerKeyTests(TemporaryKeyTests):
         custom.chmod(0o755)
         key_file = custom / 'provider-key'
         write_fixture(key_file)
-        self.assertEqual(runner.load_or_create_key(key_file, state_dir=self.state), FIXTURE_KEY)
+        self.assertEqual(keys.load_or_create_key(key_file, state_dir=self.state), FIXTURE_KEY)
         self.assertEqual(stat.S_IMODE(self.state.stat().st_mode), 0o700)
         self.assertEqual(stat.S_IMODE(custom.stat().st_mode), 0o755)
 
@@ -544,7 +544,7 @@ class PosixRunnerKeyTests(TemporaryKeyTests):
         key_file = custom / 'provider-key'
         write_fixture(key_file)
         with self.assertRaises(ValueError):
-            runner.load_or_create_key(key_file, state_dir=self.state)
+            keys.load_or_create_key(key_file, state_dir=self.state)
         self.assertEqual(stat.S_IMODE(self.state.stat().st_mode), 0o755)
         self.assertEqual(key_file.read_text(encoding='utf-8'), FIXTURE_KEY)
 
@@ -564,9 +564,9 @@ class PosixRunnerKeyTests(TemporaryKeyTests):
                 raise FileExistsError(errno.EEXIST, 'Disposable unsafe competing key creation', str(path))
             return original_open(path, flags, mode, **options)
 
-        with patch.object(runner.os, 'open', side_effect=competing_open):
+        with patch.object(keys.os, 'open', side_effect=competing_open):
             with self.assertRaises(ValueError):
-                runner.load_or_create_key(self.key_file)
+                keys.load_or_create_key(self.key_file)
         self.assertTrue(competed)
         self.assertEqual(stat.S_IMODE(self.key_file.stat().st_mode), 0o644)
         self.assertEqual(self.key_file.read_text(encoding='utf-8'), FIXTURE_KEY)
