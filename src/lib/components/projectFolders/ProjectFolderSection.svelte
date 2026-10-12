@@ -12,12 +12,15 @@
 		type ProjectFolderComputer
 	} from '$lib/apis/subscriptions';
 	import Spinner from '$lib/components/common/Spinner.svelte';
+	import PlanAccessRequest from './PlanAccessRequest.svelte';
 	import ProjectFolderPicker from './ProjectFolderPicker.svelte';
 	import { announceProjectFolderChange } from './project-folder-changes';
 	import {
 		anyFullAccess,
 		claudeReadHint,
 		draftFromProject,
+		fileAccessNeed,
+		plansToAllow,
 		sameDraft,
 		waitsForOwnChoice,
 		type ProjectDraft
@@ -40,22 +43,25 @@
 	let pickingFor: ProjectFolderComputer | null = null;
 
 	$: dirty = !sameDraft(draft, saved);
-	$: workingComputers =
-		project?.computers.filter((computer) => computer.providers.length > 0) ?? [];
-	$: noFilePlans = project !== null && project.has_plans && workingComputers.length === 0;
+	$: need = project ? fileAccessNeed(project) : 'ready';
+	$: allowablePlans = project ? plansToAllow(project) : [];
+
+	async function fetchProject() {
+		const loaded = await getFolderProject(localStorage.token, folderId);
+		// Null: not allowed to use computers, or the folder is gone; nothing to choose here.
+		hidden = loaded === null || !loaded.has_plans;
+		project = loaded;
+		if (loaded) {
+			saved = draftFromProject(loaded);
+			draft = { mode: saved.mode, paths: { ...saved.paths } };
+		}
+	}
 
 	async function load() {
 		loading = true;
 		loadError = '';
 		try {
-			const loaded = await getFolderProject(localStorage.token, folderId);
-			// Null: not allowed to use computers, or the folder is gone; nothing to choose here.
-			hidden = loaded === null || !loaded.has_plans;
-			project = loaded;
-			if (loaded) {
-				saved = draftFromProject(loaded);
-				draft = { mode: saved.mode, paths: { ...saved.paths } };
-			}
+			await fetchProject();
 		} catch (cause) {
 			project = null;
 			loadError = `${cause}`;
@@ -65,6 +71,31 @@
 	}
 
 	onMount(load);
+
+	/** Loads again after a plan changed, keeping a choice the person has not saved yet. */
+	async function refresh() {
+		let unsaved: ProjectDraft | null = null;
+		if (dirty) unsaved = draft;
+		try {
+			await fetchProject();
+		} catch (cause) {
+			// What was loaded before still saves; only the plans may be out of date.
+			error = $i18n.t('The project folder could not be loaded: {{reason}}', { reason: `${cause}` });
+			return;
+		}
+		if (unsaved) draft = unsaved;
+	}
+
+	async function planAllowed() {
+		// The folder page chip and a chat's Project tab list this folder's computers too.
+		announceProjectFolderChange(folderId);
+		await tick();
+		// The choices took the place of the request; keep keyboard focus in the section.
+		const name = `project-folder-mode-${folderId}`;
+		const checked = document.querySelector<HTMLInputElement>(`input[name="${name}"]:checked`);
+		const first = document.querySelector<HTMLInputElement>(`input[name="${name}"]`);
+		(checked ?? first)?.focus();
+	}
 
 	function computerProviders(computer: ProjectFolderComputer): string {
 		return computer.providers.map((provider) => provider.name).join(', ');
@@ -168,7 +199,9 @@
 				onBack={closePicker}
 				onPick={choosePath}
 			/>
-		{:else if noFilePlans}
+		{:else if need === 'allow'}
+			<PlanAccessRequest plans={allowablePlans} reload={refresh} onAllowed={planAllowed} />
+		{:else if need !== 'ready'}
 			<p class="text-xs text-gray-600 dark:text-gray-300">
 				{$i18n.t(
 					"Your plans are set to Chat only, so they don't open folders. Change their access in Settings → Machines."
