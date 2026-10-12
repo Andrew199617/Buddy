@@ -575,3 +575,115 @@ export const getSuggestedFolders = async (
 ): Promise<FolderSuggestions> => {
 	return subscriptionRequest(token, `/machines/${encodeURIComponent(machineId)}/folders/suggested`);
 };
+
+// --- Where chats run ---------------------------------------------------------------
+
+export type RunTargetFolder = { mode: 'path'; path: string } | { mode: 'auto' };
+
+// What the composer's bar sends when a chat starts.
+export type RunTargetRequest =
+	| { kind: 'detached'; access: 'chat' }
+	| {
+			kind: 'computer';
+			machine_id: string;
+			// The computer's revision the bar showed; the server compares it.
+			expected_revision: string | null;
+			folder: RunTargetFolder;
+			access: SubscriptionAccess;
+			acknowledged_instructions_folder_id: string | null;
+	  };
+
+export type RunTargetPlanState =
+	| 'ready'
+	| 'unknown'
+	| 'checking'
+	| 'sign_in'
+	| 'not_installed'
+	| 'api_billing'
+	| 'offline'
+	| 'not_allowed';
+
+export type RunTargetComputer = Omit<ProjectFolderComputer, 'providers'> & {
+	revision: string | null;
+	providers: Partial<
+		Record<SubscriptionProviderId, { state: RunTargetPlanState; message: string | null }>
+	>;
+};
+
+export type RunTargetDefault = {
+	kind: 'computer' | 'detached';
+	machine_id: string | null;
+	folder: RunTargetFolder | null;
+	// null means each plan's own access.
+	access: SubscriptionAccess | null;
+	from: 'chat_folder' | 'this_pc' | 'last_used' | 'plan' | 'first_ready' | 'none';
+	// The chat folder's shared instructions keep it chat only until the person acknowledges them.
+	access_locked: boolean;
+};
+
+export type RunTargetOptions = {
+	allowed: boolean;
+	has_plans: boolean;
+	plan_access?: Partial<Record<SubscriptionProviderId, SubscriptionAccess>>;
+	computers?: RunTargetComputer[];
+	recent?: { machine_id: string; path: string; last_used: number }[];
+	chat_folder?: {
+		id: string;
+		name: string;
+		mode: ProjectFolderMode | null;
+		paths: Record<string, string>;
+		offered: Record<string, string[]>;
+		shared_instructions: boolean;
+	} | null;
+	default?: RunTargetDefault;
+};
+
+export type ChatRunTargetDetails = {
+	kind: 'computer' | 'detached';
+	machine_id: string | null;
+	computer: { name: string; kind: ProjectFolderComputer['kind']; online: boolean | null } | null;
+	folder_mode: 'path' | 'auto' | 'none';
+	path: string | null;
+	access: SubscriptionAccess;
+	source: 'bar' | 'default' | 'copy' | 'refused';
+	note: string | null;
+	note_message?: string | null;
+	problem: 'removed' | 'reset' | 'server_off' | 'offline' | null;
+};
+
+export type ChatRunTarget =
+	| ({ bound: true } & ChatRunTargetDetails)
+	| { bound: false; would_bind: ChatRunTargetDetails };
+
+export const getRunTargetOptions = async (
+	token: string,
+	options: { folderId?: string | null; thisMachineId?: string | null } = {}
+): Promise<RunTargetOptions> => {
+	const query = new URLSearchParams();
+	if (options.folderId) query.set('folder_id', options.folderId);
+	if (options.thisMachineId) query.set('this_machine_id', options.thisMachineId);
+	const search = query.toString();
+	let path = '/run-target/options';
+	if (search) path = `${path}?${search}`;
+	return subscriptionRequest(token, path);
+};
+
+export const getRunTargetReadiness = async (
+	token: string,
+	providerId: SubscriptionProviderId,
+	machineId: string
+): Promise<{ state: RunTargetPlanState; message: string | null }> => {
+	const query = new URLSearchParams({ provider: providerId, machine_id: machineId });
+	return subscriptionRequest(token, `/run-target/readiness?${query}`);
+};
+
+/** Where the person's chat runs, or null when it isn't theirs (404). */
+export const getChatRunTarget = async (
+	token: string,
+	chatId: string
+): Promise<ChatRunTarget | null> => {
+	const path = `/chats/${encodeURIComponent(chatId)}/run-target`;
+	const response = await sendSubscriptionRequest(token, path, 'GET');
+	if (response.status === 404) return null;
+	return readSubscriptionResponse(response);
+};
