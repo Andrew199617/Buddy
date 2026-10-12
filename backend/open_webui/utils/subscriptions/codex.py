@@ -37,7 +37,7 @@ from open_webui.utils.subscriptions.events import (
     TurnFailed,
 )
 from open_webui.utils.subscriptions.discovery import TOOL_CODEX
-from open_webui.utils.subscriptions.process import OutputLimitError, ProcessClosedError
+from buddy_runner.process import OutputLimitError, ProcessClosedError
 
 log = logging.getLogger(__name__)
 

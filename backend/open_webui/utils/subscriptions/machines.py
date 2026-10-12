@@ -26,7 +26,7 @@ from open_webui.utils.subscriptions.runner_transport import (
     runner_ssl_context,
     runner_trace_config,
 )
-from open_webui.utils.subscriptions.process import (
+from buddy_runner.process import (
     ChildProcess,
     MAX_STDERR_BYTES,
     OutputLimitError,

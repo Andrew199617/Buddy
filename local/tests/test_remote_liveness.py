@@ -16,7 +16,7 @@ from aiohttp.test_utils import TestServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'backend'))
 from open_webui.utils.subscriptions import codex, machines
-from open_webui.utils.subscriptions.process import ProcessClosedError
+from buddy_runner.process import ProcessClosedError
 from local.tests.test_subscription_machines import MemoryConfig, load_service
 
 

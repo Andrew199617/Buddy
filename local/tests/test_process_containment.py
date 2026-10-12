@@ -12,7 +12,6 @@ failure cleanup never targets a PID that could have been reused.
 import asyncio
 import ctypes
 import faulthandler
-import importlib.util
 import json
 import os
 import signal
@@ -21,35 +20,15 @@ import sys
 import threading
 import tempfile
 import time
-import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT_DIR / 'backend'))
 
-
-def load_process_module():
-    """Load real process/helper code without initializing the web application."""
-    package_paths = {
-        'open_webui': ROOT_DIR / 'backend' / 'open_webui',
-        'open_webui.utils': ROOT_DIR / 'backend' / 'open_webui' / 'utils',
-        'open_webui.utils.subscriptions': ROOT_DIR / 'backend' / 'open_webui' / 'utils' / 'subscriptions',
-    }
-    module_stubs = {}
-    for name, path in package_paths.items():
-        package = types.ModuleType(name)
-        package.__path__ = [str(path)]
-        module_stubs[name] = package
-    process_path = package_paths['open_webui.utils.subscriptions'] / 'process.py'
-    spec = importlib.util.spec_from_file_location('buddy_process_containment_under_test', process_path)
-    module = importlib.util.module_from_spec(spec)
-    with patch.dict(sys.modules, module_stubs):
-        spec.loader.exec_module(module)
-    return module
-
-
-subscription_process = load_process_module()
+# The Runner package never imports the web application.
+from buddy_runner import process as subscription_process  # noqa: E402
 
 IS_WINDOWS = sys.platform == 'win32'
 

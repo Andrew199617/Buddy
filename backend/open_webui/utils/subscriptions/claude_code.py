@@ -36,7 +36,7 @@ from open_webui.utils.subscriptions.events import (
 )
 from open_webui.utils.subscriptions.discovery import TOOL_CLAUDE
 from open_webui.utils.subscriptions.machines import temp_file_arg
-from open_webui.utils.subscriptions.process import ProcessClosedError
+from buddy_runner.process import ProcessClosedError
 
 log = logging.getLogger(__name__)
 

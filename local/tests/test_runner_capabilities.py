@@ -31,7 +31,7 @@ from open_webui.utils.subscriptions.workspace_capabilities import (  # noqa: E40
     _normalize_pairing_code,
 )
 from open_webui.utils.subscriptions.pinned_paths import PinnedPath, PinnedPathError  # noqa: E402
-from open_webui.utils.subscriptions.process import ProcessClosedError  # noqa: E402
+from buddy_runner.process import ProcessClosedError  # noqa: E402
 
 ORIGIN = 'http://localhost:8082'
 SECOND_ORIGIN = 'http://127.0.0.1:8082'
