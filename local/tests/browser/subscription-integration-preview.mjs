@@ -432,6 +432,9 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		}
 		if (method === 'PUT' && relayPath === '/v1/files') {
 			projectSaves.push(body);
+			if (projectSaves.length === 4) {
+				return { status: 503, json: { detail: 'Work PC is offline.' } };
+			}
 			if (projectSaves.length === 2 && !body.overwrite) {
 				return {
 					status: 409,
@@ -2747,6 +2750,17 @@ async function projectTabCase(browser, profile) {
 			'Overwrite is chosen only after a conflict'
 		);
 		assert.equal(fixtures.projectSaves[2].baseVersion, 'readme-2');
+
+		await editor.fill('# Site\nOffline edit\n');
+		await panel.getByRole('button', { name: 'Save', exact: true }).click();
+		await panel.getByText('Not saved: Work PC is offline.', { exact: true }).waitFor();
+		assert.equal(
+			await editor.inputValue(),
+			'# Site\nOffline edit\n',
+			'A failed save keeps the editor and the edits'
+		);
+		// Going back with unsaved edits asks first.
+		page.once('dialog', (dialog) => dialog.accept());
 		await panel.getByRole('button', { name: '← Files', exact: true }).click();
 		await panel.getByRole('button', { name: 'README.md', exact: true }).waitFor();
 

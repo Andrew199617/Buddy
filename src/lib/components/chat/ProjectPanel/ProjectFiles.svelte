@@ -43,7 +43,10 @@
 	let editing = false;
 	let conflict = false;
 	let fileBusy = false;
-	let fileError = '';
+	let opening = false;
+	// A file that could not be opened shows no editor; a failed save keeps it.
+	let openError = '';
+	let saveError = '';
 	let fileNotice = '';
 	let fileGeneration = 0;
 	let disposed = false;
@@ -82,7 +85,9 @@
 		editing = false;
 		conflict = false;
 		fileBusy = false;
-		fileError = '';
+		opening = false;
+		openError = '';
+		saveError = '';
 		fileNotice = '';
 	}
 
@@ -92,6 +97,7 @@
 		filePath = entry.path;
 		fileName = entry.name;
 		fileBusy = true;
+		opening = true;
 		try {
 			const file = await client.getFile(grant.id, entry.path);
 			if (disposed || generation !== fileGeneration) return;
@@ -102,9 +108,12 @@
 			fileVersion = file.version;
 		} catch (cause) {
 			if (disposed || generation !== fileGeneration) return;
-			fileError = onFailure(cause);
+			openError = onFailure(cause);
 		} finally {
-			if (!disposed && generation === fileGeneration) fileBusy = false;
+			if (!disposed && generation === fileGeneration) {
+				fileBusy = false;
+				opening = false;
+			}
 		}
 	}
 
@@ -130,7 +139,7 @@
 		if (path === null || !canEdit || !editing) return;
 		const generation = fileGeneration;
 		fileBusy = true;
-		fileError = '';
+		saveError = '';
 		fileNotice = '';
 		try {
 			const saved = await client.putFile(
@@ -152,7 +161,7 @@
 				conflict = true;
 				return;
 			}
-			fileError = onFailure(cause);
+			saveError = onFailure(cause);
 		} finally {
 			if (!disposed && generation === fileGeneration) fileBusy = false;
 		}
@@ -185,7 +194,7 @@
 				<button
 					type="button"
 					class="min-h-11 shrink-0 rounded-lg px-3 text-sm font-medium hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-gray-850 md:min-h-8"
-					disabled={fileBusy || fileError !== ''}
+					disabled={fileBusy || openError !== ''}
 					on:click={() => (editing = true)}
 				>
 					{$i18n.t('Edit')}
@@ -234,19 +243,24 @@
 				</div>
 			</div>
 		{/if}
-		{#if fileError}
-			<p role="alert" class="px-3 pb-2 text-xs text-red-600 dark:text-red-400">{fileError}</p>
+		{#if openError}
+			<p role="alert" class="px-3 pb-2 text-xs text-red-600 dark:text-red-400">{openError}</p>
+		{/if}
+		{#if saveError}
+			<p role="alert" class="px-3 pb-2 text-xs text-red-600 dark:text-red-400">
+				{$i18n.t('Not saved: {{reason}}', { reason: saveError })}
+			</p>
 		{/if}
 		{#if fileNotice && !dirty}
 			<p role="status" class="px-3 pb-2 text-xs text-green-700 dark:text-green-400">{fileNotice}</p>
 		{/if}
 
-		{#if fileBusy && fileText === '' && !fileError}
+		{#if opening}
 			<div class="flex items-center gap-2 px-3 py-2 text-xs text-gray-500">
 				<Spinner className="size-3.5" />
 				{$i18n.t('Opening {{name}}…', { name: fileName })}
 			</div>
-		{:else if !fileError}
+		{:else if !openError}
 			<textarea
 				class="mx-2 mb-2 min-h-0 flex-1 resize-none rounded-xl bg-gray-50 p-2.5 font-mono text-base outline-hidden dark:bg-gray-850 md:text-xs"
 				aria-label={$i18n.t('Contents of {{name}}', { name: fileName })}
