@@ -65,7 +65,6 @@
 		$user?.role === 'admin' || ($user?.permissions?.chat?.system_prompt ?? true);
 	$: knowledgeCount = (data?.files ?? []).length;
 	// A save the project folder refused shows its reason where the choice is made.
-	$: if (projectError) openProjectSettings();
 	$: formId = `folder-form-${folderId ?? 'new'}`;
 	$: projectKey = folderId ?? 'new';
 	// Edit Folder holds the section for its folder; Create Folder for the one it will make.
@@ -102,6 +101,8 @@
 		if (edit) projectReady = (await projectSection?.save()) !== false;
 		else if (projectSection) projectReady = projectSection.check();
 		if (!projectReady) {
+			// Show why, every time: on a phone the reason is on the project screen.
+			openProjectSettings();
 			loading = false;
 			return;
 		}
@@ -124,6 +125,7 @@
 	};
 
 	const init = async () => {
+		projectError = '';
 		knowledgeOpen = false;
 		projectOpen = false;
 		screen = 'main';
@@ -272,6 +274,7 @@
 	}
 
 	function openProjectSettings() {
+		revealed = { ...revealed, project: true };
 		projectOpen = true;
 		if ($mobile) screen = 'project';
 	}
@@ -446,7 +449,7 @@
 					<button
 						type="submit"
 						form={formId}
-						class="flex h-9 items-center gap-2 justify-self-end rounded-full bg-gray-900 px-4 text-[0.9375rem] font-medium text-white disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900"
+						class="flex h-11 items-center gap-2 justify-self-end rounded-full bg-gray-900 px-5 text-[0.9375rem] font-medium text-white disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900"
 						disabled={loading}
 					>
 						{#if edit}

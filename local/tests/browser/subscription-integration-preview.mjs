@@ -3324,6 +3324,34 @@ async function folderDefaultsCase(browser, profile) {
 	);
 }
 
+async function folderNeedsFolderCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'folder-needs-folder',
+		'folder-defaults',
+		async ({ page }, fixtures) => {
+			const dialog = await openFolderSettings(page);
+			await pickChoice(dialog, 'project-run-on-website', /^Work PC/);
+			await dialog.getByRole('radio', { name: 'A specific folder', exact: true }).click();
+			const reason = dialog.getByText('Choose a folder on Work PC, or let the AI choose.', {
+				exact: true
+			});
+			// Each refused Save shows why, where the choice is made; nothing is sent.
+			for (const attempt of [1, 2]) {
+				await saveFolderSettings(dialog);
+				await reason.waitFor();
+				assert.equal(
+					await dialog.getByText('Run on', { exact: true }).isVisible(),
+					true,
+					`Try ${attempt}`
+				);
+			}
+			assert.equal(fixtures.requests.filter((entry) => entry.method === 'PUT').length, 0);
+		}
+	);
+}
+
 async function folderNoPlansCase(browser, profile) {
 	await runCase(
 		browser,
@@ -3517,6 +3545,7 @@ try {
 		await folderCreateCase(browser, profile);
 		await folderCreateTopCase(browser, profile);
 		await folderDefaultsCase(browser, profile);
+		await folderNeedsFolderCase(browser, profile);
 		await folderNoPlansCase(browser, profile);
 		await folderBrowseCase(browser, profile);
 		await runTargetNewCase(browser, profile);
