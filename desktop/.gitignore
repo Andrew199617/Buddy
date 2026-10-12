@@ -1,0 +1,6 @@
+node_modules/
+dist/
+release/
+# Built by build-runner.ps1.
+resources/runner/
+.runner-build/
