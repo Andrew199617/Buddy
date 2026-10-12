@@ -128,20 +128,58 @@ and saved tokens stay intact; Buddy registers a separate dynamic client when a
 new callback address is needed. For static OAuth credentials, the provider must
 also allow that exact callback URI.
 
-## Projects on your computers
+## Project folders
 
-The **Projects** page opens folders on a computer you connected with the Buddy
-app (see [Connect a computer](#connect-a-computer-with-the-buddy-app)). Buddy
-relays the page's requests over that computer's own connection, so it works
-from a phone or another browser with no address or pairing code. The computer
-still decides what is possible: only folders shared in the app appear, and
-editing files or running commands works only after you allow it there.
+A chat folder can say where Claude and ChatGPT work for the chats in it. Open
+the folder's settings (**Edit**, or the chip under the folder's title) and
+choose its **Project folder**:
 
-Under **Advanced**, the page can still pair with a Buddy Runner started on its
-own, by address and one-time code; see [the Runner guide](companion/README.md).
-Choosing a project never changes which computer Claude and ChatGPT run on, how
-they sign in, or what they may do. Direct file access stays inside shared
-folders; provider read access and opt-in commands can be broader.
+- **Let the AI choose** (the default): plans start in their start folder (see
+  [What the models may do](#what-the-models-may-do)). With Full access, Buddy
+  tells them to find the project you mention and to use absolute paths.
+- **A specific folder**: an exact folder on each computer. Pick it in the
+  Buddy app's Windows folder dialog, from the folders shared in the app, from
+  recent folders, or by typing its full path. Buddy checks that it exists on
+  that computer first. Network paths and whole drives are refused.
+- **No files, just chat**: plans run Chat only for chats in this folder.
+
+Subfolders follow the nearest parent folder that has a choice. The choice is
+yours alone: people you share a folder with choose their own, and Buddy never
+stores your path in the shared folder. If someone else can change a chat
+folder's system prompt or knowledge (its owner, or anyone allowed to edit it),
+its chats stay Chat only until you choose a project folder for it yourself,
+just as presets written by someone else run Chat only.
+
+When a chat can't start where its folder says, Buddy refuses with a reason
+instead of working somewhere else: the folder is on another computer, that
+computer was set up again or removed, or the folder no longer exists. Chats
+outside chat folders work as before, in the plan's start folder.
+
+A project folder is where the models start, not a fence. With Full access they
+can still reach other folders, and the folder's own `CLAUDE.md`, `AGENTS.md`,
+settings and hooks run as you, so choose only folders you trust. Changing the
+choice starts a fresh CLI session for the folder's chats; their history comes
+along. Cloud computers, once built, have no exact folder: their models work in
+their own workspace.
+
+### The chat's Project tab
+
+In a chat inside a chat folder with a specific project folder, the side
+panel's **Project** tab opens that folder on the computer that has it. Buddy
+relays the requests over that computer's own connection, so it works from a
+phone or another browser too. It needs the Buddy app on that computer, and the
+project folder must be inside a folder shared in the app:
+
+- **Files**: browse inside the project folder and read text files. With
+  **Allow editing files** on in the app, tap **Edit** to change a file. Saving
+  keeps its line endings, and if the file changed on the computer meanwhile,
+  Buddy asks whether to reload it or overwrite the copy there.
+- **Commands**: with **Allow running commands** on in the app, confirm the
+  risk, start a session in the project folder, and run one program with its
+  arguments, one per line. There is no shell. The output keeps the latest
+  256 KiB. Leaving or reloading the page stops the session's commands.
+
+This replaces the separate Projects page; old links to it go home.
 
 ## Claude and ChatGPT subscriptions
 
@@ -177,7 +215,9 @@ plain HTTP is accepted only when Buddy runs on the same computer.
   app. Buddy keeps only its hash and never shows it to the web page.
 - **Shared folders** and the **Allow editing files** and **Allow running
   commands** switches are chosen in the app, with Windows dialogs, so the Buddy
-  server cannot widen them.
+  server cannot widen them. They limit what a chat's
+  [Project tab](#the-chats-project-tab) can open, edit and run; they do not
+  limit Claude and ChatGPT.
 - **Whoever controls the Buddy server** can run Claude Code and Codex on a
   connected computer as your account. The app says so before connecting.
 - **Disconnect** from Settings → Machines or the app's taskbar icon. Removing a
@@ -251,11 +291,12 @@ The gear button sets what the models may do:
 | Setting     | Claude Code                                        | Codex                              |
 | ----------- | -------------------------------------------------- | ---------------------------------- |
 | Chat only   | No tools; Buddy's chat instructions                | No command, file, or MCP tools     |
-| Read files  | Read, search, and web tools in the working folder  | Read-only commands; no MCP servers |
+| Read files  | Read, search, and web tools in the start folder    | Read-only commands; no MCP servers |
 | Full access | All tools, including the terminal, without prompts | No sandbox, no approval prompts    |
 
-In **Read files**, Claude Code's file tools stay inside the working folder,
-and it ignores the folder's settings, hooks, MCP servers, and skills. Codex's
+In **Read files**, Claude Code's file tools stay inside the folder it starts
+in: the chat folder's [project folder](#project-folders), or the start folder.
+It ignores the folder's settings, hooks, MCP servers, and skills. Codex's
 read-only sandbox blocks writes but cannot limit reads to one folder (custom
 read rules need Codex's elevated Windows sandbox), so a Codex model can read
 any file your account can. Buddy turns off Codex hooks in every setting and
@@ -263,8 +304,9 @@ Codex MCP servers outside Full access. Instruction files in the folder
 (`CLAUDE.md`, `AGENTS.md`) can still steer the model.
 
 **Full access** lets the model edit files and run terminal commands on the
-computer as you, in the working folder you choose (by default `workspace` in
-the Runner's data folder: `%APPDATA%\Buddy\runner\workspace` for the app,
+computer as you. It starts in the chat folder's project folder, or else in the
+**Start folder** you choose (by default `workspace` in the Runner's data
+folder: `%APPDATA%\Buddy\runner\workspace` for the app,
 `~/.buddy-runner/workspace` for a Runner started on its own, or
 `subscriptions/workspace` in Buddy's data folder on This server). Status lines
 show each command while it runs, and the reasoning block keeps a log of them.
