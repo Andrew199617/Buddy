@@ -20,6 +20,12 @@
 	let error = '';
 	let loadError = '';
 
+	// A new opening starts without the last one's errors.
+	$: if (!show) {
+		error = '';
+		loadError = '';
+	}
+
 	async function save() {
 		saving = true;
 		const saved = await section.save();
