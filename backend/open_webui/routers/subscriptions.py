@@ -104,6 +104,7 @@ class PolicyForm(BaseModel):
     plan_sign_in: Optional[bool] = None
     api_keys: Optional[bool] = None
     server_machine: Optional[bool] = None
+    desktop_download_url: Optional[str] = None
 
 
 def _bad_request(error: Exception) -> HTTPException:
@@ -150,8 +151,12 @@ async def get_subscriptions(user=Depends(get_verified_user)):
 
 
 def _public_policy(policy) -> dict:
-    """What every user may know about the policy: which sign-ins are allowed."""
-    return {'plan_sign_in': policy.plan_sign_in, 'api_keys': policy.api_keys}
+    """What every user may know about the policy: which sign-ins are allowed, and where the app is."""
+    return {
+        'plan_sign_in': policy.plan_sign_in,
+        'api_keys': policy.api_keys,
+        'desktop_download_url': policy.desktop_download_url,
+    }
 
 
 @router.get('/machines')
@@ -233,6 +238,7 @@ async def _policy_response() -> dict:
         'plan_sign_in': policy.plan_sign_in,
         'api_keys': policy.api_keys,
         'server_machine': policy.server_machine,
+        'desktop_download_url': policy.desktop_download_url,
         'owner_id': await service.server_owner_id(),
     }
 

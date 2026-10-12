@@ -189,6 +189,15 @@ class SubscriptionPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(policy.api_keys)
         self.assertFalse(self.config.values['subscriptions.policy']['plan_sign_in'])
 
+    async def test_the_app_download_link_must_be_https(self):
+        policy = await self.service.save_policy({'desktop_download_url': ' https://example.com/Buddy-Setup.exe '})
+        self.assertEqual(policy.desktop_download_url, 'https://example.com/Buddy-Setup.exe')
+        for link in ('http://example.com/setup.exe', 'javascript:alert(1)', 'https://me:secret@example.com/x'):
+            with self.assertRaises(self.service.SubscriptionError):
+                await self.service.save_policy({'desktop_download_url': link})
+        self.assertEqual((await self.service.get_policy()).desktop_download_url, 'https://example.com/Buddy-Setup.exe')
+        self.assertEqual((await self.service.save_policy({'desktop_download_url': ''})).desktop_download_url, '')
+
     async def test_an_unknown_audience_is_refused(self):
         with self.assertRaises(self.service.SubscriptionError):
             await self.service.save_policy({'user_machines': 'everyone-everywhere'})
