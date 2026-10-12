@@ -1532,8 +1532,9 @@ async def _folder_computers(user, choices: dict, named_machine_ids: set[str]) ->
 
 
 async def _folder_plan_machine(owner_id: str, machine_id: str, configs: dict[str, dict]) -> dict | None:
-    """The computer a plan runs on, with the revision a settings change must confirm,
-    or None when it has none it can use: none chosen, removed, or This server not allowed."""
+    """The computer a plan runs on, with the revision a settings change must confirm, or
+    None when it has none it can use: none chosen, removed, This server not allowed, or
+    added by address without its runner key (as after a config import)."""
     if not machine_id:
         return None
     if machine_id == LOCAL_MACHINE_ID:
@@ -1543,6 +1544,8 @@ async def _folder_plan_machine(owner_id: str, machine_id: str, configs: dict[str
     config = configs.get(machine_id)
     revision = await _machine_revision(owner_id, machine_id)
     if config is None or revision is None:
+        return None
+    if _folder_computer_kind(machine_id, config) == 'address' and not config.get('key'):
         return None
     return {'id': machine_id, 'name': config['name'], 'revision': revision}
 

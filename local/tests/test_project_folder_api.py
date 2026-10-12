@@ -134,6 +134,25 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
         project = await self.service.describe_folder_project(OWNER_USER, 'website')
         self.assertEqual([plan['machine'] for plan in project['plans']], [None, None])
 
+    async def test_a_computer_added_by_address_without_its_key_is_not_usable(self):
+        # As after a config import onto a server where that computer's address changed.
+        del self.config.values['subscriptions.machines'][0]['key']
+        project = await self.service.describe_folder_project(OWNER_USER, 'website')
+        self.assertIsNone(project['plans'][0]['machine'])
+
+    async def test_a_described_plan_saves_with_the_computer_it_reports(self):
+        self.config.values['subscriptions.claude'] = {
+            'enable': True, 'access': 'chat', 'workspace': '', 'cli_path': '', 'machine_id': 'pc-1'
+        }
+        project = await self.service.describe_folder_project(OWNER_USER, 'website')
+        for plan in project['plans']:
+            with self.subTest(plan=plan['id']):
+                machine = plan['machine']
+                saved = await self.service.save_settings(
+                    OWNER, plan['id'], {'access': 'read'}, machine['id'], machine['revision']
+                )
+                self.assertEqual((saved.access, saved.machine_id), ('read', machine['id']))
+
     async def test_a_members_plans_name_only_their_own_computers(self):
         self.config.values['subscriptions.users.member-1.claude'] = enabled_settings('pc-1')
         self.config.values['subscriptions.users.member-1.codex'] = {
