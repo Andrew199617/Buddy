@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import OrderedDict
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, status
@@ -50,52 +51,38 @@ class EnrollForm(BaseModel):
 
 
 class EnrollThrottle:
-    """Limits enrollment attempts per address and overall, in a sliding window.
+    """Limits enrollment attempts per address in a sliding window, in bounded memory.
 
-    Tokens are 256-bit and single-use, so this bounds work and memory rather
-    than guessing. The address can come from X-Forwarded-For, which a caller
-    may forge, so the overall ceiling also caps how many addresses are kept.
+    Tokens are 256-bit and single-use, so this bounds each caller's work rather
+    than guessing. The address can come from X-Forwarded-For, which a caller may
+    forge: rotating it only gives that caller more attempts and never blocks
+    anyone else. At most max_addresses are kept; the least recently seen goes first.
     """
 
-    def __init__(self, per_address: int, overall: int, window_seconds: float, clock=time.monotonic):
+    def __init__(self, per_address: int, max_addresses: int, window_seconds: float, clock=time.monotonic):
         self.per_address = per_address
-        self.overall = overall
+        self.max_addresses = max_addresses
         self.window_seconds = window_seconds
         self.clock = clock
-        self.by_address: dict[str, list[float]] = {}
-        # Every attempt counted per address, oldest first.
-        self.all_attempts: list[float] = []
+        # Most recently seen last.
+        self.by_address: OrderedDict[str, list[float]] = OrderedDict()
 
     def allow(self, address: str) -> bool:
         now = self.clock()
-        self._forget_expired(now)
-        if len(self.all_attempts) >= self.overall:
-            return False
-        recent = self.by_address.get(address, [])
-        if len(recent) >= self.per_address:
-            return False
-        recent.append(now)
-        self.by_address[address] = recent
-        self.all_attempts.append(now)
-        return True
-
-    def _is_recent(self, moment: float, now: float) -> bool:
-        return now - moment < self.window_seconds
-
-    def _forget_expired(self, now: float) -> None:
-        # Attempts are kept in time order, so nothing has expired while the oldest is recent.
-        if not self.all_attempts or self._is_recent(self.all_attempts[0], now):
-            return
-        self.all_attempts = [moment for moment in self.all_attempts if self._is_recent(moment, now)]
-        for address in list(self.by_address):
-            recent = [moment for moment in self.by_address[address] if self._is_recent(moment, now)]
-            if recent:
-                self.by_address[address] = recent
-            else:
-                del self.by_address[address]
+        # A forwarded address is caller-chosen text; the longest real IPv6 address is 45 characters.
+        key = address[:64]
+        recent = [moment for moment in self.by_address.pop(key, []) if now - moment < self.window_seconds]
+        allowed = len(recent) < self.per_address
+        if allowed:
+            recent.append(now)
+        if recent:
+            self.by_address[key] = recent
+        while len(self.by_address) > self.max_addresses:
+            self.by_address.popitem(last=False)
+        return allowed
 
 
-ENROLL_THROTTLE = EnrollThrottle(per_address=20, overall=200, window_seconds=600)
+ENROLL_THROTTLE = EnrollThrottle(per_address=20, max_addresses=1000, window_seconds=600)
 
 
 @router.post('/enrollments')
