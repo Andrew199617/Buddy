@@ -78,7 +78,7 @@ POLICY_CONFIG_KEY = 'subscriptions.policy'
 USER_SETTINGS_PREFIX = 'subscriptions.users'
 # Key-free metadata a runner reports in /health that is saved and shown.
 HOST_FIELDS = ('id', 'name', 'platform', 'version')
-CAPABILITY_FIELDS = ('directories', 'files', 'workspaces', 'terminals', 'pty', 'providerExecution')
+CAPABILITY_FIELDS = ('directories', 'files', 'workspaces', 'terminals', 'pty', 'providerExecution', 'folderBrowsing')
 REVERIFY_MACHINE_MESSAGE = 'Verify the selected machine again in subscription settings before using its provider.'
 NO_MACHINE_MESSAGE = 'Choose one of your computers for this provider in Settings → Machines.'
 SERVER_MACHINE_MESSAGE = 'This server is not available to your account. Choose one of your computers.'
