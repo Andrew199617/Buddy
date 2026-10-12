@@ -1394,7 +1394,7 @@ async def _save_settings(
     if not only_turns_off:
         machine = await get_machine(ref.owner_id, settings.machine_id)
         if settings.workspace and not await machine.path_exists(settings.workspace, 'dir'):
-            raise SubscriptionError(f'The working folder does not exist on {machine.name}: {settings.workspace}')
+            raise SubscriptionError(f'The start folder does not exist on {machine.name}: {settings.workspace}')
         if settings.cli_path and not await machine.path_exists(settings.cli_path, 'file'):
             raise SubscriptionError(f'The CLI path does not exist on {machine.name}: {settings.cli_path}')
 

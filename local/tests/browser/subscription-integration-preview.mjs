@@ -2325,7 +2325,7 @@ async function permissionDisclosureCase(browser, profile) {
 		assert.equal(await dialog.locator('input[value="chat"]').isChecked(), true);
 		await dialog
 			.getByText(
-				"Can run read-only commands. Codex's read-only sandbox does not limit reads to the working folder, so it can read any file your account can. No edits.",
+				"Can run read-only commands. Codex's read-only sandbox does not limit reads to the start folder, so it can read any file your account can. No edits.",
 				{ exact: true }
 			)
 			.waitFor();
@@ -2337,7 +2337,7 @@ async function permissionDisclosureCase(browser, profile) {
 			.waitFor();
 		await dialog
 			.getByText(
-				'The working folder is CLI context, not a project or filesystem grant. Chat only uses an empty folder.',
+				'Where it starts for chats outside a chat folder, and in folders that let the AI choose. A chat folder with a specific project folder starts there instead. This is CLI context, not a project or filesystem grant. Chat only uses an empty folder.',
 				{ exact: true }
 			)
 			.waitFor();
