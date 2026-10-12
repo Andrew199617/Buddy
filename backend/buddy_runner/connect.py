@@ -23,6 +23,7 @@ import json
 import logging
 import socket
 import sys
+import threading
 from pathlib import Path
 
 import aiohttp
@@ -107,28 +108,48 @@ async def enroll(server_url: str, token: str, name: str | None) -> dict:
     }
 
 
-async def _watch_stdin(stop: asyncio.Event) -> None:
+def _is_stop_command(line: str) -> bool:
+    try:
+        command = json.loads(line)
+    except ValueError:
+        return False
+    return isinstance(command, dict) and command.get('command') == 'stop'
+
+
+def _set_event_from_thread(loop: asyncio.AbstractEventLoop, event: asyncio.Event) -> None:
+    try:
+        loop.call_soon_threadsafe(event.set)
+    except RuntimeError:
+        # The loop already finished, so nothing is waiting for the stop.
+        pass
+
+
+def _read_stdin_until_stop(loop: asyncio.AbstractEventLoop, stop: asyncio.Event) -> None:
     """Stop on {"command": "stop"}, or when the app that started us goes away."""
     while True:
-        line = await asyncio.to_thread(sys.stdin.readline)
-        if not line:
+        line = sys.stdin.readline()
+        if not line or _is_stop_command(line):
             break
-        try:
-            command = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(command, dict) and command.get('command') == 'stop':
-            break
-    stop.set()
+    _set_event_from_thread(loop, stop)
+
+
+def _start_stdin_reader(stop: asyncio.Event) -> None:
+    # A daemon thread, not asyncio.to_thread: a read blocked on the app's open
+    # pipe must not keep the process alive once Buddy ends the connection for
+    # good, and asyncio.run waits for its executor threads before returning.
+    loop = asyncio.get_running_loop()
+    reader = threading.Thread(
+        target=_read_stdin_until_stop, args=(loop, stop), name='buddy-runner-stdin', daemon=True
+    )
+    reader.start()
 
 
 async def serve(connection: dict, runner: Runner, *, watch_stdin: bool) -> int:
     """Stay connected until stopped or refused; returns the process exit code."""
     stop = asyncio.Event()
-    watcher = None
     await runner.workspaces.start()
     if watch_stdin:
-        watcher = asyncio.create_task(_watch_stdin(stop))
+        _start_stdin_reader(stop)
     tunnel = asyncio.create_task(run_tunnel(
         connection['server_url'], connection['machine_id'], connection['credential'], runner, on_status=emit_status,
     ))
@@ -145,10 +166,9 @@ async def serve(connection: dict, runner: Runner, *, watch_stdin: bool) -> int:
     finally:
         # Stop every process and acknowledge it to Buddy before the connection closes.
         await runner.close()
-        for task in (tunnel, stopping, watcher):
-            if task is not None and not task.done():
-                task.cancel()
-        await asyncio.gather(tunnel, stopping, *(task for task in (watcher,) if task), return_exceptions=True)
+        tunnel.cancel()
+        stopping.cancel()
+        await asyncio.gather(tunnel, stopping, return_exceptions=True)
     if exit_code == 0:
         emit_status('stopped')
     return exit_code
