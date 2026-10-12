@@ -296,6 +296,10 @@ describe('drafts', () => {
 		expect(sameDraft(base, { ...base, offered: { 'pc-1': ['C:\\b'] } })).toBe(false);
 		const folder = { ...emptyDraft('folder'), paths: { a: 'x' } };
 		expect(sameDraft(folder, { ...folder, paths: { a: 'y' } })).toBe(false);
+		// Left over from an earlier pick, but not saved for these modes.
+		for (const mode of ['inherit', 'unchosen', 'chat'] as const) {
+			expect(sameDraft(emptyDraft(mode), { ...emptyDraft(mode), machineId: 'pc-1' })).toBe(true);
+		}
 	});
 });
 

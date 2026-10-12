@@ -252,7 +252,14 @@
 
 					{#if edit && folderId}
 						<hr class=" border-gray-50 dark:border-gray-850/30 my-2.5 w-full" />
-						<ProjectFolderSection bind:this={projectSection} {folderId} />
+						<h3 id="folder-project-heading-{folderId}" class="mb-2 text-xs text-gray-500">
+							{$i18n.t('Project folder')}
+						</h3>
+						<ProjectFolderSection
+							bind:this={projectSection}
+							{folderId}
+							labelledBy="folder-project-heading-{folderId}"
+						/>
 					{/if}
 
 					<div class="flex justify-end pt-3 text-sm font-normal gap-1.5">

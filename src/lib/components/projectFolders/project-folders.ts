@@ -261,6 +261,8 @@ function sameOffered(first: Record<string, string[]>, second: Record<string, str
 
 export function sameDraft(first: ProjectDraft, second: ProjectDraft): boolean {
 	if (first.mode !== second.mode) return false;
+	// With no own choice, or detached, nothing else is saved, so nothing else counts.
+	if (first.mode === 'inherit' || first.mode === 'unchosen' || first.mode === 'chat') return true;
 	if (first.machineId !== second.machineId || first.access !== second.access) return false;
 	return samePaths(first.paths, second.paths) && sameOffered(first.offered, second.offered);
 }
