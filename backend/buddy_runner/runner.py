@@ -96,6 +96,10 @@ def _auth_middleware(key: str):
     return check_key
 
 
+# A sleeping or disconnected drive can take a long time to answer a path check.
+PATH_CHECK_SECONDS = 5
+
+
 class RunnerError(Exception):
     """A request the Runner refuses, with the HTTP status the listener reports."""
 
@@ -200,6 +204,13 @@ class Runner:
             return Path(path).is_dir()
         return Path(path).is_file()
 
+    async def check_path_exists(self, path: str, kind: str) -> bool:
+        """path_exists in a worker thread, so a slow drive never holds up other requests."""
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(self.path_exists, path, kind), PATH_CHECK_SECONDS)
+        except asyncio.TimeoutError:
+            raise RunnerError(504, 'That drive took too long to answer. It may be asleep or disconnected.') from None
+
     def at_process_limit(self) -> bool:
         return len(self.command_requests) + len(self.processes) >= 16
 
@@ -216,7 +227,10 @@ class Runner:
 
     async def check_path(self, request: web.Request) -> web.Response:
         body = await request.json()
-        exists = self.path_exists(str(body.get('path') or ''), body.get('kind'))
+        try:
+            exists = await self.check_path_exists(str(body.get('path') or ''), body.get('kind'))
+        except RunnerError as error:
+            return _json_error(error.status, error.message)
         return web.json_response({'exists': exists})
 
     async def run(self, request: web.Request) -> web.Response:
