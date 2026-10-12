@@ -1531,6 +1531,39 @@ async def _folder_computers(user, choices: dict, named_machine_ids: set[str]) ->
     return computers
 
 
+async def _folder_plan_machine(owner_id: str, machine_id: str, configs: dict[str, dict]) -> dict | None:
+    """The computer a plan runs on, with the revision a settings change must confirm,
+    or None when it has none it can use: none chosen, removed, or This server not allowed."""
+    if not machine_id:
+        return None
+    if machine_id == LOCAL_MACHINE_ID:
+        if not await _may_use_server_machine(owner_id):
+            return None
+        return {'id': machine_id, 'name': 'This server', 'revision': 'local'}
+    config = configs.get(machine_id)
+    revision = await _machine_revision(owner_id, machine_id)
+    if config is None or revision is None:
+        return None
+    return {'id': machine_id, 'name': config['name'], 'revision': revision}
+
+
+async def _folder_plans(user) -> list[dict]:
+    """Each plan's switch, access and computer, so a folder's settings can ask to let a
+    Chat-only plan use files. Contacts no computer."""
+    configs = {config['id']: config for config in await _owned_machine_configs(user.id)}
+    plans = []
+    for provider_id in PROVIDER_IDS:
+        settings = await _load_settings(ProviderRef(user.id, provider_id))
+        plans.append({
+            'id': provider_id,
+            'name': PROVIDER_LABELS[provider_id],
+            'enable': settings.enable,
+            'access': settings.access,
+            'machine': await _folder_plan_machine(user.id, settings.machine_id, configs),
+        })
+    return plans
+
+
 def _describe_folder_choice(choice, revisions: dict[str, str]) -> dict | None:
     if choice is None:
         return None
@@ -1572,6 +1605,7 @@ async def describe_folder_project(user, folder_id: str) -> dict:
         # Instructions someone else can change keep chats chat-only until the person chooses here.
         'shared_instructions': await project_folders.has_shared_instructions(user.id, folder),
         'has_plans': has_plans,
+        'plans': await _folder_plans(user),
         'computers': await _folder_computers(user, choices, named_machine_ids),
     }
 

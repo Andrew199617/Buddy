@@ -106,6 +106,46 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(computer['providers'], [{'id': 'claude', 'name': 'Claude', 'access': 'full'}])
         self.assertEqual(self.machine.path_checks, [])
 
+    async def test_describing_lists_each_plan_with_its_computer(self):
+        project = await self.service.describe_folder_project(OWNER_USER, 'website')
+        self.assertEqual(project['plans'], [
+            {
+                'id': 'claude', 'name': 'Claude', 'enable': True, 'access': 'full',
+                'machine': {'id': 'pc-1', 'name': 'Test pc-1', 'revision': 'fixture-revision-pc-1'},
+            },
+            {
+                'id': 'codex', 'name': 'ChatGPT', 'enable': False, 'access': 'chat',
+                'machine': {'id': 'local', 'name': 'This server', 'revision': 'local'},
+            },
+        ])
+        self.assertEqual(self.machine.path_checks, [])
+
+    async def test_a_chat_only_plan_is_listed_but_opens_no_computer(self):
+        self.config.values['subscriptions.claude'] = {**enabled_settings('pc-1'), 'access': 'chat'}
+        project = await self.service.describe_folder_project(OWNER_USER, 'website')
+        claude = project['plans'][0]
+        self.assertEqual((claude['enable'], claude['access'], claude['machine']['id']), (True, 'chat', 'pc-1'))
+        self.assertEqual(project['computers'], [])
+        self.assertTrue(project['has_plans'])
+
+    async def test_a_plan_without_a_usable_computer_has_none(self):
+        self.config.values['subscriptions.claude'] = enabled_settings('removed-pc')
+        await self.service.save_policy({'server_machine': False})
+        project = await self.service.describe_folder_project(OWNER_USER, 'website')
+        self.assertEqual([plan['machine'] for plan in project['plans']], [None, None])
+
+    async def test_a_members_plans_name_only_their_own_computers(self):
+        self.config.values['subscriptions.users.member-1.claude'] = enabled_settings('pc-1')
+        self.config.values['subscriptions.users.member-1.codex'] = {
+            **enabled_settings('member-pc'), 'access': 'chat'
+        }
+        project = await self.service.describe_folder_project(MEMBER_USER, 'website')
+        [claude, codex] = project['plans']
+        self.assertIsNone(claude['machine'])
+        self.assertEqual(codex['machine'], {
+            'id': 'member-pc', 'name': 'Test member-pc', 'revision': 'fixture-revision-member-pc'
+        })
+
     async def test_a_saved_folder_round_trips_with_recent_paths(self):
         project = await self.save(OWNER_USER, 'folder', {'pc-1': 'C:/code/site'})
         self.assertEqual(project['own']['paths'], {'pc-1': {'path': 'C:\\code\\site', 'problem': None}})
