@@ -4,7 +4,7 @@ Routes:
   POST      /enrollments — a signed-in user asks to connect this PC; returns a 60-second, single-use token
   POST      /enroll      — the Buddy app trades that token for this computer's machine credential
   WEBSOCKET /connect     — a connected computer's Runner keeps this open; see buddy_runner/protocol.py
-  *         /machines/{machine}/workspace/v1/... — the Projects page, relayed to the user's own computer
+  *         /machines/{machine}/workspace/v1/... — a chat's Project tab, relayed to the user's own computer
 
 Relayed project requests carry an ``X-Buddy-Relay-Client`` header naming the
 page, so each page keeps its own workspaces and terminals. The computer still

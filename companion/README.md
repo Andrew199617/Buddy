@@ -278,17 +278,16 @@ A registered machine's `url` is reached by Buddy's backend, for example
 `https://host.docker.internal:8765` from Docker Desktop with verified Runner TLS.
 Every non-loopback address requires HTTPS; Docker and Tailscale names or IPs
 do not waive certificate verification. [The HTTPS setup](TLS_SETUP.md) describes
-operator-supplied certificates and application-scoped public trust. Its optional `browser_url`
-is a separately configured HTTPS origin or loopback HTTP origin. It is never
-inferred from the backend address. Registry metadata contains no key or grants.
+operator-supplied certificates and application-scoped public trust. Registry
+metadata contains no key or grants. A machine's saved browser address is kept
+for older editors, but nothing in the web app uses it.
 
-A phone's 127.0.0.1 addresses the phone itself. Remote PC/cloud access needs an
-approved private HTTPS transport to the execution host's loopback listener,
-rewriting its upstream Host header and preserving the browser Origin when using
-a proxy. Runner TLS can serve backend provider requests directly on loopback.
-No certificates, trust stores, VPN, firewall, public listener, persistent service
-or live Docker configuration are changed automatically. Future desktop clients
-can use the same versioned API.
+Browsers and phones never reach a Runner directly. A chat's Project tab opens a
+computer only through Buddy's relay, over the Buddy app's own connection, so it
+works from any device that can reach Buddy. A Runner started on its own runs
+Claude and ChatGPT for Buddy, but its folders can't be opened from Buddy. No
+certificates, trust stores, VPN, firewall, public listener, persistent service
+or live Docker configuration are changed automatically.
 
 Discovery is `GET /v1/capabilities`; it advertises API support and observed host
 identity, not permission. Actual file/write/execute authority comes only from
