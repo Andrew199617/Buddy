@@ -353,6 +353,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	const projectModes = new Set([
 		'project-tab',
 		'project-agents',
+		'project-agents-server',
 		'folder-chip',
 		'folder-edit',
 		'folder-allow',
@@ -390,6 +391,14 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	if (askingModes.has(mode)) {
 		projectChoice = { folder_id: 'website', folder_name: 'Website', mode: 'auto', paths: {} };
 	}
+	if (mode === 'project-agents-server') {
+		projectChoice = {
+			folder_id: 'website',
+			folder_name: 'Website',
+			mode: 'folder',
+			paths: { local: { path: 'C:\\baseball\\src', problem: null } }
+		};
+	}
 	// The person's plans as the folder settings see them, changed by plan config saves.
 	const folderPlans = [
 		{
@@ -409,6 +418,9 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	];
 	if (mode === 'folder-no-plans') {
 		folderPlans[0].enable = false;
+	}
+	if (mode === 'project-agents-server') {
+		folderPlans[0].machine = { id: 'local', name: 'This server', revision: 'local' };
 	}
 	if (mode === 'folder-allow-homeless') {
 		// Claude has Full access on a This server the policy no longer allows;
@@ -489,6 +501,21 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		const computers = [];
 		if (providers.length > 0 || projectChoice.paths['pc-1']) {
 			computers.push({ ...workPc, providers });
+		}
+		if (mode === 'project-agents-server') {
+			const serverProviders = folderPlans
+				.filter((plan) => plan.enable && plan.access !== 'chat' && plan.machine?.id === 'local')
+				.map((plan) => ({ id: plan.id, name: plan.name, access: plan.access }));
+			computers.push({
+				machine_id: 'local',
+				name: 'This server',
+				kind: 'server',
+				online: true,
+				platform: 'win32',
+				can_browse: false,
+				providers: serverProviders,
+				recent_paths: []
+			});
 		}
 		return {
 			folder_id: 'website',
@@ -652,6 +679,18 @@ function createFixtures(mode = 'normal', role = 'admin') {
 				created_at: 1,
 				updated_at: 1
 			};
+		} else if (path === '/api/v1/subscriptions/folders/website/agents' && method === 'GET') {
+			requests.push({ method, path });
+			reply = {
+				files: [
+					{
+						path: '.github/agents/QuickPlan.agent.md',
+						content: '---\ndescription: Plans quickly\n---\nWrite a short plan first.'
+					},
+					{ path: '.github/agents/ResearchFast.agent.md', content: 'Research fast.' }
+				],
+				left_out: 0
+			};
 		} else if (path === '/api/v1/subscriptions/folders/website/project') {
 			requests.push({ method, path, body: request.postDataJSON() });
 			if (machinesRevoked) {
@@ -712,7 +751,8 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	}
 
 	let sessionOptions = {};
-	if (mode === 'project-tab' || mode === 'project-agents') sessionOptions = { folderId: 'website' };
+	if (mode === 'project-tab' || mode === 'project-agents' || mode === 'project-agents-server')
+		sessionOptions = { folderId: 'website' };
 	if (mode === 'folder-chip' || mode === 'folder-edit' || askingModes.has(mode))
 		sessionOptions = { path: '/folders/website' };
 
@@ -3123,6 +3163,53 @@ async function projectAgentsCase(browser, profile) {
 	});
 }
 
+async function projectAgentsServerCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'project-agents-server',
+		'project-agents-server',
+		async (session, fixtures) => {
+			const { page } = session;
+			const robot = page.locator('#agent-menu-button');
+			if (profile.mobile) await page.locator('#chat-input').tap();
+			else await page.locator('#chat-input').click();
+			await robot.click();
+
+			const menu = page.getByRole('menu');
+			await menu.getByText('Agents in src').waitFor();
+			await menu.getByRole('menuitemradio', { name: /ResearchFast/ }).waitFor();
+			await menu.getByRole('menuitemradio', { name: /QuickPlan/ }).click();
+			await waitUntil(
+				async () => (await robot.getAttribute('aria-label')) === 'Agent: QuickPlan',
+				'The button names the agent chosen from This server'
+			);
+			assert.ok(
+				fixtures.requests.some((entry) => entry.path.endsWith('/folders/website/agents')),
+				'Buddy reads This server itself'
+			);
+			assert.equal(
+				fixtures.requests.filter((entry) => entry.path.includes('/runners/machines/')).length,
+				0,
+				'This server needs no relay'
+			);
+
+			await page.locator('#chat-input').click();
+			await page.keyboard.type('Plan it');
+			await page.locator('#send-message-button').click();
+			await waitUntil(() => session.completions.length === 1, 'The message is sent');
+			const system = session.completions[0].messages?.find((message) => message.role === 'system');
+			assert.match(
+				system?.content ?? '',
+				/from \.github\/agents\/QuickPlan\.agent\.md in the project folder\. Follow its instructions:\n\nWrite a short plan first\.$/
+			);
+			// This case sends one message on purpose; runCase still checks that nothing else was sent.
+			session.completions.splice(0);
+			await captureScreenshot(page, profile.name + '-project-agents-server');
+		}
+	);
+}
+
 async function folderChipCase(browser, profile) {
 	await runCase(browser, profile, 'folder-chip', 'folder-chip', async ({ page }, fixtures) => {
 		const chip = page.getByRole('button', { name: 'Project folder: Work PC · site', exact: true });
@@ -3626,6 +3713,7 @@ try {
 	]) {
 		await projectTabCase(browser, profile);
 		await projectAgentsCase(browser, profile);
+		await projectAgentsServerCase(browser, profile);
 		await folderChipCase(browser, profile);
 		await folderEditCase(browser, profile);
 		await folderAllowCase(browser, profile);
