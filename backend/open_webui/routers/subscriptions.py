@@ -16,6 +16,8 @@ Routes:
   GET    /admin/policy             — who may use machines, and which sign-ins are allowed
   POST   /admin/policy             — save that policy
   POST   /machines/{machine}/folders/check — check that a folder exists on one of the user's computers
+  GET    /machines/{machine}/folders   — folder names in one folder there (?path=, hidden, prefix); drives for no path
+  GET    /machines/{machine}/folders/suggested — folders Claude Code and Codex worked in there
   GET    /folders/{folder}/project — the user's project folder for a chat folder, and their computers
   PUT    /folders/{folder}/project — choose it: let the AI choose, an exact folder per computer, or no files
   DELETE /folders/{folder}/project — forget it, so the chat folder follows its parent again
@@ -263,6 +265,28 @@ class FolderProjectForm(BaseModel):
 async def check_folder_on_machine(machine_id: str, form_data: FolderCheckForm, user=Depends(get_machine_session_user)):
     try:
         return {'path': await service.check_machine_folder(user, machine_id, form_data.path)}
+    except SubscriptionError as error:
+        raise _bad_request(error)
+
+
+@router.get('/machines/{machine_id}/folders')
+async def list_folders_on_machine(
+    machine_id: str,
+    path: str = '',
+    hidden: bool = False,
+    prefix: str = '',
+    user=Depends(get_machine_session_user),
+):
+    try:
+        return await service.list_machine_folders(user, machine_id, path, hidden, prefix)
+    except SubscriptionError as error:
+        raise _bad_request(error)
+
+
+@router.get('/machines/{machine_id}/folders/suggested')
+async def suggested_folders_on_machine(machine_id: str, user=Depends(get_machine_session_user)):
+    try:
+        return await service.suggested_machine_folders(user, machine_id)
     except SubscriptionError as error:
         raise _bad_request(error)
 

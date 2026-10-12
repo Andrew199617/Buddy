@@ -36,7 +36,8 @@ sys.path.insert(0, str(ROOT / 'backend'))
 from open_webui.utils.subscriptions.runner_transport import normalize_runner_url  # noqa: E402
 from open_webui.utils.subscriptions.events import SubscriptionError  # noqa: E402
 from open_webui.utils.subscriptions.machines import TunnelMachine  # noqa: E402
-from open_webui.utils.subscriptions.tunnel_hub import RunnerHub  # noqa: E402
+from open_webui.utils.subscriptions.tunnel_hub import RunnerCallError, RunnerHub  # noqa: E402
+from open_webui.utils.subscriptions import folder_listing  # noqa: E402
 from test_project_folders import FakeChats, FakeFolders, load_project_folders  # noqa: E402
 
 # The instance owner: the user whose setup predates per-user machines. Most
@@ -230,6 +231,8 @@ def load_service(config, data_dir):
         'RemoteMachine': FakeRemoteMachine,
         'TunnelMachine': TunnelMachine,
         'HUB': RunnerHub(),
+        'RunnerCallError': RunnerCallError,
+        'folder_listing': folder_listing,
         'SUBSCRIPTION_OWNED_BY': 'subscription'
     })
     # Use the actual settings dataclass and error type without importing the
