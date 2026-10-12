@@ -222,6 +222,14 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			};
 			provider.models = [];
 		}
+		if (mode === 'computer-sign-in') {
+			// Claude is on and signed in on this server, but not yet on computer A.
+			provider.settings.enable = true;
+			provider.computers = [
+				{ machine_id: 'local', name: 'This server', online: true, state: 'ready' },
+				{ machine_id: 'runner-a', name: 'Synthetic computer A', online: true, state: 'signed_out' }
+			];
+		}
 		return provider;
 	}
 
@@ -733,7 +741,18 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			return;
 		}
 		const providerId = path.split('/')[4];
-		if (providerId === 'claude' || providerId === 'codex') {
+		const chosenMachineId = body?.machine_id ?? url.searchParams.get('machine_id');
+		if ((providerId === 'claude' || providerId === 'codex') && chosenMachineId) {
+			// A sign-in action on a chosen computer names it, with the revision the page showed.
+			const chosen = machines.find((machine) => machine.id === chosenMachineId);
+			assert.ok(chosen, 'A chosen computer is one of the person’s');
+			assert.equal(recordedRequest.expectedMachineId, null, 'A chosen computer is not the plan’s guard');
+			assert.equal(
+				recordedRequest.expectedMachineRevision,
+				chosen.revision ?? 'local',
+				'A chosen computer carries its revision'
+			);
+		} else if (providerId === 'claude' || providerId === 'codex') {
 			const recovering = recoversMissingMachine(recordedRequest, providerId);
 			assert.equal(
 				typeof recordedRequest.expectedMachineId,
@@ -1792,11 +1811,14 @@ async function permissionCase(browser, profile) {
 					.count(),
 				0
 			);
-			assert.equal(
-				fixtures.requests.filter((request) => request.path.startsWith('/api/v1/subscriptions'))
-					.length,
-				0
+			// The chat page asks where its chat runs; nothing else about plans is asked.
+			const planRequests = fixtures.requests.filter(
+				(request) =>
+					request.path.startsWith('/api/v1/subscriptions') &&
+					!request.path.startsWith('/api/v1/subscriptions/run-target/') &&
+					!request.path.endsWith('/run-target')
 			);
+			assert.equal(planRequests.length, 0);
 			await setSettings(page, false);
 			await page.locator('#chat-input').click();
 			await waitUntil(
@@ -2990,6 +3012,29 @@ async function folderEditCase(browser, profile) {
 	});
 }
 
+async function computerSignInCase(browser, profile) {
+	await runCase(browser, profile, 'computer-sign-in', 'computer-sign-in', async ({ page }, fixtures) => {
+		await setSettings(page, PROVIDERS_TAB);
+		const row = page
+			.getByRole('list', { name: 'Plans on Synthetic computer A' })
+			.getByRole('listitem')
+			.filter({ hasText: 'Claude' });
+		assert.match(await row.innerText(), /Not signed in/);
+		await row.getByRole('button', { name: 'Sign in here', exact: true }).click();
+		await loginDialog(page).waitFor();
+		await startLogin(page);
+		await waitUntil(() => fixtures.count('POST') === 1, 'One sign-in starts');
+		const start = fixtures.requests.find(
+			(request) => request.method === 'POST' && request.path === '/api/v1/subscriptions/claude/login'
+		);
+		// The chosen computer is named apart from the plan's own computer.
+		assert.equal(start.body.machine_id, 'runner-a');
+		assert.equal(start.body.expected_machine_revision, 'fixture-revision-a-1');
+		assert.equal(start.body.expected_machine_id, undefined);
+		await captureScreenshot(page, `computer-sign-in-${profile.name}`);
+	});
+}
+
 function runTargetBar(page) {
 	return page.locator('[role="group"][aria-label="Where this chat runs"]');
 }
@@ -3103,6 +3148,7 @@ try {
 		await folderBrowseCase(browser, profile);
 		await runTargetNewCase(browser, profile);
 		await runTargetBoundCase(browser, profile);
+		await computerSignInCase(browser, profile);
 		await cancellationCase(browser, profile, 'x');
 		await cancellationCase(browser, profile, 'escape');
 		await cancellationCase(browser, profile, 'backdrop');
