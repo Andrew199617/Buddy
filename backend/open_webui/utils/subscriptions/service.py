@@ -2388,6 +2388,20 @@ async def copy_chat_target(user, source_chat_id: str, new_chat_id: str):
     return await bind_chat_target(user, new_chat_id, None, provider_id, started_before_targets=True)
 
 
+async def bind_imported_chat(user, chat_id: str):
+    """An imported chat keeps its old date but starts like a new chat.
+
+    Its row is saved even while its owner may not use computers, so its date
+    never makes it look like a chat from before targets later.
+    """
+    row = await bind_chat_target(user, chat_id)
+    if row is not None:
+        return row
+    if not is_saved_chat_id(chat_id) or not await Chats.is_chat_owner(chat_id, user.id):
+        return None
+    return await ChatRunTargets.insert_if_absent(_detached_row(user, chat_id, SOURCE_DEFAULT))
+
+
 def _provider_for_model_id(model_id) -> str | None:
     """The plan behind one of Buddy's own plan model ids, such as 'claude-code.opus'."""
     if not isinstance(model_id, str):

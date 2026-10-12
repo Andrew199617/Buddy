@@ -117,6 +117,16 @@ class BindingTests(RunTargetTestCase):
         self.assertNotIn('fork-3', self.targets.rows)
         self.assertNotIn('fork-4', self.targets.rows)
 
+    async def test_an_imported_chat_starts_like_a_new_chat_whatever_its_date(self):
+        row = await self.service.bind_imported_chat(OWNER_USER, 'chat-1')
+        self.assertEqual((row.kind, row.source), ('detached', 'default'))
+        # Saved even while its owner may not use computers, so its old date never counts later.
+        self.config.values['subscriptions.policy'] = {'user_machines': 'admins'}
+        self.chats.add('imported-1', MEMBER)
+        row = await self.service.bind_imported_chat(MEMBER_USER, 'imported-1')
+        self.assertEqual((row.kind, row.access, row.source), ('detached', 'chat', 'default'))
+        self.assertIsNone(await self.service.bind_imported_chat(MEMBER_USER, 'chat-1'))
+
     async def test_only_the_owner_of_a_saved_chat_binds_it(self):
         self.assertIsNone(await self.bind(self.computer(), user=MEMBER_USER))
         self.assertIsNone(await self.bind(self.computer(), chat_id='temporary:session-1'))
