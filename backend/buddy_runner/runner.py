@@ -38,6 +38,7 @@ from pathlib import Path
 from aiohttp import WSMsgType, web
 
 from buddy_runner import agent_history, folder_browser
+from buddy_runner.disk_calls import DiskCalls, DiskCallsBusy
 from buddy_runner.discovery import find_tool
 from buddy_runner.keys import load_or_create_key
 from buddy_runner.local_process import start_local_process
@@ -104,6 +105,10 @@ PATH_CHECK_SECONDS = 5
 FOLDER_LIST_SECONDS = 3
 FOLDER_SUGGEST_SECONDS = 2
 FOLDER_SUGGESTIONS_CACHE_SECONDS = 60
+# Threads for path checks, and for folder listings and CLI history; see disk_calls.py.
+PATH_CHECK_SLOTS = 2
+FOLDER_CALL_SLOTS = 2
+SLOW_DRIVE_MESSAGE = 'This computer is still waiting on a slow drive. Try again in a moment.'
 
 
 class RunnerError(Exception):
@@ -163,7 +168,8 @@ class Runner:
         # chat works. Off until the person allows it in the Buddy app, which
         # can change it while the Runner runs.
         self.folder_browsing = folder_browsing
-        self._folder_calls = asyncio.Semaphore(2)
+        self._path_checks = DiskCalls(PATH_CHECK_SLOTS, 'path-check')
+        self._folder_calls = DiskCalls(FOLDER_CALL_SLOTS, 'folders')
         self._suggestions = None
         self.chat_dir = state_dir / 'chat'
         self.default_workspace = state_dir / 'workspace'
@@ -218,12 +224,24 @@ class Runner:
             return Path(path).is_dir()
         return Path(path).is_file()
 
-    async def check_path_exists(self, path: str, kind: str) -> bool:
-        """path_exists in a worker thread, so a slow drive never holds up other requests."""
+    async def _on_disk(self, calls: DiskCalls, seconds: float, slow_message: str, function, *args):
+        """A blocking file-system call on its own threads, so a slow drive never holds up other requests."""
         try:
-            return await asyncio.wait_for(asyncio.to_thread(self.path_exists, path, kind), PATH_CHECK_SECONDS)
+            return await calls.run(seconds, function, *args)
+        except DiskCallsBusy:
+            raise RunnerError(503, SLOW_DRIVE_MESSAGE) from None
         except asyncio.TimeoutError:
-            raise RunnerError(504, 'That drive took too long to answer. It may be asleep or disconnected.') from None
+            raise RunnerError(504, slow_message) from None
+
+    async def check_path_exists(self, path: str, kind: str) -> bool:
+        return await self._on_disk(
+            self._path_checks,
+            PATH_CHECK_SECONDS,
+            'That drive took too long to answer. It may be asleep or disconnected.',
+            self.path_exists,
+            path,
+            kind,
+        )
 
     def set_folder_browsing(self, allowed: bool) -> None:
         self.folder_browsing = allowed
@@ -236,18 +254,21 @@ class Runner:
     async def list_folders(self, path: str, show_hidden: bool, prefix: str) -> dict:
         """Folder names in one folder, or the drives and places to start from when path is empty."""
         self._require_folder_browsing()
-        async with self._folder_calls:
-            try:
-                if not path:
-                    roots = await asyncio.wait_for(asyncio.to_thread(folder_browser.list_roots), FOLDER_LIST_SECONDS)
-                    return {'path': '', 'roots': roots, 'entries': [], 'truncated': False}
-                deadline = time.monotonic() + FOLDER_LIST_SECONDS
-                listing = await asyncio.wait_for(
-                    asyncio.to_thread(folder_browser.list_folders, path, show_hidden, prefix, deadline),
-                    FOLDER_LIST_SECONDS + 1,
-                )
-            except asyncio.TimeoutError:
-                raise RunnerError(504, 'That folder took too long to list. It may be on a sleeping or network drive.') from None
+        slow_message = 'That folder took too long to list. It may be on a sleeping or network drive.'
+        if not path:
+            roots = await self._on_disk(self._folder_calls, FOLDER_LIST_SECONDS, slow_message, folder_browser.list_roots)
+            return {'path': '', 'roots': roots, 'entries': [], 'truncated': False}
+        deadline = time.monotonic() + FOLDER_LIST_SECONDS
+        listing = await self._on_disk(
+            self._folder_calls,
+            FOLDER_LIST_SECONDS + 1,
+            slow_message,
+            folder_browser.list_folders,
+            path,
+            show_hidden,
+            prefix,
+            deadline,
+        )
         log.info('Listed %d folders for Buddy', len(listing['entries']))
         return listing
 
@@ -258,15 +279,17 @@ class Runner:
             return self._suggestions[1]
         claude_home, codex_home = agent_history.default_homes()
         exclusions = agent_history.default_exclusions(self.state_dir)
-        async with self._folder_calls:
-            deadline = time.monotonic() + FOLDER_SUGGEST_SECONDS
-            try:
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(agent_history.suggest_folders, claude_home, codex_home, exclusions, deadline),
-                    FOLDER_SUGGEST_SECONDS + 2,
-                )
-            except asyncio.TimeoutError:
-                raise RunnerError(504, 'Looking through Claude Code and Codex history took too long.') from None
+        deadline = time.monotonic() + FOLDER_SUGGEST_SECONDS
+        result = await self._on_disk(
+            self._folder_calls,
+            FOLDER_SUGGEST_SECONDS + 2,
+            'Looking through Claude Code and Codex history took too long.',
+            agent_history.suggest_folders,
+            claude_home,
+            codex_home,
+            exclusions,
+            deadline,
+        )
         self._suggestions = (time.monotonic(), result)
         log.info('Suggested %d folders for Buddy', len(result['folders']))
         return result
@@ -610,6 +633,9 @@ class Runner:
         if self._shutdown_task is None or retry_failed_shutdown:
             self._shutdown_task = asyncio.create_task(self._shutdown())
         await _finish_owned_cleanup(self._shutdown_task)
+        # Calls still waiting on a slow drive finish on their own; nothing new starts.
+        self._path_checks.shutdown()
+        self._folder_calls.shutdown()
 
     async def _shutdown(self) -> None:
         # A failed process must not skip cleanup of other owned transports and
