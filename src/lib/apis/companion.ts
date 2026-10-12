@@ -1,30 +1,3 @@
-export const DEFAULT_COMPANION_ENDPOINT = 'http://127.0.0.1:8765';
-
-export type CompanionHost = {
-	id: string;
-	name: string;
-	platform: string;
-	version: string;
-};
-
-export type CompanionCapabilities = {
-	protocol: 'buddy-workspaces';
-	version: 1;
-	host: CompanionHost;
-	capabilities: {
-		directories: boolean;
-		files: boolean;
-		workspaces: boolean;
-		terminals: boolean;
-		pty: false;
-	};
-	permissions: {
-		requiresPairing: true;
-		grants: 'host-approved';
-		commands: 'opt-in-os-account';
-	};
-};
-
 export type CompanionGrant = {
 	id: string;
 	name: string;
@@ -90,43 +63,11 @@ export type CompanionTerminal = {
 export class CompanionError extends Error {
 	constructor(
 		message: string,
-		readonly status: number,
-		readonly hostChanged = false
+		readonly status: number
 	) {
 		super(message);
 		this.name = 'CompanionError';
 	}
-}
-
-/** A host address identifies a machine; it never grants filesystem access. */
-export function normalizeCompanionEndpoint(value: string): string {
-	const input = value.trim();
-	const authorityMatch = input.match(/^[a-z][a-z\d+.-]*:\/\/([^/?#]+)(.*)$/i);
-	if (!authorityMatch || authorityMatch[1].includes('@')) {
-		throw new Error('Enter a computer URL without credentials, such as http://127.0.0.1:8765.');
-	}
-	if (authorityMatch[2] !== '' && authorityMatch[2] !== '/') {
-		throw new Error('The host URL cannot include a path, query, or fragment.');
-	}
-
-	let url: URL;
-	try {
-		url = new URL(input);
-	} catch {
-		throw new Error('Enter a valid Buddy Runner computer URL.');
-	}
-	const hostname = url.hostname;
-	const loopbackAddress =
-		/^127(?:\.\d{1,3}){3}$/.test(hostname) &&
-		hostname.split('.').every((octet) => Number(octet) <= 255);
-	const loopback = hostname === 'localhost' || hostname === '[::1]' || loopbackAddress;
-	if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
-		throw new Error('Use HTTPS for another computer. HTTP is allowed only for loopback hosts.');
-	}
-	if (url.username || url.password || url.search || url.hash || url.pathname !== '/') {
-		throw new Error('The host URL cannot include credentials, a path, query, or fragment.');
-	}
-	return url.origin;
 }
 
 function describeFailure(data: unknown, status: number): string {
@@ -139,13 +80,10 @@ function describeFailure(data: unknown, status: number): string {
 
 /**
  * The Runner's projects protocol. Subclasses decide how a request reaches the
- * computer: straight to its Runner after pairing, or relayed by Buddy.
+ * computer; the app relays it through Buddy (RelayCompanionClient).
  */
 export abstract class WorkspaceClient {
-	/** Shown next to the computer's identity. */
-	abstract readonly description: string;
 	protected closed = false;
-	protected inspectedHost: CompanionHost | null = null;
 	private requests = new Set<AbortController>();
 	private disconnectPromise: Promise<void> | null = null;
 
@@ -178,57 +116,6 @@ export abstract class WorkspaceClient {
 			clearTimeout(timeout);
 			this.requests.delete(controller);
 		}
-	}
-
-	protected validateHost(value: unknown): CompanionHost {
-		const host = value as CompanionHost | null;
-		if (
-			!host ||
-			!['id', 'name', 'platform', 'version'].every(
-				(field) =>
-					typeof host[field as keyof CompanionHost] === 'string' &&
-					host[field as keyof CompanionHost].trim()
-			)
-		) {
-			throw new Error('The Runner returned an invalid computer identity.');
-		}
-		return host;
-	}
-
-	async getCapabilities(): Promise<CompanionCapabilities> {
-		const response = await this.request<CompanionCapabilities>('/v1/capabilities');
-		if (
-			response.protocol !== 'buddy-workspaces' ||
-			response.version !== 1 ||
-			response.permissions?.requiresPairing !== true ||
-			response.permissions?.grants !== 'host-approved' ||
-			response.permissions?.commands !== 'opt-in-os-account' ||
-			response.capabilities?.directories !== true ||
-			response.capabilities?.files !== true ||
-			response.capabilities?.workspaces !== true ||
-			response.capabilities?.terminals !== true ||
-			response.capabilities?.pty !== false
-		) {
-			throw new Error('This computer does not support Buddy Runner projects protocol version 1.');
-		}
-		this.validateHost(response.host);
-		return response;
-	}
-
-	async getHost(): Promise<CompanionHost> {
-		const capabilities = await this.getCapabilities();
-		const response = await this.request<{ host: CompanionHost }>('/v1/host');
-		const host = this.validateHost(response.host);
-		if (this.closed) throw new Error('The computer connection changed while inspecting.');
-		if (host.id !== capabilities.host.id) {
-			throw new CompanionError(
-				'The Runner restarted while inspecting. Inspect its new identity again.',
-				409,
-				true
-			);
-		}
-		this.inspectedHost = host;
-		return host;
 	}
 
 	async getGrants(): Promise<CompanionGrant[]> {
@@ -330,109 +217,9 @@ export abstract class WorkspaceClient {
 	disconnect(): Promise<void> {
 		if (this.disconnectPromise) return this.disconnectPromise;
 		this.closed = true;
-		this.inspectedHost = null;
 		for (const request of this.requests) request.abort();
 		this.requests.clear();
 		this.disconnectPromise = this.endSession();
 		return this.disconnectPromise;
-	}
-}
-
-/** Independent of Buddy/model authentication. The short-lived token stays in this instance. */
-export class CompanionClient extends WorkspaceClient {
-	readonly endpoint: string;
-	readonly description: string;
-	private token = '';
-
-	constructor(endpoint: string = DEFAULT_COMPANION_ENDPOINT) {
-		super();
-		this.endpoint = normalizeCompanionEndpoint(endpoint);
-		this.description = this.endpoint;
-	}
-
-	protected send(path: string, method: string, body: unknown, signal: AbortSignal) {
-		const headers: Record<string, string> = { Accept: 'application/json' };
-		if (this.token) headers.Authorization = `Bearer ${this.token}`;
-		if (body !== undefined) headers['Content-Type'] = 'application/json';
-		return fetch(`${this.endpoint}${path}`, {
-			method,
-			headers,
-			body: body === undefined ? undefined : JSON.stringify(body),
-			credentials: 'omit',
-			mode: 'cors',
-			redirect: 'error',
-			referrerPolicy: 'no-referrer',
-			signal
-		});
-	}
-
-	async pair(code: string): Promise<{ host: CompanionHost; expiresAt: number }> {
-		const inspectedHost = this.inspectedHost;
-		if (!inspectedHost)
-			throw new Error('Inspect the computer and its project capabilities before pairing.');
-		const response = await this.request<{ token: string; expiresAt: number; host: CompanionHost }>(
-			'/v1/pair',
-			'POST',
-			{ code }
-		);
-		// If disposed while pairing, revoke any token that arrived after cancellation.
-		if (this.closed) {
-			await this.revokeToken(response.token);
-			throw new Error('The companion connection changed while pairing.');
-		}
-		try {
-			if (
-				typeof response.token !== 'string' ||
-				!response.token ||
-				!Number.isFinite(response.expiresAt) ||
-				response.expiresAt <= Date.now()
-			) {
-				throw new Error('The Runner returned an invalid pairing response.');
-			}
-			const pairedHost = this.validateHost(response.host);
-			if (pairedHost.id !== inspectedHost.id) {
-				throw new CompanionError(
-					'The computer changed during pairing. Inspect its identity and pair again.',
-					409,
-					true
-				);
-			}
-			this.token = response.token;
-			return { host: pairedHost, expiresAt: response.expiresAt };
-		} catch (cause) {
-			if (typeof response.token === 'string' && response.token) {
-				await this.revokeToken(response.token).catch(() => {});
-			}
-			throw cause;
-		}
-	}
-
-	private async revokeToken(token: string): Promise<void> {
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), 5000);
-		try {
-			const response = await fetch(`${this.endpoint}/v1/session`, {
-				method: 'DELETE',
-				headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-				credentials: 'omit',
-				mode: 'cors',
-				redirect: 'error',
-				referrerPolicy: 'no-referrer',
-				keepalive: true,
-				signal: controller.signal
-			});
-			if (!response.ok && response.status !== 401) {
-				throw new CompanionError('Could not revoke the Runner project session.', response.status);
-			}
-		} finally {
-			clearTimeout(timeout);
-		}
-	}
-
-	protected endSession(): Promise<void> {
-		const token = this.token;
-		this.token = '';
-		if (!token) return Promise.resolve();
-		return this.revokeToken(token);
 	}
 }
