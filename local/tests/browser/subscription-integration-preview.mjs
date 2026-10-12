@@ -3138,6 +3138,58 @@ async function saveFolderSettings(dialog, label = 'Save') {
 	await dialog.getByRole('button', { name: label, exact: true }).click();
 }
 
+async function folderCreateTopCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'folder-create-top',
+		'folder-create',
+		async ({ page }, fixtures) => {
+			const newFolder = page.getByRole('button', { name: 'New Folder', exact: true });
+			if (!(await newFolder.isVisible())) {
+				await page.locator('#sidebar-toggle-button').click();
+				await newFolder.waitFor();
+			}
+			await newFolder.click();
+			const dialog = page.locator('.modal').filter({ has: page.locator('#folder-form-new') });
+			await dialog.getByRole('heading', { name: 'New folder', exact: true }).waitFor();
+
+			// A folder that can't be made keeps the dialog, and what was typed, open.
+			await dialog.getByRole('button', { name: 'Create', exact: true }).click();
+			await page.getByText('Folder name cannot be empty.', { exact: true }).waitFor();
+			assert.equal(await dialog.isVisible(), true, 'The dialog stays open');
+
+			await dialog.locator('#folder-name').fill('Notes');
+			await dialog.getByRole('button', { name: /^Project folder\s*Where the AI works/ }).click();
+			await pickChoice(dialog, 'project-run-on-new', /^Work PC/);
+			await saveFolderSettings(dialog, 'Create');
+			await dialog.waitFor({ state: 'hidden' });
+
+			const created = fixtures.requests.filter(
+				(entry) => entry.method === 'POST' && entry.path === '/api/v1/folders'
+			);
+			assert.equal(created.length, 1);
+			assert.equal(created[0].body.name, 'Notes');
+			assert.equal(created[0].body.parent_id, null);
+			const reads = fixtures.requests.filter(
+				(entry) => entry.path === '/api/v1/subscriptions/new-folder/project'
+			);
+			assert.deepEqual(
+				reads.map((entry) => entry.parentId),
+				[null],
+				'A top-level folder has no parent to follow'
+			);
+			const saved = fixtures.requests.filter(
+				(entry) =>
+					entry.method === 'PUT' &&
+					entry.path === '/api/v1/subscriptions/folders/new-folder/project'
+			);
+			assert.equal(saved.length, 1, 'The new folder’s project folder is saved once it exists');
+			assert.equal(saved[0].body.machine_id, 'pc-1');
+		}
+	);
+}
+
 async function folderCreateCase(browser, profile) {
 	await runCase(browser, profile, 'folder-create', 'folder-create', async ({ page }, fixtures) => {
 		await page.locator('button[aria-label="Folder options"]').click();
@@ -3463,6 +3515,7 @@ try {
 		await folderEditCase(browser, profile);
 		await folderDialogCase(browser, profile);
 		await folderCreateCase(browser, profile);
+		await folderCreateTopCase(browser, profile);
 		await folderDefaultsCase(browser, profile);
 		await folderNoPlansCase(browser, profile);
 		await folderBrowseCase(browser, profile);

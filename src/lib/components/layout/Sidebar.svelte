@@ -1120,13 +1120,7 @@
 	}}
 />
 
-<FolderModal
-	bind:show={showCreateFolderModal}
-	onSubmit={async (folder) => {
-		await createFolder(folder);
-		showCreateFolderModal = false;
-	}}
-/>
+<FolderModal bind:show={showCreateFolderModal} onSubmit={createFolder} />
 
 <svelte:window
 	on:pointermove={(e) => {
