@@ -5,7 +5,10 @@
 
 	import type { FolderProject } from '$lib/apis/subscriptions';
 	import ProjectFolderModal from '$lib/components/projectFolders/ProjectFolderModal.svelte';
-	import { effectiveChoice } from '$lib/components/projectFolders/project-folders';
+	import {
+		effectiveChoice,
+		waitsForOwnChoice
+	} from '$lib/components/projectFolders/project-folders';
 	import ProjectComputer from './ProjectComputer.svelte';
 	import {
 		preferredTarget,
@@ -84,7 +87,22 @@
 	{/if}
 
 	<div class="min-h-0 flex-1">
-		{#if mode === 'chat'}
+		{#if waitsForOwnChoice(project)}
+			<div class="flex flex-col gap-2 px-3 text-xs text-gray-600 dark:text-gray-300">
+				<p>
+					{$i18n.t(
+						"Someone else can change this folder's instructions, so its chats don't use files on your computers until you choose a project folder for it."
+					)}
+				</p>
+				<button
+					type="button"
+					class="min-h-11 self-start rounded-xl bg-gray-900 px-4 text-sm font-medium text-white dark:bg-white dark:text-gray-900 md:min-h-9"
+					on:click={() => (showModal = true)}
+				>
+					{$i18n.t('Choose a project folder')}
+				</button>
+			</div>
+		{:else if mode === 'chat'}
 			<p class="px-3 text-xs text-gray-600 dark:text-gray-300">
 				{$i18n.t(
 					'This folder is set to No files, just chat, so Claude and ChatGPT never touch your computers here.'
