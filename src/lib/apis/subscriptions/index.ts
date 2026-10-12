@@ -340,6 +340,14 @@ export const useMachineSignIn = async (
 	return subscriptionRequest(token, `/${providerId}/credentials/machine`, 'POST');
 };
 
+export const useStoredSubscriptionCredential = async (
+	token: string,
+	providerId: SubscriptionProviderId,
+	kind: 'plan_token' | 'api_key'
+): Promise<SubscriptionProvider> => {
+	return subscriptionRequest(token, `/${providerId}/credentials/${kind}/use`, 'POST');
+};
+
 export const getAllSubscriptionMachines = async (
 	token: string
 ): Promise<{ machines: SubscriptionMachine[] }> => {

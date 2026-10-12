@@ -112,6 +112,16 @@ class ServiceCredentialTests(unittest.IsolatedAsyncioTestCase):
         tracked = await self.service._tracked(self.ref('claude'), await self.service.get_settings(OWNER, 'claude'))
         self.assertEqual(tracked.credential_env, {})
 
+    async def test_a_stored_key_can_be_used_again_without_pasting_it(self):
+        await self.service.save_api_key(OWNER, 'claude', FIXTURE_API_KEY)
+        await self.service.use_machine_sign_in(OWNER, 'claude')
+        described = await self.service.use_stored_credential(OWNER, 'claude', 'api_key')
+        self.assertEqual(described['mode'], CREDENTIAL_API_KEY)
+        with self.assertRaisesRegex(SubscriptionError, 'Nothing is stored'):
+            await self.service.use_stored_credential(OWNER, 'claude', 'plan_token')
+        with self.assertRaisesRegex(SubscriptionError, 'Unknown kind'):
+            await self.service.use_stored_credential(OWNER, 'codex', 'plan_token')
+
     async def test_signing_out_of_a_stored_key_never_signs_the_computer_out(self):
         await self.service.save_api_key(OWNER, 'claude', FIXTURE_API_KEY)
         # FakeProvider has no logout; calling it would fail this test.
