@@ -38,7 +38,7 @@ from open_webui.utils.subscriptions.events import SubscriptionError  # noqa: E40
 from open_webui.utils.subscriptions.machines import TunnelMachine  # noqa: E402
 from open_webui.utils.subscriptions.tunnel_hub import RunnerCallError, RunnerHub  # noqa: E402
 from open_webui.utils.subscriptions import computer_settings, folder_listing, run_targets  # noqa: E402
-from open_webui.utils.chat_id import is_saved_chat_id  # noqa: E402
+from open_webui.utils.chat_id import is_saved_chat_id, is_temporary_chat_id  # noqa: E402
 from test_project_folders import FakeChats, FakeFolders, load_project_folders  # noqa: E402
 
 # The instance owner: the user whose setup predates per-user machines. Most
@@ -248,6 +248,7 @@ def load_service(config, data_dir):
         'SOURCE_DEFAULT': 'default',
         'SOURCE_REFUSED': 'refused',
         'is_saved_chat_id': is_saved_chat_id,
+        'is_temporary_chat_id': is_temporary_chat_id,
         'run_targets': run_targets,
         'asyncio': asyncio,
         'hashlib': hashlib,

@@ -47,6 +47,7 @@ class ChatRunTarget(Base):
     access = Column(Text, nullable=False)
     acknowledged_instructions_folder_id = Column(Text, nullable=True)
     source = Column(Text, nullable=False)
+    # Why it runs there: a refusal code for refused targets, or where a default came from.
     note = Column(Text, nullable=True)
     created_at = Column(BigInteger, nullable=False)
 

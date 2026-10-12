@@ -1467,7 +1467,7 @@ def load_subscription_service(data_dir: Path, config: StandInConfig):
         # Where chats run; these tests start no chats.
         'open_webui.models.chat_run_targets': types.SimpleNamespace(
             SOURCE_BAR='bar', SOURCE_DEFAULT='default', SOURCE_REFUSED='refused',
-            ChatRunTargetModel=None, ChatRunTargets=None,
+            ChatRunTargetModel=type('ChatRunTargetModel', (), {}), ChatRunTargets=None,
         ),
         # Project folders read chat folders; these tests use none.
         'open_webui.models.access_grants': types.SimpleNamespace(AccessGrants=None),

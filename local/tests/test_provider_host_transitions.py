@@ -455,6 +455,7 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
             yield {'text': 'fixture response'}
 
         self.providers['claude'].turn_hook = record_turn
+        self.service.Chats.add('fixture-chat', OWNER)
         await self.fixture_chat(metadata={'chat_id': 'channel:fixture-channel'})
         await self.fixture_chat(metadata={'chat_id': 'fixture-chat'})
         self.assertEqual(observed, [

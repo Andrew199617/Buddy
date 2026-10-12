@@ -403,6 +403,15 @@ async def _held_back_by_received_instructions(user_id: str, metadata: dict, choi
     return FolderChoice(folder.id, MODE_CHAT, folder_name=folder.name)
 
 
+async def instructions_hold(user_id: str, metadata: dict) -> FolderChoice | None:
+    """The folder whose instructions this turn received and someone else can change, keeping it chat only.
+
+    None when there is none, or the person chose that folder's project folder
+    themselves.
+    """
+    return await _held_back_by_received_instructions(user_id, metadata, await load_choices(user_id))
+
+
 async def choice_for_turn(user_id: str, metadata: dict) -> FolderChoice | None:
     """The project folder choice for the chat a turn belongs to, or None outside chat folders.
 
