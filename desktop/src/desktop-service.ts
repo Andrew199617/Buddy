@@ -1,0 +1,243 @@
+import { EventEmitter } from 'node:events';
+
+import type { CredentialStore } from './credential-store';
+import type { EnrolledComputer, HostDetails } from './enrollment';
+import type { RunnerSettings, RunnerStatus, RunnerSupervisor } from './runner-supervisor';
+import type { DesktopSettings, SettingsStore } from './settings-store';
+import type { DesktopConnectionState, DesktopPermission, DesktopStatus } from './status';
+
+// What window.buddyDesktop does. The page may ask for anything here; the
+// decisions that widen access (connecting, sharing a folder, allowing edits or
+// commands) are made by the person in the app's own dialogs.
+
+export type Dialogs = {
+	confirmConnect(serverUrl: string, accountName: string): Promise<boolean>;
+	chooseFolder(): Promise<string | null>;
+	confirmPermission(permission: DesktopPermission): Promise<boolean>;
+};
+
+export type LoginItem = {
+	isEnabled(): boolean;
+	setEnabled(enabled: boolean): void;
+};
+
+export type DesktopServiceOptions = {
+	settings: SettingsStore;
+	credentials: CredentialStore;
+	supervisor: RunnerSupervisor;
+	dialogs: Dialogs;
+	loginItem: LoginItem;
+	enroll: (serverUrl: string, token: string, host: HostDetails) => Promise<EnrolledComputer>;
+	platform: string;
+	appVersion: string;
+	hostName: string;
+	// The OS account Claude Code and Codex run as.
+	accountName: string;
+};
+
+type ConnectionState = { state: DesktopConnectionState; message: string };
+
+const MAX_SHARED_FOLDERS = 20;
+const MAX_NAME_LENGTH = 80;
+// Buddy's enrollment tokens are short URL-safe strings.
+const ENROLLMENT_TOKEN = /^[A-Za-z0-9_-]{1,200}$/;
+
+export class DesktopService extends EventEmitter {
+	private settings: DesktopSettings;
+	// How the last connection ended, shown until this computer connects again.
+	private ending: ConnectionState | null = null;
+	private connecting = false;
+
+	constructor(private readonly options: DesktopServiceOptions) {
+		super();
+		this.settings = options.settings.load();
+		options.supervisor.on('status', (status: RunnerStatus) => this.handleRunnerStatus(status));
+	}
+
+	get serverUrl(): string | null {
+		return this.settings.serverUrl;
+	}
+
+	get isConnected(): boolean {
+		return this.settings.machine !== null;
+	}
+
+	/** Reconnects a computer connected in an earlier session. */
+	start(): void {
+		if (!this.settings.machine) return;
+		const runnerSettings = this.runnerSettings();
+		if (!runnerSettings) {
+			this.forgetMachine();
+			this.ending = {
+				state: 'error',
+				message: "This computer's saved connection could not be read. Connect it again."
+			};
+			this.emitStatus();
+			return;
+		}
+		this.options.supervisor.start(runnerSettings);
+	}
+
+	getStatus(): DesktopStatus {
+		const connection = this.connectionState();
+		const status: DesktopStatus = {
+			state: connection.state,
+			machineName: this.settings.machine?.name || this.options.hostName,
+			folders: [...this.settings.folders],
+			allowEdits: this.settings.allowEdits,
+			allowCommands: this.settings.allowCommands,
+			startAtLogin: this.options.loginItem.isEnabled(),
+			platform: this.options.platform,
+			appVersion: this.options.appVersion
+		};
+		if (this.settings.machine) status.machineId = this.settings.machine.id;
+		if (connection.message) status.message = connection.message;
+		return status;
+	}
+
+	async connectThisPC(token: string, name: string): Promise<DesktopStatus> {
+		const serverUrl = this.settings.serverUrl;
+		if (!serverUrl) throw new Error('Set your Buddy address first.');
+		if (this.settings.machine) return this.getStatus();
+		if (this.connecting) throw new Error('This computer is already connecting.');
+		if (!ENROLLMENT_TOKEN.test(token)) throw new Error('Buddy sent an invalid connection request.');
+		const confirmed = await this.options.dialogs.confirmConnect(serverUrl, this.options.accountName);
+		if (!confirmed) return this.getStatus();
+
+		this.connecting = true;
+		this.emitStatus();
+		try {
+			const host: HostDetails = {
+				name: cleanName(name) || this.options.hostName,
+				platform: this.options.platform,
+				version: this.options.appVersion
+			};
+			const enrolled = await this.options.enroll(serverUrl, token, host);
+			this.options.credentials.write(enrolled.credential);
+			this.settings.machine = { id: enrolled.machineId, name: enrolled.name };
+			this.saveSettings();
+			this.ending = null;
+		} finally {
+			this.connecting = false;
+			this.emitStatus();
+		}
+		this.start();
+		return this.getStatus();
+	}
+
+	/** Stops the Runner and forgets the credential. The page removes the computer from Buddy. */
+	async disconnectThisPC(): Promise<DesktopStatus> {
+		await this.options.supervisor.stop();
+		this.forgetMachine();
+		this.ending = null;
+		this.emitStatus();
+		return this.getStatus();
+	}
+
+	async chooseSharedFolder(): Promise<DesktopStatus> {
+		const folder = await this.options.dialogs.chooseFolder();
+		if (!folder || this.settings.folders.includes(folder)) return this.getStatus();
+		if (this.settings.folders.length >= MAX_SHARED_FOLDERS) {
+			throw new Error(`You can share up to ${MAX_SHARED_FOLDERS} folders.`);
+		}
+		this.settings.folders = [...this.settings.folders, folder];
+		await this.applyLocalChange();
+		return this.getStatus();
+	}
+
+	async removeSharedFolder(folder: string): Promise<DesktopStatus> {
+		if (!this.settings.folders.includes(folder)) return this.getStatus();
+		this.settings.folders = this.settings.folders.filter((shared) => shared !== folder);
+		await this.applyLocalChange();
+		return this.getStatus();
+	}
+
+	async setPermission(permission: DesktopPermission, allowed: boolean): Promise<DesktopStatus> {
+		if (this.settings[permission] === allowed) return this.getStatus();
+		if (allowed) {
+			const confirmed = await this.options.dialogs.confirmPermission(permission);
+			if (!confirmed) return this.getStatus();
+		}
+		this.settings[permission] = allowed;
+		await this.applyLocalChange();
+		return this.getStatus();
+	}
+
+	setStartAtLogin(enabled: boolean): DesktopStatus {
+		this.options.loginItem.setEnabled(enabled);
+		this.emitStatus();
+		return this.getStatus();
+	}
+
+	/** A computer's connection belongs to one Buddy server, so changing it disconnects first. */
+	async changeServer(serverUrl: string): Promise<void> {
+		if (serverUrl === this.settings.serverUrl) return;
+		if (this.settings.machine) await this.disconnectThisPC();
+		this.settings.serverUrl = serverUrl;
+		this.saveSettings();
+	}
+
+	async shutdown(): Promise<void> {
+		await this.options.supervisor.stop();
+	}
+
+	private connectionState(): ConnectionState {
+		if (this.connecting) return { state: 'connecting', message: '' };
+		if (!this.settings.machine) return this.ending ?? { state: 'not_connected', message: '' };
+		return this.options.supervisor.status;
+	}
+
+	private runnerSettings(): RunnerSettings | null {
+		const machine = this.settings.machine;
+		const serverUrl = this.settings.serverUrl;
+		if (!machine || !serverUrl) return null;
+		const credential = this.options.credentials.read();
+		if (!credential) return null;
+		return {
+			serverUrl,
+			machineId: machine.id,
+			credential,
+			machineName: machine.name,
+			folders: [...this.settings.folders],
+			allowEdits: this.settings.allowEdits,
+			allowCommands: this.settings.allowCommands
+		};
+	}
+
+	/** Saves a folder or permission change and restarts a running Runner with it. */
+	private async applyLocalChange(): Promise<void> {
+		this.saveSettings();
+		if (this.options.supervisor.active) {
+			await this.options.supervisor.stop();
+			this.start();
+		}
+		this.emitStatus();
+	}
+
+	private handleRunnerStatus(status: RunnerStatus): void {
+		if (status.state === 'removed' && this.settings.machine) {
+			// Buddy removed this computer, so its credential no longer works.
+			this.forgetMachine();
+			this.ending = { state: 'removed', message: status.message };
+		}
+		this.emitStatus();
+	}
+
+	private forgetMachine(): void {
+		this.options.credentials.delete();
+		this.settings.machine = null;
+		this.saveSettings();
+	}
+
+	private saveSettings(): void {
+		this.options.settings.save(this.settings);
+	}
+
+	private emitStatus(): void {
+		this.emit('status', this.getStatus());
+	}
+}
+
+function cleanName(name: string): string {
+	return name.trim().slice(0, MAX_NAME_LENGTH);
+}
