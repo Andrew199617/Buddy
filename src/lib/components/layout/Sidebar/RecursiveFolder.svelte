@@ -602,7 +602,7 @@
 	};
 
 	/** A new chat in this folder, starting from the folder's defaults for new chats. */
-	const newChatInFolderHandler = async (event: MouseEvent) => {
+	const newChatInFolderHandler = async (event) => {
 		event.stopPropagation();
 		await openFolderHandler();
 	};
