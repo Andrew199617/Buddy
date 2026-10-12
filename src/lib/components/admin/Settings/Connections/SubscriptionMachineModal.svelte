@@ -38,7 +38,6 @@
 
 	let name = '';
 	let url = '';
-	let browserUrl = '';
 	let key = '';
 	let info: SubscriptionMachineInfo | null = null;
 	let actionPending = false;
@@ -91,7 +90,6 @@
 	const loadForm = () => {
 		name = machine?.name ?? '';
 		url = machine?.url ?? DEFAULT_URL;
-		browserUrl = machine?.browser_url ?? '';
 		key = '';
 		info = null;
 	};
@@ -160,12 +158,7 @@
 
 	const verify = () =>
 		runAction(async (isCurrent) => {
-			const result = await verifySubscriptionMachine(
-				localStorage.token,
-				url.trim(),
-				key.trim(),
-				browserUrl.trim() || undefined
-			);
+			const result = await verifySubscriptionMachine(localStorage.token, url.trim(), key.trim());
 			if (isCurrent()) info = result;
 		});
 
@@ -178,7 +171,6 @@
 				id: machine?.id,
 				name: name.trim(),
 				url: url.trim(),
-				browser_url: browserUrl.trim() || null,
 				key: key.trim() || undefined
 			});
 			machineRegistryChanges.set(result.machines);
@@ -268,25 +260,6 @@
 				<p class="text-xs text-gray-400 dark:text-gray-600">
 					{$i18n.t(
 						'Use HTTPS with a certificate trusted by Buddy. In Docker, host.docker.internal reaches the computer running Docker; Buddy must be able to reach the Runner port.'
-					)}
-				</p>
-			</div>
-
-			<div class="flex flex-col gap-1">
-				<label class="text-xs text-gray-500" for="machine-browser-url"
-					>{$i18n.t('Browser address')}</label
-				>
-				<input
-					id="machine-browser-url"
-					class={inputClass}
-					bind:value={browserUrl}
-					disabled={busy}
-					autocomplete="off"
-					spellcheck="false"
-				/>
-				<p class="text-xs text-gray-400 dark:text-gray-600">
-					{$i18n.t(
-						'Optional pairing address your browser can reach directly: loopback HTTP on this computer, or reachable HTTPS for a phone. This address creates no project or file permissions.'
 					)}
 				</p>
 			</div>

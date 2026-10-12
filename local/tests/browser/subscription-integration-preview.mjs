@@ -1506,12 +1506,11 @@ async function machineCrudCase(browser, profile) {
 			'https://host.docker.internal:8765'
 		);
 		assert.equal(
-			await dialog.locator('#machine-browser-url').inputValue(),
-			'',
-			'Backend address is never inferred as browser address'
+			await dialog.locator('#machine-browser-url').count(),
+			0,
+			'Computers are opened through Buddy, so no browser address is asked for'
 		);
 		await dialog.locator('#machine-name').fill('Synthetic new computer');
-		await dialog.locator('#machine-browser-url').fill('http://127.0.0.1:8765');
 		await dialog.locator('#machine-key').fill('synthetic-runner-key-never-used');
 		await dialog.getByRole('button', { name: 'Verify', exact: true }).click();
 		await dialog
@@ -1519,7 +1518,7 @@ async function machineCrudCase(browser, profile) {
 			.waitFor();
 		const verified = fixtures.requests.find((request) => request.path === machinesPath + '/verify');
 		assert.equal(verified.body.url, 'https://host.docker.internal:8765');
-		assert.equal(verified.body.browser_url, 'http://127.0.0.1:8765');
+		assert.equal(verified.body.browser_url, undefined);
 		await dialog.getByRole('button', { name: 'Save', exact: true }).click();
 		await dialog.waitFor({ state: 'hidden' });
 		await page
@@ -1540,10 +1539,6 @@ async function machineCrudCase(browser, profile) {
 			await machineDialog(page).locator('#machine-key').getAttribute('placeholder'),
 			'Leave empty to keep the saved key'
 		);
-		assert.equal(
-			await machineDialog(page).locator('#machine-browser-url').inputValue(),
-			'http://127.0.0.1:8765'
-		);
 		const edited = machineDialog(page);
 		await edited.locator('#machine-url').fill('https://moved-runner.example.invalid');
 		assert.equal(
@@ -1563,7 +1558,6 @@ async function machineCrudCase(browser, profile) {
 			'The same origin keeps the saved key'
 		);
 		await edited.locator('#machine-url').fill('https://host.docker.internal:8765');
-		await machineDialog(page).locator('#machine-browser-url').fill('');
 		await machineDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
 		await machineDialog(page).waitFor({ state: 'hidden' });
 		const updates = fixtures.requests.filter(
@@ -1571,13 +1565,13 @@ async function machineCrudCase(browser, profile) {
 		);
 		assert.equal(updates.length, 2);
 		assert.equal(updates[0].body.url, 'https://host.docker.internal:8765');
-		assert.equal(updates[0].body.browser_url, 'http://127.0.0.1:8765');
+		assert.equal(updates[0].body.browser_url, undefined);
 		assert.equal(updates[1].body.url, 'https://host.docker.internal:8765');
 		assert.equal(updates[1].body.id, 'runner-new');
 		assert.equal(
 			updates[1].body.browser_url,
-			null,
-			'Clearing optional browser address is explicit'
+			undefined,
+			'Saving leaves any browser address saved earlier alone'
 		);
 		assert.equal(updates[1].body.key, undefined, 'Blank edit preserves existing server key');
 		await openMachine(page, 'Synthetic new computer');
@@ -1660,7 +1654,6 @@ async function delayedMachineCase(browser, profile, action, method, errorRespons
 			await dialog.locator('#machine-key').fill('synthetic-delayed-key');
 		} else if (action === 'save') {
 			await dialog.locator('#machine-name').fill('Synthetic renamed computer A');
-			await dialog.locator('#machine-browser-url').fill('https://fixture-a.example.invalid');
 		}
 		if (action === 'remove') {
 			await confirmMachineRemoval(await askToRemoveMachine(page, 'Synthetic computer A'));
@@ -1727,7 +1720,7 @@ async function delayedMachineCase(browser, profile, action, method, errorRespons
 				(request) => request.method === 'POST' && request.path === machinesPath
 			);
 			assert.equal(request.body.id, 'runner-a');
-			assert.equal(request.body.browser_url, 'https://fixture-a.example.invalid');
+			assert.equal(request.body.name, 'Synthetic renamed computer A');
 		}
 		if (action === 'remove' && !errorResponse) {
 			assert.equal(fixtures.count('DELETE', machinesPath + '/runner-a'), 1);
@@ -2426,9 +2419,6 @@ async function loginRevisionCase(browser, profile, metadataOnly = false, equival
 	await runCase(browser, profile, name, mode, async ({ page }, fixtures) => {
 		await openMachine(page, 'Synthetic computer A');
 		await machineDialog(page).locator('#machine-name').fill('Synthetic renamed computer A');
-		await machineDialog(page)
-			.locator('#machine-browser-url')
-			.fill('https://browser-a.example.invalid');
 		if (!metadataOnly) {
 			await machineDialog(page)
 				.locator('#machine-url')
