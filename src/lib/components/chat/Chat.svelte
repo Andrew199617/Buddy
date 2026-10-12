@@ -54,6 +54,7 @@
 		type ChatFolderMove
 	} from '$lib/components/chat/ProjectPanel/chat-folder';
 	import {
+		createSaveQueue,
 		ownAgent,
 		systemWithAgent,
 		type ChatAgent
@@ -4046,16 +4047,27 @@
 		}
 	};
 
-	const changeAgent = async (agent: ChatAgent | null) => {
+	// Agent saves run one at a time, so the last choice is the one that stays saved.
+	const queueAgentSave = createSaveQueue();
+
+	const saveAgent = async (savingChatId: string, agent: ChatAgent | null) => {
+		const saved = await updateChatById(localStorage.token, savingChatId, { agent }).catch(
+			(error) => {
+				console.error('[agent save]', error);
+				toast.error($i18n.t('The agent could not be saved with this chat.'));
+				return null;
+			}
+		);
+		// The page may have moved on to another chat while this was saving.
+		if (saved && $chatId === savingChatId) chat = saved;
+	};
+
+	const changeAgent = (agent: ChatAgent | null) => {
 		selectedAgent = agent;
 		// A chat that isn't saved yet keeps it until its first message saves it.
 		if (!$chatId || $temporaryChatEnabled) return;
-		const saved = await updateChatById(localStorage.token, $chatId, { agent }).catch((error) => {
-			console.error('[agent save]', error);
-			toast.error($i18n.t('The agent could not be saved with this chat.'));
-			return null;
-		});
-		if (saved) chat = saved;
+		const savingChatId = $chatId;
+		void queueAgentSave(() => saveAgent(savingChatId, agent));
 	};
 
 	const saveControls = async () => {

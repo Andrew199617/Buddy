@@ -41,6 +41,19 @@ export function ownAgent(chat: LoadedChat, userId: string | undefined): ChatAgen
 	return savedAgent(chat.chat?.agent);
 }
 
+/**
+ * Runs each save after the one before it, so when choices come quickly the last
+ * choice is also the last one saved. A failed save doesn't stop later ones.
+ */
+export function createSaveQueue(): (save: () => Promise<void>) => Promise<void> {
+	let last: Promise<void> = Promise.resolve();
+	return (save) => {
+		const next = last.catch(() => {}).then(save);
+		last = next;
+		return next;
+	};
+}
+
 /** The chat's system prompt with the agent's instructions after it. */
 export function systemWithAgent(system: string, agent: ChatAgent | null): string {
 	const instructions = agent?.instructions.trim() ?? '';

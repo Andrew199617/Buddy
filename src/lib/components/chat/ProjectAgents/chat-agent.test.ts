@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { ownAgent, savedAgent, systemWithAgent, type ChatAgent } from './chat-agent';
+import {
+	createSaveQueue,
+	ownAgent,
+	savedAgent,
+	systemWithAgent,
+	type ChatAgent
+} from './chat-agent';
 
 const reviewer: ChatAgent = {
 	name: 'Reviewer',
@@ -41,6 +47,54 @@ describe('ownAgent', () => {
 		expect(ownAgent(loaded, undefined)).toBeNull();
 		expect(ownAgent({ chat: loaded.chat }, 'owner')).toBeNull();
 		expect(ownAgent(null, 'owner')).toBeNull();
+	});
+});
+
+describe('createSaveQueue', () => {
+	function deferred() {
+		let resolve: () => void = () => {};
+		let reject: (error: Error) => void = () => {};
+		const promise = new Promise<void>((done, fail) => {
+			resolve = done;
+			reject = fail;
+		});
+		return { promise, resolve, reject };
+	}
+
+	it('starts each save only after the one before it has finished', async () => {
+		const queue = createSaveQueue();
+		const events: string[] = [];
+		const first = deferred();
+		const firstStarted = deferred();
+		const firstDone = queue(async () => {
+			events.push('first started');
+			firstStarted.resolve();
+			await first.promise;
+			events.push('first finished');
+		});
+		const secondDone = queue(async () => {
+			events.push('second started');
+		});
+		await firstStarted.promise;
+		expect(events).toEqual(['first started']);
+		first.resolve();
+		await firstDone;
+		await secondDone;
+		expect(events).toEqual(['first started', 'first finished', 'second started']);
+	});
+
+	it('keeps going after a save fails', async () => {
+		const queue = createSaveQueue();
+		const failing = deferred();
+		const failed = queue(() => failing.promise);
+		let saved = false;
+		const next = queue(async () => {
+			saved = true;
+		});
+		failing.reject(new Error('offline'));
+		await expect(failed).rejects.toThrow('offline');
+		await next;
+		expect(saved).toBe(true);
 	});
 });
 
