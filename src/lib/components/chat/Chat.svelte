@@ -841,7 +841,8 @@
 	/** "New chat here": a new chat in the same chat folder, starting where this one runs. */
 	async function newChatHere(details: ChatRunTargetDetails | null) {
 		if (details) pendingRunTarget.set(details);
-		const folderId = chat?.folder_id ?? null;
+		// The open chat's folder; `chat` can still be an earlier chat after one started in place.
+		const folderId = sidePanelFolderId;
 		if (!folderId) {
 			selectedFolder.set(null);
 			await goto('/');
