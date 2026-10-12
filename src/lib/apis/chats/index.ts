@@ -1,6 +1,7 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
 import { getTimeRange } from '$lib/utils';
 import type { ChatUnreadSummary } from '$lib/stores/chatUnread';
+import { chatFolderMoves } from '$lib/stores/chatFolderMoves';
 
 const getErrorDetail = (err: any) => {
 	if (Array.isArray(err?.detail)) {
@@ -1162,6 +1163,8 @@ export const updateChatFolderIdById = async (token: string, id: string, folderId
 		throw error;
 	}
 
+	// Buddy: lets the open chat's Project tab follow the move.
+	chatFolderMoves.set({ chatId: id, folderId: folderId ?? null });
 	return res;
 };
 
