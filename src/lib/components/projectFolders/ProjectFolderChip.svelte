@@ -20,7 +20,8 @@
 	async function load() {
 		try {
 			const loaded = await getFolderProject(localStorage.token, folderId);
-			project = loaded.has_plans ? loaded : null;
+			project = null;
+			if (loaded?.has_plans) project = loaded;
 		} catch {
 			project = null;
 		}

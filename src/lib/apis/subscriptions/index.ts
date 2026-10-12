@@ -138,13 +138,15 @@ export type SubscriptionProvider = {
 	credential?: SubscriptionCredential;
 };
 
-const subscriptionRequest = async (
+type SubscriptionMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+
+const sendSubscriptionRequest = (
 	token: string,
 	path: string,
-	method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'GET',
+	method: SubscriptionMethod,
 	body?: object
 ) => {
-	const response = await fetch(`${WEBUI_API_BASE_URL}/subscriptions${path}`, {
+	return fetch(`${WEBUI_API_BASE_URL}/subscriptions${path}`, {
 		method,
 		headers: {
 			'Content-Type': 'application/json',
@@ -152,12 +154,23 @@ const subscriptionRequest = async (
 		},
 		body: body ? JSON.stringify(body) : undefined
 	});
+};
 
+const readSubscriptionResponse = async (response: Response) => {
 	const data = await response.json().catch(() => null);
 	if (!response.ok) {
 		throw data?.detail ?? `Request failed (${response.status})`;
 	}
 	return data;
+};
+
+const subscriptionRequest = async (
+	token: string,
+	path: string,
+	method: SubscriptionMethod = 'GET',
+	body?: object
+) => {
+	return readSubscriptionResponse(await sendSubscriptionRequest(token, path, method, body));
 };
 
 const withExpectedMachine = (path: string, machineId?: string, machineRevision?: string) => {
@@ -425,8 +438,18 @@ export type FolderProject = {
 	computers: ProjectFolderComputer[];
 };
 
-export const getFolderProject = async (token: string, folderId: string): Promise<FolderProject> => {
-	return subscriptionRequest(token, `/folders/${encodeURIComponent(folderId)}/project`);
+/**
+ * The person's project folder for a chat folder, or null when they may not use
+ * computers (403) or can't read the folder (404). Other failures throw.
+ */
+export const getFolderProject = async (
+	token: string,
+	folderId: string
+): Promise<FolderProject | null> => {
+	const path = `/folders/${encodeURIComponent(folderId)}/project`;
+	const response = await sendSubscriptionRequest(token, path, 'GET');
+	if (response.status === 403 || response.status === 404) return null;
+	return readSubscriptionResponse(response);
 };
 
 export const saveFolderProject = async (

@@ -28,6 +28,8 @@
 	// Set when the draft differs from what is saved.
 	export let dirty = false;
 	export let error = '';
+	// Set when the choice could not be loaded; there is then nothing to save.
+	export let loadError = '';
 
 	let project: FolderProject | null = null;
 	let hidden = false;
@@ -43,14 +45,19 @@
 
 	async function load() {
 		loading = true;
+		loadError = '';
 		try {
-			project = await getFolderProject(localStorage.token, folderId);
-			hidden = !project.has_plans;
-			saved = draftFromProject(project);
-			draft = { mode: saved.mode, paths: { ...saved.paths } };
-		} catch {
-			// Not allowed to use computers, or the folder is gone: nothing to choose here.
-			hidden = true;
+			const loaded = await getFolderProject(localStorage.token, folderId);
+			// Null: not allowed to use computers, or the folder is gone; nothing to choose here.
+			hidden = loaded === null || !loaded.has_plans;
+			project = loaded;
+			if (loaded) {
+				saved = draftFromProject(loaded);
+				draft = { mode: saved.mode, paths: { ...saved.paths } };
+			}
+		} catch (cause) {
+			project = null;
+			loadError = `${cause}`;
 		} finally {
 			loading = false;
 		}
@@ -89,7 +96,7 @@
 
 	/** Saves the choice; returns false when it could not be saved, with the reason in `error`. */
 	export async function save(): Promise<boolean> {
-		if (hidden || !project || !dirty) return true;
+		if (loadError || hidden || !project || !dirty) return true;
 		error = '';
 		try {
 			if (draft.mode === 'inherit') {
@@ -116,6 +123,19 @@
 	<div class="flex items-center gap-2 py-2 text-xs text-gray-500">
 		<Spinner className="size-3.5" />
 		{$i18n.t('Loading project folder…')}
+	</div>
+{:else if loadError}
+	<div class="flex flex-col gap-1 text-xs">
+		<p role="alert" class="text-red-600 dark:text-red-400">
+			{$i18n.t('The project folder could not be loaded: {{reason}}', { reason: loadError })}
+		</p>
+		<button
+			type="button"
+			class="min-h-11 self-start rounded-lg px-3 font-medium hover:bg-gray-100 dark:hover:bg-gray-850 md:min-h-8"
+			on:click={load}
+		>
+			{$i18n.t('Try again')}
+		</button>
 	</div>
 {:else if !hidden && project}
 	<section aria-labelledby="project-folder-heading" class="flex flex-col gap-2">

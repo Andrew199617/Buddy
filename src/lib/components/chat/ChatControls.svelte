@@ -128,7 +128,7 @@
 		try {
 			const loaded = await getFolderProject(localStorage.token, id);
 			if (folderProjectFor !== id) return;
-			if (loaded.has_plans) folderProject = loaded;
+			if (loaded?.has_plans) folderProject = loaded;
 		} catch {
 			// Not allowed to use computers, or the folder is gone: no Project tab.
 		}
