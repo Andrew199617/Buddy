@@ -254,8 +254,35 @@
 /* Keep context details available while editing, with a quiet resting message bar. */
 .buddy-chat
 	form:has(.buddy-composer[data-expanded='false'])
+	> .owui-context-rail:not(:focus-within):not(:has([aria-expanded='true'])),
+.buddy-chat
+	form:has(.buddy-composer[data-expanded='false'])
+	> .buddy-run-target-slot
 	> .owui-context-rail:not(:focus-within):not(:has([aria-expanded='true'])) {
 	display: none;
+}
+
+/* Where the chat runs, on the row above the composer; the context rail keeps its right end. */
+.buddy-run-target-slot > .buddy-run-target-bar {
+	flex: 1 1 auto;
+}
+
+@media (max-width: 767px) {
+	/* On a phone the summary chip takes the whole row, and the context rail wraps below it. */
+	.buddy-run-target-slot {
+		flex-wrap: wrap;
+		padding-inline: max(0px, env(safe-area-inset-left, 0px)) max(0px, env(safe-area-inset-right, 0px));
+	}
+
+	.buddy-run-target-summary {
+		background: rgba(247, 252, 247, 0.88);
+		border: 1px solid rgba(94, 126, 104, 0.17);
+	}
+
+	.dark .buddy-run-target-summary {
+		background: rgba(41, 46, 43, 0.88);
+		border-color: rgba(231, 245, 235, 0.12);
+	}
 }
 
 /* Portaled mobile pickers share a surface independent of the shell's inherited tokens. */
