@@ -281,15 +281,27 @@ describe('the row summary', () => {
 		expect(projectSummary(draft, project())).toEqual({
 			kind: 'set',
 			folder: 'site',
+			missingFolder: false,
 			computer: workPc,
 			access: 'full'
 		});
 		expect(projectSummary(emptyDraft('auto'), project())).toEqual({
 			kind: 'set',
 			folder: null,
+			missingFolder: false,
 			computer: null,
 			access: ''
 		});
+	});
+
+	it('never names another computer’s folder for the chosen one', () => {
+		const elsewhere = {
+			...emptyDraft('folder'),
+			paths: { 'pc-2': 'D:\\docs' },
+			machineId: 'pc-1'
+		};
+		const summary = projectSummary(elsewhere, project());
+		expect(summary).toMatchObject({ kind: 'set', folder: null, missingFolder: true });
 	});
 
 	it('says when the folder follows its parent, has no choice, or is detached', () => {

@@ -312,6 +312,7 @@
 		if (current.kind === 'unchosen') return $i18n.t('Waiting for your choice');
 		if (current.kind === 'detached') return $i18n.t('Detached');
 		let folder = $i18n.t('AI chooses');
+		if (current.missingFolder) folder = $i18n.t('No folder chosen');
 		if (current.folder) folder = current.folder;
 		let computer = $i18n.t('Automatic');
 		if (current.computer) computer = computerName(current.computer);

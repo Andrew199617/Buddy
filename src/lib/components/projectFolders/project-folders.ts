@@ -323,6 +323,8 @@ export type ProjectSummary =
 			kind: 'set';
 			// The exact folder's last part, or null when the AI chooses.
 			folder: string | null;
+			// A specific folder is wanted but none is picked on the chosen computer yet.
+			missingFolder: boolean;
 			// Null when Buddy picks the computer.
 			computer: ProjectFolderComputer | null;
 			access: SubscriptionAccess | '';
@@ -342,13 +344,16 @@ export function projectSummary(draft: ProjectDraft, project: FolderProject): Pro
 			project.computers.find((candidate) => candidate.machine_id === draft.machineId) ?? null;
 	}
 	let folder: string | null = null;
+	let missingFolder = false;
 	if (draft.mode === 'folder') {
+		// The chosen computer's own folder; with Buddy picking, any computer's.
 		let path = '';
 		if (draft.machineId) path = draft.paths[draft.machineId] ?? '';
-		if (!path) path = Object.values(draft.paths)[0] ?? '';
+		else path = Object.values(draft.paths).find(Boolean) ?? '';
 		if (path) folder = lastSegment(path);
+		else missingFolder = true;
 	}
-	return { kind: 'set', folder, computer, access: draft.access };
+	return { kind: 'set', folder, missingFolder, computer, access: draft.access };
 }
 
 // Why a draft can't be saved yet: a specific folder is wanted but not chosen.
