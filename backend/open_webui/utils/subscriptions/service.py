@@ -1847,27 +1847,29 @@ async def _describe_folder_computer(owner_id: str, machine_id: str, config: dict
 
 
 async def _folder_computers(user, choices: dict, named_machine_ids: set[str]) -> list[dict]:
-    """The computers a project folder can be on: those running a plan that may use files,
-    and those already named in this folder's choice."""
-    providers_by_machine: dict[str, list[dict]] = {}
+    """Every computer the person's plans can run on, and those already named in this folder's choice.
+
+    Each lists the plans that are on, with the access new chats start with.
+    """
+    plans = []
     for provider_id in PROVIDER_IDS:
         settings = await _load_settings(ProviderRef(user.id, provider_id))
-        if not settings.enable or settings.access == ACCESS_CHAT or not settings.machine_id:
-            continue
-        providers_by_machine.setdefault(settings.machine_id, []).append(
-            {'id': provider_id, 'name': PROVIDER_LABELS[provider_id], 'access': settings.access}
-        )
-    machine_ids = list(providers_by_machine)
+        if settings.enable:
+            plans.append({'id': provider_id, 'name': PROVIDER_LABELS[provider_id], 'access': settings.access})
+    configs = {config['id']: config for config in await _owned_machine_configs(user.id)}
+    machine_ids = []
+    if await _may_use_server_machine(user.id):
+        machine_ids.append(LOCAL_MACHINE_ID)
+    machine_ids.extend(configs)
     for machine_id in sorted(named_machine_ids):
         if machine_id not in machine_ids:
             machine_ids.append(machine_id)
-    configs = {config['id']: config for config in await _owned_machine_configs(user.id)}
     computers = []
     for machine_id in machine_ids:
         computer = await _describe_folder_computer(user.id, machine_id, configs.get(machine_id), choices)
         if computer is None:
             continue
-        computer['providers'] = providers_by_machine.get(machine_id, [])
+        computer['providers'] = list(plans)
         computers.append(computer)
     return computers
 
