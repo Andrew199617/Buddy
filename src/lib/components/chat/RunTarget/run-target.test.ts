@@ -162,6 +162,58 @@ describe('changing the draft', () => {
 		expect(refreshUntouched(start, moved, ['claude']).machineId).toBe('laptop');
 	});
 
+	it('keeps a folder and access the person picked when only the model changes', () => {
+		const inFolder = options({
+			default: {
+				kind: 'computer',
+				machine_id: 'laptop',
+				folder: { mode: 'auto' },
+				access: null,
+				from: 'chat_folder',
+				access_locked: false
+			}
+		});
+		const start = draftFromDefault(inFolder, ['claude']);
+		const picked = {
+			...start,
+			folder: { mode: 'path' as const, path: 'D:\\api' },
+			access: 'read' as const,
+			touched: { computer: false, folder: true, access: true }
+		};
+		const refreshed = refreshUntouched(picked, inFolder, ['codex']);
+		expect(refreshed.machineId).toBe('laptop');
+		expect(refreshed.folder).toEqual({ mode: 'path', path: 'D:\\api' });
+		expect(refreshed.access).toBe('read');
+	});
+
+	it('gives a picked computer the chat folder’s access, chat only until acknowledged', () => {
+		const sharedFolder = {
+			id: 'website',
+			name: 'Website',
+			mode: 'auto' as const,
+			paths: {},
+			offered: {},
+			shared_instructions: true
+		};
+		const locked = options({
+			chat_folder: sharedFolder,
+			default: {
+				kind: 'computer',
+				machine_id: 'laptop',
+				folder: { mode: 'auto' },
+				access: 'read',
+				from: 'chat_folder',
+				access_locked: true
+			}
+		});
+		const chosen = chooseComputer(draftFromDefault(locked, ['claude']), locked, ['claude'], 'pc-1');
+		expect(refreshUntouched(chosen, locked, ['claude']).access).toBe('chat');
+		const acknowledged = { ...chosen, acknowledgedFolderId: 'website' };
+		expect(refreshUntouched(acknowledged, locked, ['claude']).access).toBe('read');
+		const elsewhere = options({ chat_folder: { ...sharedFolder, id: 'other' } });
+		expect(refreshUntouched(acknowledged, elsewhere, ['claude']).acknowledgedFolderId).toBeNull();
+	});
+
 	it('resets the folder to the chat folder’s default on the new computer', () => {
 		const inFolder = options({
 			chat_folder: {
