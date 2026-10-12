@@ -204,7 +204,9 @@ export const renameSubscriptionMachine = async (
 	machineId: string,
 	name: string
 ): Promise<{ machines: SubscriptionMachine[] }> => {
-	return subscriptionRequest(token, `/machines/${encodeURIComponent(machineId)}`, 'PATCH', { name });
+	return subscriptionRequest(token, `/machines/${encodeURIComponent(machineId)}`, 'PATCH', {
+		name
+	});
 };
 
 export const deleteSubscriptionMachine = async (

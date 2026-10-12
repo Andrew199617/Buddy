@@ -125,7 +125,9 @@
 		{$i18n.t('settings.personal.machines.description')}
 	</p>
 
-	<div class="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto pr-1.5 pb-[max(env(safe-area-inset-bottom),0.75rem)] scrollbar-hover">
+	<div
+		class="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto pr-1.5 pb-[max(env(safe-area-inset-bottom),0.75rem)] scrollbar-hover"
+	>
 		{#if !loaded}
 			<div class="flex justify-center py-8"><Spinner className="size-6" /></div>
 		{:else if !allowed}
@@ -141,7 +143,10 @@
 					onDisconnect={disconnectThisComputer}
 				/>
 			{:else}
-				<section aria-labelledby="connect-computer-heading" class="rounded-2xl border border-gray-100 p-3 dark:border-gray-850">
+				<section
+					aria-labelledby="connect-computer-heading"
+					class="rounded-2xl border border-gray-100 p-3 dark:border-gray-850"
+				>
 					<h3 id="connect-computer-heading" class="text-xs text-gray-600 dark:text-gray-400">
 						{$i18n.t('settings.personal.machines.connect.title')}
 					</h3>

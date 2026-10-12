@@ -31,7 +31,12 @@
 		}
 		const date = new Date(machine.last_seen_at * 1000);
 		return $i18n.t('Last seen {{date}}', {
-			date: date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+			date: date.toLocaleString(undefined, {
+				month: 'short',
+				day: 'numeric',
+				hour: 'numeric',
+				minute: '2-digit'
+			})
 		});
 	};
 
@@ -51,14 +56,18 @@
 
 {#if machines}
 	{#if machines.length === 0}
-		<p class="text-[0.6875rem] text-gray-400 dark:text-gray-600">{$i18n.t('No computers connected yet.')}</p>
+		<p class="text-[0.6875rem] text-gray-400 dark:text-gray-600">
+			{$i18n.t('No computers connected yet.')}
+		</p>
 	{:else}
 		<ul class="flex flex-col gap-1">
 			{#each machines as machine (machine.id)}
 				<li class="flex flex-col gap-1">
 					<div class="flex items-center gap-2">
 						<span
-							class="size-2 shrink-0 rounded-full {machine.online ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-700'}"
+							class="size-2 shrink-0 rounded-full {machine.online
+								? 'bg-green-500'
+								: 'bg-gray-300 dark:bg-gray-700'}"
 							aria-hidden="true"
 						></span>
 						<div class="min-w-0 flex-1">
@@ -82,12 +91,18 @@
 						</button>
 					</div>
 					{#if confirmingId === machine.id}
-						<div class="ml-4 flex flex-wrap items-center gap-2 rounded-lg bg-red-50 p-2 text-xs dark:bg-red-950/30" role="alert">
+						<div
+							class="ml-4 flex flex-wrap items-center gap-2 rounded-lg bg-red-50 p-2 text-xs dark:bg-red-950/30"
+							role="alert"
+						>
 							<span class="min-w-0 flex-1">
-								{$i18n.t('Remove {{name}} for {{owner}}? Its providers turn off and its app disconnects.', {
-									name: machine.name,
-									owner: machine.owner_name || $i18n.t('Unknown user')
-								})}
+								{$i18n.t(
+									'Remove {{name}} for {{owner}}? Its providers turn off and its app disconnects.',
+									{
+										name: machine.name,
+										owner: machine.owner_name || $i18n.t('Unknown user')
+									}
+								)}
 							</span>
 							<button
 								type="button"
@@ -97,7 +112,12 @@
 							>
 								{$i18n.t('Remove')}
 							</button>
-							<button type="button" class="min-h-8 rounded-lg px-3" disabled={busy} on:click={() => (confirmingId = null)}>
+							<button
+								type="button"
+								class="min-h-8 rounded-lg px-3"
+								disabled={busy}
+								on:click={() => (confirmingId = null)}
+							>
 								{$i18n.t('Cancel')}
 							</button>
 						</div>

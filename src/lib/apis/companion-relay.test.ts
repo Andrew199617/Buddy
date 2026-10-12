@@ -95,7 +95,9 @@ describe('projects relayed through Buddy', () => {
 		expect(url.pathname).toBe(`${relayBase}/v1/session`);
 		expect(options.method).toBe('DELETE');
 		expect(options.keepalive).toBe(true);
-		expect(options.headers['X-Buddy-Relay-Client']).toBe(call(0).options.headers['X-Buddy-Relay-Client']);
+		expect(options.headers['X-Buddy-Relay-Client']).toBe(
+			call(0).options.headers['X-Buddy-Relay-Client']
+		);
 	});
 
 	it('treats an offline computer as an ended session', async () => {
