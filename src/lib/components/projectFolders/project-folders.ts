@@ -162,14 +162,15 @@ export function grantContaining<T extends SharedFolder>(
 }
 
 export type ProjectDraft = {
-	// 'inherit' means no own choice: follow the parent folder.
-	mode: ProjectFolderMode | 'inherit';
+	// 'inherit': no own choice, follow the parent folder.
+	// 'unchosen': no own choice yet in a folder whose instructions others can change.
+	mode: ProjectFolderMode | 'inherit' | 'unchosen';
 	paths: Record<string, string>;
 };
 
 export function draftFromProject(project: FolderProject): ProjectDraft {
 	if (!project.own) {
-		if (waitsForOwnChoice(project)) return { mode: 'chat', paths: {} };
+		if (waitsForOwnChoice(project)) return { mode: 'unchosen', paths: {} };
 		if (project.inherited) return { mode: 'inherit', paths: {} };
 		return { mode: 'auto', paths: {} };
 	}

@@ -97,17 +97,17 @@
 	/** Saves the choice; returns false when it could not be saved, with the reason in `error`. */
 	export async function save(): Promise<boolean> {
 		if (loadError || hidden || !project || !dirty) return true;
+		const mode = draft.mode;
+		// Nothing chosen yet, so there is nothing to save.
+		if (mode === 'unchosen') return true;
 		error = '';
 		try {
-			if (draft.mode === 'inherit') {
+			if (mode === 'inherit') {
 				project = await clearFolderProject(localStorage.token, folderId);
 			} else {
 				let paths: Record<string, string> = {};
-				if (draft.mode === 'folder') paths = draft.paths;
-				project = await saveFolderProject(localStorage.token, folderId, {
-					mode: draft.mode,
-					paths
-				});
+				if (mode === 'folder') paths = draft.paths;
+				project = await saveFolderProject(localStorage.token, folderId, { mode, paths });
 			}
 			saved = draftFromProject(project);
 			draft = { mode: saved.mode, paths: { ...saved.paths } };

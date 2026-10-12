@@ -58,7 +58,9 @@ describe('a folder whose instructions others can change', () => {
 		const shared = project({ shared_instructions: true, inherited: choice('auto', {}, 'Work') });
 		expect(waitsForOwnChoice(shared)).toBe(true);
 		expect(effectiveChoice(shared).mode).toBe('chat');
-		expect(draftFromProject(shared).mode).toBe('chat');
+		// Nothing is selected, so choosing "No files, just chat" is a change that gets saved.
+		expect(draftFromProject(shared).mode).toBe('unchosen');
+		expect(sameDraft(draftFromProject(shared), { mode: 'chat', paths: {} })).toBe(false);
 		const chosen = project({ shared_instructions: true, own: choice('auto') });
 		expect(waitsForOwnChoice(chosen)).toBe(false);
 		expect(effectiveChoice(chosen).mode).toBe('auto');
