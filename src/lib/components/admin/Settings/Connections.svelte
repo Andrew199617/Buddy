@@ -29,6 +29,7 @@
 	import SubscriptionConnection from './Connections/SubscriptionConnection.svelte';
 	import SubscriptionMachineModal from './Connections/SubscriptionMachineModal.svelte';
 	import SubscriptionPolicy from './Connections/SubscriptionPolicy.svelte';
+	import RunnerMachinesOverview from './Connections/RunnerMachinesOverview.svelte';
 	import AdminSettingRow from './AdminSettingRow.svelte';
 	import AdminSettingSection from './AdminSettingSection.svelte';
 
@@ -455,6 +456,11 @@
 				<div>
 					<div class="mb-1.5 text-xs text-gray-600 dark:text-gray-400">{$i18n.t('Policy')}</div>
 					<SubscriptionPolicy />
+				</div>
+
+				<div>
+					<div class="mb-1.5 text-xs text-gray-600 dark:text-gray-400">{$i18n.t("Everyone's computers")}</div>
+					<RunnerMachinesOverview />
 				</div>
 
 				{#if subscriptionsError}
