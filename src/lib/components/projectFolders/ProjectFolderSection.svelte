@@ -61,6 +61,8 @@
 	export let summary = '';
 	// Set while a folder picker fills the section; Escape and Back close it first.
 	export let picking = false;
+	// Set once loaded, when this person may set where new chats run.
+	export let available = false;
 
 	type Picker = { computer: ProjectFolderComputer; purpose: 'folder' | 'offered' };
 
@@ -80,6 +82,7 @@
 	$: accessId = `project-access-${idPrefix}`;
 	$: dirty = !sameDraft(draft, saved);
 	$: picking = picker !== null;
+	$: available = !loading && !loadError && !hidden && project !== null;
 	$: planDefault = project ? planDefaultAccess(project) : null;
 	$: chosenComputer = findComputer(project, draft.machineId);
 	$: choosingFolders = draft.mode === 'auto' || draft.mode === 'folder';
@@ -410,6 +413,17 @@
 		return $i18n.t('Choose a folder, or let the AI choose.');
 	}
 
+	/** Whether the draft can be saved; when it can't, says why in `error`. */
+	export function check(): boolean {
+		if (loadError || hidden || !project || !dirty) return true;
+		// Nothing chosen yet, so there is nothing to save.
+		if (draft.mode === 'unchosen') return true;
+		const problem = draftProblem(draft);
+		if (!problem) return true;
+		error = needsFolderMessage(problem.machineId);
+		return false;
+	}
+
 	/**
 	 * Saves the choice; returns false when it could not be saved, with the reason in
 	 * `error`. A folder being created passes its new id.
@@ -417,13 +431,8 @@
 	export async function save(targetFolderId: string | null = folderId): Promise<boolean> {
 		if (loadError || hidden || !project || !dirty || !targetFolderId) return true;
 		const mode = draft.mode;
-		// Nothing chosen yet, so there is nothing to save.
 		if (mode === 'unchosen') return true;
-		const problem = draftProblem(draft);
-		if (problem) {
-			error = needsFolderMessage(problem.machineId);
-			return false;
-		}
+		if (!check()) return false;
 		error = '';
 		try {
 			if (mode === 'inherit') {

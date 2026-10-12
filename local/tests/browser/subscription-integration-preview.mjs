@@ -357,6 +357,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		'folder-edit',
 		'folder-no-plans',
 		'folder-defaults',
+		'folder-create',
 		'folder-browse',
 		...runTargetModes
 	]);
@@ -436,6 +437,17 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			shared_instructions: false,
 			has_plans: folderPlans.some((plan) => plan.enable),
 			computers
+		};
+	}
+
+	/** A folder about to be made under Website: it follows Website's choice. */
+	function newFolderProject() {
+		return {
+			...folderProject(),
+			folder_id: '',
+			folder_name: '',
+			own: null,
+			inherited: { ...projectChoice, folder_name: 'Website' }
 		};
 	}
 
@@ -532,6 +544,27 @@ function createFixtures(mode = 'normal', role = 'admin') {
 				created_at: 1,
 				updated_at: 1
 			};
+		} else if (path === '/api/v1/folders' && method === 'POST') {
+			const body = request.postDataJSON();
+			requests.push({ method, path, body });
+			reply = {
+				id: 'new-folder',
+				name: body.name,
+				parent_id: body.parent_id,
+				user_id: 'buddy-design-user',
+				data: body.data,
+				meta: body.meta,
+				items: { chats: [], files: [] },
+				write_access: true,
+				created_at: 2,
+				updated_at: 2
+			};
+		} else if (path === '/api/v1/subscriptions/new-folder/project' && method === 'GET') {
+			requests.push({ method, path, parentId: url.searchParams.get('parent_id') });
+			reply = newFolderProject();
+		} else if (path === '/api/v1/subscriptions/folders/new-folder/project' && method === 'PUT') {
+			requests.push({ method, path, body: request.postDataJSON() });
+			reply = newFolderProject();
 		} else if (path === '/api/v1/subscriptions/folders/website/project') {
 			requests.push({ method, path, body: request.postDataJSON() });
 			if (method === 'PUT') {
@@ -697,6 +730,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		mode === 'folder-chip' ||
 		mode === 'folder-edit' ||
 		mode === 'folder-browse' ||
+		mode === 'folder-create' ||
 		askingModes.has(mode)
 	) {
 		sessionOptions = { path: '/folders/website' };
@@ -3098,10 +3132,77 @@ async function folderDialogCase(browser, profile) {
 }
 
 /** Saves the folder dialog; on phones Save is on the folder's own screen. */
-async function saveFolderSettings(dialog) {
+async function saveFolderSettings(dialog, label = 'Save') {
 	const back = dialog.getByRole('button', { name: 'Back to folder', exact: true });
 	if (await back.isVisible()) await back.click();
-	await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+	await dialog.getByRole('button', { name: label, exact: true }).click();
+}
+
+async function folderCreateCase(browser, profile) {
+	await runCase(browser, profile, 'folder-create', 'folder-create', async ({ page }, fixtures) => {
+		await page.locator('button[aria-label="Folder options"]').click();
+		await page.getByRole('button', { name: 'Create Folder', exact: true }).click();
+		// Found by its form: on a phone the heading changes with each screen.
+		const dialog = page.locator('.modal').filter({ has: page.locator('#folder-form-new') });
+		await dialog.getByRole('heading', { name: 'New folder', exact: true }).waitFor();
+		await dialog.locator('#folder-name').fill('Docs');
+
+		// Only the name to start with; the rest waits behind optional tiles.
+		const projectTile = dialog.getByRole('button', {
+			name: /^Project folder\s*Where the AI works/
+		});
+		await projectTile.waitFor();
+		assert.equal(await dialog.getByText('Run on', { exact: true }).isVisible(), false);
+		await captureScreenshot(page, profile.name + '-folder-create');
+
+		await dialog.getByRole('button', { name: /^Instructions\s*How chats behave/ }).click();
+		await dialog.getByRole('textbox', { name: 'Instructions', exact: true }).fill('Be brief.');
+
+		// The new folder starts from Website's choice; this person picks their own.
+		await projectTile.click();
+		if (profile.mobile) {
+			const inherited = dialog.getByRole('radio', { name: /^Same as “Website”/ });
+			await inherited.waitFor();
+			assert.equal(await inherited.getAttribute('aria-checked'), 'true');
+		} else {
+			await dialog
+				.locator('#project-run-on-new-trigger')
+				.getByText('Same as “Website”', { exact: true })
+				.waitFor();
+		}
+		await pickChoice(dialog, 'project-run-on-new', /^Work PC/);
+		await pickChoice(dialog, 'project-access-new', /^Read files/);
+		assert.equal(fixtures.requests.filter((entry) => entry.method === 'POST').length, 0);
+
+		await saveFolderSettings(dialog, 'Create');
+		await dialog.waitFor({ state: 'hidden' });
+		const created = fixtures.requests.filter(
+			(entry) => entry.method === 'POST' && entry.path === '/api/v1/folders'
+		);
+		assert.equal(created.length, 1);
+		assert.equal(created[0].body.name, 'Docs');
+		assert.equal(created[0].body.parent_id, 'website');
+		assert.equal(created[0].body.data.system_prompt, 'Be brief.');
+		const reads = fixtures.requests.filter(
+			(entry) => entry.path === '/api/v1/subscriptions/new-folder/project'
+		);
+		assert.deepEqual(
+			reads.map((entry) => entry.parentId),
+			['website'],
+			'Asks once what a folder under Website starts with'
+		);
+		const saved = fixtures.requests.filter(
+			(entry) =>
+				entry.method === 'PUT' && entry.path === '/api/v1/subscriptions/folders/new-folder/project'
+		);
+		assert.deepEqual(saved[0].body, {
+			mode: 'auto',
+			paths: {},
+			machine_id: 'pc-1',
+			access: 'read',
+			offered: {}
+		});
+	});
 }
 
 /** Opens the folder's Edit folder dialog with its Project folder row open. */
@@ -3361,6 +3462,7 @@ try {
 		await folderChipCase(browser, profile);
 		await folderEditCase(browser, profile);
 		await folderDialogCase(browser, profile);
+		await folderCreateCase(browser, profile);
 		await folderDefaultsCase(browser, profile);
 		await folderNoPlansCase(browser, profile);
 		await folderBrowseCase(browser, profile);
