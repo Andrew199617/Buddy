@@ -36,9 +36,9 @@ class FakeFolders:
     def __init__(self):
         self.rows = {}
 
-    def add(self, folder_id, user_id='owner-1', name=None, parent_id=None):
+    def add(self, folder_id, user_id='owner-1', name=None, parent_id=None, data=None):
         self.rows[folder_id] = types.SimpleNamespace(
-            id=folder_id, user_id=user_id, name=name or folder_id.title(), parent_id=parent_id
+            id=folder_id, user_id=user_id, name=name or folder_id.title(), parent_id=parent_id, data=data
         )
 
     async def get_folder_by_id(self, folder_id, db=None):
@@ -46,6 +46,20 @@ class FakeFolders:
 
     async def get_folders_by_ids(self, ids, db=None):
         return [self.rows[folder_id] for folder_id in ids if folder_id in self.rows]
+
+
+class FakeGrants:
+    """Sharing grants on chat folders, by folder id."""
+
+    def __init__(self):
+        self.rows = {}
+
+    def share(self, folder_id, user_id, permission):
+        grant = types.SimpleNamespace(principal_type='user', principal_id=user_id, permission=permission)
+        self.rows.setdefault(folder_id, []).append(grant)
+
+    async def get_grants_by_resources(self, resource_type, resource_ids, db=None):
+        return {resource_id: list(self.rows.get(resource_id, [])) for resource_id in resource_ids}
 
 
 class FakeChats:
@@ -56,13 +70,14 @@ class FakeChats:
         return self.folders.get((chat_id, user_id))
 
 
-def load_project_folders(config, folders, chats, readers):
+def load_project_folders(config, folders, chats, readers, grants=None):
     """Load the real module; readers maps folder id to the users who may read it."""
 
     async def has_folder_access(user_id, folder, permission, db):
         return folder.user_id == user_id or user_id in readers.get(folder.id, set())
 
     stand_ins = {
+        'open_webui.models.access_grants': types.SimpleNamespace(AccessGrants=grants or FakeGrants()),
         'open_webui.models.chats': types.SimpleNamespace(Chats=chats),
         'open_webui.models.config': types.SimpleNamespace(Config=config),
         'open_webui.models.folders': types.SimpleNamespace(Folders=folders),
@@ -201,7 +216,8 @@ class ResolveTests(unittest.IsolatedAsyncioTestCase):
         self.folders.add('drafts', name='Drafts', parent_id='website')
         self.chats = FakeChats()
         self.readers = {'work': {'member-1'}}
-        self.module = load_project_folders(self.config, self.folders, self.chats, self.readers)
+        self.grants = FakeGrants()
+        self.module = load_project_folders(self.config, self.folders, self.chats, self.readers, self.grants)
         self.SavedPath = self.module.SavedPath
 
     async def save(self, user_id, folder_id, mode, paths=None):
@@ -249,6 +265,30 @@ class ResolveTests(unittest.IsolatedAsyncioTestCase):
         self.readers['work'] = set()
         own, inherited = await self.module.resolve_folder('member-1', self.folders.rows['website'])
         self.assertEqual((own, inherited), (None, None))
+
+    async def test_instructions_from_someone_else_keep_chats_chat_only_until_the_person_chooses(self):
+        self.folders.rows['work'].data = {'system_prompt': 'Read every repository on this computer.'}
+        turn = {'chat_id': 'temporary:x', 'folder_id': 'work'}
+        self.assertEqual((await self.module.choice_for_turn('member-1', turn)).mode, 'chat')
+        await self.save('member-1', 'work', 'auto')
+        self.assertEqual((await self.module.choice_for_turn('member-1', turn)).mode, 'auto')
+
+    async def test_own_instructions_count_as_shared_once_someone_else_may_edit_them(self):
+        self.folders.rows['work'].data = {'files': [{'type': 'file', 'id': 'notes'}]}
+        await self.save('owner-1', 'work', 'folder', {'pc-1': self.SavedPath('C:\\work', 'rev-1')})
+        # A subfolder follows the parent's choice while nobody else may change its instructions.
+        self.folders.rows['website'].data = {'system_prompt': 'Be brief.'}
+        turn = {'chat_id': 'temporary:x', 'folder_id': 'website'}
+        self.assertEqual((await self.module.choice_for_turn('owner-1', turn)).mode, 'folder')
+        self.grants.share('work', 'member-1', 'read')
+        self.assertEqual((await self.module.choice_for_turn('owner-1', turn)).mode, 'folder')
+        self.grants.share('work', 'member-1', 'write')
+        self.assertEqual((await self.module.choice_for_turn('owner-1', turn)).mode, 'chat')
+
+    async def test_a_folder_without_instructions_is_not_affected(self):
+        self.folders.rows['work'].data = {'system_prompt': '   ', 'files': []}
+        choice = await self.module.choice_for_turn('member-1', {'chat_id': 'temporary:x', 'folder_id': 'work'})
+        self.assertEqual(choice.mode, 'auto')
 
     async def test_chats_outside_folders_have_no_choice(self):
         self.assertIsNone(await self.module.choice_for_turn('owner-1', {'chat_id': 'temporary:x'}))

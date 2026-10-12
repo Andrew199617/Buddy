@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath, PureWindowsPath
 
+from open_webui.models.access_grants import AccessGrants
 from open_webui.models.chats import Chats
 from open_webui.models.config import Config
 from open_webui.models.folders import Folders
@@ -304,6 +305,51 @@ async def resolve_folder(user_id: str, folder, choices: dict[str, FolderChoice] 
     return own, inherited
 
 
+def _adds_instructions(folder) -> bool:
+    """The chat folder adds a system prompt or knowledge files to its chats."""
+    data = folder.data or {}
+    prompt = data.get('system_prompt')
+    if isinstance(prompt, str) and prompt.strip():
+        return True
+    files = data.get('files')
+    return isinstance(files, list) and len(files) > 0
+
+
+async def _others_can_edit(user_id: str, folder) -> bool:
+    """Someone besides this person owns the folder or one above it, or may edit one of them."""
+    folder_ids = []
+    seen = set()
+    current = folder
+    while current is not None and current.id not in seen and len(folder_ids) < MAX_PARENT_DEPTH:
+        if current.user_id != user_id:
+            return True
+        seen.add(current.id)
+        folder_ids.append(current.id)
+        if not current.parent_id:
+            break
+        current = await Folders.get_folder_by_id(current.parent_id)
+    grants = await AccessGrants.get_grants_by_resources('folder', folder_ids)
+    for folder_grants in grants.values():
+        for grant in folder_grants:
+            if grant.permission != 'write':
+                continue
+            if grant.principal_type == 'user' and grant.principal_id == user_id:
+                continue
+            return True
+    return False
+
+
+async def has_shared_instructions(user_id: str, folder) -> bool:
+    """The folder adds instructions to this person's chats that someone else can change.
+
+    Like a preset written by someone else, those chats then stay chat-only
+    until this person chooses the folder's project folder themselves.
+    """
+    if not _adds_instructions(folder):
+        return False
+    return await _others_can_edit(user_id, folder)
+
+
 async def choice_for_turn(user_id: str, metadata: dict) -> FolderChoice | None:
     """The project folder choice for the chat a turn belongs to, or None outside chat folders.
 
@@ -320,6 +366,8 @@ async def choice_for_turn(user_id: str, metadata: dict) -> FolderChoice | None:
     own, inherited = await resolve_folder(user_id, folder)
     if own is not None:
         return own
+    if await has_shared_instructions(user_id, folder):
+        return FolderChoice(folder.id, MODE_CHAT, folder_name=folder.name)
     if inherited is not None:
         return inherited
     return FolderChoice(folder.id, MODE_AUTO, folder_name=folder.name)

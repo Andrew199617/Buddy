@@ -141,6 +141,13 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
         project = await self.service.describe_folder_project(OWNER_USER, 'website')
         self.assertEqual(project['own']['paths']['pc-1']['problem'], 'computer_changed')
 
+    async def test_instructions_from_someone_else_are_reported(self):
+        self.service.project_folders.Folders.rows['website'].data = {'system_prompt': 'Be brief.'}
+        member_view = await self.service.describe_folder_project(MEMBER_USER, 'website')
+        owner_view = await self.service.describe_folder_project(OWNER_USER, 'website')
+        self.assertTrue(member_view['shared_instructions'])
+        self.assertFalse(owner_view['shared_instructions'])
+
     async def test_a_member_of_a_shared_folder_chooses_for_themselves_only(self):
         await self.save(MEMBER_USER, 'folder', {'member-pc': 'D:\\member\\site'})
         member_view = await self.service.describe_folder_project(MEMBER_USER, 'website')
