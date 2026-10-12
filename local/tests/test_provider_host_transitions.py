@@ -1292,6 +1292,63 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         ])
         self.assertEqual([computer['state'] for computer in described['computers']], ['ready', 'ready', 'ready'])
 
+    async def test_each_computer_keeps_its_own_start_folder_and_cli_paths(self):
+        before = await self.service.describe_computer_settings(OWNER, 'runner-a')
+        # Until it has its own, the plan's computer uses what was saved with the plan.
+        self.assertEqual(before['start_folder'], 'C:\\fixture-project')
+        self.assertEqual(before['cli_paths']['claude'], 'C:\\fixture-tools\\provider.exe')
+        self.assertFalse(before['saved'])
+        # Codex's plan runs on runner-b, so what was saved with it applies there.
+        other = await self.service.describe_computer_settings(OWNER, 'runner-b')
+        self.assertEqual(other['start_folder'], 'C:\\fixture-project')
+        self.assertEqual(other['cli_paths'], {'claude': '', 'codex': 'C:\\fixture-tools\\provider.exe'})
+
+        saved = await self.service.save_computer_settings(
+            OWNER, 'runner-b', REVISION_B, ' C:\\code ', {'claude': 'C:\\tools\\claude.exe', 'codex': ''}
+        )
+        self.assertTrue(saved['saved'])
+        self.assertEqual(saved['start_folder'], 'C:\\code')
+        self.assertEqual(saved['cli_paths'], {'claude': 'C:\\tools\\claude.exe', 'codex': ''})
+        self.assertEqual(self.machines['runner-b'].path_checks, [
+            ('C:\\code', 'dir'), ('C:\\tools\\claude.exe', 'file')
+        ])
+        await self.service.status_cache.get(self.service.ProviderRef(OWNER, 'claude').on('runner-b'))
+        on_b = self.providers['claude'].status_settings[-1]
+        self.assertEqual((on_b.workspace, on_b.cli_path), ('C:\\code', 'C:\\tools\\claude.exe'))
+        # The plan's own settings are unchanged.
+        self.assertEqual(self.config.values['subscriptions.claude']['cli_path'], 'C:\\fixture-tools\\provider.exe')
+
+        # A computer that is set up again starts with nothing saved.
+        self.config.values['subscriptions.machines'][1]['revision'] = 'fixture-revision-runner-b-again'
+        again = await self.service.describe_computer_settings(OWNER, 'runner-b')
+        self.assertFalse(again['saved'])
+        self.assertEqual(again['cli_paths']['claude'], '')
+
+    async def test_saving_computer_settings_needs_the_revision_the_page_showed(self):
+        await self.assert_conflict(
+            self.service.save_computer_settings(OWNER, 'runner-b', REVISION_A, '', {})
+        )
+        with self.assertRaisesRegex(self.service.SubscriptionError, 'That computer was removed'):
+            await self.service.save_computer_settings(OWNER, 'missing-pc', REVISION_B, '', {})
+        with self.assertRaisesRegex(self.service.SubscriptionError, 'Network paths'):
+            await self.service.save_computer_settings(OWNER, 'runner-b', REVISION_B, '\\\\server\\share', {})
+        self.assertNotIn('subscriptions.users.owner-1.computers', self.config.values)
+
+    async def test_a_turn_uses_its_computers_saved_cli_path(self):
+        self.seed_old_signed_in_cache()
+        await self.service.save_computer_settings(OWNER, 'runner-a', REVISION_A, '', {'claude': 'C:\\tools\\claude.exe'})
+        self.seed_old_signed_in_cache()
+        observed = []
+
+        async def record_turn(turn):
+            observed.append(turn.settings)
+            yield {'text': 'fixture response'}
+
+        self.providers['claude'].turn_hook = record_turn
+        self.assertEqual(await self.fixture_chat(), [{'text': 'fixture response'}])
+        self.assertEqual(observed[0].cli_path, 'C:\\tools\\claude.exe')
+        self.assertEqual(observed[0].workspace, '')
+
     async def test_status_is_cached_for_each_computer_and_forgotten_for_all(self):
         ref = self.service.ProviderRef(OWNER, 'claude')
         on_a = ref.on('runner-a')
@@ -2031,6 +2088,19 @@ class ProviderHostRouterTests(unittest.IsolatedAsyncioTestCase):
         self.service.logout.assert_awaited_once_with(OWNER, 'claude', 'runner-a', REVISION_A, machine_id=None)
         self.service.describe_provider.assert_awaited_once_with(
             OWNER, 'claude', fresh=True, expected_machine_id='runner-a', expected_machine_revision=REVISION_A
+        )
+
+    async def test_computer_settings_routes_forward_the_revision_and_paths(self):
+        self.service.describe_computer_settings = AsyncMock(return_value={'machine_id': 'runner-b'})
+        self.service.save_computer_settings = AsyncMock(return_value={'machine_id': 'runner-b'})
+        await self.router.get_computer_settings('runner-b', user=self.admin)
+        self.service.describe_computer_settings.assert_awaited_once_with(OWNER, 'runner-b')
+        form = self.router.ComputerSettingsForm(
+            expected_revision=REVISION_B, start_folder='C:\\code', cli_paths={'claude': 'C:\\tools\\claude.exe'}
+        )
+        await self.router.save_computer_settings('runner-b', form, user=self.admin)
+        self.service.save_computer_settings.assert_awaited_once_with(
+            OWNER, 'runner-b', REVISION_B, 'C:\\code', {'claude': 'C:\\tools\\claude.exe'}
         )
 
     async def test_sign_in_routes_forward_the_chosen_computer(self):

@@ -18,6 +18,8 @@ Routes:
   POST   /machines/{machine}/folders/check — check that a folder exists on one of the user's computers
   GET    /machines/{machine}/folders   — folder names in one folder there (?path=, hidden, prefix); drives for no path
   GET    /machines/{machine}/folders/suggested — folders Claude Code and Codex worked in there
+  GET    /machines/{machine}/settings — where plans start there, and which CLIs they run
+  PUT    /machines/{machine}/settings — save those, checked on that computer
   GET    /folders/{folder}/project — the user's project folder for a chat folder, and their computers
   PUT    /folders/{folder}/project — choose it: let the AI choose, an exact folder per computer, or no files
   DELETE /folders/{folder}/project — forget it, so the chat folder follows its parent again
@@ -257,6 +259,14 @@ class FolderCheckForm(BaseModel):
     path: str
 
 
+class ComputerSettingsForm(BaseModel):
+    model_config = {'extra': 'forbid'}
+    # The computer's revision the page showed, so a computer set up again is not changed.
+    expected_revision: str
+    start_folder: str = ''
+    cli_paths: dict[str, str] = {}
+
+
 class FolderProjectForm(BaseModel):
     model_config = {'extra': 'forbid'}
     mode: Literal['auto', 'folder', 'chat']
@@ -291,6 +301,26 @@ async def suggested_folders_on_machine(machine_id: str, user=Depends(get_machine
     try:
         return await service.suggested_machine_folders(user, machine_id)
     except SubscriptionError as error:
+        raise _bad_request(error)
+
+
+@router.get('/machines/{machine_id}/settings')
+async def get_computer_settings(machine_id: str, user=Depends(get_machine_user)):
+    try:
+        return await service.describe_computer_settings(user.id, machine_id)
+    except SubscriptionError as error:
+        raise _bad_request(error)
+
+
+@router.put('/machines/{machine_id}/settings')
+async def save_computer_settings(
+    machine_id: str, form_data: ComputerSettingsForm, user=Depends(get_machine_session_user)
+):
+    try:
+        return await service.save_computer_settings(
+            user.id, machine_id, form_data.expected_revision, form_data.start_folder, form_data.cli_paths
+        )
+    except (SubscriptionError, OSError) as error:
         raise _bad_request(error)
 
 

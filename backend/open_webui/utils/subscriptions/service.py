@@ -57,7 +57,7 @@ from open_webui.utils.subscriptions.common import (
     requested_effort,
 )
 from open_webui.utils.subscriptions.conversation import parse_messages
-from open_webui.utils.subscriptions import folder_listing, project_folders
+from open_webui.utils.subscriptions import computer_settings, folder_listing, project_folders
 from open_webui.utils.subscriptions.events import SubscriptionError
 from open_webui.utils.subscriptions.machines import (
     LOCAL_MACHINE_ID, LocalMachine, RemoteMachine, StartupCleanupUnconfirmedError, TunnelMachine,
@@ -100,6 +100,7 @@ MAX_PENDING_ENROLLMENTS = 500
 CLOSE_UNKNOWN_MACHINE = 4401
 CLOSE_NOT_ALLOWED = 4403
 REMOVED_MACHINE_MESSAGE = 'This computer was removed from Buddy. Connect it again from the Buddy app.'
+REMOVED_COMPUTER_MESSAGE = 'That computer was removed. Choose another.'
 
 PROVIDER_IDS = ('claude', 'codex')
 PROVIDER_LABELS = {'claude': 'Claude', 'codex': 'ChatGPT'}
@@ -171,6 +172,7 @@ _enrollments: dict[str, dict] = {}
 _providers: dict[ProviderRef, Any] = {}
 _provider_locks: dict[ProviderRef, asyncio.Lock] = {}
 _machine_lock = asyncio.Lock()
+_computer_settings_lock = asyncio.Lock()
 _provider_generations: dict[ProviderRef, int] = {}
 _active_provider_tasks: dict[ProviderRef, set[asyncio.Task]] = {}
 # One handle per computer a provider runs on, so a turn on one computer
@@ -1355,6 +1357,88 @@ async def get_settings(owner_id: str, provider_id: str) -> ProviderSettings:
     return await _load_settings(_ref(owner_id, provider_id))
 
 
+async def _saved_computer_settings(owner_id: str) -> dict[str, 'computer_settings.ComputerSettings']:
+    return computer_settings.parse(await Config.get(computer_settings.settings_key(owner_id), {}))
+
+
+async def _settings_for(ref: ProviderRef, settings: ProviderSettings, machine_id: str) -> ProviderSettings:
+    """The plan's settings for work on one computer, with that computer's start folder and CLI path.
+
+    A computer without saved settings finds its CLI itself and has no start
+    folder, except the plan's own computer: it keeps the start folder and
+    CLI path saved with the plan before computers had their own.
+    """
+    saved = await _saved_computer_settings(ref.owner_id)
+    entry = computer_settings.current(saved, machine_id, await _machine_revision(ref.owner_id, machine_id))
+    if entry is not None:
+        return replace(
+            settings, machine_id=machine_id, workspace=entry.start_folder, cli_path=entry.cli_path(ref.provider_id)
+        )
+    if machine_id == settings.machine_id:
+        return settings
+    return replace(settings, machine_id=machine_id, workspace='', cli_path='')
+
+
+async def describe_computer_settings(owner_id: str, machine_id: str) -> dict:
+    """A computer's start folder and CLI paths, as turns there use them."""
+    revision = await _machine_revision(owner_id, machine_id)
+    if revision is None:
+        raise SubscriptionError(REMOVED_COMPUTER_MESSAGE)
+    saved = computer_settings.current(await _saved_computer_settings(owner_id), machine_id, revision)
+    start_folder = ''
+    cli_paths = {}
+    for provider_id in PROVIDER_IDS:
+        ref = _ref(owner_id, provider_id)
+        on_computer = await _settings_for(ref, await _load_settings(ref), machine_id)
+        cli_paths[provider_id] = on_computer.cli_path
+        if not start_folder:
+            start_folder = on_computer.workspace
+    return {
+        'machine_id': machine_id,
+        'revision': revision,
+        'start_folder': start_folder,
+        'cli_paths': cli_paths,
+        # False while it still uses what was saved with a plan.
+        'saved': saved is not None,
+    }
+
+
+async def save_computer_settings(
+    owner_id: str, machine_id: str, expected_revision: str, start_folder, cli_paths: dict
+) -> dict:
+    """Save where plans start on one computer and which CLIs they run, checked on that computer."""
+    _require_single_worker()
+    revision = await _machine_revision(owner_id, machine_id)
+    if revision is None:
+        raise SubscriptionError(REMOVED_COMPUTER_MESSAGE)
+    if expected_revision != revision:
+        raise HTTPException(status_code=409, detail='That computer was set up again. Refresh before trying again.')
+    # Also refuses This server while the policy has it off.
+    machine = await get_machine(owner_id, machine_id)
+    folder = ''
+    if isinstance(start_folder, str) and start_folder.strip():
+        folder = project_folders.clean_project_path(start_folder.strip(), await _machine_platform(owner_id, machine_id))
+        if not await machine.path_exists(folder, 'dir'):
+            raise SubscriptionError(f'The start folder does not exist on {machine.name}: {folder}')
+    paths = {}
+    for provider_id in PROVIDER_IDS:
+        path = computer_settings.clean_cli_path((cli_paths or {}).get(provider_id))
+        if path and not await machine.path_exists(path, 'file'):
+            raise SubscriptionError(f'The CLI path does not exist on {machine.name}: {path}')
+        if path:
+            paths[provider_id] = path
+
+    async with _computer_settings_lock:
+        saved = await _saved_computer_settings(owner_id)
+        # Entries for removed computers are dropped here, the next time anything is saved.
+        kept = await _owned_machine_ids(owner_id)
+        saved = {kept_id: entry for kept_id, entry in saved.items() if kept_id in kept}
+        saved[machine_id] = computer_settings.ComputerSettings(revision, folder, paths)
+        await Config.upsert({computer_settings.settings_key(owner_id): computer_settings.serialize(saved)})
+    invalidate_computer(owner_id, machine_id)
+    return await describe_computer_settings(owner_id, machine_id)
+
+
 def _forget_machine_authority(settings: ProviderSettings) -> None:
     """Turn the provider off and drop the access and paths approved on its machine."""
     settings.enable = False
@@ -1715,7 +1799,7 @@ async def _checked_project_path(user, machine_id: str, path, current) -> 'projec
     # Confirms the computer is the user's and, for This server, that the policy allows it.
     await get_machine(user.id, machine_id)
     if revision is None:
-        raise SubscriptionError('That computer was removed. Choose another.')
+        raise SubscriptionError(REMOVED_COMPUTER_MESSAGE)
     cleaned = project_folders.clean_project_path(path, await _machine_platform(user.id, machine_id))
     if previous is not None and previous.path == cleaned and previous.revision == revision:
         # Checked when it was chosen, so it saves even while that computer is offline.
@@ -1762,7 +1846,7 @@ async def _sign_in_settings(
         return settings
     if not machine_id:
         raise SubscriptionError(NO_MACHINE_MESSAGE)
-    on_computer = _settings_on(settings, machine_id)
+    on_computer = await _settings_for(ref, settings, machine_id)
     await _check_expected_machine(ref.owner_id, on_computer, machine_id, expected_machine_revision, mutation)
     return on_computer
 
@@ -1941,6 +2025,7 @@ async def forget_user(user_id: str) -> None:
         for ref in refs:
             updates[await _credential_mode_key(ref)] = CREDENTIAL_MACHINE
         updates[project_folders.choices_key(user_id)] = {}
+        updates[computer_settings.settings_key(user_id)] = {}
         await Config.upsert(updates)
         await SubscriptionCredentials.delete_user(user_id)
         for ref in refs:
@@ -2185,24 +2270,13 @@ def _log_refresh_failure(task: asyncio.Task) -> None:
         log.warning('Could not refresh subscription details: %s', error)
 
 
-def _settings_on(settings: ProviderSettings, machine_id: str) -> ProviderSettings:
-    """The plan's settings for work on one computer.
-
-    The start folder and CLI path were chosen for the plan's own computer, so
-    on another computer the CLI is found there and no start folder is assumed.
-    """
-    if machine_id == settings.machine_id:
-        return settings
-    return replace(settings, machine_id=machine_id, workspace='', cli_path='')
-
-
 async def _load_status(machine_ref: MachineRef) -> dict:
     ref = machine_ref.ref
     task = asyncio.current_task()
     try:
         _require_single_worker()
         async with _provider_lock(ref):
-            settings = _settings_on(await _load_settings(ref), machine_ref.machine_id)
+            settings = await _settings_for(ref, await _load_settings(ref), machine_ref.machine_id)
             await _require_verified_machine(ref, settings)
             _require_provider_cleanup(ref)
             machine = await _tracked(ref, settings)
@@ -2225,7 +2299,7 @@ async def _load_models(machine_ref: MachineRef) -> list[ProviderModel]:
     try:
         _require_single_worker()
         async with _provider_lock(ref):
-            settings = _settings_on(await _load_settings(ref), machine_ref.machine_id)
+            settings = await _settings_for(ref, await _load_settings(ref), machine_ref.machine_id)
             await _require_verified_machine(ref, settings)
             _require_provider_cleanup(ref)
             machine = await _tracked(ref, settings)
@@ -2423,7 +2497,7 @@ async def _plan_computers(ref: ProviderRef, settings: ProviderSettings) -> list[
     computers = []
     for machine_id in machine_ids:
         try:
-            await _require_verified_machine(ref, _settings_on(settings, machine_id))
+            await _require_verified_machine(ref, replace(settings, machine_id=machine_id))
         except SubscriptionError:
             continue
         reachable = True
@@ -2742,6 +2816,7 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
         async with _provider_lock(ref):
             _require_single_worker()
             settings = await _load_settings(ref)
+            settings = await _settings_for(ref, settings, settings.machine_id)
             await _require_verified_machine(ref, settings)
             _require_provider_cleanup(ref)
             generation = _provider_generations.get(ref, 0)
