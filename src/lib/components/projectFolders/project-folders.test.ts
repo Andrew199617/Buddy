@@ -120,10 +120,11 @@ describe('the chip', () => {
 	});
 
 	it('describes the other modes and where they come from', () => {
-		expect(chipState(project()).label).toBe('AI chooses where to work');
+		expect(chipState(project()).label).toBe('Project folder not set');
+		expect(chipState(project({ own: choice('auto') })).label).toBe('AI chooses where to work');
 		const inherited = chipState(project({ inherited: choice('chat', {}, 'Work') }));
 		expect(inherited).toEqual({
-			label: 'Just chat, no files',
+			label: 'Detached',
 			tone: 'normal',
 			fromFolderName: 'Work'
 		});

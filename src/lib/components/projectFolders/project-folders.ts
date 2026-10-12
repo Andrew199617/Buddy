@@ -73,8 +73,12 @@ export function chipState(project: FolderProject): ChipState {
 	if (needsAttention(project)) {
 		return { label: 'Project folder needs attention', tone: 'attention', fromFolderName };
 	}
+	// No choice of its own or from a parent: new chats start detached until one is made.
+	if (!project.own && !project.inherited && !waitsForOwnChoice(project)) {
+		return { label: 'Project folder not set', tone: 'normal', fromFolderName };
+	}
 	if (choice.mode === 'chat') {
-		return { label: 'Just chat, no files', tone: 'normal', fromFolderName };
+		return { label: 'Detached', tone: 'normal', fromFolderName };
 	}
 	if (choice.mode === 'auto') {
 		return { label: 'AI chooses where to work', tone: 'normal', fromFolderName };
