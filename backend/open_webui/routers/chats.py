@@ -44,6 +44,7 @@ from open_webui.utils.models import get_all_models
 from open_webui.utils.subscriptions.service import (
     API_KEY_TARGET_MESSAGE,
     bind_chat_target,
+    bind_imported_chat,
     copy_chat_target,
 )
 from pydantic import BaseModel
@@ -865,7 +866,7 @@ async def import_chats(
         chats = await Chats.import_chats(user.id, form_data.chats, db=db)
         # Imported chats keep their dates but start like new chats, not where chats from before targets ran.
         for chat in chats:
-            await bind_chat_target(user, chat.id)
+            await bind_imported_chat(user, chat.id)
         await publish_event(
             request,
             EVENTS.CHAT_IMPORTED,
