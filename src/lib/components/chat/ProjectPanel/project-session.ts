@@ -32,12 +32,15 @@ export function preferredTarget(targets: ProjectTarget[]): ProjectTarget | null 
 	return working ?? targets[0] ?? null;
 }
 
-export type TargetProblem = 'choose_again' | 'needs_app' | 'offline' | null;
+// 'needs_app': a Runner added by address, which could get the Buddy app.
+// 'not_browsable': This server, which never can.
+export type TargetProblem = 'choose_again' | 'needs_app' | 'not_browsable' | 'offline' | null;
 
 /** Only computers connected through the Buddy app can be opened from the chat. */
 export function targetProblem(target: ProjectTarget): TargetProblem {
 	if (target.chooseAgain) return 'choose_again';
-	if (target.computer.kind !== 'app') return 'needs_app';
+	if (target.computer.kind === 'address') return 'needs_app';
+	if (target.computer.kind !== 'app') return 'not_browsable';
 	if (!target.computer.online) return 'offline';
 	return null;
 }

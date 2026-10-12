@@ -80,6 +80,9 @@ describe('the project folders a chat can open', () => {
 		expect(targetProblem(target)).toBeNull();
 		expect(targetProblem({ ...target, chooseAgain: true })).toBe('choose_again');
 		expect(targetProblem({ ...target, computer: computer({ kind: 'address' }) })).toBe('needs_app');
+		expect(targetProblem({ ...target, computer: computer({ kind: 'server' }) })).toBe(
+			'not_browsable'
+		);
 		expect(targetProblem({ ...target, computer: computer({ online: false }) })).toBe('offline');
 	});
 
