@@ -10,12 +10,14 @@ The Runner has two independent authorization boundaries:
 | API | Client | Authority |
 | --- | --- | --- |
 | Provider execution (`/health`, `/run`, `/process`, `/processes/{id}/stop`) | Buddy backend | Privileged Runner key; OS-account execution |
-| Workspace API (`/v1/*`) | Browser, mobile, future desktop | Temporary origin-bound pairing token; explicit project grants |
+| Workspace API (`/v1/*`) | A chat's Project tab, relayed by Buddy in connect mode; paired clients of a Runner on its own | Buddy's owner check, or a temporary origin-bound pairing token; explicit project grants |
 | Operator controls | Host operator | Privileged Runner key; browser Origin requests refused |
 
 The privileged key never goes to the workspace browser. Provider credentials
 remain on the selected provider machine. Provider login, chat organization
 folders, machine registration and a supplied path never create project grants.
+A chat folder's project folder only says where Claude and ChatGPT start: it
+creates no grant and never restarts the Runner.
 
 Most people never start the Runner themselves: the Buddy app runs it in
 [connect mode](#connect-mode-the-runner-dials-out-to-buddy). The rest of this
@@ -26,7 +28,8 @@ browser and an address-registered Buddy (the older setup).
 
 In connect mode the Runner opens one WebSocket to Buddy,
 `wss://<buddy>/api/v1/runners/connect`, and serves everything over it: provider
-execution, and Projects requests that Buddy relays for the computer's owner.
+execution, and the requests of a chat's Project tab, which Buddy relays for the
+computer's owner.
 Nothing listens on the computer, so it needs no open port or certificate. The
 protocol is versioned in `backend/buddy_runner/protocol.py`.
 
@@ -40,7 +43,10 @@ buddy-runner run --connection-stdin --state-dir <app data>\runner [--root <folde
 `--root`, `--write` and `--allow-host-execution` mean what they mean below,
 and only the computer chooses them: Buddy cannot add folders or permissions.
 A relayed page needs no pairing code because Buddy has checked it belongs to
-the computer's owner, but it gets only the grants a paired browser would.
+the computer's owner, but it gets only the grants a paired browser would. The
+Project tab can browse only inside shared folders, edit only with `--write`,
+and run commands only with `--allow-host-execution`; leaving or reloading the
+page ends its session and stops its commands.
 
 Without the app, for example on a server, enroll once and run from the saved,
 owner-only connection file. The token comes from
@@ -106,10 +112,12 @@ With approved roots, the host prints a one-use pairing code valid for five
 minutes. The code is five dash-separated groups of four letters and digits
 (100 random bits); case, spaces and dashes do not matter when typing it, and
 O, I and L are read as 0, 1 and 1. Eight wrong attempts use up a code.
-Inspect the host name, current instance ID and endpoint in Buddy's
-project UI, then pair. Tokens expire after 30 minutes and stay in client memory.
-The Projects page revokes its session when it is closed, reloaded or left. A
-page the browser discards without notice stays paired until the token expires.
+Buddy's web app no longer pairs by code: it opens computers through the Buddy
+app's connection instead. Pairing remains for other workspace clients of a
+Runner on its own, until that setup is retired. Tokens expire after 30 minutes
+and stay in client memory. A client should revoke its session through
+`DELETE /v1/session` when it is done; one that disappears without doing so
+stays paired until the token expires.
 The same instance ID is shown by discovery, pairing and workspace responses.
 Restart changes it and invalidates all previous tokens, grants and sessions.
 
@@ -302,8 +310,9 @@ saving before remote mutations. Changing a backend URL, key or observed host
 instance disables affected providers, clears inherited access and paths, and
 quiesces old operations. Editing only the name or browser address grants nothing
 and retains the execution revision.
-Older machine editors that omit the optional browser address preserve its
-saved value. Explicitly clearing the field removes only that address.
+The machine editor no longer shows the browser address, which only the retired
+Projects page used, and saving without it preserves the saved value. An
+explicit null still clears it.
 
 Provider execution and host transitions require a single Buddy backend worker.
 The server refuses new provider execution and mutations with multiple workers,
