@@ -408,9 +408,18 @@
 		await tick();
 		if (!closing || !restoreFocus) return;
 		const machineId = closing.computer.machine_id;
-		let opener = `project-folder-change-${machineId}`;
-		if (closing.purpose === 'offered') opener = `project-folder-offer-${machineId}`;
-		document.getElementById(opener)?.focus();
+		let openerId = `project-folder-change-${machineId}`;
+		if (closing.purpose === 'offered') openerId = `project-folder-offer-${machineId}`;
+		const opener = document.getElementById(openerId) as HTMLButtonElement | null;
+		if (opener && !opener.disabled) {
+			opener.focus();
+			return;
+		}
+		// The fifth folder turns Add off; the last folder's Remove takes focus instead.
+		const removes = sectionElement?.querySelectorAll<HTMLElement>(
+			`[data-offered-remove="${machineId}"]`
+		);
+		removes?.[removes.length - 1]?.focus();
 	}
 
 	function pickPath(path: string) {
@@ -702,6 +711,7 @@
 												type="button"
 												class="flex size-11 shrink-0 items-center justify-center rounded-lg text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800 md:size-8"
 												aria-label={$i18n.t('Remove {{path}}', { path })}
+												data-offered-remove={computer.machine_id}
 												on:click={() => removeOffered(computer.machine_id, path)}
 											>
 												<svg
