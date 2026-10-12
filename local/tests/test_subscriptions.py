@@ -42,6 +42,7 @@ from open_webui.utils.subscriptions.events import (  # noqa: E402
     TurnFailed,
 )
 from open_webui.utils.subscriptions.machines import (  # noqa: E402
+    AiohttpProcessChannel,
     LocalMachine,
     RemoteMachine,
     RemoteProcess,
@@ -1227,7 +1228,7 @@ class MachineTests(unittest.TestCase):
 
         async def run():
             connection = DroppedConnection()
-            process = RemoteProcess(connection, ['codex', 'app-server'], 7)
+            process = RemoteProcess(AiohttpProcessChannel(connection), ["codex", "app-server"], 7)
             with self.assertRaisesRegex(ProcessClosedError, 'Runner connection ended'):
                 await process.wait(5)
             self.assertEqual(process.returncode, -1)
