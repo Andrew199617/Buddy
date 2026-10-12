@@ -42,6 +42,7 @@ function project(overrides: Partial<FolderProject> = {}): FolderProject {
 		inherited: null,
 		shared_instructions: false,
 		has_plans: true,
+		plans: [],
 		computers: [laptop, computer()],
 		...overrides
 	};

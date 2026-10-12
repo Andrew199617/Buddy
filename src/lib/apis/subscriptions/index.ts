@@ -424,6 +424,18 @@ export type ProjectFolderComputer = {
 	recent_paths: string[];
 };
 
+// One of the person's plans, as their chat folder settings see it.
+export type FolderPlan = {
+	id: SubscriptionProviderId;
+	name: string;
+	// Off plans answer in no chat.
+	enable: boolean;
+	access: SubscriptionAccess;
+	// The computer it runs on, with the revision an access change must confirm,
+	// or null when it has none it can use.
+	machine: { id: string; name: string; revision: string } | null;
+};
+
 export type FolderProject = {
 	folder_id: string;
 	folder_name: string;
@@ -435,6 +447,7 @@ export type FolderProject = {
 	// until this person makes their own choice for it.
 	shared_instructions: boolean;
 	has_plans: boolean;
+	plans: FolderPlan[];
 	computers: ProjectFolderComputer[];
 };
 
