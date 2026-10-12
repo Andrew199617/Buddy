@@ -1569,6 +1569,8 @@ async def describe_folder_project(user, folder_id: str) -> dict:
         'folder_name': folder.name,
         'own': _describe_folder_choice(own, revisions),
         'inherited': _describe_folder_choice(inherited, revisions),
+        # Instructions someone else can change keep chats chat-only until the person chooses here.
+        'shared_instructions': await project_folders.has_shared_instructions(user.id, folder),
         'has_plans': has_plans,
         'computers': await _folder_computers(user, choices, named_machine_ids),
     }

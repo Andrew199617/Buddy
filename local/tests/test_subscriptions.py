@@ -1454,6 +1454,7 @@ def load_subscription_service(data_dir: Path, config: StandInConfig):
             apply_system_prompt_to_body=None,
         ),
         # Project folders read chat folders; these tests use none.
+        'open_webui.models.access_grants': types.SimpleNamespace(AccessGrants=None),
         'open_webui.models.chats': types.SimpleNamespace(Chats=None),
         'open_webui.models.folders': types.SimpleNamespace(Folders=None),
         'open_webui.utils.access_control.folders': types.SimpleNamespace(has_folder_access=None),
