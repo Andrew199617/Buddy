@@ -2660,7 +2660,7 @@ async function permissionDisclosureCase(browser, profile) {
 			.waitFor();
 		await dialog
 			.getByText(
-				'CLI permissions apply on the selected computer. Model sign-in does not create project or file API grants.',
+				'New chats start with this, and each chat can choose its own above the message box. Model sign-in does not create project or file API grants.',
 				{ exact: true }
 			)
 			.waitFor();
