@@ -145,6 +145,17 @@ class ConversationTests(unittest.TestCase):
             self.assertIsNone(reloaded.get('a'))
             self.assertEqual(reloaded.get('c'), 'session-c')
 
+    def test_session_store_forgets_one_computers_sessions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'sessions.json'
+            store = SessionStore(path)
+            store.put('laptop|/code|key-1', 'session-1')
+            store.put('desktop|/code|key-1', 'session-2')
+            store.forget_prefix('laptop|')
+            reloaded = SessionStore(path)
+            self.assertIsNone(reloaded.get('laptop|/code|key-1'))
+            self.assertEqual(reloaded.get('desktop|/code|key-1'), 'session-2')
+
 
 class CommonTests(unittest.TestCase):
     def test_requested_effort_reads_chip_and_responses_format(self):

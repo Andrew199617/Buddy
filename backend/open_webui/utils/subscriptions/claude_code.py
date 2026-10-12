@@ -601,7 +601,8 @@ class ClaudeCodeProvider:
         cli = await self._require_cli(settings, machine)
         await self.cancel_login()
         returncode, _, error_output = await machine.run([cli, 'auth', 'logout'], await machine.chat_dir(), 60)
-        self._sessions.clear()
+        # Only this computer's sessions belonged to the account that signed out.
+        self._sessions.forget_prefix(f'{machine.id}|')
         if returncode != 0:
             raise SubscriptionError(_shorten(error_output, 400) or 'Claude Code could not sign out.')
 
