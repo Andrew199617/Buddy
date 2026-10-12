@@ -472,7 +472,8 @@
 	[data-composer-menu='integrations']:not(.buddy-action-menu)
 		.app-dropdown-menu
 		button:not([role='switch']),
-	[data-composer-menu='terminal'] .app-dropdown-menu button:not([role='switch']) {
+	[data-composer-menu='terminal'] .app-dropdown-menu button:not([role='switch']),
+	[data-composer-menu='agents'] .app-dropdown-menu button {
 		min-height: 44px;
 	}
 
