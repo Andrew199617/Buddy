@@ -534,6 +534,10 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			method === 'GET'
 		) {
 			requests.push({ method, path });
+			if (mode === 'run-target-new') {
+				// Slow enough that the bar's folder menu opens before the suggestions arrive.
+				await new Promise((resolve) => setTimeout(resolve, 600));
+			}
 			const day = 86400;
 			reply = {
 				state: 'ok',
