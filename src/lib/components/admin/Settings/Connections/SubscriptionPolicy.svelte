@@ -16,10 +16,12 @@
 	let policy: SubscriptionPolicy | null = null;
 	let groups: { id: string; name: string }[] = [];
 	let saving = false;
+	let downloadUrl = '';
 
 	onMount(async () => {
 		try {
 			policy = await getSubscriptionPolicy(localStorage.token);
+			downloadUrl = policy.desktop_download_url;
 			groups = (await getGroups(localStorage.token)) ?? [];
 		} catch (error) {
 			toast.error(`${error}`);
@@ -43,6 +45,12 @@
 		const choice = (event.currentTarget as HTMLSelectElement)
 			.value as SubscriptionPolicy['user_machines'];
 		save({ user_machines: choice });
+	};
+
+	const saveDownloadUrl = async () => {
+		if (!policy || downloadUrl.trim() === policy.desktop_download_url) return;
+		await save({ desktop_download_url: downloadUrl.trim() });
+		if (policy) downloadUrl = policy.desktop_download_url;
 	};
 
 	const toggleGroup = (groupId: string, checked: boolean) => {
@@ -134,5 +142,33 @@
 				on:change={(event) => save({ server_machine: event.detail })}
 			/>
 		</div>
+
+		<form class="flex flex-col gap-1" on:submit|preventDefault={saveDownloadUrl}>
+			<label class="text-sm" for="subscription-desktop-download">
+				{$i18n.t('Buddy for Windows download link')}
+			</label>
+			<p class="text-[0.6875rem] text-gray-500 dark:text-gray-400">
+				{$i18n.t(
+					'Settings → Machines links here for people who open Buddy in a browser. Leave it empty to hide the link.'
+				)}
+			</p>
+			<div class="flex gap-2">
+				<input
+					id="subscription-desktop-download"
+					class="min-w-0 flex-1 rounded-xl bg-gray-50 px-3 py-2 text-sm outline-hidden dark:bg-gray-850"
+					type="url"
+					inputmode="url"
+					placeholder="https://"
+					bind:value={downloadUrl}
+					on:blur={saveDownloadUrl}
+				/>
+				<button
+					type="submit"
+					class="shrink-0 rounded-xl px-3 text-sm font-medium hover:bg-gray-100 dark:hover:bg-gray-850"
+				>
+					{$i18n.t('Save')}
+				</button>
+			</div>
+		</form>
 	</fieldset>
 {/if}

@@ -33,7 +33,16 @@ export type SubscriptionPolicy = {
 	plan_sign_in: boolean;
 	api_keys: boolean;
 	server_machine: boolean;
+	// Where people get the Buddy app for Windows; '' when not set.
+	desktop_download_url: string;
 	owner_id?: string | null;
+};
+
+// The part of the policy every user sees.
+export type SubscriptionPublicPolicy = {
+	plan_sign_in: boolean;
+	api_keys: boolean;
+	desktop_download_url: string;
 };
 
 export type SubscriptionMachine = {
@@ -168,7 +177,7 @@ export const getSubscriptions = async (
 	allowed: boolean;
 	providers: SubscriptionProvider[];
 	machines: SubscriptionMachine[];
-	policy: { plan_sign_in: boolean; api_keys: boolean };
+	policy: SubscriptionPublicPolicy;
 }> => {
 	return subscriptionRequest(token, '/');
 };
