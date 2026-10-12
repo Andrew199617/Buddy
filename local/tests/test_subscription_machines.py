@@ -11,7 +11,10 @@ configuration, or providers, and makes no HTTP requests.
 import ast
 import asyncio
 import copy
+import hashlib
+import hmac
 import ipaddress
+import secrets
 import logging
 import re
 import sys
@@ -32,6 +35,8 @@ sys.path.insert(0, str(ROOT / 'backend'))
 
 from open_webui.utils.subscriptions.runner_transport import normalize_runner_url  # noqa: E402
 from open_webui.utils.subscriptions.events import SubscriptionError  # noqa: E402
+from open_webui.utils.subscriptions.machines import TunnelMachine  # noqa: E402
+from open_webui.utils.subscriptions.tunnel_hub import RunnerHub  # noqa: E402
 
 # The instance owner: the user whose setup predates per-user machines. Most
 # tests act as this user, whose settings keep the original config keys.
@@ -45,11 +50,17 @@ def owner_providers(service, providers_by_id):
 
 
 class FakeUsers:
+    def __init__(self, users=None):
+        self.users = {OWNER: OWNER_USER, **(users or {})}
+
     async def get_first_user(self):
         return OWNER_USER
 
     async def get_super_admin_user(self):
         return OWNER_USER
+
+    async def get_user_by_id(self, user_id):
+        return self.users.get(user_id)
 
 
 class FakeGroups:
@@ -140,7 +151,10 @@ def load_service(config, data_dir):
     module.__file__ = str(SUBSCRIPTIONS / 'service.py')
     module.__dict__.update({
         'asyncio': asyncio,
+        'hashlib': hashlib,
+        'hmac': hmac,
         'ipaddress': ipaddress,
+        'secrets': secrets,
         'logging': logging,
         're': re,
         'time': time,
@@ -171,6 +185,8 @@ def load_service(config, data_dir):
         'LOCAL_MACHINE_ID': 'local',
         'LocalMachine': FakeLocalMachine,
         'RemoteMachine': FakeRemoteMachine,
+        'TunnelMachine': TunnelMachine,
+        'HUB': RunnerHub(),
         'SUBSCRIPTION_OWNED_BY': 'subscription'
     })
     # Use the actual settings dataclass and error type without importing the
