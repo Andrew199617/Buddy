@@ -89,7 +89,7 @@ STARTUP_CLEANUP_MESSAGE = (
 # A computer connected through the Buddy app's Runner, over the tunnel.
 MACHINE_KIND_RUNNER = 'runner'
 MAX_MACHINES_PER_USER = 10
-# How long the token behind "Connect this PC" stays usable.
+# How long the token behind "Connect this computer" stays usable.
 ENROLLMENT_SECONDS = 60
 MAX_PENDING_ENROLLMENTS = 500
 # Tunnel close codes, from buddy_runner.protocol.
@@ -146,7 +146,7 @@ LOCAL_MACHINE = LocalMachine(STATE_DIR)
 _remote_machines: dict[str, RemoteMachine] = {}
 # One handle per connected computer, so tracked processes keep their machine.
 _tunnel_machines: dict[str, TunnelMachine] = {}
-# Pending "Connect this PC" requests: token digest -> owner and expiry.
+# Pending "Connect this computer" requests: token digest -> owner and expiry.
 _enrollments: dict[str, dict] = {}
 _providers: dict[ProviderRef, Any] = {}
 _provider_locks: dict[ProviderRef, asyncio.Lock] = {}
@@ -1128,7 +1128,7 @@ async def redeem_enrollment(token: str, name: str | None, host: dict | None) -> 
     _forget_expired_enrollments()
     enrollment = _enrollments.pop(_digest(token or ''), None)
     if enrollment is None:
-        raise SubscriptionError('This connection request expired. Choose Connect this PC again.')
+        raise SubscriptionError('This connection request expired. Choose Connect this computer again.')
     owner = await Users.get_user_by_id(enrollment['owner_id'])
     if owner is None or not await may_use_machines(owner):
         raise SubscriptionError(NOT_ALLOWED_MESSAGE)
