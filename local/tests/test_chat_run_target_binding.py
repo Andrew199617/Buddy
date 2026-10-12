@@ -200,5 +200,42 @@ class OptionsTests(RunTargetTestCase):
         self.assertEqual(await self.service.run_target_options(MEMBER_USER), {'allowed': False, 'has_plans': False})
 
 
+class ChatTargetTests(RunTargetTestCase):
+    """What the read-only bar shows for a chat that started."""
+
+    async def test_the_owner_sees_where_the_chat_runs_and_any_problem(self):
+        await self.bind(self.computer())
+        described = await self.service.describe_chat_run_target(OWNER_USER, 'chat-1')
+        self.assertTrue(described['bound'])
+        self.assertEqual((described['machine_id'], described['path'], described['access']), ('runner-b', 'C:\\code\\site', 'full'))
+        self.assertEqual(described['computer'], {'name': 'Test runner-b', 'kind': 'address', 'online': None})
+        self.assertIsNone(described['problem'])
+        self.config.values['subscriptions.machines'][1]['revision'] = 'fixture-revision-again'
+        self.assertEqual((await self.service.describe_chat_run_target(OWNER_USER, 'chat-1'))['problem'], 'reset')
+        self.config.values['subscriptions.machines'].pop(1)
+        described = await self.service.describe_chat_run_target(OWNER_USER, 'chat-1')
+        self.assertEqual((described['problem'], described['computer']['name']), ('removed', 'Removed computer'))
+
+    async def test_a_refused_choice_says_why(self):
+        await self.bind(self.computer('missing-pc'))
+        described = await self.service.describe_chat_run_target(OWNER_USER, 'chat-1')
+        self.assertEqual((described['kind'], described['note']), ('detached', 'computer_removed'))
+        self.assertIn('runs Detached', described['note_message'])
+
+    async def test_a_chat_from_before_targets_shows_where_its_next_turn_binds(self):
+        described = await self.service.describe_chat_run_target(OWNER_USER, 'chat-1')
+        self.assertFalse(described['bound'])
+        self.assertEqual((described['would_bind']['machine_id'], described['would_bind']['folder_mode']), ('runner-a', 'auto'))
+        self.assertEqual(self.targets.rows, {})
+
+    async def test_only_the_owner_sees_a_chats_target(self):
+        await self.bind(self.computer())
+        for user, chat_id in ((MEMBER_USER, 'chat-1'), (OWNER_USER, 'temporary:x'), (OWNER_USER, 'missing-chat')):
+            with self.subTest(user=user.id, chat_id=chat_id):
+                with self.assertRaises(self.service.HTTPException) as refused:
+                    await self.service.describe_chat_run_target(user, chat_id)
+                self.assertEqual(refused.exception.status_code, 404)
+
+
 if __name__ == '__main__':
     unittest.main()

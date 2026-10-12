@@ -2466,6 +2466,66 @@ async def run_target_readiness(user, provider_id: str, machine_id: str) -> dict:
     return {'state': _bar_plan_state(provider_status, True), 'message': provider_status.get('message')}
 
 
+async def _target_problem(user, row, kind: str, online: bool | None) -> str | None:
+    """Why a chat's computer can't run its turns now, if it can't."""
+    if row.machine_id == LOCAL_MACHINE_ID and not await _may_use_server_machine(user.id):
+        return 'server_off'
+    revision = await _machine_revision(user.id, row.machine_id)
+    if revision is None:
+        return 'removed'
+    if row.machine_revision and revision != row.machine_revision:
+        return 'reset'
+    if kind == 'app' and not online:
+        return 'offline'
+    return None
+
+
+async def _describe_target_row(user, row) -> dict:
+    described = {
+        'kind': row.kind,
+        'machine_id': row.machine_id,
+        'computer': None,
+        'folder_mode': row.folder_mode,
+        'path': row.path,
+        'access': row.access,
+        'source': row.source,
+        'note': row.note,
+        'problem': None,
+    }
+    if row.source == SOURCE_REFUSED:
+        described['note_message'] = run_targets.REFUSAL_MESSAGES.get(row.note)
+    if row.kind != run_targets.KIND_COMPUTER:
+        return described
+    config = next((saved for saved in await _owned_machine_configs(user.id) if saved['id'] == row.machine_id), None)
+    kind = _folder_computer_kind(row.machine_id, config)
+    online = None
+    name = 'Removed computer'
+    if kind == 'server':
+        name = 'This server'
+        online = True
+    elif config is not None:
+        name = config['name']
+    if kind == 'app' and config is not None:
+        online = HUB.is_online(row.machine_id)
+    described['computer'] = {'name': name, 'kind': kind, 'online': online}
+    described['problem'] = await _target_problem(user, row, kind, online)
+    return described
+
+
+async def describe_chat_run_target(user, chat_id: str) -> dict:
+    """Where the person's chat runs, or where it will when its next turn binds it. Only its owner sees it."""
+    if not is_saved_chat_id(chat_id) or not await Chats.is_chat_owner(chat_id, user.id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='That chat no longer exists.')
+    row = await ChatRunTargets.get(chat_id)
+    if row is not None:
+        return {'bound': True, **await _describe_target_row(user, row)}
+    # A chat from before targets: its next turn binds where its plan ran.
+    folder_id = await Chats.get_chat_folder_id(chat_id, user.id)
+    default = await default_run_target(user, folder_id, started_before_targets=True)
+    would_bind = await _row_from_default(user, chat_id, default, None)
+    return {'bound': False, 'would_bind': await _describe_target_row(user, would_bind)}
+
+
 async def start_login(
     owner_id: str, provider_id: str, method: str, expected_machine_id: str | None = None,
     expected_machine_revision: str | None = None, machine_id: str | None = None
