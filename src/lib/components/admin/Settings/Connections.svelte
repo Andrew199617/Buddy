@@ -459,7 +459,9 @@
 				</div>
 
 				<div>
-					<div class="mb-1.5 text-xs text-gray-600 dark:text-gray-400">{$i18n.t("Everyone's computers")}</div>
+					<div class="mb-1.5 text-xs text-gray-600 dark:text-gray-400">
+						{$i18n.t("Everyone's computers")}
+					</div>
 					<RunnerMachinesOverview />
 				</div>
 

@@ -73,7 +73,10 @@ export class RelayCompanionClient extends WorkspaceClient {
 			});
 			const sessionAlreadyEnded = response.status === 401 || response.status === 503;
 			if (!response.ok && !sessionAlreadyEnded) {
-				throw new CompanionError('Could not end this page’s session on the computer.', response.status);
+				throw new CompanionError(
+					'Could not end this page’s session on the computer.',
+					response.status
+				);
 			}
 		} finally {
 			clearTimeout(timeout);

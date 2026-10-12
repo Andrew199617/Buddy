@@ -47,7 +47,9 @@
 		if (current.state === 'error') {
 			return current.message || $i18n.t('Something went wrong with the connection.');
 		}
-		return $i18n.t('Not connected. Connect it to run Claude and ChatGPT here and to open its projects from any device.');
+		return $i18n.t(
+			'Not connected. Connect it to run Claude and ChatGPT here and to open its projects from any device.'
+		);
 	};
 
 	// Every bridge call returns the app's new status; a refusal in the app's own dialog is not an error.
@@ -70,7 +72,10 @@
 		runBridge(() => desktop.setPermission(permission, allowed));
 </script>
 
-<section aria-labelledby="this-computer-heading" class="rounded-2xl border border-gray-100 p-3 dark:border-gray-850">
+<section
+	aria-labelledby="this-computer-heading"
+	class="rounded-2xl border border-gray-100 p-3 dark:border-gray-850"
+>
 	<h3 id="this-computer-heading" class="text-xs text-gray-600 dark:text-gray-400">
 		{$i18n.t('This computer')}
 	</h3>
@@ -101,7 +106,9 @@
 	<div class="mt-4">
 		<h4 class="text-xs text-gray-600 dark:text-gray-400">{$i18n.t('Shared folders')}</h4>
 		<p class="mt-1 text-[0.6875rem] text-gray-500 dark:text-gray-400">
-			{$i18n.t('Projects and file access can use only the folders you share here. Buddy cannot add any.')}
+			{$i18n.t(
+				'Projects and file access can use only the folders you share here. Buddy cannot add any.'
+			)}
 		</p>
 		<ul class="mt-1 flex flex-col gap-1">
 			{#each status.folders as folder (folder)}

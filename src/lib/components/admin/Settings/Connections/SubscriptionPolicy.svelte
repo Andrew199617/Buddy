@@ -40,7 +40,8 @@
 	};
 
 	const changeWhoMayConnect = (event: Event) => {
-		const choice = (event.currentTarget as HTMLSelectElement).value as SubscriptionPolicy['user_machines'];
+		const choice = (event.currentTarget as HTMLSelectElement)
+			.value as SubscriptionPolicy['user_machines'];
 		save({ user_machines: choice });
 	};
 
@@ -122,7 +123,9 @@
 			<div class="min-w-0">
 				<div class="text-sm">{$i18n.t('Run on this server')}</div>
 				<p class="text-[0.6875rem] text-gray-500 dark:text-gray-400">
-					{$i18n.t("The instance owner may also run Claude and ChatGPT inside the Buddy server itself.")}
+					{$i18n.t(
+						'The instance owner may also run Claude and ChatGPT inside the Buddy server itself.'
+					)}
 				</p>
 			</div>
 			<Switch

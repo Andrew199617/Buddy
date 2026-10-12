@@ -39,7 +39,7 @@
 	$: isClaude = provider.id === 'claude';
 	$: cliName = isClaude ? 'Claude Code' : 'Codex';
 	$: apiKeyLabel = isClaude ? $i18n.t('Anthropic API key') : $i18n.t('OpenAI API key');
-	$: storedForSelection = selectedMode === 'machine' ? null : stored[selectedMode] ?? null;
+	$: storedForSelection = selectedMode === 'machine' ? null : (stored[selectedMode] ?? null);
 	let secretPlaceholder = '';
 	$: if (storedForSelection) {
 		secretPlaceholder = $i18n.t('Paste a new one to replace it');
@@ -137,7 +137,9 @@
 	</legend>
 
 	{#if policy.plan_sign_in}
-		<label class="flex min-h-11 cursor-pointer items-start gap-2.5 rounded-xl px-1 py-1.5 md:min-h-0">
+		<label
+			class="flex min-h-11 cursor-pointer items-start gap-2.5 rounded-xl px-1 py-1.5 md:min-h-0"
+		>
 			<input
 				class="mt-1"
 				type="radio"
@@ -156,7 +158,9 @@
 		</label>
 
 		{#if isClaude}
-			<label class="flex min-h-11 cursor-pointer items-start gap-2.5 rounded-xl px-1 py-1.5 md:min-h-0">
+			<label
+				class="flex min-h-11 cursor-pointer items-start gap-2.5 rounded-xl px-1 py-1.5 md:min-h-0"
+			>
 				<input
 					class="mt-1"
 					type="radio"
@@ -177,7 +181,9 @@
 	{/if}
 
 	{#if policy.api_keys}
-		<label class="flex min-h-11 cursor-pointer items-start gap-2.5 rounded-xl px-1 py-1.5 md:min-h-0">
+		<label
+			class="flex min-h-11 cursor-pointer items-start gap-2.5 rounded-xl px-1 py-1.5 md:min-h-0"
+		>
 			<input
 				class="mt-1"
 				type="radio"
@@ -197,7 +203,9 @@
 	{#if selectedMode !== 'machine'}
 		<div class="ml-6 flex flex-col gap-1.5">
 			{#if storedForSelection}
-				<div class="flex flex-wrap items-center gap-x-2 text-[0.6875rem] text-gray-500 dark:text-gray-400">
+				<div
+					class="flex flex-wrap items-center gap-x-2 text-[0.6875rem] text-gray-500 dark:text-gray-400"
+				>
 					<span>{describeStored(storedForSelection)}</span>
 					<button
 						type="button"

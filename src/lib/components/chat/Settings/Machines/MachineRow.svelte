@@ -16,7 +16,11 @@
 	let busy = false;
 	let confirmingRemoval = false;
 
-	const PLATFORM_NAMES: Record<string, string> = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' };
+	const PLATFORM_NAMES: Record<string, string> = {
+		win32: 'Windows',
+		darwin: 'macOS',
+		linux: 'Linux'
+	};
 
 	$: platform = PLATFORM_NAMES[machine.host?.platform ?? ''] ?? machine.host?.platform ?? '';
 
@@ -26,7 +30,12 @@
 		}
 		const date = new Date(seconds * 1000);
 		return $i18n.t('Last seen {{date}}', {
-			date: date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+			date: date.toLocaleString(undefined, {
+				month: 'short',
+				day: 'numeric',
+				hour: 'numeric',
+				minute: '2-digit'
+			})
 		});
 	};
 
@@ -64,7 +73,9 @@
 <li class="flex flex-col gap-1 rounded-xl px-1 py-2">
 	<div class="flex items-center gap-2">
 		<span
-			class="size-2 shrink-0 rounded-full {machine.online ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-700'}"
+			class="size-2 shrink-0 rounded-full {machine.online
+				? 'bg-green-500'
+				: 'bg-gray-300 dark:bg-gray-700'}"
 			aria-hidden="true"
 		></span>
 		<div class="min-w-0 flex-1">
@@ -127,11 +138,17 @@
 		{/if}
 	</div>
 	{#if confirmingRemoval}
-		<div class="ml-4 flex flex-wrap items-center gap-2 rounded-lg bg-red-50 p-2 text-xs dark:bg-red-950/30" role="alert">
+		<div
+			class="ml-4 flex flex-wrap items-center gap-2 rounded-lg bg-red-50 p-2 text-xs dark:bg-red-950/30"
+			role="alert"
+		>
 			<span class="min-w-0 flex-1">
-				{$i18n.t('Remove {{name}}? Buddy stops running anything there, and the app on it disconnects.', {
-					name: machine.name
-				})}
+				{$i18n.t(
+					'Remove {{name}}? Buddy stops running anything there, and the app on it disconnects.',
+					{
+						name: machine.name
+					}
+				)}
 			</span>
 			<button
 				type="button"
