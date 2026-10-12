@@ -27,6 +27,7 @@
 	import { isSavedChatId } from '$lib/utils/chatId';
 	import { getFolderProject, type FolderProject } from '$lib/apis/subscriptions';
 	import { KeptProjectPanel, showKeptPanel } from './ProjectPanel/kept-panel';
+	import { projectTabAvailable } from './ProjectPanel/project-tab';
 	import { projectFolderChanges } from '$lib/components/projectFolders/project-folder-changes';
 
 	const i18n: Writable<I18n> = getContext('i18n');
@@ -165,6 +166,7 @@
 		reloadFolderProject();
 	}
 	$: showProjectTab = folderProject !== null;
+	$: projectTabAvailable.set(showProjectTab);
 
 	// The Project tab's panel starts the first time the tab shows, then lives as
 	// long as this chat stays in the same folder: switching tabs, an artifact
@@ -202,7 +204,12 @@
 	$: if (keptProject && keptProjectFolder !== folderId) dropProjectPanel();
 	$: if (keptProject && !folderProject && !folderProjectLoading) dropProjectPanel();
 
-	onDestroy(dropProjectPanel);
+	function leaveProjectTab() {
+		dropProjectPanel();
+		projectTabAvailable.set(false);
+	}
+
+	onDestroy(leaveProjectTab);
 
 	// Tab fallback: if active tab becomes hidden, switch to next available
 	$: if (!showOverviewTab && activeTab === 'overview') activeTab = 'controls';

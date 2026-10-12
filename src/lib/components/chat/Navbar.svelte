@@ -28,6 +28,7 @@
 	import ChatPlus from '../icons/ChatPlus.svelte';
 	import Knobs from '../icons/Knobs.svelte';
 	import { isTemporaryChatId } from '$lib/utils/chatId';
+	import { projectTabAvailable } from '$lib/components/chat/ProjectPanel/project-tab';
 	import { hasUnreadChats } from '$lib/stores/chatList';
 
 	const i18n: any = getContext('i18n');
@@ -265,7 +266,8 @@
 					</Tooltip>
 				{/if}
 			{/if}
-			{#if canUseControls}
+			<!-- Buddy: the panel also holds a chat folder's Project tab. -->
+			{#if canUseControls || $projectTabAvailable}
 				<Tooltip content={$i18n.t('Controls')}>
 					<button
 						type="button"
