@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { savedAgent, systemWithAgent, type ChatAgent } from './chat-agent';
+import { ownAgent, savedAgent, systemWithAgent, type ChatAgent } from './chat-agent';
 
 const reviewer: ChatAgent = {
 	name: 'Reviewer',
@@ -26,6 +26,21 @@ describe('savedAgent', () => {
 		expect(savedAgent({ ...reviewer, name: '  ' })).toBeNull();
 		expect(savedAgent({ ...reviewer, path: 7 })).toBeNull();
 		expect(savedAgent({ ...reviewer, instructions: undefined })).toBeNull();
+	});
+});
+
+describe('ownAgent', () => {
+	const loaded = { user_id: 'owner', chat: { agent: { ...reviewer } } };
+
+	it('gives the owner their saved agent', () => {
+		expect(ownAgent(loaded, 'owner')).toEqual(reviewer);
+	});
+
+	it('gives anyone else no agent', () => {
+		expect(ownAgent(loaded, 'folder-member')).toBeNull();
+		expect(ownAgent(loaded, undefined)).toBeNull();
+		expect(ownAgent({ chat: loaded.chat }, 'owner')).toBeNull();
+		expect(ownAgent(null, 'owner')).toBeNull();
 	});
 });
 

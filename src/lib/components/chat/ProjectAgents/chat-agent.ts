@@ -30,6 +30,17 @@ export function savedAgent(value: unknown): ChatAgent | null {
 	};
 }
 
+type LoadedChat = { user_id?: string; chat?: { agent?: unknown } } | null;
+
+/**
+ * The loaded chat's agent, only for the person who chose it. Someone opening a
+ * chat in a folder shared with them never sends its owner's instructions.
+ */
+export function ownAgent(chat: LoadedChat, userId: string | undefined): ChatAgent | null {
+	if (!chat || !userId || chat.user_id !== userId) return null;
+	return savedAgent(chat.chat?.agent);
+}
+
 /** The chat's system prompt with the agent's instructions after it. */
 export function systemWithAgent(system: string, agent: ChatAgent | null): string {
 	const instructions = agent?.instructions.trim() ?? '';

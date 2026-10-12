@@ -54,7 +54,7 @@
 		type ChatFolderMove
 	} from '$lib/components/chat/ProjectPanel/chat-folder';
 	import {
-		savedAgent,
+		ownAgent,
 		systemWithAgent,
 		type ChatAgent
 	} from '$lib/components/chat/ProjectAgents/chat-agent';
@@ -2385,7 +2385,7 @@
 
 				params = structuredClone(chatContent?.params ?? {});
 				delete params.note_id;
-				selectedAgent = savedAgent(chatContent?.agent);
+				selectedAgent = ownAgent(chat, $user?.id);
 				chatFiles = structuredClone(chatContent?.files ?? []);
 
 				// Load tasks from chat-level DB field
