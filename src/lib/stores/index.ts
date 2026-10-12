@@ -232,6 +232,8 @@ type OllamaModelDetails = {
 
 type Settings = {
 	pinnedModels?: string[];
+	// The person's always-on main chat; see utils/main-chat.ts.
+	mainChatId?: string;
 	toolServers?: never[];
 	detectArtifacts?: boolean;
 	showUpdateToast?: boolean;
