@@ -1349,6 +1349,30 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(observed[0].cli_path, 'C:\\tools\\claude.exe')
         self.assertEqual(observed[0].workspace, '')
 
+    async def test_unconfirmed_cleanup_on_an_offline_app_computer_waits_for_that_computer_alone(self):
+        ref = self.service.ProviderRef(OWNER, 'claude')
+        laptop = self.service.TunnelMachine('laptop', 'Laptop', self.service.HUB)
+        waiting = self.service.TrackingMachine(laptop)
+        waiting.cleanup_error = self.service.SubscriptionError('Fixture stop unconfirmed')
+        self.service._tracked_machines[ref.on('laptop')] = waiting
+        offline = types.SimpleNamespace(is_online=lambda machine_id: False)
+        with patch.object(self.service, 'HUB', offline):
+            # The plan's other computers carry on; work on the laptop waits.
+            self.service._tracking_machine(ref, self.machines['runner-a'])
+            with self.assertRaises(self.service.SubscriptionError):
+                self.service._require_computer_cleanup(ref, 'laptop')
+            # A stop of the whole plan keeps it waiting instead of turning the plan off.
+            waiting.revoke = AsyncMock(side_effect=self.service.SubscriptionError('Fixture still offline'))
+            async with self.service._provider_lock(ref):
+                await self.service._quiesce_provider(ref)
+            self.assertIs(self.service._tracked_machines[ref.on('laptop')], waiting)
+            self.assertTrue(self.config.values['subscriptions.claude']['enable'])
+        online = types.SimpleNamespace(is_online=lambda machine_id: True)
+        with patch.object(self.service, 'HUB', online):
+            # Once it is back but still unconfirmed, it blocks the provider as any other computer would.
+            with self.assertRaises(self.service.SubscriptionError):
+                self.service._tracking_machine(ref, self.machines['runner-a'])
+
     async def test_status_is_cached_for_each_computer_and_forgotten_for_all(self):
         ref = self.service.ProviderRef(OWNER, 'claude')
         on_a = ref.on('runner-a')

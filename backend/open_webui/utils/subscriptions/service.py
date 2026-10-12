@@ -655,14 +655,30 @@ def _tracked_refs() -> list[ProviderRef]:
     return list({key.ref for key in _tracked_machines})
 
 
-def _require_provider_cleanup(ref: ProviderRef) -> None:
-    """An old process on any computer whose stop is unconfirmed blocks the provider's new work."""
-    for tracked in _tracked_handles(ref):
-        tracked._check_cleanup()
+def _waits_for_its_computer(tracked: TrackingMachine) -> bool:
+    """A Buddy app computer that is offline: its stops are confirmed when it connects again."""
+    return isinstance(tracked.machine, TunnelMachine) and not HUB.is_online(tracked.id)
+
+
+def _require_computer_cleanup(ref: ProviderRef, machine_id: str) -> None:
+    """Old work whose stop is unconfirmed blocks the provider's new work.
+
+    Unconfirmed work on an offline Buddy app computer blocks only that
+    computer, so a laptop that sleeps doesn't stop the plan everywhere; it is
+    retried when the computer connects again. Anywhere else it blocks the
+    provider on every computer, as does a startup that may have left a
+    process Buddy has no handle to stop.
+    """
+    for key, tracked in _tracked_machines.items():
+        if key.ref != ref:
+            continue
+        tracked._check_startup_cleanup()
+        if key.machine_id == machine_id or not _waits_for_its_computer(tracked):
+            tracked._check_cleanup()
 
 
 def _tracking_machine(ref: ProviderRef, machine, credential_env: dict | None = None) -> TrackingMachine:
-    _require_provider_cleanup(ref)
+    _require_computer_cleanup(ref, machine.id)
     key = ref.on(machine.id)
     tracked = _tracked_machines.get(key)
     if tracked is None or tracked.machine is not machine or not tracked.valid:
@@ -721,11 +737,18 @@ async def _quiesce_provider_work(ref: ProviderRef) -> None:
     handles = [(key, tracked) for key, tracked in _tracked_machines.items() if key.ref == ref]
     cleanup_error = None
     revoked = await asyncio.gather(*(tracked.revoke() for _, tracked in handles), return_exceptions=True)
-    for outcome in revoked:
-        if isinstance(outcome, SubscriptionError):
-            cleanup_error = outcome
-        elif isinstance(outcome, BaseException):
+    stopped = []
+    for (key, tracked), outcome in zip(handles, revoked):
+        if outcome is None:
+            stopped.append((key, tracked))
+        elif not isinstance(outcome, SubscriptionError):
             raise outcome
+        elif _waits_for_its_computer(tracked):
+            # Kept with its error: new work there waits until the computer
+            # connects again and the stop is confirmed.
+            log.info('Cleanup on %s waits for it to connect again: %s', key.machine_id, outcome)
+        else:
+            cleanup_error = outcome
     if tasks:
         _, pending = await asyncio.wait(tasks, timeout=10)
         if pending:
@@ -737,7 +760,7 @@ async def _quiesce_provider_work(ref: ProviderRef) -> None:
         provider.stop()
     if cleanup_error:
         raise cleanup_error
-    for key, tracked in handles:
+    for key, tracked in stopped:
         if _tracked_machines.get(key) is tracked:
             _tracked_machines.pop(key)
 
@@ -2132,7 +2155,7 @@ async def login_state(
             return {'state': 'idle', 'message': SINGLE_WORKER_MESSAGE}
         try:
             await _require_verified_machine(ref, on_computer)
-            _require_provider_cleanup(ref)
+            _require_computer_cleanup(ref, on_computer.machine_id)
         except SubscriptionError as error:
             return {'state': 'idle', 'message': str(error)}
         running_on = _login_computers.get(ref)
@@ -2156,7 +2179,7 @@ async def submit_login_code(
             ref, settings, machine_id, expected_machine_id, expected_machine_revision, mutation=True
         )
         await _require_login_on(ref, on_computer.machine_id)
-        _require_provider_cleanup(ref)
+        _require_computer_cleanup(ref, on_computer.machine_id)
         login = await (await get_provider(ref)).submit_login_code(code)
         if login.get('state') == 'success':
             invalidate(ref)
@@ -2218,7 +2241,7 @@ async def _tracked_turn(ref: ProviderRef, provider, turn: TurnRequest, generatio
             try:
                 _require_single_worker()
                 await _require_verified_machine(ref, turn.settings)
-                _require_provider_cleanup(ref)
+                _require_computer_cleanup(ref, turn.settings.machine_id)
             except SubscriptionError as failure:
                 error = str(failure)
             if error is None:
@@ -2509,7 +2532,7 @@ async def _load_status(machine_ref: MachineRef) -> dict:
         async with _provider_lock(ref):
             settings = await _settings_for(ref, await _load_settings(ref), machine_ref.machine_id)
             await _require_verified_machine(ref, settings)
-            _require_provider_cleanup(ref)
+            _require_computer_cleanup(ref, machine_ref.machine_id)
             machine = await _tracked(ref, settings)
             _active_provider_tasks.setdefault(ref, set()).add(task)
         return await (await get_provider(ref)).status(settings, machine)
@@ -2532,7 +2555,7 @@ async def _load_models(machine_ref: MachineRef) -> list[ProviderModel]:
         async with _provider_lock(ref):
             settings = await _settings_for(ref, await _load_settings(ref), machine_ref.machine_id)
             await _require_verified_machine(ref, settings)
-            _require_provider_cleanup(ref)
+            _require_computer_cleanup(ref, machine_ref.machine_id)
             machine = await _tracked(ref, settings)
             _active_provider_tasks.setdefault(ref, set()).add(task)
         return await (await get_provider(ref)).list_models(settings, machine)
@@ -2610,7 +2633,7 @@ async def _describe_provider_snapshot(
                 readiness_message = str(error)
         if execution_ready:
             try:
-                _require_provider_cleanup(ref)
+                _require_computer_cleanup(ref, settings.machine_id)
                 machine = await _tracked(ref, settings)
             except SubscriptionError as error:
                 execution_ready = False
@@ -2740,6 +2763,10 @@ async def _plan_computers(ref: ProviderRef, settings: ProviderSettings) -> list[
 
 
 async def _computer_models(ref: ProviderRef, computer: _PlanComputer) -> list[ProviderModel]:
+    try:
+        _require_computer_cleanup(ref, computer.machine_id)
+    except SubscriptionError:
+        return []
     on_computer = ref.on(computer.machine_id)
     may_load = computer.may_load_models
     provider_status = await _cached_for_model_list(status_cache, on_computer, may_load) or {}
@@ -2798,7 +2825,6 @@ async def _provider_models(ref: ProviderRef) -> list[dict]:
     settings = await _load_settings(ref)
     try:
         _require_single_worker()
-        _require_provider_cleanup(ref)
     except SubscriptionError:
         return []
     if not settings.enable:
@@ -3049,7 +3075,7 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
             settings = await _load_settings(ref)
             settings = await _settings_for(ref, settings, settings.machine_id)
             await _require_verified_machine(ref, settings)
-            _require_provider_cleanup(ref)
+            _require_computer_cleanup(ref, settings.machine_id)
             generation = _provider_generations.get(ref, 0)
         if not settings.enable:
             raise SubscriptionError(
