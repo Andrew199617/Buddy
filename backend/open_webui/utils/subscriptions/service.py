@@ -109,6 +109,9 @@ CLOSE_UNKNOWN_MACHINE = 4401
 CLOSE_NOT_ALLOWED = 4403
 REMOVED_MACHINE_MESSAGE = 'This computer was removed from Buddy. Connect it again from the Buddy app.'
 REMOVED_COMPUTER_MESSAGE = 'That computer was removed. Choose another.'
+OWN_COMPUTER_SETTINGS_MESSAGE = (
+    'This computer has its own start folder and CLI paths now. Change them in Settings → Machines.'
+)
 
 PROVIDER_IDS = ('claude', 'codex')
 PROVIDER_LABELS = {'claude': 'Claude', 'codex': 'ChatGPT'}
@@ -1623,6 +1626,13 @@ async def _save_settings(
     settings.cli_path = settings.cli_path.strip()
     if settings.access not in ACCESS_LEVELS:
         raise SubscriptionError('Choose chat only, read files, or full access.')
+    changes_paths = settings.workspace != previous.workspace or settings.cli_path != previous.cli_path
+    if settings.machine_id == previous.machine_id and changes_paths:
+        # Turns there use the computer's own settings, so changing the plan's would do nothing.
+        revision = await _machine_revision(ref.owner_id, settings.machine_id)
+        saved = await _saved_computer_settings(ref.owner_id)
+        if computer_settings.current(saved, settings.machine_id, revision) is not None:
+            raise SubscriptionError(OWN_COMPUTER_SETTINGS_MESSAGE)
 
     # Turning a provider off needs nothing from its machine, which may still be
     # waiting for its runner key after a config import.
