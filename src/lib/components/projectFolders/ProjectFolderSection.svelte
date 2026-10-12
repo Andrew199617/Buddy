@@ -18,6 +18,7 @@
 		claudeReadHint,
 		draftFromProject,
 		sameDraft,
+		waitsForOwnChoice,
 		type ProjectDraft
 	} from './project-folders';
 
@@ -145,7 +146,14 @@
 			</p>
 		{:else}
 			<div class="flex flex-col gap-1.5" role="radiogroup" aria-labelledby="project-folder-heading">
-				{#if project.inherited}
+				{#if waitsForOwnChoice(project)}
+					<p class="text-[0.6875rem] text-amber-700 dark:text-amber-400">
+						{$i18n.t(
+							"This folder adds instructions or files that someone else can change, so its chats don't use files on your computers until you choose here."
+						)}
+					</p>
+				{/if}
+				{#if project.inherited && !project.shared_instructions}
 					<label
 						class="flex min-h-11 cursor-pointer items-start gap-2 rounded-xl border border-gray-100 p-2.5 dark:border-gray-850"
 					>

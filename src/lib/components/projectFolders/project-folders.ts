@@ -15,10 +15,18 @@ export type EffectiveChoice = {
 	fromFolderName: string;
 };
 
+/** Chats stay chat-only until the person chooses, because others can change the folder's instructions. */
+export function waitsForOwnChoice(project: FolderProject): boolean {
+	return project.shared_instructions && project.own === null;
+}
+
 /** The folder's own choice, else its parent's, else "Let the AI choose". */
 export function effectiveChoice(project: FolderProject): EffectiveChoice {
 	if (project.own) {
 		return { mode: project.own.mode, paths: project.own.paths, fromFolderName: '' };
+	}
+	if (waitsForOwnChoice(project)) {
+		return { mode: 'chat', paths: {}, fromFolderName: '' };
 	}
 	if (project.inherited) {
 		return {
@@ -161,6 +169,7 @@ export type ProjectDraft = {
 
 export function draftFromProject(project: FolderProject): ProjectDraft {
 	if (!project.own) {
+		if (waitsForOwnChoice(project)) return { mode: 'chat', paths: {} };
 		if (project.inherited) return { mode: 'inherit', paths: {} };
 		return { mode: 'auto', paths: {} };
 	}

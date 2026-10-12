@@ -40,6 +40,7 @@ function project(overrides: Partial<FolderProject> = {}): FolderProject {
 		folder_name: 'Website',
 		own: null,
 		inherited: null,
+		shared_instructions: false,
 		has_plans: true,
 		computers: [laptop, computer()],
 		...overrides

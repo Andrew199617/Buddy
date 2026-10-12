@@ -11,7 +11,8 @@ import {
 	lastSegment,
 	needsAttention,
 	parentWithinRoot,
-	sameDraft
+	sameDraft,
+	waitsForOwnChoice
 } from './project-folders';
 
 const workPc: ProjectFolderComputer = {
@@ -31,6 +32,7 @@ function project(overrides: Partial<FolderProject> = {}): FolderProject {
 		folder_name: 'Website',
 		own: null,
 		inherited: null,
+		shared_instructions: false,
 		has_plans: true,
 		computers: [workPc],
 		...overrides
@@ -48,6 +50,18 @@ describe('the effective choice', () => {
 		expect(effectiveChoice(inherited)).toEqual({ mode: 'chat', paths: {}, fromFolderName: 'Work' });
 		const own = project({ own: choice('auto'), inherited: choice('chat', {}, 'Work') });
 		expect(effectiveChoice(own).fromFolderName).toBe('');
+	});
+});
+
+describe('a folder whose instructions others can change', () => {
+	it('stays chat-only until the person makes their own choice', () => {
+		const shared = project({ shared_instructions: true, inherited: choice('auto', {}, 'Work') });
+		expect(waitsForOwnChoice(shared)).toBe(true);
+		expect(effectiveChoice(shared).mode).toBe('chat');
+		expect(draftFromProject(shared).mode).toBe('chat');
+		const chosen = project({ shared_instructions: true, own: choice('auto') });
+		expect(waitsForOwnChoice(chosen)).toBe(false);
+		expect(effectiveChoice(chosen).mode).toBe('auto');
 	});
 });
 

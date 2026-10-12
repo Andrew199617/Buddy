@@ -424,6 +424,9 @@ export type FolderProject = {
 	own: ProjectFolderChoice | null;
 	// The nearest parent folder's choice that applies otherwise.
 	inherited: ProjectFolderChoice | null;
+	// The folder adds instructions others can change, so its chats stay chat-only
+	// until this person makes their own choice for it.
+	shared_instructions: boolean;
 	has_plans: boolean;
 	computers: ProjectFolderComputer[];
 };
