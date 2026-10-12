@@ -115,7 +115,7 @@ class ServeTests(unittest.IsolatedAsyncioTestCase):
             on_status('connected', 'Fixture PC')
             await asyncio.Event().wait()
 
-        def stop_at_once(stop):
+        def stop_at_once(stop, runner):
             stop.set()
 
         with patch.object(connect, 'run_tunnel', stays_connected), patch.object(connect, '_start_stdin_reader', stop_at_once):
@@ -125,12 +125,49 @@ class ServeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.runner.closing)
 
 
+def connect_args(argv):
+    return connect.build_parser().parse_args(argv)
+
+
 class StopCommandTests(unittest.TestCase):
     def test_only_a_stop_command_stops(self):
         self.assertTrue(connect._is_stop_command('{"command": "stop"}\n'))
         for line in ('garbage\n', '[]\n', '{"command": "other"}\n'):
             with self.subTest(line=line):
                 self.assertFalse(connect._is_stop_command(line))
+
+    def test_folder_browsing_commands_need_a_true_or_false(self):
+        self.assertTrue(connect._folder_browsing_change('{"command": "folder_browsing", "allowed": true}\n'))
+        self.assertFalse(connect._folder_browsing_change('{"command": "folder_browsing", "allowed": false}\n'))
+        for line in ('{"command": "folder_browsing", "allowed": "yes"}\n', '{"command": "stop"}\n', 'x\n'):
+            with self.subTest(line=line):
+                self.assertIsNone(connect._folder_browsing_change(line))
+
+
+class StdinCommandTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_app_turns_folder_browsing_on_and_off_live(self):
+        state = tempfile.TemporaryDirectory(prefix='buddy-runner-stdin-')
+        self.addCleanup(state.cleanup)
+        runner = Runner(Path(state.name), WorkspaceCapabilities())
+        self.addAsyncCleanup(runner.close)
+        stop = asyncio.Event()
+        lines = io.StringIO(
+            '{"command": "folder_browsing", "allowed": true}\n'
+            '{"command": "folder_browsing", "allowed": "maybe"}\n'
+        )
+        loop = asyncio.get_running_loop()
+        with patch.object(connect.sys, 'stdin', lines):
+            await asyncio.to_thread(connect._read_stdin_commands, loop, stop, runner)
+        await asyncio.wait_for(stop.wait(), 1)
+        self.assertTrue(runner.folder_browsing)
+
+    def test_the_flag_starts_folder_browsing_on(self):
+        state = tempfile.TemporaryDirectory(prefix='buddy-runner-flag-')
+        self.addCleanup(state.cleanup)
+        args = connect_args(['run', '--state-dir', state.name, '--browse-folders'])
+        self.assertTrue(connect._build_runner(args).folder_browsing)
+        args = connect_args(['run', '--state-dir', state.name])
+        self.assertFalse(connect._build_runner(args).folder_browsing)
 
 
 class RunnerProcessExitTests(unittest.TestCase):

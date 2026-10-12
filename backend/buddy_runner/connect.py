@@ -2,10 +2,12 @@
 
 The Buddy app starts it like this, writing the connection as one JSON line
 ({server_url, machine_id, credential}) on stdin, so the credential is never
-written to disk; later stdin lines may say {"command": "stop"}, and stdin
-closing also stops the Runner:
+written to disk. Later stdin lines are commands from the app:
+{"command": "stop"}, or {"command": "folder_browsing", "allowed": true|false},
+which turns folder browsing on or off without a restart. Stdin closing also
+stops the Runner:
 
-    buddy-runner run --connection-stdin [--root DIR ...] [--write] [--allow-host-execution]
+    buddy-runner run --connection-stdin [--root DIR ...] [--write] [--allow-host-execution] [--browse-folders]
 
 Without the app, for example on a server, enroll once with a token from
 Buddy and run from the saved, owner-only connection file:
@@ -108,12 +110,31 @@ async def enroll(server_url: str, token: str, name: str | None) -> dict:
     }
 
 
-def _is_stop_command(line: str) -> bool:
+def _stdin_command(line: str) -> dict | None:
+    """One command from the app, or None for a line that is not one."""
     try:
         command = json.loads(line)
     except ValueError:
-        return False
-    return isinstance(command, dict) and command.get('command') == 'stop'
+        return None
+    if not isinstance(command, dict) or not isinstance(command.get('command'), str):
+        return None
+    return command
+
+
+def _is_stop_command(line: str) -> bool:
+    command = _stdin_command(line)
+    return command is not None and command['command'] == 'stop'
+
+
+def _folder_browsing_change(line: str) -> bool | None:
+    """True or False for a folder_browsing command, otherwise None."""
+    command = _stdin_command(line)
+    if command is None or command['command'] != 'folder_browsing':
+        return None
+    allowed = command.get('allowed')
+    if not isinstance(allowed, bool):
+        return None
+    return allowed
 
 
 def _set_event_from_thread(loop: asyncio.AbstractEventLoop, event: asyncio.Event) -> None:
@@ -124,22 +145,37 @@ def _set_event_from_thread(loop: asyncio.AbstractEventLoop, event: asyncio.Event
         pass
 
 
-def _read_stdin_until_stop(loop: asyncio.AbstractEventLoop, stop: asyncio.Event) -> None:
-    """Stop on {"command": "stop"}, or when the app that started us goes away."""
+def _change_folder_browsing(loop: asyncio.AbstractEventLoop, runner: Runner, allowed: bool) -> None:
+    try:
+        loop.call_soon_threadsafe(runner.set_folder_browsing, allowed)
+    except RuntimeError:
+        # The loop already finished.
+        pass
+
+
+def _read_stdin_commands(loop: asyncio.AbstractEventLoop, stop: asyncio.Event, runner: Runner) -> None:
+    """Follow the app's commands until {"command": "stop"}, or until the app goes away.
+
+    Only the app that started the Runner writes here, so Buddy can't change
+    these settings.
+    """
     while True:
         line = sys.stdin.readline()
         if not line or _is_stop_command(line):
             break
+        allowed = _folder_browsing_change(line)
+        if allowed is not None:
+            _change_folder_browsing(loop, runner, allowed)
     _set_event_from_thread(loop, stop)
 
 
-def _start_stdin_reader(stop: asyncio.Event) -> None:
+def _start_stdin_reader(stop: asyncio.Event, runner: Runner) -> None:
     # A daemon thread, not asyncio.to_thread: a read blocked on the app's open
     # pipe must not keep the process alive once Buddy ends the connection for
     # good, and asyncio.run waits for its executor threads before returning.
     loop = asyncio.get_running_loop()
     reader = threading.Thread(
-        target=_read_stdin_until_stop, args=(loop, stop), name='buddy-runner-stdin', daemon=True
+        target=_read_stdin_commands, args=(loop, stop, runner), name='buddy-runner-stdin', daemon=True
     )
     reader.start()
 
@@ -149,7 +185,7 @@ async def serve(connection: dict, runner: Runner, *, watch_stdin: bool) -> int:
     stop = asyncio.Event()
     await runner.workspaces.start()
     if watch_stdin:
-        _start_stdin_reader(stop)
+        _start_stdin_reader(stop, runner)
     tunnel = asyncio.create_task(run_tunnel(
         connection['server_url'], connection['machine_id'], connection['credential'], runner, on_status=emit_status,
     ))
@@ -177,7 +213,7 @@ async def serve(connection: dict, runner: Runner, *, watch_stdin: bool) -> int:
 def _build_runner(args) -> Runner:
     roots = [{'path': directory, 'write': args.write, 'execute': args.allow_host_execution} for directory in args.root]
     workspaces = WorkspaceCapabilities(roots=roots, origins=[], host_name=args.name)
-    return Runner(args.state_dir, workspaces)
+    return Runner(args.state_dir, workspaces, folder_browsing=args.browse_folders)
 
 
 def _read_connection(args) -> dict:
@@ -219,7 +255,7 @@ def enroll_command(args) -> int:
     return 0
 
 
-def main(argv: list[str]) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog='buddy-runner', description='Run Claude Code and Codex for a Buddy server.')
     commands = parser.add_subparsers(dest='command', required=True)
 
@@ -233,6 +269,8 @@ def main(argv: list[str]) -> int:
     run.add_argument('--allow-host-execution', action='store_true',
                      help='Approve commands as this OS account; a working directory is not a sandbox.')
     run.add_argument('--name', default=None, help='Name shown for this computer in project views.')
+    run.add_argument('--browse-folders', action='store_true',
+                     help='Let Buddy list folder names and suggest folders Claude Code and Codex worked in.')
 
     enroll_parser = commands.add_parser('enroll', help='Connect this computer with a token from Buddy.')
     enroll_parser.add_argument('--server', required=True, help='Your Buddy address, such as https://buddy.example.com')
@@ -240,8 +278,11 @@ def main(argv: list[str]) -> int:
     enroll_parser.add_argument('--name', default=None, help='Name shown for this computer in Buddy.')
     enroll_parser.add_argument('--state-dir', type=Path, default=DEFAULT_STATE_DIR)
     enroll_parser.add_argument('--connection-file', type=Path, default=None)
+    return parser
 
-    args = parser.parse_args(argv)
+
+def main(argv: list[str]) -> int:
+    args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s', stream=sys.stderr)
     if args.command == 'run':
         return run_command(args)
