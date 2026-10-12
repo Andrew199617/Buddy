@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Asks, inside a chat folder's settings, to let a Chat-only plan use files
 	// on its computer, so the person need not leave for Settings → Machines.
-	import { getContext, tick } from 'svelte';
+	import { getContext, onDestroy, tick } from 'svelte';
 	import { toast } from 'svelte-sonner';
 
 	import { updateSubscriptionConfig, type FolderPlan } from '$lib/apis/subscriptions';
@@ -32,6 +32,12 @@
 	let confirming: { planId: string; access: FileAccess } | null = null;
 	let saving = false;
 	let error = '';
+	// A reload can replace this request with something else; its plans are then stale.
+	let destroyed = false;
+
+	onDestroy(() => {
+		destroyed = true;
+	});
 
 	async function ask(plan: FolderPlan, access: FileAccess) {
 		confirming = { planId: plan.id, access };
@@ -97,7 +103,8 @@
 		await reload();
 		await tick();
 		saving = false;
-		if (plans.some((candidate) => candidate.id === plan.id)) {
+		const stillOffered = !destroyed && plans.some((candidate) => candidate.id === plan.id);
+		if (stillOffered) {
 			// Still offered: the question stays, and the next try confirms the plan as it is now.
 			error = reason;
 			await tick();
