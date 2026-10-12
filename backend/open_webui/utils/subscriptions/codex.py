@@ -22,6 +22,8 @@ from open_webui.utils.subscriptions.common import (
     ACCESS_CHAT,
     ACCESS_FULL,
     CHAT_INSTRUCTIONS,
+    CREDENTIAL_API_KEY,
+    CREDENTIAL_MACHINE,
     ProviderModel,
     ProviderSettings,
     TurnRequest,
@@ -312,9 +314,11 @@ class CodexTurnParser:
 class CodexAppServer:
     """One ``codex app-server`` process and its JSON-RPC traffic."""
 
-    def __init__(self, machine, cli: str, cwd: str, on_notification):
+    def __init__(self, machine, cli: str, cwd: str, on_notification, api_key: str | None = None):
         self.machine = machine
         self.cli = cli
+        # Signs the app-server in with the user's own API key, held only in its memory.
+        self.api_key = api_key
         self._cwd = cwd
         self._on_notification = on_notification
         self._process = None
@@ -339,6 +343,9 @@ class CodexAppServer:
             args = [self.cli, 'app-server']
             for feature in DISABLED_FEATURES:
                 args.extend(['--disable', feature])
+            if self.api_key:
+                # Keep the key out of auth.json, so the computer's own sign-in is untouched.
+                args.extend(['-c', 'cli_auth_credentials_store="ephemeral"'])
             self._process = await self.machine.start_process(args, self._cwd)
             self.generation += 1
             self._reader = asyncio.create_task(self._read_messages(self._process))
@@ -346,6 +353,10 @@ class CodexAppServer:
             try:
                 await self._send_request('initialize', {'clientInfo': client_info}, REQUEST_TIMEOUT)
                 await self._send({'method': 'initialized'})
+                if self.api_key:
+                    await self._send_request(
+                        'account/login/start', {'type': 'apiKey', 'apiKey': self.api_key}, REQUEST_TIMEOUT
+                    )
             except SubscriptionError as error:
                 self.stop()
                 raise SubscriptionError(f'Codex did not start: {error}') from error
@@ -521,6 +532,9 @@ class CodexProvider:
         self._model_efforts_server: CodexAppServer | None = None
         self._model_efforts_generation: int | None = None
         self.rate_limits: dict | None = None
+        # Set by the service before each use: which sign-in Codex should be using.
+        self.credential_mode = CREDENTIAL_MACHINE
+        self._api_key: str | None = None
 
     def _on_notification(self, message: dict) -> None:
         method = message.get('method')
@@ -550,6 +564,14 @@ class CodexProvider:
                 del self._live_threads[key]
                 self._release_live_thread(live)
 
+    def use_credential(self, credential_mode: str, api_key: str | None) -> None:
+        """Sign in with the machine's own sign-in, or with the user's API key; a change restarts Codex."""
+        if credential_mode == self.credential_mode and api_key == self._api_key:
+            return
+        self.credential_mode = credential_mode
+        self._api_key = api_key
+        self.stop()
+
     async def _server_for(self, settings: ProviderSettings, machine) -> CodexAppServer:
         """The machine's app-server; it starts in the machine's empty chat folder."""
         cli = await machine.find_tool(TOOL_CODEX, settings.cli_path)
@@ -561,7 +583,9 @@ class CodexProvider:
             server = None
             self._forget_machine_threads(machine.id)
         if not server:
-            server = CodexAppServer(machine, cli, await machine.chat_dir(), self._on_notification)
+            server = CodexAppServer(
+                machine, cli, await machine.chat_dir(), self._on_notification, api_key=self._api_key
+            )
             self._servers[machine.id] = server
         await server.ensure_started()
         return server
@@ -587,12 +611,21 @@ class CodexProvider:
                 'auth_method': account.get('type'),
             },
         }
-        if account.get('type') == 'apiKey':
+        uses_api_key = account.get('type') == 'apiKey'
+        if account and self.credential_mode == CREDENTIAL_API_KEY:
+            if uses_api_key:
+                status['billing'] = 'api_key'
+            else:
+                status['api_billing'] = True
+                status['message'] = 'Codex is not using your OpenAI API key. Add it again in Settings → Machines.'
+        elif uses_api_key:
             status['api_billing'] = True
             status['message'] = (
                 'Codex is signed in with an API key, which bills API usage instead of a ChatGPT plan. '
                 'Sign out and sign in with ChatGPT.'
             )
+        elif account:
+            status['billing'] = 'plan'
         if account:
             try:
                 rate_limits = await server.request('account/rateLimits/read', None, timeout=30)
@@ -638,6 +671,8 @@ class CodexProvider:
         return models
 
     async def start_login(self, settings: ProviderSettings, machine, method: str) -> dict:
+        if self.credential_mode != CREDENTIAL_MACHINE:
+            raise SubscriptionError('ChatGPT uses your OpenAI API key here. Remove the key to sign in on the computer.')
         await self.cancel_login()
         server = await self._server_for(settings, machine)
         if method == 'device':
