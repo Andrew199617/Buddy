@@ -1535,12 +1535,12 @@
 		border-top: 1px solid var(--buddy-edge, #dde6df);
 		padding-top: 8px;
 	}
+	/* Keeps the browser's disclosure arrow; the padding makes a 44px touch target. */
 	.advanced summary {
-		display: flex;
-		align-items: center;
-		min-height: 44px;
+		padding: 12px 0;
 		font-size: 13px;
 		font-weight: 550;
+		line-height: 1.5;
 		cursor: pointer;
 	}
 	.advanced[open] summary {
