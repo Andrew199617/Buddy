@@ -4,6 +4,11 @@ Routes:
   POST      /enrollments — a signed-in user asks to connect this PC; returns a 60-second, single-use token
   POST      /enroll      — the Buddy app trades that token for this computer's machine credential
   WEBSOCKET /connect     — a connected computer's Runner keeps this open; see buddy_runner/protocol.py
+  *         /machines/{machine}/workspace/v1/... — the Projects page, relayed to the user's own computer
+
+Relayed project requests carry an ``X-Buddy-Relay-Client`` header naming the
+page, so each page keeps its own workspaces and terminals. The computer still
+checks its own folder, write and command approvals.
 
 The credential lets this server run commands on that computer, so the app
 asks for it itself and never shows it to the web page.
@@ -16,6 +21,7 @@ import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from buddy_runner import protocol
@@ -36,6 +42,9 @@ ENROLL_WINDOW_SECONDS = 600
 _enroll_attempts: dict[str, list[float]] = {}
 # Cleanup retries started when a computer reconnects; kept until they finish.
 _background_tasks: set[asyncio.Task] = set()
+RELAY_BODY_BYTES = 2 * 1024 * 1024
+# Long enough for the computer's own 60-second command limit.
+RELAY_TIMEOUT_SECONDS = 70
 
 
 class EnrollForm(BaseModel):
@@ -181,3 +190,37 @@ async def runner_connect(websocket: WebSocket):
         HUB.detach(connection)
         await service.record_runner_disconnected(machine['id'])
         log.info('Runner %s disconnected', machine['id'])
+
+
+async def _relay_body(request: Request):
+    if request.method not in ('POST', 'PUT'):
+        return None
+    raw = await request.body()
+    if len(raw) > RELAY_BODY_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail='Request bodies are limited to 2 MiB.')
+    try:
+        return json.loads(raw or b'null')
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Provide a valid JSON object.')
+
+
+@router.api_route('/machines/{machine_id}/workspace/{path:path}', methods=['GET', 'POST', 'PUT', 'DELETE'])
+async def relay_workspace(machine_id: str, path: str, request: Request, user=Depends(get_machine_session_user)):
+    body = await _relay_body(request)
+    params = {
+        'client_id': request.headers.get('x-buddy-relay-client', ''),
+        'method': request.method,
+        'path': '/' + path,
+        'query': dict(request.query_params),
+        'body': body,
+    }
+    try:
+        connection = await service.relay_connection(user.id, machine_id)
+        reply = await connection.call('workspace.request', params, timeout=RELAY_TIMEOUT_SECONDS)
+    except SubscriptionError as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error))
+    reply_status = reply.get('status') if isinstance(reply, dict) else None
+    reply_body = reply.get('body') if isinstance(reply, dict) else None
+    if isinstance(reply_status, bool) or not isinstance(reply_status, int) or not 100 <= reply_status <= 599:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail='The computer sent an invalid reply.')
+    return JSONResponse(status_code=reply_status, content=reply_body, headers={'Cache-Control': 'no-store'})

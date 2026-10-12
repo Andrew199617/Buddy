@@ -1131,6 +1131,17 @@ async def redeem_enrollment(token: str, name: str | None, host: dict | None) -> 
     return {'machine_id': machine_id, 'credential': credential, 'name': clean_name}
 
 
+async def relay_connection(owner_id: str, machine_id: str):
+    """The connection to one of the user's own computers, for relaying project requests."""
+    config = next((machine for machine in await _owned_machine_configs(owner_id) if machine['id'] == machine_id), None)
+    if config is None or config.get('kind') != MACHINE_KIND_RUNNER:
+        raise SubscriptionError('That computer no longer exists.')
+    connection = HUB.connection(machine_id)
+    if connection is None:
+        raise SubscriptionError(f'{config["name"]} is offline. Open the Buddy app on that computer.')
+    return connection
+
+
 async def authenticate_runner(machine_id, credential) -> dict | None:
     """The connected computer's machine entry, with its owner, when the credential matches."""
     if not isinstance(machine_id, str) or not isinstance(credential, str) or not credential:
