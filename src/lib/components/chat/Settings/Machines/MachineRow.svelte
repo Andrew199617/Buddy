@@ -6,6 +6,7 @@
 		SubscriptionMachine,
 		SubscriptionProvider
 	} from '$lib/apis/subscriptions';
+	import ComputerAdvanced from './ComputerAdvanced.svelte';
 
 	const i18n: any = getContext('i18n');
 
@@ -21,6 +22,8 @@
 		[];
 	export let onSignIn: (provider: SubscriptionProvider) => void = () => {};
 	export let onSignOut: (provider: SubscriptionProvider) => Promise<void> = async () => {};
+
+	let showAdvanced = false;
 
 	// Buddy server is always there; a computer added by address can't say whether it is.
 	$: available = machine.id === 'local' || machine.online === true;
@@ -239,6 +242,17 @@
 				</li>
 			{/each}
 		</ul>
+	{/if}
+	<button
+		type="button"
+		class="ml-4 min-h-11 self-start rounded-lg px-2 text-xs text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-850 md:min-h-8"
+		aria-expanded={showAdvanced}
+		on:click={() => (showAdvanced = !showAdvanced)}
+	>
+		{$i18n.t('Advanced')}
+	</button>
+	{#if showAdvanced}
+		<ComputerAdvanced machineId={machine.id} machineName={machine.name} />
 	{/if}
 	{#if confirmingRemoval}
 		<div
