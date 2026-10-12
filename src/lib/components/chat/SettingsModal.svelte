@@ -29,6 +29,7 @@
 	import Search from '../icons/Search.svelte';
 	import Connections from './Settings/Connections.svelte';
 	import Integrations from './Settings/Integrations.svelte';
+	import Machines from './Settings/Machines.svelte';
 	import DatabaseSettings from '../icons/DatabaseSettings.svelte';
 	import SettingsAlt from '../icons/SettingsAlt.svelte';
 	import Link from '../icons/Link.svelte';
@@ -36,6 +37,7 @@
 	import SoundHigh from '../icons/SoundHigh.svelte';
 	import InfoCircle from '../icons/InfoCircle.svelte';
 	import WrenchAlt from '../icons/WrenchAlt.svelte';
+	import Computer from '../icons/Computer.svelte';
 	import Face from '../icons/Face.svelte';
 	import AppNotification from '../icons/AppNotification.svelte';
 	import AdjustmentsHorizontal from '../icons/AdjustmentsHorizontal.svelte';
@@ -147,6 +149,7 @@
 		shortcuts: $i18n.t('Basics'),
 		connections: $i18n.t('Services'),
 		tools: $i18n.t('Services'),
+		machines: $i18n.t('Services'),
 		personalization: $i18n.t('Preferences'),
 		audio: $i18n.t('Preferences'),
 		data_controls: $i18n.t('Data'),
@@ -221,6 +224,12 @@
 			titleKey: 'settings.personal.tools.title',
 			title: $i18n.t('settings.personal.tools.title'),
 			searchPrefixes: ['settings.personal.tools.']
+		},
+		{
+			id: 'machines',
+			titleKey: 'settings.personal.machines.title',
+			title: $i18n.t('settings.personal.machines.title'),
+			searchPrefixes: ['settings.personal.machines.']
 		},
 		{
 			id: 'personalization',
@@ -685,6 +694,19 @@
 								<span>{$i18n.t('settings.personal.tools.title')}</span>
 							</button>
 						{/if}
+					{:else if tabId === 'machines'}
+						<button
+							role="tab"
+							aria-controls="tab-machines"
+							aria-selected={selectedTab === 'machines'}
+							class={tabButtonClass(selectedTab === 'machines')}
+							on:click={() => {
+								selectTab('machines');
+							}}
+						>
+							<Computer className="size-3.5" strokeWidth="2" />
+							<span>{$i18n.t('settings.personal.machines.title')}</span>
+						</button>
 					{:else if tabId === 'personalization'}
 						<button
 							role="tab"
@@ -839,6 +861,8 @@
 				<Connections saveSettings={saveSettingsWithSuccessToast} on:save={notifySettingsSaved} />
 			{:else if selectedTab === 'tools'}
 				<Integrations saveSettings={saveSettingsWithSuccessToast} on:save={notifySettingsSaved} />
+			{:else if selectedTab === 'machines'}
+				<Machines />
 			{:else if selectedTab === 'personalization'}
 				<Personalization {saveSettings} on:save={personalSettingsSaveHandler} />
 			{:else if selectedTab === 'audio'}
