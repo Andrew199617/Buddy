@@ -136,6 +136,8 @@ class SubscriptionPolicy:
     api_keys: bool = True
     # Whether the instance owner may also run providers on this server.
     server_machine: bool = True
+    # Where people get the Buddy app for Windows; Settings → Machines links to it.
+    desktop_download_url: str = ''
 
 
 LOCAL_MACHINE = LocalMachine(STATE_DIR)
@@ -242,7 +244,22 @@ async def get_policy() -> SubscriptionPolicy:
         policy.api_keys = stored['api_keys']
     if isinstance(stored.get('server_machine'), bool):
         policy.server_machine = stored['server_machine']
+    if isinstance(stored.get('desktop_download_url'), str):
+        policy.desktop_download_url = stored['desktop_download_url']
     return policy
+
+
+def _validate_download_url(value) -> str:
+    """An HTTPS link people can open to get the Buddy app, or '' for none."""
+    if not isinstance(value, str):
+        raise SubscriptionError('Enter the download link as text.')
+    value = value.strip()
+    if not value:
+        return ''
+    parsed = urlsplit(value)
+    if len(value) > 2000 or parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password:
+        raise SubscriptionError('Enter an https:// download link without a user name or password.')
+    return value
 
 
 async def save_policy(updates: dict) -> SubscriptionPolicy:
@@ -264,6 +281,8 @@ async def save_policy(updates: dict) -> SubscriptionPolicy:
         policy.api_keys = bool(updates['api_keys'])
     if updates.get('server_machine') is not None:
         policy.server_machine = bool(updates['server_machine'])
+    if updates.get('desktop_download_url') is not None:
+        policy.desktop_download_url = _validate_download_url(updates['desktop_download_url'])
     await Config.upsert({POLICY_CONFIG_KEY: asdict(policy)})
     for ref in list(_provider_generations) + list(_tracked_machines) + list(_providers):
         invalidate(ref)
