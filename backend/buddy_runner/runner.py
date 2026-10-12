@@ -56,9 +56,9 @@ def _json_error(status: int, message: str) -> web.Response:
     return web.json_response({'error': message}, status=status)
 
 
-async def _refuse_start(websocket: web.WebSocketResponse, message: str) -> None:
+async def _refuse_start(channel, message: str) -> None:
     """Report a start that created no process, so Buddy keeps no cleanup debt."""
-    await websocket.send_json({'type': 'start_failed', 'message': message})
+    await channel.send_json({'type': 'start_failed', 'message': message})
 
 
 async def _finish_owned_cleanup(task: asyncio.Task) -> None:
@@ -95,6 +95,56 @@ def _auth_middleware(key: str):
     return check_key
 
 
+class RunnerError(Exception):
+    """A request the Runner refuses, with the HTTP status the listener reports."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+class WebSocketProcessChannel:
+    """A process stream over its own listener WebSocket.
+
+    Process channels give ``Runner.serve_process`` one process's messages
+    whatever carries them: ``closed``, ``receive_json(timeout)``,
+    ``commands()``, ``send_json(message)`` and ``close(code)``.
+    """
+
+    def __init__(self, websocket: web.WebSocketResponse):
+        self.websocket = websocket
+
+    @property
+    def closed(self) -> bool:
+        return self.websocket.closed
+
+    async def receive_json(self, timeout: float):
+        return await self.websocket.receive_json(timeout=timeout)
+
+    async def commands(self):
+        async for message in self.websocket:
+            if message.type != WSMsgType.TEXT:
+                continue
+            yield json.loads(message.data)
+
+    async def send_json(self, message: dict) -> None:
+        await self.websocket.send_json(message)
+
+    async def close(self, code: int | None = None) -> None:
+        if code is None:
+            await self.websocket.close()
+        else:
+            await self.websocket.close(code=code)
+
+
+def _valid_start_id(start: dict) -> str | None:
+    start_id = start.get('start_id')
+    if isinstance(start_id, str) and 0 < len(start_id) <= 128:
+        return start_id
+    return None
+
+
 class Runner:
     def __init__(self, state_dir: Path, workspaces: WorkspaceCapabilities):
         self.state_dir = state_dir
@@ -104,53 +154,68 @@ class Runner:
         self.workspaces = workspaces
         self.processes = set()
         self.stdin_workers = {}
-        self.websockets = set()
-        # The connection that started each process, for shutdown acknowledgements.
-        self.process_sockets = {}
+        self.channels = set()
+        # The channel that started each process, for shutdown acknowledgements.
+        self.process_channels = {}
         # After a lost connection, Buddy asks about a process by the ID sent in
         # its startup reply. Only verified cleanup moves an ID to the stopped
         # records, which keep the most recent IDs.
         self.running_process_ids = {}
         self.stopped_process_ids = OrderedDict()
+        # Over the tunnel, Buddy names each startup before sending it, so after
+        # a lost connection it can ask about a startup whose reply never came.
+        # A running process keeps its startup name until its cleanup is
+        # verified; finished and refused startups join the bounded records.
+        self.running_start_ids = {}
+        self.process_start_ids = {}
+        self.finished_start_ids = OrderedDict()
         self.command_requests = set()
         self.closing = False
         self._shutdown_task = None
         for directory in (self.chat_dir, self.default_workspace, self.temp_dir):
             directory.mkdir(parents=True, exist_ok=True)
 
+    def describe(self) -> dict:
+        return {
+            'ok': True,
+            'version': RUNNER_VERSION,
+            'platform': sys.platform,
+            'hostname': socket.gethostname(),
+            'home': str(Path.home()),
+            'chat_dir': str(self.chat_dir),
+            'default_workspace': str(self.default_workspace),
+            'host': self.workspaces.host,
+            'capabilities': {
+                'directories': True, 'files': True, 'workspaces': True,
+                'terminals': True, 'pty': False, 'providerExecution': True,
+            },
+        }
+
+    def locate_tool(self, tool: str, configured_path: str) -> str | None:
+        return find_tool(tool, configured_path)
+
+    def path_exists(self, path: str, kind: str) -> bool:
+        if kind == 'dir':
+            return Path(path).is_dir()
+        return Path(path).is_file()
+
+    def at_process_limit(self) -> bool:
+        return len(self.command_requests) + len(self.processes) >= 16
+
     async def health(self, request: web.Request) -> web.Response:
-        return web.json_response(
-            {
-                'ok': True,
-                'version': RUNNER_VERSION,
-                'platform': sys.platform,
-                'hostname': socket.gethostname(),
-                'home': str(Path.home()),
-                'chat_dir': str(self.chat_dir),
-                'default_workspace': str(self.default_workspace),
-                'host': self.workspaces.host,
-                'capabilities': {
-                    'directories': True, 'files': True, 'workspaces': True,
-                    'terminals': True, 'pty': False, 'providerExecution': True,
-                },
-            }
-        )
+        return web.json_response(self.describe())
 
     async def find_tool(self, request: web.Request) -> web.Response:
         body = await request.json()
         try:
-            path = find_tool(str(body.get('tool')), str(body.get('configured_path') or ''))
+            path = self.locate_tool(str(body.get('tool')), str(body.get('configured_path') or ''))
         except ValueError as error:
             return _json_error(400, str(error))
         return web.json_response({'path': path})
 
     async def check_path(self, request: web.Request) -> web.Response:
         body = await request.json()
-        path = Path(str(body.get('path') or ''))
-        if body.get('kind') == 'dir':
-            exists = path.is_dir()
-        else:
-            exists = path.is_file()
+        exists = self.path_exists(str(body.get('path') or ''), body.get('kind'))
         return web.json_response({'exists': exists})
 
     async def run(self, request: web.Request) -> web.Response:
@@ -166,7 +231,7 @@ class Runner:
             return _json_error(400, 'Choose a finite timeout between 0.1 and 120 seconds.')
         if self.closing:
             return _json_error(503, 'The Runner is shutting down.')
-        if len(self.command_requests) + len(self.processes) >= 16:
+        if self.at_process_limit():
             return _json_error(429, 'The Runner process limit was reached.')
         cwd = str(body.get('cwd') or self.chat_dir)
         task = asyncio.current_task()
@@ -185,13 +250,23 @@ class Runner:
         """Start a process and stream it over a WebSocket until it exits or Buddy disconnects."""
         if self.closing:
             return _json_error(503, 'The Runner is shutting down.')
-        if len(self.command_requests) + len(self.processes) >= 16:
+        if self.at_process_limit():
             return _json_error(429, 'The Runner process limit was reached.')
         websocket = web.WebSocketResponse(heartbeat=30, max_msg_size=MAX_WEBSOCKET_MESSAGE_BYTES)
         await websocket.prepare(request)
-        self.websockets.add(websocket)
+        await self.serve_process(WebSocketProcessChannel(websocket))
+        return websocket
+
+    async def serve_process(self, channel, start: dict | None = None) -> None:
+        """Start one process and stream it over ``channel`` until it exits or the channel closes.
+
+        ``start`` is the start message when the transport has already read it;
+        otherwise the first message on the channel must be one.
+        """
+        self.channels.add(channel)
         process = None
         process_id = None
+        start_id = None
         forwarder = None
         stdin_queue = asyncio.Queue()
         pending_stdin_bytes = 0
@@ -234,7 +309,7 @@ class Runner:
                     text = await process.read_text()
                     if text is None:
                         break
-                    await websocket.send_json({'type': 'stdout', 'data': text})
+                    await channel.send_json({'type': 'stdout', 'data': text})
                 await process.finish_output(30)
                 # The process is done; remove its temporary files before reporting.
                 await process.close()
@@ -243,32 +318,40 @@ class Runner:
                     # Native cleanup can produce EOF before it reports the error.
                     return
                 exit_event = {'type': 'exit', 'code': process.returncode, 'stderr': process.stderr_text()}
-                await websocket.send_json(exit_event)
+                await channel.send_json(exit_event)
             except ProcessClosedError as error:
                 failure_reporting = True
                 try:
-                    await self._report_process_failure(process, websocket, error)
+                    await self._report_process_failure(process, channel, error)
                 except (OSError, RuntimeError, TimeoutError) as cleanup_error:
                     log.warning('Could not confirm failed process cleanup: %s', cleanup_error)
             except (OSError, ConnectionResetError, RuntimeError, TimeoutError):
                 # Closing wakes the handler and its process-cleanup finally.
-                await websocket.close()
+                await channel.close()
             else:
-                await websocket.close()
+                await channel.close()
 
         try:
-            start = await websocket.receive_json(timeout=60)
+            if start is None:
+                start = await channel.receive_json(timeout=60)
             args = start.get('args') if isinstance(start, dict) else None
+            if isinstance(start, dict):
+                start_id = _valid_start_id(start)
+            if start_id is not None and (start_id in self.running_start_ids or start_id in self.finished_start_ids):
+                # A repeated name would make a later stop question ambiguous.
+                start_id = None
+                await _refuse_start(channel, 'This startup was already received.')
+                return
             if (
                 not isinstance(start, dict) or start.get('type') != 'start'
                 or not isinstance(args, list) or not args
                 or not all(isinstance(arg, str) and '\0' not in arg for arg in args)
             ):
-                await _refuse_start(websocket, 'Expected a start message with string args.')
-                return websocket
-            if self.closing or len(self.command_requests) + len(self.processes) >= 16:
-                await _refuse_start(websocket, 'The Runner is unavailable or at its process limit.')
-                return websocket
+                await _refuse_start(channel, 'Expected a start message with string args.')
+                return
+            if self.closing or self.at_process_limit():
+                await _refuse_start(channel, 'The Runner is unavailable or at its process limit.')
+                return
             try:
                 process = start_local_process(
                     args, str(start.get('cwd') or self.chat_dir), start.get('env') or None,
@@ -276,21 +359,21 @@ class Runner:
                 )
             except (OSError, ValueError, TypeError) as error:
                 # A missing working folder or CLI fails before anything runs.
-                await _refuse_start(websocket, f'Could not start {os.path.basename(args[0])}: {error}')
-                return websocket
+                await _refuse_start(channel, f'Could not start {os.path.basename(args[0])}: {error}')
+                return
             self.processes.add(process)
-            self.process_sockets[process] = websocket
+            self.process_channels[process] = channel
             process_id = secrets.token_urlsafe(16)
             self.running_process_ids[process_id] = process
+            if start_id is not None:
+                self.running_start_ids[start_id] = process_id
+                self.process_start_ids[process_id] = start_id
             log.info('Started %s (pid %s)', os.path.basename(args[0]), process.pid)
             # Startup acknowledgement is covered by the same cleanup finally.
-            await websocket.send_json({'type': 'started', 'pid': process.pid, 'id': process_id})
+            await channel.send_json({'type': 'started', 'pid': process.pid, 'id': process_id})
             forwarder = asyncio.create_task(forward_output())
             self.stdin_workers[process] = asyncio.create_task(write_stdin())
-            async for message in websocket:
-                if message.type != WSMsgType.TEXT:
-                    continue
-                command = json.loads(message.data)
+            async for command in channel.commands():
                 kind = command.get('type')
                 if kind == 'stdin':
                     if not stdin_closed:
@@ -301,33 +384,34 @@ class Runner:
                         stdin_closed = True
                 elif kind == 'kill':
                     await process.close()
-                    # Closing the socket is not proof of native process cleanup.
+                    # Closing the channel is not proof of native process cleanup.
                     # Acknowledge only after the whole owned process tree stops.
-                    if not websocket.closed:
-                        await websocket.send_json({'type': 'stopped', 'pid': process.pid})
+                    if not channel.closed:
+                        await channel.send_json({'type': 'stopped', 'pid': process.pid})
         except ProcessClosedError as error:
             failure_reporting = True
-            await self._report_process_failure(process, websocket, error)
+            await self._report_process_failure(process, channel, error)
         except (OSError, ValueError, TimeoutError, ConnectionResetError, RuntimeError) as error:
-            if not websocket.closed:
+            if not channel.closed:
                 reply = {'type': 'error', 'message': str(error)}
                 if process is None:
                     # No process exists yet, so this failure started nothing.
                     reply['type'] = 'start_failed'
                 try:
-                    await websocket.send_json(reply)
+                    await channel.send_json(reply)
                 except (ConnectionResetError, RuntimeError):
                     pass
         finally:
-            cleanup = asyncio.create_task(self._dispose_connection(process, process_id, forwarder, websocket))
+            if process is None and start_id is not None:
+                self._remember_finished_start(start_id)
+            cleanup = asyncio.create_task(self._dispose_connection(process, process_id, forwarder, channel))
             await _finish_owned_cleanup(cleanup)
-        return websocket
 
-    async def _report_process_failure(self, process, websocket, error: ProcessClosedError) -> None:
+    async def _report_process_failure(self, process, channel, error: ProcessClosedError) -> None:
         """Report failed execution only after its native cleanup is verified."""
         try:
             await process.close()
-            if not websocket.closed:
+            if not channel.closed:
                 code = process.returncode
                 if not isinstance(code, int) or code == 0:
                     code = 1
@@ -335,13 +419,13 @@ class Runner:
                 detail = f'{type(error).__name__}: {error}'
                 if stderr:
                     detail = f'{stderr}\n{detail}'
-                await websocket.send_json({'type': 'exit', 'code': code, 'stderr': detail})
+                await channel.send_json({'type': 'exit', 'code': code, 'stderr': detail})
         finally:
             # An unverified cleanup releases the failed transport, without an
             # exit acknowledgement that could falsely authorize fresh work.
-            await websocket.close()
+            await channel.close()
 
-    async def _dispose_connection(self, process, process_id, forwarder, websocket) -> None:
+    async def _dispose_connection(self, process, process_id, forwarder, channel) -> None:
         try:
             if process is not None:
                 await process.close()
@@ -352,8 +436,8 @@ class Runner:
                 forwarder.cancel()
             if forwarder is not None:
                 await asyncio.gather(forwarder, return_exceptions=True)
-            self.websockets.discard(websocket)
-            await websocket.close()
+            self.channels.discard(channel)
+            await channel.close()
 
     async def _stop_stdin_worker(self, process) -> None:
         worker = self.stdin_workers.pop(process, None)
@@ -362,6 +446,11 @@ class Runner:
                 worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
 
+    def _remember_finished_start(self, start_id: str) -> None:
+        self.finished_start_ids[start_id] = True
+        if len(self.finished_start_ids) > MAX_STOPPED_PROCESS_RECORDS:
+            self.finished_start_ids.popitem(last=False)
+
     async def _forget_stopped_process(self, process, process_id: str | None) -> None:
         """Release a process; call only after its native cleanup was verified."""
         if process_id is not None:
@@ -369,33 +458,60 @@ class Runner:
             self.stopped_process_ids[process_id] = True
             if len(self.stopped_process_ids) > MAX_STOPPED_PROCESS_RECORDS:
                 self.stopped_process_ids.popitem(last=False)
+            start_id = self.process_start_ids.pop(process_id, None)
+            if start_id is not None:
+                self.running_start_ids.pop(start_id, None)
+                self._remember_finished_start(start_id)
         await self._stop_stdin_worker(process)
         self.processes.discard(process)
-        self.process_sockets.pop(process, None)
+        self.process_channels.pop(process, None)
 
-    async def stop_process(self, request: web.Request) -> web.Response:
+    async def stop_known_process(self, process_id: str) -> dict:
         """Stop a process whose connection Buddy lost, and confirm its cleanup."""
-        process_id = request.match_info['process_id']
         if process_id in self.stopped_process_ids:
-            return web.json_response({'stopped': True})
+            return {'stopped': True}
         process = self.running_process_ids.get(process_id)
         if process is None:
             # A restarted Runner cannot vouch for an earlier run's processes.
-            return _json_error(404, 'This Runner has no record of that process. It may have restarted.')
+            raise RunnerError(404, 'This Runner has no record of that process. It may have restarted.')
         try:
             await process.close()
         except (OSError, RuntimeError, TimeoutError) as error:
-            return _json_error(500, f'Could not confirm that process {process.pid} stopped: {error}')
+            raise RunnerError(500, f'Could not confirm that process {process.pid} stopped: {error}') from error
         await self._forget_stopped_process(process, process_id)
-        return web.json_response({'stopped': True})
+        return {'stopped': True}
+
+    async def stop_named_start(self, start_id: str) -> dict:
+        """Stop whatever a named tunnel startup created, and confirm its cleanup.
+
+        A name this Runner has no record of was never received, or its
+        process stopped long enough ago to leave the records. Either way
+        nothing runs for it; ``known`` tells Buddy which answer this is, and
+        Buddy trusts it only when the Runner has not restarted since.
+        """
+        if start_id in self.finished_start_ids:
+            return {'stopped': True, 'known': True}
+        process_id = self.running_start_ids.get(start_id)
+        if process_id is None:
+            return {'stopped': True, 'known': False}
+        result = await self.stop_known_process(process_id)
+        result['known'] = True
+        return result
+
+    async def stop_process(self, request: web.Request) -> web.Response:
+        try:
+            result = await self.stop_known_process(request.match_info['process_id'])
+        except RunnerError as error:
+            return _json_error(error.status, error.message)
+        return web.json_response(result)
 
     async def _acknowledge_stopped(self, process) -> None:
         """Confirm verified cleanup to Buddy before its connection closes."""
-        websocket = self.process_sockets.get(process)
-        if websocket is None or websocket.closed:
+        channel = self.process_channels.get(process)
+        if channel is None or channel.closed:
             return
         try:
-            await websocket.send_json({'type': 'stopped', 'pid': process.pid})
+            await channel.send_json({'type': 'stopped', 'pid': process.pid})
         except (ConnectionResetError, RuntimeError):
             pass
 
@@ -411,7 +527,7 @@ class Runner:
         # This route never approves a directory or changes an existing session.
         return web.json_response(self.workspaces.issue_pairing_code())
 
-    async def close(self, app: web.Application) -> None:
+    async def close(self, app: web.Application | None = None) -> None:
         self.closing = True
         retry_failed_shutdown = self._shutdown_task is not None and self._shutdown_task.done() and (
             self._shutdown_task.cancelled() or self._shutdown_task.exception() is not None
@@ -431,7 +547,7 @@ class Runner:
                 # A bare close would leave Buddy unsure the process stopped.
                 await self._acknowledge_stopped(process)
         errors.extend(await asyncio.gather(
-            *(websocket.close(code=1001) for websocket in list(self.websockets)), return_exceptions=True
+            *(channel.close(code=1001) for channel in list(self.channels)), return_exceptions=True
         ))
         requests = list(self.command_requests)
         for task in requests:
