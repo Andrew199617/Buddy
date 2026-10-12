@@ -84,6 +84,8 @@
 	export let folderId: string | null = null;
 	// The exact folder the open chat runs in, which its Project tab opens instead of the folder's.
 	export let chatTarget: ProjectTarget | null = null;
+	// Checks again whether the chat's own computer is online.
+	export let onChatTargetCheck: () => void = () => {};
 
 	let largeScreen = false;
 	let dragged = false;
@@ -185,8 +187,17 @@
 	let keptProject: KeptProjectPanel | null = null;
 	let keptProjectKey: string | null = null;
 
+	/** The Project tab's "Check again": the chat's own computer, or else the chat folder's project. */
+	function recheckProjectPanel() {
+		if (chatTarget) {
+			onChatTargetCheck();
+			return;
+		}
+		reloadFolderProject();
+	}
+
 	function keepProjectPanel(component: any, key: string | null) {
-		const props = { project: folderProject, chatTarget, onChanged: reloadFolderProject };
+		const props = { project: folderProject, chatTarget, onChanged: recheckProjectPanel };
 		if (keptProject && keptProjectKey === key) {
 			keptProject.update(props);
 			return;
