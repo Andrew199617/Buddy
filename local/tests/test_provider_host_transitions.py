@@ -1339,14 +1339,15 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_each_computer_keeps_its_own_start_folder_and_cli_paths(self):
         before = await self.service.describe_computer_settings(OWNER, 'runner-a')
-        # Until it has its own, the plan's computer uses what was saved with the plan.
-        self.assertEqual(before['start_folder'], 'C:\\fixture-project')
-        self.assertEqual(before['cli_paths']['claude'], 'C:\\fixture-tools\\provider.exe')
+        # Until it has its own, the plan's computer uses what was saved with the plan, kept per plan.
         self.assertFalse(before['saved'])
+        self.assertEqual((before['start_folder'], before['cli_paths']), ('', {'claude': '', 'codex': ''}))
+        self.assertEqual(before['from_plans'], {
+            'claude': {'start_folder': 'C:\\fixture-project', 'cli_path': 'C:\\fixture-tools\\provider.exe'}
+        })
         # Codex's plan runs on runner-b, so what was saved with it applies there.
         other = await self.service.describe_computer_settings(OWNER, 'runner-b')
-        self.assertEqual(other['start_folder'], 'C:\\fixture-project')
-        self.assertEqual(other['cli_paths'], {'claude': '', 'codex': 'C:\\fixture-tools\\provider.exe'})
+        self.assertEqual(list(other['from_plans']), ['codex'])
 
         saved = await self.service.save_computer_settings(
             OWNER, 'runner-b', REVISION_B, ' C:\\code ', {'claude': 'C:\\tools\\claude.exe', 'codex': ''}
@@ -1354,6 +1355,7 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(saved['saved'])
         self.assertEqual(saved['start_folder'], 'C:\\code')
         self.assertEqual(saved['cli_paths'], {'claude': 'C:\\tools\\claude.exe', 'codex': ''})
+        self.assertEqual(saved['from_plans'], {})
         self.assertEqual(self.machines['runner-b'].path_checks, [
             ('C:\\code', 'dir'), ('C:\\tools\\claude.exe', 'file')
         ])
