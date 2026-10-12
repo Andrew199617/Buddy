@@ -39,6 +39,11 @@
 		}
 	};
 
+	const changeWhoMayConnect = (event: Event) => {
+		const choice = (event.currentTarget as HTMLSelectElement).value as SubscriptionPolicy['user_machines'];
+		save({ user_machines: choice });
+	};
+
 	const toggleGroup = (groupId: string, checked: boolean) => {
 		if (!policy) return;
 		let ids = policy.machine_group_ids.filter((id) => id !== groupId);
@@ -59,7 +64,7 @@
 				id="subscription-user-machines"
 				class="w-full rounded-xl bg-gray-50 px-3 py-2 text-sm outline-hidden dark:bg-gray-850"
 				value={policy.user_machines}
-				on:change={(event) => save({ user_machines: event.currentTarget.value })}
+				on:change={changeWhoMayConnect}
 			>
 				<option value="all">{$i18n.t('Everyone')}</option>
 				<option value="groups">{$i18n.t('Selected groups')}</option>
