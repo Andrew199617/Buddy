@@ -352,6 +352,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	// --- Chat folders' project folders and the chat's Project tab -------------
 	const projectModes = new Set([
 		'project-tab',
+		'project-agents',
 		'folder-chip',
 		'folder-edit',
 		'folder-allow',
@@ -443,6 +444,24 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		],
 		'site/src': [{ name: 'app.ts', path: 'site/src/app.ts', type: 'file' }]
 	};
+	// The project's custom agents; .github/chatmodes is missing on purpose.
+	const agentListings = {
+		'site/.github/agents': [
+			{ name: 'reviewer.agent.md', path: 'site/.github/agents/reviewer.agent.md', type: 'file' },
+			{ name: 'helper.agent.md', path: 'site/.github/agents/helper.agent.md', type: 'file' },
+			{ name: 'notes.txt', path: 'site/.github/agents/notes.txt', type: 'file' }
+		],
+		'site/.claude/agents': [
+			{ name: 'tester.md', path: 'site/.claude/agents/tester.md', type: 'file' }
+		]
+	};
+	const agentFiles = {
+		'site/.github/agents/reviewer.agent.md':
+			"---\r\nname: Reviewer\r\ndescription: 'Reviews changes for bugs'\r\ntools: [search]\r\n---\r\nReview the diff.\r\nList risks first.\r\n",
+		'site/.github/agents/helper.agent.md': '---\nuser-invocable: false\n---\nOnly a subagent.',
+		'site/.claude/agents/tester.md':
+			'---\nname: Tester\ndescription: Writes tests\n---\nWrite tests.'
+	};
 	let readmeContent = '# Site\r\nHello\r\n';
 	let readmeVersion = 'readme-1';
 	const projectSaves = [];
@@ -522,6 +541,23 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		const body = request.postDataJSON();
 		if (method === 'GET' && relayPath === '/v1/grants') {
 			return { grants: [projectGrant] };
+		}
+		if (method === 'GET' && relayPath === '/v1/directories' && mode === 'project-agents') {
+			assert.equal(url.searchParams.get('grantId'), 'grant-code');
+			const listed = url.searchParams.get('path');
+			assert.ok(
+				['site/.github/agents', 'site/.claude/agents', 'site/.github/chatmodes'].includes(listed),
+				'Only the agent folders inside the project folder are listed'
+			);
+			if (!agentListings[listed]) {
+				return { status: 404, json: { error: 'The requested file or directory does not exist.' } };
+			}
+			return { path: listed, entries: agentListings[listed] };
+		}
+		if (method === 'GET' && relayPath === '/v1/files' && mode === 'project-agents') {
+			const read = url.searchParams.get('path');
+			assert.ok(agentFiles[read] !== undefined, 'Only agent files are read: ' + read);
+			return { path: read, content: agentFiles[read], version: 'agent-1' };
 		}
 		if (method === 'GET' && relayPath === '/v1/directories') {
 			assert.equal(url.searchParams.get('grantId'), 'grant-code');
@@ -644,7 +680,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	}
 
 	let sessionOptions = {};
-	if (mode === 'project-tab') sessionOptions = { folderId: 'website' };
+	if (mode === 'project-tab' || mode === 'project-agents') sessionOptions = { folderId: 'website' };
 	if (mode === 'folder-chip' || mode === 'folder-edit' || askingModes.has(mode))
 		sessionOptions = { path: '/folders/website' };
 
@@ -2953,6 +2989,88 @@ async function projectTabCase(browser, profile) {
 	});
 }
 
+async function projectAgentsCase(browser, profile) {
+	await runCase(browser, profile, 'project-agents', 'project-agents', async (session, fixtures) => {
+		const { page } = session;
+		const robot = page.locator('#agent-menu-button');
+		assert.equal(await robot.isVisible(), false, 'The collapsed composer keeps its tools hidden');
+		// The composer shows its tool buttons once the draft is in use.
+		if (profile.mobile) await page.locator('#chat-input').tap();
+		else await page.locator('#chat-input').click();
+		await robot.waitFor();
+		assert.equal(await robot.getAttribute('aria-label'), 'Choose an agent');
+		await robot.click();
+
+		const menu = page.getByRole('menu');
+		const reviewer = menu.getByRole('menuitemradio', { name: /Reviewer/ });
+		await reviewer.waitFor();
+		await menu.getByRole('menuitemradio', { name: /Tester/ }).waitFor();
+		assert.equal(
+			await menu.getByRole('menuitemradio', { name: /helper/i }).count(),
+			0,
+			'Agents hidden from the picker stay out'
+		);
+		assert.equal(await menu.getByText('notes.txt').count(), 0, 'Only Markdown files are agents');
+		assert.equal(
+			await menu.getByRole('menuitemradio', { name: 'No agent' }).getAttribute('aria-checked'),
+			'true'
+		);
+		await captureScreenshot(page, profile.name + '-project-agents-menu');
+		await reviewer.click();
+
+		await waitUntil(
+			async () => (await robot.getAttribute('aria-label')) === 'Agent: Reviewer',
+			'The button names the chosen agent'
+		);
+		assert.equal((await robot.innerText()).trim(), 'Reviewer');
+		await captureScreenshot(page, profile.name + '-project-agents-chosen');
+		await waitUntil(
+			() => session.mutations.some((entry) => entry.body?.chat?.agent?.name === 'Reviewer'),
+			'The chosen agent is saved with the chat'
+		);
+		const saved = session.mutations.find((entry) => entry.body?.chat?.agent);
+		assert.deepEqual(saved.body.chat.agent, {
+			name: 'Reviewer',
+			description: 'Reviews changes for bugs',
+			path: '.github/agents/reviewer.agent.md',
+			instructions: 'Review the diff.\nList risks first.'
+		});
+		assert.ok(
+			fixtures.requests.some(
+				(entry) => entry.method === 'DELETE' && entry.path.endsWith('/v1/session')
+			),
+			'Reading the agents ends its session on the computer'
+		);
+
+		await page.locator('#chat-input').click();
+		await page.keyboard.type('Check my change');
+		await page.locator('#send-message-button').click();
+		await waitUntil(() => session.completions.length === 1, 'The message is sent');
+		const system = session.completions[0].messages?.find((message) => message.role === 'system');
+		assert.ok(system, 'The request has a system prompt');
+		assert.match(
+			system.content,
+			/The user chose the "Reviewer" custom agent, from \.github\/agents\/reviewer\.agent\.md in the project folder\. Follow its instructions:\n\nReview the diff\.\nList risks first\.$/
+		);
+		// This case sends one message on purpose; runCase still checks that nothing else was sent.
+		session.completions.splice(0);
+
+		if (profile.mobile) await page.locator('#chat-input').tap();
+		else await page.locator('#chat-input').click();
+		await robot.click();
+		await menu.getByRole('menuitemradio', { name: 'No agent' }).click();
+		await waitUntil(
+			async () => (await robot.getAttribute('aria-label')) === 'Choose an agent',
+			'The button goes back to the robot alone'
+		);
+		await waitUntil(
+			() => session.mutations.some((entry) => entry.body?.chat?.agent === null),
+			'Clearing the agent is saved too'
+		);
+		await captureScreenshot(page, profile.name + '-project-agents');
+	});
+}
+
 async function folderChipCase(browser, profile) {
 	await runCase(browser, profile, 'folder-chip', 'folder-chip', async ({ page }, fixtures) => {
 		const chip = page.getByRole('button', { name: 'Project folder: Work PC · site', exact: true });
@@ -3322,6 +3440,7 @@ try {
 		{ name: 'phone', mobile: true, theme: 'dark' }
 	]) {
 		await projectTabCase(browser, profile);
+		await projectAgentsCase(browser, profile);
 		await folderChipCase(browser, profile);
 		await folderEditCase(browser, profile);
 		await folderAllowCase(browser, profile);
