@@ -29,6 +29,7 @@
 	import DeleteConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 	import Emoji from '$lib/components/common/Emoji.svelte';
 	import EmojiPicker from '$lib/components/common/EmojiPicker.svelte';
+	import ProjectFolderChip from '$lib/components/projectFolders/ProjectFolderChip.svelte';
 
 	export let folder = null;
 	export let readOnly: boolean = false;
@@ -37,12 +38,17 @@
 	export let onDelete: Function = (folderId) => {};
 
 	let showFolderModal = false;
+	// Bumped after the folder is edited, so the project folder chip reloads.
+	let projectRevision = 0;
 	let showCreateSubFolderModal = false;
 	let showShareModal = false;
 	let showDeleteConfirm = false;
 	let deleteFolderContents = true;
 
 	const updateHandler = async ({ name, meta, data }) => {
+		// The dialog saved the project folder before calling this.
+		projectRevision += 1;
+
 		if (name === '') {
 			toast.error($i18n.t('Folder name cannot be empty.'));
 			return;
@@ -275,5 +281,11 @@
 				</FolderMenu>
 			</div>
 		{/if}
+	</div>
+
+	<div class="-mt-1 mb-3 w-full px-6 @md:max-w-3xl">
+		{#key `${folder.id}:${projectRevision}`}
+			<ProjectFolderChip folderId={folder.id} folderName={folder.name} />
+		{/key}
 	</div>
 {/if}
