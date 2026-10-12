@@ -227,6 +227,22 @@ class RunnerEnrollmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(websocket.closed_with[0], protocol.CLOSE_UNKNOWN_MACHINE)
         self.assertEqual(await self.service.describe_all_machines(), [])
 
+    async def test_tokens_issued_before_the_limit_cannot_connect_more_computers(self):
+        limit = self.service.MAX_MACHINES_PER_USER
+        tokens = []
+        for _ in range(limit + 1):
+            tokens.append((await self.service.create_enrollment(MEMBER_USER))['token'])
+        enrolled = []
+        for token in tokens[:limit]:
+            enrolled.append(await self.service.redeem_enrollment(token, 'Member PC', RUNNER_INFO['host']))
+        with self.assertRaisesRegex(self.service.SubscriptionError, 'up to'):
+            await self.service.redeem_enrollment(tokens[limit], 'Member PC', RUNNER_INFO['host'])
+        self.assertEqual(len(self.machines()), limit)
+        # The refused token is used up: after removing a computer, connecting needs a new request.
+        await self.service.delete_machine(MEMBER, enrolled[0]['machine_id'])
+        with self.assertRaisesRegex(self.service.SubscriptionError, 'expired'):
+            await self.service.redeem_enrollment(tokens[limit], 'Member PC', RUNNER_INFO['host'])
+
     async def test_renaming_changes_only_the_name(self):
         enrollment = await self.enroll()
         await self.service.rename_machine(MEMBER, enrollment['machine_id'], '  Studio PC  ')
