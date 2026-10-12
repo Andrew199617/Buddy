@@ -44,6 +44,7 @@ from open_webui.utils.subscriptions.claude_code import ClaudeCodeProvider
 from open_webui.utils.subscriptions.codex import CodexProvider
 from open_webui.utils.subscriptions.common import (
     ACCESS_CHAT,
+    ACCESS_FULL,
     ACCESS_LEVELS,
     CREDENTIAL_API_KEY,
     CREDENTIAL_MACHINE,
@@ -1404,10 +1405,17 @@ async def _save_settings(
     return settings
 
 
-async def working_directory(settings: ProviderSettings, access: str, machine) -> str:
-    """Chat-only turns run in an empty folder; tool access uses the workspace."""
+async def working_directory(settings: ProviderSettings, access: str, machine, project_path: str = '') -> str:
+    """Where a turn starts.
+
+    Chat-only turns run in an empty folder. Otherwise the chat folder's project
+    folder wins; without one, the plan's start folder (settings.workspace) or
+    the computer's default workspace is used.
+    """
     if access == ACCESS_CHAT:
         return await machine.chat_dir()
+    if project_path:
+        return project_path
     if settings.workspace:
         return settings.workspace
     return await machine.default_workspace()
@@ -2348,6 +2356,42 @@ def _turn_model(ref: ProviderRef, model_id: str, subscription: dict) -> tuple[st
     return subscription['model'], [effort for effort in efforts if isinstance(effort, str) and effort]
 
 
+async def _turn_folder_choice(user, settings: ProviderSettings, metadata: dict, foreign_preset: bool):
+    """The chat folder's project folder choice, looked up only for turns that may use files.
+
+    Tasks, channel replies and presets written by someone else stay chat-only,
+    so they never depend on a folder.
+    """
+    if foreign_preset or _turn_access(settings, metadata) == ACCESS_CHAT:
+        return None
+    return await project_folders.choice_for_turn(user.id, metadata)
+
+
+async def _turn_project_path(ref: ProviderRef, choice, access: str, machine) -> str:
+    """The exact folder this turn starts in, or '' when the chat folder lets the AI choose."""
+    if choice is None or access == ACCESS_CHAT or choice.mode != project_folders.MODE_FOLDER:
+        return ''
+    revision = await _machine_revision(ref.owner_id, machine.id)
+    return project_folders.turn_project_path(
+        choice, machine.id, machine.name, PROVIDER_LABELS[ref.provider_id], revision
+    )
+
+
+async def _require_project_folder(machine, path: str, choice) -> None:
+    """Refuse rather than start somewhere else when the project folder is gone."""
+    if not await machine.path_exists(path, 'dir'):
+        raise SubscriptionError(project_folders.missing_project_folder_message(choice, machine.name))
+
+
+def _with_start_note(conversation, cwd: str):
+    """Tell a Full-access plan it chooses where to work, ahead of the chat's own system prompt."""
+    note = project_folders.START_FOLDER_NOTE.format(cwd=cwd)
+    system = note
+    if conversation.system:
+        system = f'{note}\n\n{conversation.system}'
+    return replace(conversation, system=system)
+
+
 async def generate_subscription_chat_completion(request, form_data: dict, user, models):
     if not await may_use_machines(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=NOT_ALLOWED_MESSAGE)
@@ -2379,6 +2423,7 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
         # the machine, so a turn waits for a current one.
         _require_plan(ref.provider_id, await status_cache.get(ref, serve_expired=False))
         cli_model, model_efforts = _turn_model(ref, model_id, subscription)
+        folder_choice = await _turn_folder_choice(user, settings, metadata, foreign_preset)
         async with _provider_lock(ref):
             if generation != _provider_generations.get(ref, 0):
                 raise SubscriptionError('The provider machine changed; refresh before starting another turn.')
@@ -2386,16 +2431,28 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
             access = _turn_access(settings, metadata)
             if foreign_preset:
                 access = ACCESS_CHAT
+            if folder_choice is not None and folder_choice.mode == project_folders.MODE_CHAT:
+                # A chat folder can only lower access.
+                access = ACCESS_CHAT
+            project_path = await _turn_project_path(ref, folder_choice, access, machine)
+            cwd = await working_directory(settings, access, machine, project_path)
+            conversation = parse_messages(payload.get('messages'))
+            lets_ai_choose = folder_choice is not None and folder_choice.mode == project_folders.MODE_AUTO
+            if access == ACCESS_FULL and lets_ai_choose:
+                conversation = _with_start_note(conversation, cwd)
             turn = TurnRequest(
                 model=cli_model,
-                conversation=parse_messages(payload.get('messages')),
+                conversation=conversation,
                 settings=replace(settings, access=access),
-                cwd=await working_directory(settings, access, machine),
+                cwd=cwd,
                 effort=requested_effort(payload),
                 is_task=is_task,
                 machine=machine,
                 efforts=model_efforts,
             )
+        # Checked outside the provider lock, so a slow computer never holds it.
+        if project_path:
+            await _require_project_folder(machine, project_path, folder_choice)
     except SubscriptionError as error:
         events = failure_events(str(error))
     else:
