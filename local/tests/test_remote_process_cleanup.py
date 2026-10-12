@@ -792,7 +792,7 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
         text = ('café \U0001f600 line\n' * 20000) + 'end'
         encoded = text.encode('utf-8')
         with patch.object(runner, 'MAX_WEBSOCKET_MESSAGE_BYTES', 64 * 1024), patch.object(
-            machines, 'MAX_STDIN_MESSAGE_CHARS', 4096
+            machines.RemoteProcess, 'stdin_piece_chars', 4096
         ):
             process = await remote.start_process([sys.executable, '-c', fixture], str(self.root))
             await asyncio.wait_for(process.write(text), 10)
@@ -821,7 +821,7 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
         remote = await self.fake_remote(exchange)
         process = await remote.start_process(['synthetic-fixture'], str(self.root))
         first, second = 'a' * 50, 'b' * 50
-        with patch.object(machines, 'MAX_STDIN_MESSAGE_CHARS', 8):
+        with patch.object(machines.RemoteProcess, 'stdin_piece_chars', 8):
             writes = [asyncio.create_task(process.write(first)), asyncio.create_task(process.write(second))]
             process.close_stdin()
             await asyncio.gather(*writes)
