@@ -89,6 +89,7 @@ STARTUP_CLEANUP_MESSAGE = (
 # A computer connected through the Buddy app's Runner, over the tunnel.
 MACHINE_KIND_RUNNER = 'runner'
 MAX_MACHINES_PER_USER = 10
+MACHINE_LIMIT_MESSAGE = f'You can connect up to {MAX_MACHINES_PER_USER} computers. Remove one first.'
 # How long the token behind "Connect this computer" stays usable.
 ENROLLMENT_SECONDS = 60
 MAX_PENDING_ENROLLMENTS = 500
@@ -1108,15 +1109,25 @@ async def create_enrollment(user) -> dict:
     _require_single_worker()
     if not await may_use_machines(user):
         raise SubscriptionError(NOT_ALLOWED_MESSAGE)
-    owned = [config for config in await _owned_machine_configs(user.id) if config.get('kind') == MACHINE_KIND_RUNNER]
-    if len(owned) >= MAX_MACHINES_PER_USER:
-        raise SubscriptionError(f'You can connect up to {MAX_MACHINES_PER_USER} computers. Remove one first.')
+    # Checked again when the token is redeemed: several tokens can be pending at once.
+    await _require_room_for_another_computer(user.id, await _machine_configs())
     _forget_expired_enrollments()
     if len(_enrollments) >= MAX_PENDING_ENROLLMENTS:
         raise SubscriptionError('Too many computers are connecting right now. Try again in a minute.')
     token = 'bde1_' + secrets.token_urlsafe(32)
     _enrollments[_digest(token)] = {'owner_id': user.id, 'expires_at': time.monotonic() + ENROLLMENT_SECONDS}
     return {'token': token, 'expires_in': ENROLLMENT_SECONDS}
+
+
+async def _require_room_for_another_computer(owner_id: str, configs: list[dict]) -> None:
+    """Refuse once the owner has MAX_MACHINES_PER_USER computers connected through the Buddy app."""
+    server_owner = await server_owner_id()
+    connected = [
+        config for config in configs
+        if config.get('kind') == MACHINE_KIND_RUNNER and _machine_owner(config, server_owner) == owner_id
+    ]
+    if len(connected) >= MAX_MACHINES_PER_USER:
+        raise SubscriptionError(MACHINE_LIMIT_MESSAGE)
 
 
 async def redeem_enrollment(token: str, name: str | None, host: dict | None) -> dict:
@@ -1141,6 +1152,9 @@ async def redeem_enrollment(token: str, name: str | None, host: dict | None) -> 
         clean_name = 'My computer'
     async with _machine_lock:
         configs = await _machine_configs()
+        # Counted with the list it is added to, under the lock. The token is
+        # already used up, so a refused computer needs a new one.
+        await _require_room_for_another_computer(owner.id, configs)
         taken = await _taken_machine_ids(configs)
         machine_id = uuid.uuid4().hex
         while machine_id in taken:
