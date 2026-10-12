@@ -65,9 +65,18 @@ class FakeGrants:
 class FakeChats:
     def __init__(self):
         self.folders = {}
+        self.owned = set()
+
+    def add(self, chat_id, user_id, folder_id=None):
+        self.owned.add((chat_id, user_id))
+        if folder_id is not None:
+            self.folders[(chat_id, user_id)] = folder_id
 
     async def get_chat_folder_id(self, chat_id, user_id, db=None):
         return self.folders.get((chat_id, user_id))
+
+    async def is_chat_owner(self, chat_id, user_id, db=None):
+        return (chat_id, user_id) in self.owned
 
 
 def load_project_folders(config, folders, chats, readers, grants=None):

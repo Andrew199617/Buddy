@@ -41,6 +41,7 @@ REFUSED_COMPUTER_RESET = 'computer_reset'
 REFUSED_SERVER_OFF = 'server_off'
 REFUSED_BAD_PATH = 'bad_path'
 REFUSED_NEEDS_ACKNOWLEDGEMENT = 'needs_acknowledgement'
+REFUSED_BAD_REQUEST = 'bad_request'
 
 REFUSAL_MESSAGES = {
     REFUSED_COMPUTER_REMOVED: 'That computer is no longer one of yours, so this chat runs Detached.',
@@ -50,6 +51,7 @@ REFUSAL_MESSAGES = {
     REFUSED_NEEDS_ACKNOWLEDGEMENT: (
         "This chat folder's instructions can be changed by someone else, so this chat runs Detached."
     ),
+    REFUSED_BAD_REQUEST: "That choice couldn't be used, so this chat runs Detached.",
 }
 
 
