@@ -271,7 +271,8 @@
 	/* On a phone the summary chip takes the whole row, and the context rail wraps below it. */
 	.buddy-run-target-slot {
 		flex-wrap: wrap;
-		padding-inline: max(0px, env(safe-area-inset-left, 0px)) max(0px, env(safe-area-inset-right, 0px));
+		padding-inline: max(0px, env(safe-area-inset-left, 0px))
+			max(0px, env(safe-area-inset-right, 0px));
 	}
 
 	.buddy-run-target-summary {
