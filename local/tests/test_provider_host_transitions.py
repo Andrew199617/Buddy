@@ -1249,6 +1249,57 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.service.status_cache.cached(on_a))
         self.assertIsNone(self.service.status_cache.cached(on_b))
 
+    def cache_models(self, provider_id, machine_id, *keys, signed_in=True):
+        on_computer = self.service.ProviderRef(OWNER, provider_id).on(machine_id)
+        self.service.status_cache._entries[on_computer] = self.service._CacheEntry(
+            {'installed': True, 'signed_in': signed_in, 'api_billing': False}, time.monotonic() + 60
+        )
+        models = [
+            types.SimpleNamespace(key=key, value=key, name=f'Fixture {key} on {machine_id}', description='', efforts=[])
+            for key in keys
+        ]
+        self.service.models_cache._entries[on_computer] = self.service._CacheEntry(models, time.monotonic() + 60)
+
+    async def test_plan_models_come_from_every_computer_where_the_plan_is_signed_in(self):
+        self.config.values['subscriptions.codex']['enable'] = False
+        self.cache_models('claude', 'runner-a', 'opus')
+        self.cache_models('claude', 'runner-b', 'opus', 'sonnet')
+        self.cache_models('claude', 'local', 'haiku', signed_in=False)
+        models = await self.service.get_user_subscription_models(OWNER_USER)
+        self.assertEqual([model['id'] for model in models], ['claude-code.opus', 'claude-code.sonnet'])
+        # A model on several computers is listed as the plan's own computer offers it.
+        self.assertEqual(models[0]['name'], 'Fixture opus on runner-a')
+        self.assertEqual(self.providers['claude'].calls, [])
+
+    async def test_a_model_list_asks_only_the_plans_own_computer(self):
+        self.config.values['subscriptions.codex']['enable'] = False
+        await self.service.get_user_subscription_models(OWNER_USER)
+        self.assertEqual(self.providers['claude'].calls, [
+            ('status', 'runner-a', 'runner-a'), ('list_models', 'runner-a', 'runner-a')
+        ])
+
+    async def test_an_offline_app_computer_keeps_its_last_models_and_is_not_asked(self):
+        self.config.values['subscriptions.codex']['enable'] = False
+        self.config.values['subscriptions.claude'] = enabled_settings('runner-b')
+        self.config.values['subscriptions.machines'][1]['kind'] = 'runner'
+        self.cache_models('claude', 'runner-b', 'sonnet')
+        for cache in (self.service.status_cache, self.service.models_cache):
+            cache._entries[self.service.ProviderRef(OWNER, 'claude').on('runner-b')].expires_at = 0
+        offline = types.SimpleNamespace(is_online=lambda machine_id: False)
+        with patch.object(self.service, 'HUB', offline):
+            models = await self.service.get_user_subscription_models(OWNER_USER)
+        self.assertEqual([model['id'] for model in models], ['claude-code.sonnet'])
+        self.assertEqual(self.providers['claude'].calls, [])
+
+    async def test_a_computer_that_connects_again_forgets_only_its_own_reports(self):
+        self.cache_models('claude', 'runner-a', 'opus')
+        self.cache_models('claude', 'runner-b', 'sonnet')
+        await self.service.record_runner_connected('runner-b', {})
+        ref = self.service.ProviderRef(OWNER, 'claude')
+        self.assertIsNotNone(self.service.status_cache.cached(ref.on('runner-a')))
+        self.assertIsNone(self.service.status_cache.cached(ref.on('runner-b')))
+        self.assertIsNone(self.service.models_cache.cached(ref.on('runner-b')))
+
     async def test_each_computer_keeps_its_own_handle_and_quiescing_stops_both(self):
         ref = self.service.ProviderRef(OWNER, 'claude')
         on_a = self.service._tracking_machine(ref, self.machines['runner-a'])

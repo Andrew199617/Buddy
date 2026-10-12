@@ -1307,8 +1307,7 @@ async def record_runner_connected(machine_id: str, info: dict) -> None:
             config['capabilities'] = observed_capabilities
         config['last_seen_at'] = int(time.time())
         await Config.upsert({MACHINES_CONFIG_KEY: configs})
-    for ref in _owner_refs(_machine_owner(config, await server_owner_id())):
-        invalidate(ref)
+    invalidate_computer(_machine_owner(config, await server_owner_id()), machine_id)
 
 
 async def record_runner_disconnected(machine_id: str) -> None:
@@ -2204,6 +2203,16 @@ def invalidate(ref: ProviderRef) -> None:
     models_cache.invalidate_where(of_provider)
 
 
+def invalidate_computer(owner_id: str, machine_id: str) -> None:
+    """Forget what the user's providers reported on one computer, which may have changed while it was away."""
+
+    def on_that_computer(key: MachineRef) -> bool:
+        return key.owner_id == owner_id and key.machine_id == machine_id
+
+    status_cache.invalidate_where(on_that_computer)
+    models_cache.invalidate_where(on_that_computer)
+
+
 async def describe_provider(
     owner_id: str, provider_id: str, fresh: bool = False, expected_machine_id: str | None = None,
     expected_machine_revision: str | None = None
@@ -2314,7 +2323,53 @@ def _model_entry(provider_id: str, model: ProviderModel, credential_mode: str = 
     }
 
 
+@dataclass(frozen=True)
+class _PlanComputer:
+    machine_id: str
+    # Whether a model list may ask the computer now. Listing models starts
+    # the CLI there, and Codex keeps its app-server running afterwards, so
+    # only the plan's own computer is asked, and only while it is online.
+    # The others offer the models they last reported, for example during a
+    # turn there.
+    may_load: bool
+
+
+async def _plan_computers(ref: ProviderRef, settings: ProviderSettings) -> list[_PlanComputer]:
+    """Every computer the user's plan can run on, the plan's own computer first."""
+    machine_ids = []
+    if settings.machine_id:
+        machine_ids.append(settings.machine_id)
+    if await _may_use_server_machine(ref.owner_id):
+        machine_ids.append(LOCAL_MACHINE_ID)
+    app_machine_ids = set()
+    for config in await _owned_machine_configs(ref.owner_id):
+        machine_ids.append(config['id'])
+        if config.get('kind') == MACHINE_KIND_RUNNER:
+            app_machine_ids.add(config['id'])
+
+    computers = []
+    for machine_id in dict.fromkeys(machine_ids):
+        try:
+            await _require_verified_machine(ref, _settings_on(settings, machine_id))
+        except SubscriptionError:
+            continue
+        may_load = machine_id == settings.machine_id
+        if machine_id in app_machine_ids and not HUB.is_online(machine_id):
+            may_load = False
+        computers.append(_PlanComputer(machine_id, may_load))
+    return computers
+
+
+async def _computer_models(ref: ProviderRef, computer: _PlanComputer) -> list[ProviderModel]:
+    on_computer = ref.on(computer.machine_id)
+    provider_status = await _cached_for_model_list(status_cache, on_computer, computer.may_load) or {}
+    if not uses_plan(provider_status):
+        return []
+    return await _cached_for_model_list(models_cache, on_computer, computer.may_load) or []
+
+
 async def _provider_models(ref: ProviderRef) -> list[dict]:
+    """The models the user's plan offers on any of their computers where it is signed in."""
     # Every model list runs this, so it does not take the provider lock.
     # Changes save settings before bumping the generation, so reading the
     # generation first means a change made meanwhile empties this result.
@@ -2322,7 +2377,6 @@ async def _provider_models(ref: ProviderRef) -> list[dict]:
     settings = await _load_settings(ref)
     try:
         _require_single_worker()
-        await _require_verified_machine(ref, settings)
         _require_provider_cleanup(ref)
     except SubscriptionError:
         return []
@@ -2333,23 +2387,25 @@ async def _provider_models(ref: ProviderRef) -> list[dict]:
         await _require_allowed_credential(ref, credential_mode)
     except SubscriptionError:
         return []
-    on_plan_computer = ref.on(settings.machine_id)
-    provider_status = await _cached_for_model_list(status_cache, on_plan_computer) or {}
-    if not uses_plan(provider_status):
-        return []
-    models = await _cached_for_model_list(models_cache, on_plan_computer) or []
+    computers = await _plan_computers(ref, settings)
+    found = await asyncio.gather(*(_computer_models(ref, computer) for computer in computers))
     if generation != _provider_generations.get(ref, 0):
         return []
-    return [_model_entry(ref.provider_id, model, credential_mode) for model in models]
+    # The same model on several computers is listed once, as the plan's own computer offers it.
+    entries = {}
+    for models in found:
+        for model in models:
+            entries.setdefault(_model_id(ref.provider_id, model), _model_entry(ref.provider_id, model, credential_mode))
+    return list(entries.values())
 
 
-async def _cached_for_model_list(cache: CachedLoader, machine_ref: MachineRef) -> Any:
+async def _cached_for_model_list(cache: CachedLoader, machine_ref: MachineRef, may_load: bool = True) -> Any:
     """Serve only what is cached while the user's own action holds the provider lock.
 
     Sign-in, sign-out and runner checks can hold it for up to a minute, and a
     refresh started now would wait behind them.
     """
-    if _provider_lock(machine_ref.ref).locked():
+    if not may_load or _provider_lock(machine_ref.ref).locked():
         return cache.cached(machine_ref)
     return await cache.get(machine_ref)
 
