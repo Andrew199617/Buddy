@@ -19,6 +19,7 @@ Routes:
   GET    /machines/{machine}/folders   — folder names in one folder there (?path=, hidden, prefix); drives for no path
   GET    /machines/{machine}/folders/suggested — folders Claude Code and Codex worked in there
   GET    /run-target/options       — what the composer's bar offers for a new chat (?folder_id=, this_machine_id=)
+  GET    /run-target/readiness     — check one plan on one computer again (?provider=, machine_id=)
   GET    /machines/{machine}/settings — where plans start there, and which CLIs they run
   PUT    /machines/{machine}/settings — save those, checked on that computer
   GET    /folders/{folder}/project — the user's project folder for a chat folder, and their computers
@@ -315,6 +316,14 @@ async def get_run_target_options(
     folder_id: Optional[str] = None, this_machine_id: Optional[str] = None, user=Depends(get_verified_user)
 ):
     return await service.run_target_options(user, folder_id, this_machine_id)
+
+
+@router.get('/run-target/readiness')
+async def get_run_target_readiness(provider: str, machine_id: str, user=Depends(get_machine_user)):
+    try:
+        return await service.run_target_readiness(user, provider, machine_id)
+    except SubscriptionError as error:
+        raise _bad_request(error)
 
 
 @router.get('/machines/{machine_id}/settings')

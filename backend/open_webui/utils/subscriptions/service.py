@@ -2441,6 +2441,31 @@ async def run_target_options(user, folder_id=None, this_machine_id: str | None =
     }
 
 
+async def run_target_readiness(user, provider_id: str, machine_id: str) -> dict:
+    """A fresh check of one plan on one of the person's computers, for the bar's choice: {state, message}.
+
+    It starts the CLI there, as the chat would.
+    """
+    check_provider_id(provider_id)
+    if not await may_use_machines(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=NOT_ALLOWED_MESSAGE)
+    ref = _ref(user.id, provider_id)
+    settings = await _settings_for(ref, await _load_settings(ref), machine_id)
+    try:
+        await _require_verified_machine(ref, settings)
+    except SubscriptionError as error:
+        # An unknown computer and someone else's get the same answer.
+        return {'state': 'not_allowed', 'message': str(error)}
+    config = next((saved for saved in await _owned_machine_configs(user.id) if saved['id'] == machine_id), None)
+    if _folder_computer_kind(machine_id, config) == 'app' and not HUB.is_online(machine_id):
+        return {'state': 'offline', 'message': f'{config["name"]} is offline. Open the Buddy app on it.'}
+    provider_status = await status_cache.get(ref.on(machine_id), fresh=True)
+    if provider_status is None:
+        # Still answering; the bar asks again.
+        return {'state': 'checking', 'message': None}
+    return {'state': _bar_plan_state(provider_status, True), 'message': provider_status.get('message')}
+
+
 async def start_login(
     owner_id: str, provider_id: str, method: str, expected_machine_id: str | None = None,
     expected_machine_revision: str | None = None, machine_id: str | None = None
