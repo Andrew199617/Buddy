@@ -32,6 +32,13 @@ MAX_PATH_CHARS = 1024
 MAX_PARENT_DEPTH = 32
 MAX_RECENT_PATHS = 5
 
+# Told to Full-access plans in a chat folder set to "Let the AI choose", ahead of the chat's own system prompt.
+START_FOLDER_NOTE = (
+    'No project folder is set for this chat, so you choose where to work. You start in {cwd}. '
+    'If the request is about an existing project on this computer, find it and use absolute paths. '
+    'Create new projects as subfolders of {cwd}. When you change files, say which folder you worked in.'
+)
+
 WINDOWS_EXAMPLE = 'C:\\Users\\you\\code\\project'
 POSIX_EXAMPLE = '/home/you/code/project'
 DRIVE_PREFIX = re.compile(r'^[A-Za-z]:')
@@ -287,7 +294,10 @@ async def resolve_folder(user_id: str, folder, choices: dict[str, FolderChoice] 
 
 
 async def choice_for_turn(user_id: str, metadata: dict) -> FolderChoice | None:
-    """The project folder choice for the chat a turn belongs to, or None outside chat folders."""
+    """The project folder choice for the chat a turn belongs to, or None outside chat folders.
+
+    A chat folder with no choice of its own or from a parent lets the AI choose.
+    """
     chat_id = metadata.get('chat_id')
     if is_saved_chat_id(chat_id):
         folder_id = await Chats.get_chat_folder_id(chat_id, user_id)
@@ -299,7 +309,9 @@ async def choice_for_turn(user_id: str, metadata: dict) -> FolderChoice | None:
     own, inherited = await resolve_folder(user_id, folder)
     if own is not None:
         return own
-    return inherited
+    if inherited is not None:
+        return inherited
+    return FolderChoice(folder.id, MODE_AUTO, folder_name=folder.name)
 
 
 def turn_project_path(choice: FolderChoice, machine_id: str, machine_name: str, provider_label: str, revision) -> str:

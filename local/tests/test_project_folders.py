@@ -220,9 +220,12 @@ class ResolveTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_another_persons_choice_is_never_used(self):
         await self.save('owner-1', 'work', 'folder', {'pc-1': self.SavedPath('C:\\owner', 'rev-1')})
-        self.assertIsNone(
-            await self.module.choice_for_turn('member-1', {'chat_id': 'temporary:x', 'folder_id': 'work'})
-        )
+        choice = await self.module.choice_for_turn('member-1', {'chat_id': 'temporary:x', 'folder_id': 'work'})
+        # The member has no choice of their own, so the AI chooses for them.
+        self.assertEqual((choice.mode, choice.paths), ('auto', {}))
+
+    async def test_chats_outside_folders_have_no_choice(self):
+        self.assertIsNone(await self.module.choice_for_turn('owner-1', {'chat_id': 'temporary:x'}))
 
     async def test_a_parent_loop_ends(self):
         self.folders.rows['work'].parent_id = 'drafts'
