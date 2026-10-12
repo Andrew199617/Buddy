@@ -127,6 +127,19 @@ class ProviderRef:
     provider_id: str
 
 
+@dataclass(frozen=True)
+class MachineRef:
+    """One user's provider on one of their computers: what runs there, and its state there."""
+
+    owner_id: str
+    provider_id: str
+    machine_id: str
+
+    @property
+    def ref(self) -> ProviderRef:
+        return ProviderRef(self.owner_id, self.provider_id)
+
+
 @dataclass
 class SubscriptionPolicy:
     user_machines: str = POLICY_ALL
@@ -157,7 +170,9 @@ _provider_locks: dict[ProviderRef, asyncio.Lock] = {}
 _machine_lock = asyncio.Lock()
 _provider_generations: dict[ProviderRef, int] = {}
 _active_provider_tasks: dict[ProviderRef, set[asyncio.Task]] = {}
-_tracked_machines: dict[ProviderRef, 'TrackingMachine'] = {}
+# One handle per computer a provider runs on, so a turn on one computer
+# never drops the handle of a turn still running on another.
+_tracked_machines: dict[MachineRef, 'TrackingMachine'] = {}
 _server_owner_id: str | None = None
 
 
@@ -288,7 +303,7 @@ async def save_policy(updates: dict) -> SubscriptionPolicy:
     if updates.get('desktop_download_url') is not None:
         policy.desktop_download_url = _validate_download_url(updates['desktop_download_url'])
     await Config.upsert({POLICY_CONFIG_KEY: asdict(policy)})
-    for ref in list(_provider_generations) + list(_tracked_machines) + list(_providers):
+    for ref in list(_provider_generations) + _tracked_refs() + list(_providers):
         invalidate(ref)
     # Before disconnecting computers, so their processes can still be stopped.
     await _stop_disallowed_providers()
@@ -313,7 +328,7 @@ async def _policy_allows_provider(ref: ProviderRef) -> bool:
 
 def _has_work_to_stop(ref: ProviderRef) -> bool:
     """Whether this provider has a live provider, a tracked machine or running tasks."""
-    return ref in _providers or ref in _tracked_machines or bool(_active_provider_tasks.get(ref))
+    return ref in _providers or bool(_tracked_handles(ref)) or bool(_active_provider_tasks.get(ref))
 
 
 async def _stop_provider_if_disallowed(ref: ProviderRef) -> None:
@@ -339,7 +354,7 @@ async def _stop_disallowed_providers() -> None:
     New work is refused by the policy checks when it starts. Settings are
     kept, so turning a switch back on needs nothing else.
     """
-    refs = list(set(_providers) | set(_tracked_machines) | set(_active_provider_tasks))
+    refs = list(set(_providers) | set(_tracked_refs()) | set(_active_provider_tasks))
     results = await asyncio.gather(*(_stop_provider_if_disallowed(ref) for ref in refs), return_exceptions=True)
     for ref, result in zip(refs, results):
         if isinstance(result, Exception):
@@ -615,18 +630,28 @@ class TrackingMachine:
         self.cleanup_error = None
 
 
+def _tracked_handles(ref: ProviderRef) -> list[TrackingMachine]:
+    """The provider's handles on every computer it has run on."""
+    return [tracked for key, tracked in _tracked_machines.items() if key.ref == ref]
+
+
+def _tracked_refs() -> list[ProviderRef]:
+    return list({key.ref for key in _tracked_machines})
+
+
 def _require_provider_cleanup(ref: ProviderRef) -> None:
-    tracked = _tracked_machines.get(ref)
-    if tracked is not None:
+    """An old process on any computer whose stop is unconfirmed blocks the provider's new work."""
+    for tracked in _tracked_handles(ref):
         tracked._check_cleanup()
 
 
 def _tracking_machine(ref: ProviderRef, machine, credential_env: dict | None = None) -> TrackingMachine:
     _require_provider_cleanup(ref)
-    tracked = _tracked_machines.get(ref)
+    key = MachineRef(ref.owner_id, ref.provider_id, machine.id)
+    tracked = _tracked_machines.get(key)
     if tracked is None or tracked.machine is not machine or not tracked.valid:
         tracked = TrackingMachine(machine, credential_env)
-        _tracked_machines[ref] = tracked
+        _tracked_machines[key] = tracked
     return tracked
 
 
@@ -677,13 +702,14 @@ async def _quiesce_provider_work(ref: ProviderRef) -> None:
     tasks = {task for task in _active_provider_tasks.get(ref, set()) if task is not current and not task.done()}
     for task in tasks:
         task.cancel()
-    tracked = _tracked_machines.get(ref)
+    handles = [(key, tracked) for key, tracked in _tracked_machines.items() if key.ref == ref]
     cleanup_error = None
-    if tracked:
-        try:
-            await tracked.revoke()
-        except SubscriptionError as error:
-            cleanup_error = error
+    revoked = await asyncio.gather(*(tracked.revoke() for _, tracked in handles), return_exceptions=True)
+    for outcome in revoked:
+        if isinstance(outcome, SubscriptionError):
+            cleanup_error = outcome
+        elif isinstance(outcome, BaseException):
+            raise outcome
     if tasks:
         _, pending = await asyncio.wait(tasks, timeout=10)
         if pending:
@@ -694,8 +720,9 @@ async def _quiesce_provider_work(ref: ProviderRef) -> None:
         provider.stop()
     if cleanup_error:
         raise cleanup_error
-    if tracked is not None and _tracked_machines.get(ref) is tracked:
-        _tracked_machines.pop(ref)
+    for key, tracked in handles:
+        if _tracked_machines.get(key) is tracked:
+            _tracked_machines.pop(key)
 
 
 async def _quiesce_providers(refs: list[ProviderRef]) -> None:
@@ -972,7 +999,7 @@ def _machine_id_from_name(name: str, taken: set[str]) -> str:
 async def _taken_machine_ids(configs: list[dict]) -> set[str]:
     """IDs a new machine must not reuse: every machine, selection, and cleanup owner."""
     taken = {config['id'] for config in configs}
-    for ref in set(_provider_generations) | set(_tracked_machines) | set(_providers):
+    for ref in set(_provider_generations) | set(_tracked_refs()) | set(_providers):
         taken.add((await _load_settings(ref)).machine_id)
     taken.update(tracked.id for tracked in _tracked_machines.values())
     return taken
@@ -1366,8 +1393,7 @@ async def _save_settings(
         # Nothing else can retry cleanup of a removed machine's old process.
         # The move saves the provider turned off and quiesces it below, which
         # retries that cleanup. An unknown startup process cannot be retried.
-        tracked = _tracked_machines.get(ref)
-        if tracked is not None:
+        for tracked in _tracked_handles(ref):
             tracked._check_startup_cleanup()
     else:
         await _check_expected_machine(

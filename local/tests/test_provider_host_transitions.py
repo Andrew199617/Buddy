@@ -298,6 +298,14 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
             await operation
         self.assertEqual(caught.exception.status_code, 409)
 
+    def tracked_handle(self, provider_id):
+        """The provider's handle, or None. These tests run each provider on one computer at a time."""
+        handles = self.service._tracked_handles(self.service.ProviderRef(OWNER, provider_id))
+        self.assertLessEqual(len(handles), 1)
+        if handles:
+            return handles[0]
+        return None
+
     async def assert_single_worker_rejection(self, operation):
         with self.assertRaises(self.service.SubscriptionError) as caught:
             await operation
@@ -522,7 +530,7 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.service._load_models(self.service.ProviderRef(OWNER, 'claude')), [])
         self.assertEqual(self.providers['claude'].calls, [])
         self.assertEqual(self.machines['runner-a'].processes, [])
-        self.assertNotIn(self.service.ProviderRef(OWNER, 'claude'), self.service._tracked_machines)
+        self.assertIsNone(self.tracked_handle('claude'))
         self.assertEqual(self.config.values, before)
         self.assertEqual(self.config.commits, [])
 
@@ -776,7 +784,7 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
                 None, 'Runner A', 'https://additional.example.invalid:8083', 'fixture-additional-key'
             )
         self.assertEqual(saved['id'], 'runner-a-2')
-        self.assertIs(self.service._tracked_machines[self.service.ProviderRef(OWNER, 'claude')], wrapper)
+        self.assertIs(self.tracked_handle('claude'), wrapper)
         self.assertEqual(wrapper.id, 'runner-a')
         self.assertIsNotNone(wrapper.startup_cleanup_error)
 
@@ -855,7 +863,7 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(machine.id, str(caught.exception))
                 self.assertEqual(self.config.values, before)
                 self.assertEqual(len(self.config.commits), commits)
-                self.assertIs(self.service._tracked_machines[self.service.ProviderRef(OWNER, 'claude')], wrapper)
+                self.assertIs(self.tracked_handle('claude'), wrapper)
                 self.assertIs(wrapper.startup_cleanup_error, failure)
         self.assertEqual(self.config.values['subscriptions.claude']['machine_id'], 'runner-a')
         self.assertFalse(self.config.values['subscriptions.claude']['enable'])
@@ -885,7 +893,7 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(process.stop_count, 2)
         self.assertTrue(process.cleanup_confirmed)
         self.assertEqual(wrapper.processes, set())
-        self.assertNotIn(self.service.ProviderRef(OWNER, 'codex'), self.service._tracked_machines)
+        self.assertIsNone(self.tracked_handle('codex'))
         enabled = await self.service.save_settings(OWNER, 'codex', {'enable': True}, 'local')
         self.assertTrue(enabled.enable)
 
@@ -896,14 +904,14 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         settings = self.config.values['subscriptions.codex']
         self.assertEqual(settings['machine_id'], 'local')
         self.assertFalse(settings['enable'])
-        self.assertIs(self.service._tracked_machines[self.service.ProviderRef(OWNER, 'codex')], wrapper)
+        self.assertIs(self.tracked_handle('codex'), wrapper)
         self.assertIsNotNone(wrapper.cleanup_error)
         # The selected machine exists now, so turning the provider on retries cleanup.
         enabled = await self.service.save_settings(OWNER, 'codex', {'enable': True}, 'local')
         self.assertTrue(enabled.enable)
         self.assertEqual(process.stop_count, 3)
         self.assertTrue(process.cleanup_confirmed)
-        self.assertNotIn(self.service.ProviderRef(OWNER, 'codex'), self.service._tracked_machines)
+        self.assertIsNone(self.tracked_handle('codex'))
 
     async def test_remote_mutations_without_an_expected_host_fail_before_provider_calls(self):
         before = copy.deepcopy(self.config.values)
@@ -1215,6 +1223,44 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNot(replacement, first)
         self.assertEqual(len(machine.processes), 1)
 
+    async def test_each_computer_keeps_its_own_handle_and_quiescing_stops_both(self):
+        ref = self.service.ProviderRef(OWNER, 'claude')
+        on_a = self.service._tracking_machine(ref, self.machines['runner-a'])
+        process_a = await on_a.start_process(['fixture-cli'], 'fixture-cwd')
+        on_b = self.service._tracking_machine(ref, self.machines['runner-b'])
+        process_b = await on_b.start_process(['fixture-cli'], 'fixture-cwd')
+        # A turn on another computer leaves the first computer's handle and process alone.
+        self.assertIsNot(on_a, on_b)
+        self.assertIs(self.service._tracking_machine(ref, self.machines['runner-a']), on_a)
+        self.assertTrue(on_a.valid)
+        self.assertEqual(process_a.kill_count, 0)
+        self.assertCountEqual(self.service._tracked_handles(ref), [on_a, on_b])
+        self.assertEqual(self.service._tracked_refs(), [ref])
+        async with self.service._provider_lock(ref):
+            await self.service._quiesce_provider(ref)
+        self.assertGreaterEqual(process_a.kill_count, 1)
+        self.assertGreaterEqual(process_b.kill_count, 1)
+        self.assertFalse(on_a.valid)
+        self.assertFalse(on_b.valid)
+        self.assertEqual(self.service._tracked_handles(ref), [])
+
+    async def test_unconfirmed_cleanup_on_one_computer_blocks_the_provider_on_another(self):
+        ref = self.service.ProviderRef(OWNER, 'claude')
+        machine = self.machines['runner-a']
+        machine.process_factory = StrictTrackedProcess
+        on_a = self.service._tracking_machine(ref, machine)
+        process = await on_a.start_process(['fixture-cli'], 'fixture-cwd')
+        process.stop_failures = [self.service.SubscriptionError('Fixture Runner unreachable')]
+        with self.assertRaises(self.service.SubscriptionError):
+            async with self.service._provider_lock(ref):
+                await self.service._quiesce_provider(ref)
+        self.assertIsNotNone(on_a.cleanup_error)
+        with self.assertRaises(self.service.SubscriptionError):
+            self.service._tracking_machine(ref, self.machines['runner-b'])
+        # The other provider on that computer is not held up.
+        other = self.service._tracking_machine(self.service.ProviderRef(OWNER, 'codex'), self.machines['runner-b'])
+        self.assertTrue(other.valid)
+
     async def test_machine_rename_keeps_the_underlying_machine_wrapper_and_process(self):
         machine = self.machines['runner-a']
         wrapper = self.service._tracking_machine(self.service.ProviderRef(OWNER, 'claude'), machine)
@@ -1325,19 +1371,19 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
             raise failure
 
         async def start_from_status():
-            wrapper = self.service._tracked_machines[self.service.ProviderRef(OWNER, 'claude')]
+            wrapper = self.tracked_handle('claude')
             await wrapper.start_process(['fixture-status'], 'fixture-cwd')
 
         machine.start_hook = unknown_startup
         self.providers['claude'].status_hook = start_from_status
         status = await self.service._load_status(self.service.ProviderRef(OWNER, 'claude'))
         self.assertFalse(status['signed_in'])
-        wrapper = self.service._tracked_machines[self.service.ProviderRef(OWNER, 'claude')]
+        wrapper = self.tracked_handle('claude')
         self.assertIs(wrapper.startup_cleanup_error, failure)
         self.assertEqual(wrapper.processes, set())
         with self.assertRaises(self.service.SubscriptionError):
             await self.service.save_settings(OWNER, 'claude', {'machine_id': 'runner-b'}, 'runner-a', REVISION_A)
-        self.assertIs(self.service._tracked_machines[self.service.ProviderRef(OWNER, 'claude')], wrapper)
+        self.assertIs(self.tracked_handle('claude'), wrapper)
         self.assertFalse(wrapper.valid)
         settings = self.config.values['subscriptions.claude']
         self.assertEqual(settings['machine_id'], 'runner-b')
@@ -1445,7 +1491,7 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(process.stop_count, 2)
         self.assertTrue(process.cleanup_confirmed)
         self.assertEqual(wrapper.processes, set())
-        self.assertNotIn(self.service.ProviderRef(OWNER, 'claude'), self.service._tracked_machines)
+        self.assertIsNone(self.tracked_handle('claude'))
 
     async def test_failed_existing_handle_revoke_retains_wrapper_and_disables_access_until_retry(self):
         machine = self.machines['runner-a']
@@ -1456,7 +1502,7 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         await wrapper.start_process(['fixture-cli'], 'fixture-cwd')
         with self.assertRaises(self.service.SubscriptionError):
             await self.service.save_settings(OWNER, 'claude', {'machine_id': 'runner-b'}, 'runner-a', REVISION_A)
-        self.assertIs(self.service._tracked_machines[self.service.ProviderRef(OWNER, 'claude')], wrapper)
+        self.assertIs(self.tracked_handle('claude'), wrapper)
         self.assertIn(process, wrapper.processes)
         self.assertFalse(wrapper.valid)
         self.assertIsNotNone(wrapper.cleanup_error)
