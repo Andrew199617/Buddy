@@ -37,7 +37,7 @@ from open_webui.utils.subscriptions.runner_transport import normalize_runner_url
 from open_webui.utils.subscriptions.events import SubscriptionError  # noqa: E402
 from open_webui.utils.subscriptions.machines import TunnelMachine  # noqa: E402
 from open_webui.utils.subscriptions.tunnel_hub import RunnerCallError, RunnerHub  # noqa: E402
-from open_webui.utils.subscriptions import folder_listing  # noqa: E402
+from open_webui.utils.subscriptions import computer_settings, folder_listing  # noqa: E402
 from test_project_folders import FakeChats, FakeFolders, load_project_folders  # noqa: E402
 
 # The instance owner: the user whose setup predates per-user machines. Most
@@ -232,6 +232,7 @@ def load_service(config, data_dir):
         'TunnelMachine': TunnelMachine,
         'HUB': RunnerHub(),
         'RunnerCallError': RunnerCallError,
+        'computer_settings': computer_settings,
         'folder_listing': folder_listing,
         'SUBSCRIPTION_OWNED_BY': 'subscription'
     })
