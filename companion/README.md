@@ -17,6 +17,60 @@ The privileged key never goes to the workspace browser. Provider credentials
 remain on the selected provider machine. Provider login, chat organization
 folders, machine registration and a supplied path never create project grants.
 
+Most people never start the Runner themselves: the Buddy app runs it in
+[connect mode](#connect-mode-the-runner-dials-out-to-buddy). The rest of this
+guide covers the Runner on its own, which listens on loopback for a paired
+browser and an address-registered Buddy (the older setup).
+
+## Connect mode: the Runner dials out to Buddy
+
+In connect mode the Runner opens one WebSocket to Buddy,
+`wss://<buddy>/api/v1/runners/connect`, and serves everything over it: provider
+execution, and Projects requests that Buddy relays for the computer's owner.
+Nothing listens on the computer, so it needs no open port or certificate. The
+protocol is versioned in `backend/buddy_runner/protocol.py`.
+
+The Buddy app starts it like this, writing the connection as one JSON line on
+stdin, so the credential never reaches the disk or the command line:
+
+```powershell
+buddy-runner run --connection-stdin --state-dir <app data>\runner [--root <folder> ...] [--write] [--allow-host-execution]
+```
+
+`--root`, `--write` and `--allow-host-execution` mean what they mean below,
+and only the computer chooses them: Buddy cannot add folders or permissions.
+A relayed page needs no pairing code because Buddy has checked it belongs to
+the computer's owner, but it gets only the grants a paired browser would.
+
+Without the app, for example on a server, enroll once and run from the saved,
+owner-only connection file. The token comes from
+`POST /api/v1/runners/enrollments`, made while signed in to Buddy; it is
+single-use and lasts 60 seconds:
+
+```powershell
+$env:PYTHONPATH = "$PWD\backend"
+.venv\Scripts\python.exe -P -m buddy_runner enroll --server https://buddy.example.com --token <token>
+.venv\Scripts\python.exe -P -m buddy_runner run --root C:\Projects\site
+```
+
+- **Credential.** Enrolling returns a machine credential once; Buddy keeps only
+  its hash. The Runner sends it only over verified HTTPS, or plain HTTP to
+  Buddy on the same computer. For a server with a private certificate
+  authority, set `BUDDY_SERVER_CA_FILE` to its PEM file.
+- **Status.** stdout carries JSON lines,
+  `{"event": "status", "state", "message"}`, with `connecting`, `connected`,
+  `offline` and `stopped`; logs go to stderr.
+- **Reconnecting.** After a network problem it reconnects by itself, waiting a
+  random time that grows from 1 to 60 seconds. When the connection drops,
+  Buddy waits up to 25 seconds for it to return and confirm that running
+  Claude Code and Codex processes stopped.
+- **Ending for good.** It exits with 3 when the computer was removed from
+  Buddy, 4 when its owner may no longer connect computers, 5 when the same
+  computer connected again elsewhere, and 6 when Buddy needs a newer Runner.
+- **Stopping.** With `--connection-stdin`, write `{"command": "stop"}` or close
+  stdin; otherwise press Ctrl+C. Running processes are stopped and Buddy is
+  told before the connection closes.
+
 ## Start on the computer containing the project
 
 Use Python 3.11 with Buddy's dependencies. From the checkout:
@@ -263,6 +317,8 @@ providers, read account credentials or approve live directories:
 
 ```powershell
 .venv\Scripts\python.exe -B -m unittest discover -s local\tests -p 'test_runner*.py' -v
+.venv\Scripts\python.exe -B -m unittest discover -s local\tests -p test_tunnel.py -v
+.venv\Scripts\python.exe -B -m unittest discover -s local\tests -p 'test_credential*.py' -v
 .venv\Scripts\python.exe -B -m unittest discover -s local\tests -p test_process_containment.py -v
 .venv\Scripts\python.exe -B -m unittest discover -s local\tests -p test_remote_process_cleanup.py -v
 .venv\Scripts\python.exe -B -m unittest discover -s local\tests -p 'test_subscription*.py' -v
