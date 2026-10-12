@@ -34,6 +34,7 @@ SUBSCRIPTIONS = ROOT / 'backend' / 'open_webui' / 'utils' / 'subscriptions'
 sys.path.insert(0, str(ROOT / 'backend'))
 
 from open_webui.utils.subscriptions.runner_transport import normalize_runner_url  # noqa: E402
+from open_webui.utils.subscriptions import project_agents  # noqa: E402
 from open_webui.utils.subscriptions.events import SubscriptionError  # noqa: E402
 from open_webui.utils.subscriptions.machines import TunnelMachine  # noqa: E402
 from open_webui.utils.subscriptions.tunnel_hub import RunnerHub  # noqa: E402
@@ -190,6 +191,7 @@ def load_service(config, data_dir):
     module.__dict__.update({
         'sys': sys,
         'project_folders': load_project_folders(config, FakeFolders(), FakeChats(), folder_readers),
+        'project_agents': project_agents,
         'asyncio': asyncio,
         'hashlib': hashlib,
         'hmac': hmac,

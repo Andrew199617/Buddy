@@ -280,6 +280,14 @@ async def save_folder_project(folder_id: str, form_data: FolderProjectForm, user
         raise _bad_request(error)
 
 
+@router.get('/folders/{folder_id}/agents')
+async def get_folder_agents(folder_id: str, user=Depends(get_machine_user)):
+    try:
+        return await service.folder_agent_files(user, folder_id)
+    except SubscriptionError as error:
+        raise _bad_request(error)
+
+
 @router.delete('/folders/{folder_id}/project')
 async def clear_folder_project(folder_id: str, user=Depends(get_machine_session_user)):
     try:

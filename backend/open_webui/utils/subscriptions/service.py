@@ -57,7 +57,7 @@ from open_webui.utils.subscriptions.common import (
     requested_effort,
 )
 from open_webui.utils.subscriptions.conversation import parse_messages
-from open_webui.utils.subscriptions import project_folders
+from open_webui.utils.subscriptions import project_agents, project_folders
 from open_webui.utils.subscriptions.events import SubscriptionError
 from open_webui.utils.subscriptions.machines import (
     LOCAL_MACHINE_ID, LocalMachine, RemoteMachine, StartupCleanupUnconfirmedError, TunnelMachine,
@@ -1658,6 +1658,43 @@ async def clear_folder_project(user, folder_id: str) -> dict:
     folder = await _readable_chat_folder(user, folder_id)
     await project_folders.clear_choice(user.id, folder.id, await _owned_machine_ids(user.id))
     return await describe_folder_project(user, folder.id)
+
+
+# Reading agent files never waits longer than this on a slow disk.
+AGENT_READ_TIMEOUT_SECONDS = 15
+
+
+async def folder_agent_files(user, folder_id: str) -> dict:
+    """The agent files in this person's project folder on This server, for a chat folder's agent menu.
+
+    Agents on Buddy app computers are read through the relay instead. This reads only this
+    person's own choice for the folder, as their chats would use it, and only while they
+    may use This server.
+    """
+    folder = await _readable_chat_folder(user, folder_id)
+    if not await _may_use_server_machine(user.id):
+        raise SubscriptionError('This server is not available to you.')
+    choice = await project_folders.choice_for_turn(user.id, {'folder_id': folder.id})
+    saved = None
+    if choice is not None and choice.mode == project_folders.MODE_FOLDER:
+        saved = choice.paths.get(LOCAL_MACHINE_ID)
+    if saved is None:
+        raise SubscriptionError(f'The chat folder “{folder.name}” has no project folder on This server.')
+    if saved.revision != await _machine_revision(user.id, LOCAL_MACHINE_ID):
+        raise SubscriptionError(
+            f'This server was set up again after the project folder for “{folder.name}” was chosen. '
+            "Choose it again in the folder's settings."
+        )
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(project_agents.read_agent_files, saved.path), AGENT_READ_TIMEOUT_SECONDS
+        )
+    except FileNotFoundError:
+        raise SubscriptionError(project_folders.missing_project_folder_message(choice, 'This server'))
+    except asyncio.TimeoutError:
+        raise SubscriptionError('This server took too long to read the agent files. Try again.')
+    except OSError:
+        raise SubscriptionError('This server could not read the project folder.')
 
 
 async def start_login(
