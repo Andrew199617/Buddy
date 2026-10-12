@@ -30,7 +30,7 @@ from open_webui.utils.subscriptions.workspace_capabilities import (  # noqa: E40
     _digest,
     _normalize_pairing_code,
 )
-from open_webui.utils.subscriptions.pinned_paths import PinnedPath, PinnedPathError  # noqa: E402
+from buddy_runner.pinned_paths import PinnedPath, PinnedPathError  # noqa: E402
 from buddy_runner.process import ProcessClosedError  # noqa: E402
 
 ORIGIN = 'http://localhost:8082'
@@ -560,7 +560,7 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
     @unittest.skipIf(sys.platform == 'win32', 'POSIX descriptor traversal fixture')
     async def test_posix_ancestor_swap_keeps_file_and_listing_on_pinned_directory(self):
         from unittest.mock import patch
-        from open_webui.utils.subscriptions import pinned_paths
+        from buddy_runner import pinned_paths
 
         nested = self.project / 'nested'
         saved = self.project / 'original-nested'
@@ -601,7 +601,7 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_posix_leaf_fifo_swap_is_rejected_without_blocking(self):
         import signal
         from unittest.mock import patch
-        from open_webui.utils.subscriptions import pinned_paths
+        from buddy_runner import pinned_paths
 
         leaf = self.project / 'nested' / 'inside.txt'
         original_open = pinned_paths._open_at
@@ -737,7 +737,7 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_save_keeps_previous_contents_and_reports_json(self):
         from unittest.mock import patch
-        from open_webui.utils.subscriptions import pinned_paths
+        from buddy_runner import pinned_paths
 
         await self.start()
         await self.pair()
@@ -765,7 +765,7 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
     @unittest.skipUnless(sys.platform == 'win32', 'Windows native handle sharing fixture')
     async def test_windows_save_keeps_the_directory_pinned_during_the_rename(self):
         from unittest.mock import patch
-        from open_webui.utils.subscriptions import pinned_paths
+        from buddy_runner import pinned_paths
 
         await self.start()
         await self.pair()
