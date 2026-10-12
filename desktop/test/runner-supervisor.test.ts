@@ -18,7 +18,8 @@ const settings: RunnerSettings = {
 	machineName: 'Studio PC',
 	folders: ['C:\\Projects\\site'],
 	allowEdits: true,
-	allowCommands: false
+	allowCommands: false,
+	allowFolderBrowsing: false
 };
 const launch = { command: 'buddy-runner.exe', args: [] };
 
@@ -86,6 +87,19 @@ test('the app passes only local choices as arguments', () => {
 	const allowed = { ...settings, folders: [], allowEdits: false, allowCommands: true };
 	assert.deepEqual(runnerArguments(python, allowed, 'S').slice(0, 3), ['-m', 'buddy_runner', 'run']);
 	assert.equal(runnerArguments(python, allowed, 'S').includes('--allow-host-execution'), true);
+	const browsing = { ...settings, allowFolderBrowsing: true };
+	assert.equal(runnerArguments(launch, browsing, 'S').includes('--browse-folders'), true);
+	assert.equal(runnerArguments(launch, settings, 'S').includes('--browse-folders'), false);
+});
+
+test('folder browsing changes in the running Runner without a restart', () => {
+	const { supervisor, spawned } = supervised();
+	supervisor.start(settings);
+	const [{ runner }] = spawned;
+	runner.written = '';
+	supervisor.setFolderBrowsing(true);
+	assert.deepEqual(JSON.parse(runner.written), { command: 'folder_browsing', allowed: true });
+	assert.equal(spawned.length, 1);
 });
 
 test('the credential goes over stdin, never in the arguments', () => {

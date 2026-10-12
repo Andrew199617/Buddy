@@ -28,9 +28,11 @@ test('settings round-trip and start with nothing shared or allowed', () => {
 		machine: { id: 'machine-1', name: 'Studio PC' },
 		folders: [shared],
 		allowEdits: true,
-		allowCommands: false
+		allowCommands: false,
+		allowFolderBrowsing: true
 	});
 	assert.deepEqual(store.load().folders, [shared]);
+	assert.equal(store.load().allowFolderBrowsing, true);
 	assert.equal(store.load().allowEdits, true);
 	fs.rmSync(folder, { recursive: true, force: true });
 });
@@ -42,6 +44,8 @@ test('unreadable or tampered settings fall back to the safe defaults', () => {
 	);
 	assert.deepEqual(tampered.folders, []);
 	assert.equal(tampered.allowCommands, false);
+	// Older settings files have no folder browsing choice: it starts off.
+	assert.equal(parseSettings(JSON.stringify({ allowFolderBrowsing: 'yes' })).allowFolderBrowsing, false);
 	assert.equal(tampered.machine, null);
 });
 

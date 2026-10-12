@@ -21,6 +21,7 @@ export type DesktopStatus = {
 	folders: string[];
 	allowEdits: boolean;
 	allowCommands: boolean;
+	allowFolderBrowsing: boolean;
 	startAtLogin: boolean;
 	platform: string;
 	appVersion: string;

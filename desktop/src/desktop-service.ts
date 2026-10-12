@@ -87,6 +87,7 @@ export class DesktopService extends EventEmitter {
 			folders: [...this.settings.folders],
 			allowEdits: this.settings.allowEdits,
 			allowCommands: this.settings.allowCommands,
+			allowFolderBrowsing: this.settings.allowFolderBrowsing,
 			startAtLogin: this.options.loginItem.isEnabled(),
 			platform: this.options.platform,
 			appVersion: this.options.appVersion
@@ -211,7 +212,8 @@ export class DesktopService extends EventEmitter {
 			machineName: machine.name,
 			folders: [...this.settings.folders],
 			allowEdits: this.settings.allowEdits,
-			allowCommands: this.settings.allowCommands
+			allowCommands: this.settings.allowCommands,
+			allowFolderBrowsing: this.settings.allowFolderBrowsing
 		};
 	}
 
