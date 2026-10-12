@@ -428,10 +428,11 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	let holdProjectRead = false;
 	let heldProjectRead = null;
 	let failProjectRead = false;
-	// The next plan config save can be held open, or refused.
+	// The next plan config save can be held open, refused, or saved and then turned off.
 	let holdPlanConfig = false;
 	let heldPlanConfig = null;
 	let refusePlanConfig = '';
+	let turnOffAfterPlanConfig = '';
 	const projectGrant = {
 		id: 'grant-code',
 		name: 'code',
@@ -510,6 +511,13 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			};
 		}
 		plan.access = body.access;
+		if (turnOffAfterPlanConfig) {
+			// Like the server when a running reply cannot be confirmed stopped.
+			const detail = turnOffAfterPlanConfig;
+			turnOffAfterPlanConfig = '';
+			plan.enable = false;
+			return { status: 400, json: { detail } };
+		}
 		return { id: plan.id, name: plan.name, settings: { enable: plan.enable, access: plan.access } };
 	}
 
@@ -946,6 +954,9 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		},
 		refuseNextPlanConfig(detail) {
 			refusePlanConfig = detail;
+		},
+		turnOffAfterNextPlanConfig(detail) {
+			turnOffAfterPlanConfig = detail;
 		},
 		// Work PC removed elsewhere: like the server, its plans turn off and only chat.
 		removeWorkPc() {
@@ -3306,6 +3317,34 @@ async function folderAllowHiddenRefusalCase(browser, profile) {
 	);
 }
 
+async function folderAllowTurnedOffCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'folder-allow-turned-off',
+		'folder-allow',
+		async ({ page }, fixtures) => {
+			const dialog = await openFolderSettings(page);
+			const request = dialog.getByRole('group', {
+				name: 'Let a plan work with files',
+				exact: true
+			});
+			await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
+			fixtures.turnOffAfterNextPlanConfig(
+				'An old provider process could not confirm that it stopped.'
+			);
+			await request.getByRole('button', { name: 'Allow', exact: true }).click();
+			await dialog
+				.getByText(
+					'Claude was given the access but then turned off: An old provider process could not confirm that it stopped.',
+					{ exact: true }
+				)
+				.waitFor();
+			await dialog.getByRole('button', { name: 'Open Settings → Machines', exact: true }).waitFor();
+		}
+	);
+}
+
 async function folderAllowClosedCase(browser, profile) {
 	await runCase(
 		browser,
@@ -3439,6 +3478,7 @@ try {
 		await folderAllowReloadErrorCase(browser, profile);
 		await folderAllowGoneCase(browser, profile);
 		await folderAllowHiddenRefusalCase(browser, profile);
+		await folderAllowTurnedOffCase(browser, profile);
 		await folderAllowClosedCase(browser, profile);
 		await folderAllowHomelessCase(browser, profile);
 		await folderNoPlansCase(browser, profile);

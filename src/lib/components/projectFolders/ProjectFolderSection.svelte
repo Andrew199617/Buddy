@@ -166,11 +166,21 @@
 		);
 	}
 
+	function refusalMessage(plan: FolderPlan, access: FileAccess, reason: string): string {
+		const now = project?.plans.find((candidate) => candidate.id === plan.id);
+		// The server can save the access and then turn the plan off, when a running
+		// reply cannot be confirmed stopped.
+		if (now && now.access === access && !now.enable) {
+			return $i18n.t('{{name}} was given the access but then turned off: {{reason}}', {
+				name: plan.name,
+				reason
+			});
+		}
+		return $i18n.t('{{name}} was not given access: {{reason}}', { name: plan.name, reason });
+	}
+
 	async function planRefused(plan: FolderPlan, access: FileAccess, reason: string) {
-		const message = $i18n.t('{{name}} was not given access: {{reason}}', {
-			name: plan.name,
-			reason
-		});
+		const message = refusalMessage(plan, access, reason);
 		if (destroyed) {
 			toast.error(message);
 			return;
