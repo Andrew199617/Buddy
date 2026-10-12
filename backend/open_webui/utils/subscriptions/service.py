@@ -21,6 +21,7 @@ import ipaddress
 import logging
 import re
 import secrets
+import sys
 import time
 import uuid
 from dataclasses import asdict, dataclass, field, fields, replace
@@ -55,6 +56,7 @@ from open_webui.utils.subscriptions.common import (
     requested_effort,
 )
 from open_webui.utils.subscriptions.conversation import parse_messages
+from open_webui.utils.subscriptions import project_folders
 from open_webui.utils.subscriptions.events import SubscriptionError
 from open_webui.utils.subscriptions.machines import (
     LOCAL_MACHINE_ID, LocalMachine, RemoteMachine, StartupCleanupUnconfirmedError, TunnelMachine,
@@ -1411,6 +1413,198 @@ async def working_directory(settings: ProviderSettings, access: str, machine) ->
     return await machine.default_workspace()
 
 
+# --- Project folders for chat folders ----------------------------------------------
+#
+# Each person chooses, per chat folder, where Claude and ChatGPT start on each
+# of their computers. The choice itself lives in project_folders.py; these
+# functions add what the service knows about computers and plans.
+
+
+def _folder_computer_kind(machine_id: str, config: dict | None) -> str:
+    if machine_id == LOCAL_MACHINE_ID:
+        return 'server'
+    if (config or {}).get('kind') == MACHINE_KIND_RUNNER:
+        return 'app'
+    return 'address'
+
+
+async def _machine_platform(owner_id: str, machine_id: str) -> str | None:
+    """The computer's sys.platform as it last reported it, without asking it again."""
+    if machine_id == LOCAL_MACHINE_ID:
+        return sys.platform
+    config = next((machine for machine in await _owned_machine_configs(owner_id) if machine['id'] == machine_id), None)
+    platform = ((config or {}).get('host') or {}).get('platform')
+    if isinstance(platform, str) and platform:
+        return platform
+    return None
+
+
+async def _owned_machine_ids(owner_id: str) -> set[str]:
+    machine_ids = {config['id'] for config in await _owned_machine_configs(owner_id)}
+    if await _may_use_server_machine(owner_id):
+        machine_ids.add(LOCAL_MACHINE_ID)
+    return machine_ids
+
+
+async def check_machine_folder(user, machine_id: str, path: str) -> str:
+    """The tidy form of a folder that exists on one of the user's computers."""
+    if not machine_id:
+        raise SubscriptionError('Choose a computer.')
+    machine = await get_machine(user.id, machine_id)
+    cleaned = project_folders.clean_project_path(path, await _machine_platform(user.id, machine_id))
+    if not await machine.path_exists(cleaned, 'dir'):
+        raise SubscriptionError(f'{machine.name} has no folder at that path.')
+    return cleaned
+
+
+async def _readable_chat_folder(user, folder_id: str):
+    folder = await project_folders.readable_folder(user.id, folder_id)
+    if folder is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='That folder no longer exists.')
+    return folder
+
+
+async def _describe_folder_computer(owner_id: str, machine_id: str, config: dict | None, choices: dict) -> dict | None:
+    kind = _folder_computer_kind(machine_id, config)
+    online = None
+    can_browse = False
+    if kind == 'server':
+        if not await _may_use_server_machine(owner_id):
+            return None
+        name = 'This server'
+        online = True
+    elif config is None:
+        return None
+    else:
+        name = config['name']
+    if kind == 'app':
+        online = HUB.is_online(machine_id)
+        capabilities = config.get('capabilities') or {}
+        can_browse = online and capabilities.get('directories') is not False
+    revision = await _machine_revision(owner_id, machine_id)
+    return {
+        'machine_id': machine_id,
+        'name': name,
+        'kind': kind,
+        'online': online,
+        'platform': await _machine_platform(owner_id, machine_id),
+        'can_browse': can_browse,
+        'recent_paths': project_folders.recent_paths(choices, machine_id, revision),
+    }
+
+
+async def _folder_computers(user, choices: dict, named_machine_ids: set[str]) -> list[dict]:
+    """The computers a project folder can be on: those running a plan that may use files,
+    and those already named in this folder's choice."""
+    providers_by_machine: dict[str, list[dict]] = {}
+    for provider_id in PROVIDER_IDS:
+        settings = await _load_settings(ProviderRef(user.id, provider_id))
+        if not settings.enable or settings.access == ACCESS_CHAT or not settings.machine_id:
+            continue
+        providers_by_machine.setdefault(settings.machine_id, []).append(
+            {'id': provider_id, 'name': PROVIDER_LABELS[provider_id], 'access': settings.access}
+        )
+    machine_ids = list(providers_by_machine)
+    for machine_id in sorted(named_machine_ids):
+        if machine_id not in machine_ids:
+            machine_ids.append(machine_id)
+    configs = {config['id']: config for config in await _owned_machine_configs(user.id)}
+    computers = []
+    for machine_id in machine_ids:
+        computer = await _describe_folder_computer(user.id, machine_id, configs.get(machine_id), choices)
+        if computer is None:
+            continue
+        computer['providers'] = providers_by_machine.get(machine_id, [])
+        computers.append(computer)
+    return computers
+
+
+def _describe_folder_choice(choice, revisions: dict[str, str]) -> dict | None:
+    if choice is None:
+        return None
+    paths = {}
+    for machine_id, saved in choice.paths.items():
+        if machine_id not in revisions:
+            # The computer was removed.
+            continue
+        problem = None
+        if saved.revision != revisions[machine_id]:
+            problem = 'computer_changed'
+        paths[machine_id] = {'path': saved.path, 'problem': problem}
+    return {'folder_id': choice.folder_id, 'folder_name': choice.folder_name, 'mode': choice.mode, 'paths': paths}
+
+
+async def describe_folder_project(user, folder_id: str) -> dict:
+    """This person's project folder for a chat folder, and the computers it can be on. Contacts no computer."""
+    folder = await _readable_chat_folder(user, folder_id)
+    choices = await project_folders.load_choices(user.id)
+    own, inherited = await project_folders.resolve_folder(user.id, folder, choices)
+    named_machine_ids = set()
+    for choice in (own, inherited):
+        if choice is not None:
+            named_machine_ids.update(choice.paths)
+    revisions = {}
+    for machine_id in named_machine_ids:
+        revision = await _machine_revision(user.id, machine_id)
+        if revision is not None:
+            revisions[machine_id] = revision
+    has_plans = False
+    for provider_id in PROVIDER_IDS:
+        if (await _load_settings(ProviderRef(user.id, provider_id))).enable:
+            has_plans = True
+    return {
+        'folder_id': folder.id,
+        'folder_name': folder.name,
+        'own': _describe_folder_choice(own, revisions),
+        'inherited': _describe_folder_choice(inherited, revisions),
+        'has_plans': has_plans,
+        'computers': await _folder_computers(user, choices, named_machine_ids),
+    }
+
+
+async def _checked_project_path(user, machine_id: str, path, current) -> 'project_folders.SavedPath':
+    """A path to save, checked on its computer unless it is the same as the one already saved there."""
+    if not isinstance(path, str):
+        raise SubscriptionError("Enter the folder's full path.")
+    # Confirms the computer is the user's and, for This server, that the policy allows it.
+    await get_machine(user.id, machine_id)
+    revision = await _machine_revision(user.id, machine_id)
+    if revision is None:
+        raise SubscriptionError('That computer was removed. Choose another.')
+    cleaned = project_folders.clean_project_path(path, await _machine_platform(user.id, machine_id))
+    previous = None
+    if current is not None:
+        previous = current.paths.get(machine_id)
+    if previous is not None and previous.path == cleaned and previous.revision == revision:
+        # Checked when it was chosen, so it saves even while that computer is offline.
+        return previous
+    cleaned = await check_machine_folder(user, machine_id, cleaned)
+    return project_folders.SavedPath(cleaned, revision)
+
+
+async def save_folder_project(user, folder_id: str, mode: str, paths: dict) -> dict:
+    """Replace this person's project folder choice for a chat folder."""
+    _require_single_worker()
+    folder = await _readable_chat_folder(user, folder_id)
+    if mode not in project_folders.MODES:
+        raise SubscriptionError('Choose how chats in this folder work.')
+    saved_paths = {}
+    if mode == project_folders.MODE_FOLDER:
+        current, _ = await project_folders.resolve_folder(user.id, folder)
+        for machine_id, path in (paths or {}).items():
+            saved_paths[machine_id] = await _checked_project_path(user, machine_id, path, current)
+    await project_folders.save_choice(user.id, folder.id, mode, saved_paths, await _owned_machine_ids(user.id))
+    return await describe_folder_project(user, folder.id)
+
+
+async def clear_folder_project(user, folder_id: str) -> dict:
+    """Forget this person's choice for a chat folder, so it follows its parent again."""
+    _require_single_worker()
+    folder = await _readable_chat_folder(user, folder_id)
+    await project_folders.clear_choice(user.id, folder.id, await _owned_machine_ids(user.id))
+    return await describe_folder_project(user, folder.id)
+
+
 async def start_login(
     owner_id: str, provider_id: str, method: str, expected_machine_id: str | None = None,
     expected_machine_revision: str | None = None
@@ -1549,6 +1743,7 @@ async def forget_user(user_id: str) -> None:
                 updates[await _settings_key(ref)] = {}
         for ref in refs:
             updates[await _credential_mode_key(ref)] = CREDENTIAL_MACHINE
+        updates[project_folders.choices_key(user_id)] = {}
         await Config.upsert(updates)
         await SubscriptionCredentials.delete_user(user_id)
         for ref in refs:
