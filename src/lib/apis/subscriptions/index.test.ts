@@ -285,6 +285,48 @@ describe('per-user machines and sign-ins', () => {
 		await expect(getChatRunTarget('fixture-token', 'chat-1')).rejects.toBe('Down');
 	});
 
+	it('signs in and out on a chosen computer, separate from the plan’s own', async () => {
+		await startSubscriptionLogin(
+			'fixture-token',
+			'claude',
+			'device',
+			undefined,
+			revision,
+			machineId
+		);
+		expect(JSON.parse(request().options.body)).toEqual({
+			method: 'device',
+			expected_machine_revision: revision,
+			machine_id: machineId
+		});
+		fetchMock.mockClear();
+		await getSubscriptionLogin('fixture-token', 'claude', undefined, revision, machineId);
+		let url = request().url;
+		expect(url.searchParams.get('machine_id')).toBe(machineId);
+		expect(url.searchParams.get('expected_machine_id')).toBeNull();
+		fetchMock.mockClear();
+		await logoutSubscription('fixture-token', 'claude', undefined, revision, machineId);
+		url = request().url;
+		expect(url.pathname).toBe('/api/v1/subscriptions/claude/logout');
+		expect(url.searchParams.get('machine_id')).toBe(machineId);
+	});
+
+	it('reads and saves a computer’s own settings by its encoded ID', async () => {
+		const { getComputerSettings, saveComputerSettings } = await import('./index');
+		await getComputerSettings('fixture-token', 'pc / 1');
+		expect(request().url.pathname).toBe('/api/v1/subscriptions/machines/pc%20%2F%201/settings');
+		fetchMock.mockClear();
+		const settings = {
+			expected_revision: 'rev-1',
+			start_folder: 'C:\\code',
+			cli_paths: { claude: '' }
+		};
+		await saveComputerSettings('fixture-token', 'pc / 1', settings);
+		const { options } = request();
+		expect(options.method).toBe('PUT');
+		expect(JSON.parse(options.body)).toEqual(settings);
+	});
+
 	it('lets an administrator remove anyone’s machine by its encoded ID', async () => {
 		const { deleteAnySubscriptionMachine } = await import('./index');
 		await deleteAnySubscriptionMachine('fixture-token', 'machine / A');

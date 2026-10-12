@@ -185,10 +185,17 @@ const subscriptionRequest = async (
 	return readSubscriptionResponse(await sendSubscriptionRequest(token, path, method, body));
 };
 
-const withExpectedMachine = (path: string, machineId?: string, machineRevision?: string) => {
+// chosenMachineId names the computer a sign-in action is for; without it, the plan's own computer.
+const withExpectedMachine = (
+	path: string,
+	machineId?: string,
+	machineRevision?: string,
+	chosenMachineId?: string
+) => {
 	const guards = new URLSearchParams();
 	if (machineId !== undefined) guards.set('expected_machine_id', machineId);
 	if (machineRevision !== undefined) guards.set('expected_machine_revision', machineRevision);
+	if (chosenMachineId !== undefined) guards.set('machine_id', chosenMachineId);
 	// URLSearchParams.size is missing before Safari 17 and Chrome 113; the string is not.
 	const query = guards.toString();
 	if (!query) return path;
@@ -280,12 +287,14 @@ export const startSubscriptionLogin = async (
 	providerId: SubscriptionProviderId,
 	method: 'browser' | 'device' = 'browser',
 	expectedMachineId?: string,
-	expectedMachineRevision?: string
+	expectedMachineRevision?: string,
+	machineId?: string
 ): Promise<SubscriptionLogin> => {
 	return subscriptionRequest(token, `/${providerId}/login`, 'POST', {
 		method,
 		expected_machine_id: expectedMachineId,
-		expected_machine_revision: expectedMachineRevision
+		expected_machine_revision: expectedMachineRevision,
+		machine_id: machineId
 	});
 };
 
@@ -293,11 +302,17 @@ export const getSubscriptionLogin = async (
 	token: string,
 	providerId: SubscriptionProviderId,
 	expectedMachineId?: string,
-	expectedMachineRevision?: string
+	expectedMachineRevision?: string,
+	machineId?: string
 ): Promise<SubscriptionLogin> => {
 	return subscriptionRequest(
 		token,
-		withExpectedMachine(`/${providerId}/login`, expectedMachineId, expectedMachineRevision)
+		withExpectedMachine(
+			`/${providerId}/login`,
+			expectedMachineId,
+			expectedMachineRevision,
+			machineId
+		)
 	);
 };
 
@@ -306,12 +321,14 @@ export const submitSubscriptionLoginCode = async (
 	providerId: SubscriptionProviderId,
 	code: string,
 	expectedMachineId?: string,
-	expectedMachineRevision?: string
+	expectedMachineRevision?: string,
+	machineId?: string
 ): Promise<SubscriptionLogin> => {
 	return subscriptionRequest(token, `/${providerId}/login/code`, 'POST', {
 		code,
 		expected_machine_id: expectedMachineId,
-		expected_machine_revision: expectedMachineRevision
+		expected_machine_revision: expectedMachineRevision,
+		machine_id: machineId
 	});
 };
 
@@ -319,11 +336,17 @@ export const cancelSubscriptionLogin = async (
 	token: string,
 	providerId: SubscriptionProviderId,
 	expectedMachineId?: string,
-	expectedMachineRevision?: string
+	expectedMachineRevision?: string,
+	machineId?: string
 ): Promise<SubscriptionLogin> => {
 	return subscriptionRequest(
 		token,
-		withExpectedMachine(`/${providerId}/login`, expectedMachineId, expectedMachineRevision),
+		withExpectedMachine(
+			`/${providerId}/login`,
+			expectedMachineId,
+			expectedMachineRevision,
+			machineId
+		),
 		'DELETE'
 	);
 };
@@ -332,11 +355,17 @@ export const logoutSubscription = async (
 	token: string,
 	providerId: SubscriptionProviderId,
 	expectedMachineId?: string,
-	expectedMachineRevision?: string
+	expectedMachineRevision?: string,
+	machineId?: string
 ): Promise<SubscriptionProvider> => {
 	return subscriptionRequest(
 		token,
-		withExpectedMachine(`/${providerId}/logout`, expectedMachineId, expectedMachineRevision),
+		withExpectedMachine(
+			`/${providerId}/logout`,
+			expectedMachineId,
+			expectedMachineRevision,
+			machineId
+		),
 		'POST'
 	);
 };
@@ -686,4 +715,41 @@ export const getChatRunTarget = async (
 	const response = await sendSubscriptionRequest(token, path, 'GET');
 	if (response.status === 404) return null;
 	return readSubscriptionResponse(response);
+};
+
+// --- Each computer's own start folder and CLI paths -------------------------------
+
+export type ComputerSettings = {
+	machine_id: string;
+	revision: string;
+	// False while the computer still uses what a plan saved for it.
+	saved: boolean;
+	start_folder: string;
+	cli_paths: Record<SubscriptionProviderId, string>;
+	// What each plan saved for this computer before it had its own; turns still use these.
+	from_plans: Partial<Record<SubscriptionProviderId, { start_folder: string; cli_path: string }>>;
+};
+
+export const getComputerSettings = async (
+	token: string,
+	machineId: string
+): Promise<ComputerSettings> => {
+	return subscriptionRequest(token, `/machines/${encodeURIComponent(machineId)}/settings`);
+};
+
+export const saveComputerSettings = async (
+	token: string,
+	machineId: string,
+	settings: {
+		expected_revision: string;
+		start_folder: string;
+		cli_paths: Partial<Record<SubscriptionProviderId, string>>;
+	}
+): Promise<ComputerSettings> => {
+	return subscriptionRequest(
+		token,
+		`/machines/${encodeURIComponent(machineId)}/settings`,
+		'PUT',
+		settings
+	);
 };
