@@ -62,6 +62,14 @@
 		if (chosen) await runCheck(chosen);
 	}
 
+	// Not a form: the Edit Folder dialog around this picker is one, and Enter must not submit it.
+	function checkOnEnter(event: KeyboardEvent) {
+		if (event.key !== 'Enter' || event.isComposing) return;
+		event.preventDefault();
+		if (checking || !typedPath.trim()) return;
+		void runCheck(typedPath);
+	}
+
 	async function keepInputVisible() {
 		// The on-screen keyboard can cover the field on a phone.
 		await tick();
@@ -120,7 +128,7 @@
 		</p>
 	{/if}
 
-	<form class="flex flex-col gap-1" on:submit|preventDefault={() => runCheck(typedPath)}>
+	<div class="flex flex-col gap-1">
 		<label
 			class="text-xs text-gray-600 dark:text-gray-400"
 			for="project-folder-path-{computer.machine_id}"
@@ -142,11 +150,13 @@
 				placeholder={pathPlaceholder(computer.platform)}
 				disabled={checking}
 				on:focus={keepInputVisible}
+				on:keydown={checkOnEnter}
 			/>
 			<button
-				type="submit"
+				type="button"
 				class="min-h-11 shrink-0 rounded-xl px-3 text-sm font-medium hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-gray-850 md:min-h-9"
 				disabled={checking || !typedPath.trim()}
+				on:click={() => runCheck(typedPath)}
 			>
 				{#if checking}<Spinner className="size-4" />{:else}{$i18n.t('Use')}{/if}
 			</button>
@@ -161,7 +171,7 @@
 				{result}
 			</p>
 		{/if}
-	</form>
+	</div>
 
 	{#if computer.recent_paths.length > 0}
 		<section aria-label={$i18n.t('Recent')}>
