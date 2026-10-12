@@ -50,6 +50,7 @@
 	let projectOpen = false;
 	let projectSummary = '';
 	let projectError = '';
+	let projectLoadError = '';
 	let projectPicking = false;
 	// Phones show the folder on one screen and each row's settings on their own.
 	type Screen = 'main' | 'knowledge' | 'project';
@@ -290,6 +291,16 @@
 		screen = 'main';
 		await tick();
 		document.getElementById(`${formId}-row-${leaving}`)?.focus();
+	}
+
+	function projectRowSummary(summary: string, loadError: string): string {
+		if (loadError) return $i18n.t('Couldn’t load');
+		return summary;
+	}
+
+	// People who may not use computers have nothing to set here; a load error still shows.
+	function projectRowShown(available: boolean, loadError: string): boolean {
+		return available || Boolean(loadError);
 	}
 
 	function shownOnMain(phone: boolean, current: Screen): boolean {
@@ -670,7 +681,9 @@
 							type="button"
 							id="{formId}-row-project"
 							class="flex min-h-16 w-full items-center gap-3.5 border-b border-gray-100 py-3 text-left dark:border-gray-850 md:min-h-[60px] md:py-3.5"
-							hidden={!shownOnMain($mobile, screen) || !partShown('project', edit, revealed)}
+							hidden={!shownOnMain($mobile, screen) ||
+								!partShown('project', edit, revealed) ||
+								!projectRowShown(projectAvailable, projectLoadError)}
 							aria-expanded={$mobile ? undefined : projectOpen}
 							aria-controls="folder-project-panel-{projectKey}"
 							on:click={() => {
@@ -706,7 +719,7 @@
 									{$i18n.t('Project folder')}
 								</span>
 								<span class="truncate text-[0.8125rem] text-gray-600 dark:text-gray-400">
-									{projectSummary}
+									{projectRowSummary(projectSummary, projectLoadError)}
 								</span>
 							</span>
 							<svg
@@ -739,6 +752,7 @@
 								labelledBy="folder-project-heading-{projectKey}"
 								bind:summary={projectSummary}
 								bind:error={projectError}
+								bind:loadError={projectLoadError}
 								bind:picking={projectPicking}
 								bind:available={projectAvailable}
 							/>

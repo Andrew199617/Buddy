@@ -358,6 +358,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		'folder-no-plans',
 		'folder-defaults',
 		'folder-create',
+		'folder-no-access',
 		'folder-browse',
 		...runTargetModes
 	]);
@@ -567,6 +568,11 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			reply = newFolderProject();
 		} else if (path === '/api/v1/subscriptions/folders/website/project') {
 			requests.push({ method, path, body: request.postDataJSON() });
+			if (mode === 'folder-no-access') {
+				// This person may not use computers.
+				await route.fulfill({ status: 403, json: { detail: 'Synthetic machines not allowed' } });
+				return true;
+			}
 			if (method === 'PUT') {
 				const body = request.postDataJSON();
 				const paths = {};
@@ -731,6 +737,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		mode === 'folder-edit' ||
 		mode === 'folder-browse' ||
 		mode === 'folder-create' ||
+		mode === 'folder-no-access' ||
 		askingModes.has(mode)
 	) {
 		sessionOptions = { path: '/folders/website' };
@@ -3352,6 +3359,19 @@ async function folderNeedsFolderCase(browser, profile) {
 	);
 }
 
+async function folderNoAccessCase(browser, profile) {
+	await runCase(browser, profile, 'folder-no-access', 'folder-no-access', async ({ page }) => {
+		await page.locator('button[aria-label="Folder options"]').click();
+		await page.getByRole('button', { name: 'Edit', exact: true }).click();
+		const dialog = page.locator('.modal').filter({ has: page.locator('#folder-form-website') });
+		await dialog.locator('#folder-name').waitFor();
+		await dialog.getByRole('button', { name: /^Knowledge/ }).waitFor();
+		// Nothing to set for someone who may not use computers: no empty row.
+		await page.waitForTimeout(300);
+		assert.equal(await dialog.getByRole('button', { name: /^Project folder/ }).isVisible(), false);
+	});
+}
+
 async function folderNoPlansCase(browser, profile) {
 	await runCase(
 		browser,
@@ -3546,6 +3566,7 @@ try {
 		await folderCreateTopCase(browser, profile);
 		await folderDefaultsCase(browser, profile);
 		await folderNeedsFolderCase(browser, profile);
+		await folderNoAccessCase(browser, profile);
 		await folderNoPlansCase(browser, profile);
 		await folderBrowseCase(browser, profile);
 		await runTargetNewCase(browser, profile);
