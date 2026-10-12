@@ -3093,6 +3093,21 @@ async function runTargetNewCase(browser, profile) {
 					async () => /Work PC · site · Full/.test(await summary.innerText()),
 					'The summary shows the computer, folder and access'
 				);
+				// The sheet keeps focus inside while open and gives it back when it closes.
+				await summary.click();
+				await sheet.waitFor();
+				for (let press = 0; press < 30; press += 1) await page.keyboard.press('Tab');
+				assert.equal(
+					await sheet.evaluate((node) => node.contains(document.activeElement)),
+					true,
+					'Tab stays inside the sheet'
+				);
+				await sheet.getByRole('button', { name: 'Done', exact: true }).click();
+				await sheet.waitFor({ state: 'hidden' });
+				await waitUntil(
+					() => summary.evaluate((node) => node === document.activeElement),
+					'Focus returns to the summary chip'
+				);
 			} else {
 				await runTargetChip(bar, 'Detached').click();
 				await page.getByRole('menuitemradio', { name: /Work PC/ }).click();

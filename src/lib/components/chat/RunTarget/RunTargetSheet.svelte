@@ -1,7 +1,8 @@
 <script lang="ts">
 	// A bottom sheet for the bar on phones. It sits above the safe area and the on-screen keyboard,
-	// and drops the keyboard when it opens.
+	// drops the keyboard when it opens, keeps focus inside while open, and gives focus back after.
 	import { getContext, onDestroy, tick } from 'svelte';
+	import * as FocusTrap from 'focus-trap';
 
 	const i18n: any = getContext('i18n');
 
@@ -10,6 +11,9 @@
 	export let onClose: () => void = () => {};
 
 	let panel: HTMLDivElement;
+	let focusTrap: FocusTrap.FocusTrap | null = null;
+	// What had focus before the sheet opened, given back when it closes.
+	let focusBefore: HTMLElement | null = null;
 	let isOpen = false;
 	// The visible height and how far the keyboard covers the bottom, from the visual viewport.
 	let visibleHeight: number | null = null;
@@ -58,25 +62,45 @@
 
 	async function opened() {
 		isOpen = true;
-		// The keyboard would cover the sheet; the composer gets focus back after a pick.
 		const active = document.activeElement;
+		focusBefore = null;
+		if (active instanceof HTMLElement && active !== document.body) focusBefore = active;
+		// The keyboard would cover the sheet.
 		if (active instanceof HTMLElement && active.closest('.buddy-composer')) active.blur();
 		followVisibleViewport();
 		watchVisibleViewport(true);
 		await tick();
-		panel?.focus();
+		if (!panel) return;
+		focusTrap = FocusTrap.createFocusTrap(panel, {
+			initialFocus: panel,
+			fallbackFocus: panel,
+			escapeDeactivates: false,
+			allowOutsideClick: true,
+			returnFocusOnDeactivate: false
+		});
+		focusTrap.activate();
 	}
 
-	function closed() {
+	async function closed() {
 		isOpen = false;
 		watchVisibleViewport(false);
+		focusTrap?.deactivate();
+		focusTrap = null;
+		const before = focusBefore;
+		focusBefore = null;
+		// Once the panel is gone: a pick that already focused the composer keeps it, and
+		// otherwise focus goes back where it was.
+		await tick();
+		const active = document.activeElement;
+		const focusIsLost = !active || active === document.body;
+		if (focusIsLost && before?.isConnected) before.focus();
 	}
 
 	$: if (show && !isOpen) void opened();
-	$: if (!show && isOpen) closed();
+	$: if (!show && isOpen) void closed();
 
 	onDestroy(() => {
-		if (isOpen) closed();
+		if (isOpen) void closed();
 		show = false;
 	});
 </script>
