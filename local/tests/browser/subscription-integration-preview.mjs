@@ -3454,7 +3454,7 @@ async function folderNoPlansCase(browser, profile) {
 			const dialog = await openFolderSettings(page);
 			await dialog
 				.getByText(
-					'Claude and ChatGPT aren’t turned on. Turn one on in Settings → Machines to let it work in a folder on your computer.',
+					'No AI plan is turned on. Turn one on in Settings → Machines to let the AI work in a folder on your computer.',
 					{ exact: true }
 				)
 				.waitFor();
