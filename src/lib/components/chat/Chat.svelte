@@ -121,6 +121,7 @@
 	} from '$lib/apis/subscriptions';
 	import { thisPcMachineId } from '$lib/desktop/this-pc';
 	import { pendingRunTarget } from './RunTarget/pending';
+	import { chatProjectTarget } from './ProjectPanel/project-session';
 	import {
 		detailsFromDraft,
 		draftFromDefault,
@@ -868,6 +869,17 @@
 		if (target) return target;
 		if (!draft || !options || !currentHistory?.currentId) return null;
 		return { bound: true, ...detailsFromDraft(draft, options) };
+	}
+
+	// A chat that runs in an exact folder opens that folder in its Project tab.
+	$: projectChatTarget = chatProjectTarget(
+		boundDetails(shownRunTarget),
+		runTargetOptions?.computers ?? []
+	);
+
+	function boundDetails(target: ChatRunTarget | null): ChatRunTargetDetails | null {
+		if (!target || !target.bound) return null;
+		return target;
 	}
 
 	const onSelectedModelIdsChange = () => {
@@ -4846,6 +4858,7 @@
 						{eventTarget}
 						{codeInterpreterEnabled}
 						folderId={sidePanelFolderId}
+						chatTarget={projectChatTarget}
 					/>
 				{/if}
 			</div>

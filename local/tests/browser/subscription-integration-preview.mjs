@@ -3089,6 +3089,24 @@ async function runTargetBoundCase(browser, profile) {
 	await runCase(browser, profile, 'run-target-bound', 'run-target-bound', async ({ page }) => {
 		const bar = runTargetBar(page);
 		await bar.waitFor();
+
+		// The chat runs in an exact folder, so its Project tab opens that folder, with no Change.
+		await page
+			.locator('.buddy-chat-header')
+			.getByRole('button', { name: 'Controls', exact: true })
+			.click();
+		const panel = chatPanel(page, profile);
+		await panel.getByRole('button', { name: 'Project', exact: true }).click();
+		await panel.getByText('C:\\code\\site', { exact: true }).waitFor();
+		await panel.getByText('Work PC', { exact: true }).first().waitFor();
+		await panel.getByRole('button', { name: 'README.md', exact: true }).waitFor();
+		assert.equal(
+			await panel.getByRole('button', { name: 'Change', exact: true }).count(),
+			0,
+			'A started chat’s folder is not changed from its Project tab'
+		);
+		await panel.getByRole('button', { name: 'Close', exact: true }).first().click();
+
 		if (profile.mobile) {
 			await bar.locator('.buddy-run-target-summary').filter({ hasText: 'Work PC · site · Full' }).click();
 		} else {
