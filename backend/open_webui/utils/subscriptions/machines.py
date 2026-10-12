@@ -13,11 +13,13 @@ import logging
 import os
 import socket
 import sys
+import uuid
 from pathlib import Path
 from urllib.parse import quote
 
 import aiohttp
 
+from buddy_runner import protocol
 from buddy_runner.discovery import find_tool
 from buddy_runner.local_process import start_local_process
 from buddy_runner.process import (
@@ -170,6 +172,8 @@ class RemoteProcess(StreamedOutput):
 
     # How long a stop may take to be confirmed, unless the caller says otherwise.
     cleanup_timeout = 5.0
+    # Stdin is sent in pieces of at most this many characters.
+    stdin_piece_chars = MAX_STDIN_MESSAGE_CHARS
 
     def __init__(
         self, channel, args: list[str], pid: int,
@@ -288,8 +292,8 @@ class RemoteProcess(StreamedOutput):
         async with self._write_lock:
             if self._channel.closed or self._exited.is_set():
                 raise self._closed_error()
-            for start in range(0, len(text), MAX_STDIN_MESSAGE_CHARS):
-                piece = text[start:start + MAX_STDIN_MESSAGE_CHARS]
+            for start in range(0, len(text), self.stdin_piece_chars):
+                piece = text[start:start + self.stdin_piece_chars]
                 try:
                     await self._channel.send_json({'type': 'stdin', 'data': piece})
                 except (aiohttp.ClientError, ConnectionResetError) as error:
@@ -353,12 +357,15 @@ class RemoteProcess(StreamedOutput):
         if self._machine is None or self.process_id is None:
             raise failure
         try:
-            stopped = await self._machine.confirm_process_stopped(self.process_id)
+            stopped = await self._runner_confirms_stop()
         except SubscriptionError as error:
             raise failure from error
         if not stopped:
             raise failure
         self._confirmed_stopped.set()
+
+    async def _runner_confirms_stop(self) -> bool:
+        return await self._machine.confirm_process_stopped(self.process_id)
 
     async def _confirm_stop_without_reply(self, confirmation: asyncio.Task) -> None:
         """Ask the Runner over HTTP, while still accepting a late reply on the connection.
@@ -646,3 +653,125 @@ class RemoteMachine:
         self._closed = True
         if self._session and not self._session.closed:
             await self._session.close()
+
+
+# How long a tunnel machine call waits for a computer that just went offline,
+# for example while its Buddy app restarts.
+TUNNEL_RECONNECT_WAIT_SECONDS = 5
+# How long confirming a stop waits for the computer to reconnect.
+TUNNEL_CONFIRM_WAIT_SECONDS = 20
+
+
+class TunnelProcess(RemoteProcess):
+    """A process on a computer connected over the tunnel."""
+
+    # A stop may have to wait for the computer to reconnect before it can be confirmed.
+    cleanup_timeout = TUNNEL_CONFIRM_WAIT_SECONDS + 5.0
+    stdin_piece_chars = protocol.STDIN_PIECE_CHARS
+
+    async def _runner_confirms_stop(self) -> bool:
+        return await self._machine.confirm_process_stopped(self.process_id, self._channel.instance_id)
+
+
+class TunnelMachine:
+    """A user's computer that connected to Buddy through the Buddy app's Runner."""
+
+    def __init__(self, machine_id: str, name: str, hub):
+        self.id = machine_id
+        self.name = name
+        self._hub = hub
+
+    async def _connection(self, wait: float = TUNNEL_RECONNECT_WAIT_SECONDS):
+        connection = await self._hub.wait_connection(self.id, wait)
+        if connection is None:
+            raise SubscriptionError(f'{self.name} is offline. Open the Buddy app on that computer.')
+        return connection
+
+    async def info(self) -> dict:
+        return (await self._connection()).info
+
+    async def chat_dir(self) -> str:
+        return (await self.info())['chat_dir']
+
+    async def default_workspace(self) -> str:
+        return (await self.info())['default_workspace']
+
+    async def find_tool(self, tool: str, configured_path: str = '') -> str | None:
+        connection = await self._connection()
+        result = await connection.call('tools.find', {'tool': tool, 'configured_path': configured_path})
+        return (result or {}).get('path')
+
+    async def path_exists(self, path: str, kind: str) -> bool:
+        connection = await self._connection()
+        result = await connection.call('paths.check', {'path': path, 'kind': kind})
+        return bool((result or {}).get('exists'))
+
+    async def start_process(
+        self,
+        args: list[str],
+        cwd: str,
+        extra_env: dict[str, str] | None = None,
+        temp_files: dict[str, str] | None = None,
+    ) -> TunnelProcess:
+        program = os.path.basename(args[0])
+        # The Runner records this name before starting anything, so a stop
+        # after a lost connection always gets a definite answer.
+        start = {
+            'type': 'start',
+            'args': args,
+            'cwd': cwd,
+            'env': extra_env or {},
+            'temp_files': temp_files or {},
+            'start_id': uuid.uuid4().hex,
+        }
+        try:
+            # Encode before sending, so a local encoding error starts nothing.
+            json.dumps(start)
+        except (TypeError, ValueError) as error:
+            raise SubscriptionError(f'{self.name} could not start {program}: {error}') from error
+        connection = await self._connection()
+        stream = await connection.open_stream(start)
+        return await start_over_channel(self, stream, args, None, process_class=TunnelProcess)
+
+    async def confirm_process_stopped(self, process_id: str | None, instance_id: str | None = None) -> bool:
+        """Ask the computer to stop a process whose stream ended, and confirm its cleanup.
+
+        Waits for a computer that is reconnecting. A computer whose Runner
+        restarted since the process started cannot vouch for it.
+        """
+        connection = await self._hub.wait_connection(self.id, TUNNEL_CONFIRM_WAIT_SECONDS)
+        if connection is None:
+            raise SubscriptionError(f'{self.name} is offline, so cleanup of its process could not be confirmed.')
+        if instance_id is not None and connection.instance_id != instance_id:
+            return False
+        if not process_id:
+            return False
+        result = await connection.call('process.stop', {'process_id': process_id}, timeout=15)
+        return (result or {}).get('stopped') is True
+
+    async def dispose_failed_start(self, channel, args: list[str], pid: int | None) -> None:
+        """Prove that a startup which failed midway left nothing running.
+
+        Closing the stream makes the Runner stop whatever it started for it.
+        The startup's name then gets a definite answer, even when the reply
+        with the process ID never arrived.
+        """
+        detail = f'{self.name} could not confirm cleanup of a provider startup'
+        try:
+            await channel.close()
+            if await self._startup_stopped(channel):
+                return
+        except Exception as error:
+            raise StartupCleanupUnconfirmedError(detail) from error
+        raise StartupCleanupUnconfirmedError(detail)
+
+    async def _startup_stopped(self, channel) -> bool:
+        connection = await self._hub.wait_connection(self.id, TUNNEL_CONFIRM_WAIT_SECONDS)
+        if connection is None or connection.instance_id != channel.instance_id or not channel.start_id:
+            return False
+        result = await connection.call('process.stop', {'start_id': channel.start_id}, timeout=15)
+        return (result or {}).get('stopped') is True
+
+    async def close(self) -> None:
+        # The connection belongs to the hub; this handle owns nothing to close.
+        pass
