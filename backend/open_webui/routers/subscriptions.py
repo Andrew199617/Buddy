@@ -23,11 +23,11 @@ Routes:
   DELETE /folders/{folder}/project — forget it, so the chat folder follows its parent again
   GET    /{provider}               — one provider (?refresh=true checks again)
   POST   /{provider}/config        — save enable, access, workspace, CLI path, machine
-  POST   /{provider}/login         — start signing in (browser or device code)
-  GET    /{provider}/login         — sign-in progress
+  POST   /{provider}/login         — start signing in (browser or device code) on a computer, or the plan's own
+  GET    /{provider}/login         — sign-in progress (?machine_id= for one computer)
   POST   /{provider}/login/code    — paste the code shown after approving (Claude)
   DELETE /{provider}/login         — cancel signing in
-  POST   /{provider}/logout        — sign the CLI out, or forget the stored token or key it uses
+  POST   /{provider}/logout        — sign the CLI out on a computer, or forget the stored token or key it uses
   PUT    /{provider}/credentials/api_key    — keep the user's own API key and use it everywhere
   PUT    /claude/credentials/plan_token     — keep a one-year Claude token and use it everywhere
   DELETE /{provider}/credentials/{kind}     — forget a stored token or key
@@ -67,12 +67,15 @@ class LoginForm(BaseModel):
     method: Literal['browser', 'device'] = 'browser'
     expected_machine_id: Optional[str] = None
     expected_machine_revision: Optional[str] = None
+    # The computer to sign in on; without it, the plan's own computer.
+    machine_id: Optional[str] = None
 
 
 class LoginCodeForm(BaseModel):
     code: str
     expected_machine_id: Optional[str] = None
     expected_machine_revision: Optional[str] = None
+    machine_id: Optional[str] = None
 
 
 class MachineForm(BaseModel):
@@ -340,7 +343,8 @@ async def update_subscription_config(
 async def start_subscription_login(provider_id: str, form_data: LoginForm, user=Depends(get_machine_session_user)):
     try:
         return await service.start_login(
-            user.id, provider_id, form_data.method, form_data.expected_machine_id, form_data.expected_machine_revision
+            user.id, provider_id, form_data.method, form_data.expected_machine_id,
+            form_data.expected_machine_revision, machine_id=form_data.machine_id
         )
     except (SubscriptionError, OSError) as error:
         raise _bad_request(error)
@@ -349,9 +353,12 @@ async def start_subscription_login(provider_id: str, form_data: LoginForm, user=
 @router.get('/{provider_id}/login')
 async def get_subscription_login(
     provider_id: str, expected_machine_id: Optional[str] = None,
-    expected_machine_revision: Optional[str] = None, user=Depends(get_machine_user)
+    expected_machine_revision: Optional[str] = None, machine_id: Optional[str] = None,
+    user=Depends(get_machine_user)
 ):
-    return await service.login_state(user.id, provider_id, expected_machine_id, expected_machine_revision)
+    return await service.login_state(
+        user.id, provider_id, expected_machine_id, expected_machine_revision, machine_id=machine_id
+    )
 
 
 @router.post('/{provider_id}/login/code')
@@ -362,7 +369,8 @@ async def submit_subscription_login_code(
 ):
     try:
         return await service.submit_login_code(
-            user.id, provider_id, form_data.code, form_data.expected_machine_id, form_data.expected_machine_revision
+            user.id, provider_id, form_data.code, form_data.expected_machine_id,
+            form_data.expected_machine_revision, machine_id=form_data.machine_id
         )
     except (SubscriptionError, OSError) as error:
         raise _bad_request(error)
@@ -371,10 +379,13 @@ async def submit_subscription_login_code(
 @router.delete('/{provider_id}/login')
 async def cancel_subscription_login(
     provider_id: str, expected_machine_id: Optional[str] = None,
-    expected_machine_revision: Optional[str] = None, user=Depends(get_machine_session_user)
+    expected_machine_revision: Optional[str] = None, machine_id: Optional[str] = None,
+    user=Depends(get_machine_session_user)
 ):
     try:
-        return await service.cancel_login(user.id, provider_id, expected_machine_id, expected_machine_revision)
+        return await service.cancel_login(
+            user.id, provider_id, expected_machine_id, expected_machine_revision, machine_id=machine_id
+        )
     except (SubscriptionError, OSError) as error:
         raise _bad_request(error)
 
@@ -382,12 +393,17 @@ async def cancel_subscription_login(
 @router.post('/{provider_id}/logout')
 async def logout_subscription(
     provider_id: str, expected_machine_id: Optional[str] = None,
-    expected_machine_revision: Optional[str] = None, user=Depends(get_machine_session_user)
+    expected_machine_revision: Optional[str] = None, machine_id: Optional[str] = None,
+    user=Depends(get_machine_session_user)
 ):
     try:
-        await service.logout(user.id, provider_id, expected_machine_id, expected_machine_revision)
+        await service.logout(
+            user.id, provider_id, expected_machine_id, expected_machine_revision, machine_id=machine_id
+        )
     except (SubscriptionError, OSError) as error:
         raise _bad_request(error)
+    if machine_id is not None:
+        return await service.describe_provider(user.id, provider_id, fresh=True)
     return await service.describe_provider(
         user.id, provider_id, fresh=True, expected_machine_id=expected_machine_id,
         expected_machine_revision=expected_machine_revision

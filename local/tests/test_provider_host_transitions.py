@@ -1230,6 +1230,41 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNot(replacement, first)
         self.assertEqual(len(machine.processes), 1)
 
+    async def test_signing_in_on_a_chosen_computer_keeps_the_plans_own_computer(self):
+        started = await self.service.start_login(
+            OWNER, 'claude', 'browser', expected_machine_revision=REVISION_B, machine_id='runner-b'
+        )
+        self.assertEqual(started, {'state': 'waiting'})
+        self.assertIn(('start_login', 'runner-b', 'runner-b', 'browser'), self.providers['claude'].calls)
+        self.assertEqual(self.config.values['subscriptions.claude']['machine_id'], 'runner-a')
+        # Progress for another computer shows nothing; for runner-b it shows the sign-in.
+        other = await self.service.login_state(OWNER, 'claude', machine_id='runner-a')
+        self.assertEqual(other, {'state': 'idle'})
+        here = await self.service.login_state(OWNER, 'claude', machine_id='runner-b')
+        self.assertEqual(here, {'state': 'waiting'})
+        with self.assertRaises(self.service.HTTPException) as caught:
+            await self.service.submit_login_code(
+                OWNER, 'claude', 'fixture-code', expected_machine_revision=REVISION_A, machine_id='runner-a'
+            )
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(str(caught.exception), 'Finish signing in on Test runner-b first.')
+        finished = await self.service.submit_login_code(
+            OWNER, 'claude', 'fixture-code', expected_machine_revision=REVISION_B, machine_id='runner-b'
+        )
+        self.assertEqual(finished, {'state': 'success'})
+        await self.service.logout(OWNER, 'claude', expected_machine_revision=REVISION_B, machine_id='runner-b')
+        self.assertIn(('logout', 'runner-b', 'runner-b'), self.providers['claude'].calls)
+
+    async def test_signing_in_on_a_computer_needs_one_of_yours_at_its_current_revision(self):
+        for machine_id, revision in (('runner-b', REVISION_A), ('missing-pc', REVISION_B), ('runner-b', None)):
+            with self.subTest(machine_id=machine_id, revision=revision):
+                await self.assert_conflict(self.service.start_login(
+                    OWNER, 'claude', 'browser', expected_machine_revision=revision, machine_id=machine_id
+                ))
+        with self.assertRaises(self.service.SubscriptionError):
+            await self.service.start_login(OWNER, 'claude', 'browser', machine_id='')
+        self.assertEqual(self.providers['claude'].calls, [])
+
     async def test_status_is_cached_for_each_computer_and_forgotten_for_all(self):
         ref = self.service.ProviderRef(OWNER, 'claude')
         on_a = ref.on('runner-a')
@@ -1937,35 +1972,59 @@ class ProviderHostRouterTests(unittest.IsolatedAsyncioTestCase):
         )
         result = await self.router.start_subscription_login('claude', form, user=self.admin)
         self.assertEqual(result, {'state': 'waiting'})
-        self.service.start_login.assert_awaited_once_with(OWNER, 'claude', 'device', 'runner-a', REVISION_A)
+        self.service.start_login.assert_awaited_once_with(
+            OWNER, 'claude', 'device', 'runner-a', REVISION_A, machine_id=None
+        )
 
     async def test_login_code_form_forwards_code_and_both_host_guards(self):
         form = self.router.LoginCodeForm(
             code='fixture-code', expected_machine_id='runner-a', expected_machine_revision=REVISION_A
         )
         await self.router.submit_subscription_login_code('claude', form, user=self.admin)
-        self.service.submit_login_code.assert_awaited_once_with(OWNER, 'claude', 'fixture-code', 'runner-a', REVISION_A)
+        self.service.submit_login_code.assert_awaited_once_with(
+            OWNER, 'claude', 'fixture-code', 'runner-a', REVISION_A, machine_id=None
+        )
 
     async def test_login_progress_query_forwards_both_host_guards(self):
         await self.router.get_subscription_login(
             'claude', expected_machine_id='runner-a', expected_machine_revision=REVISION_A, user=self.admin
         )
-        self.service.login_state.assert_awaited_once_with(OWNER, 'claude', 'runner-a', REVISION_A)
+        self.service.login_state.assert_awaited_once_with(OWNER, 'claude', 'runner-a', REVISION_A, machine_id=None)
 
     async def test_delete_login_query_forwards_both_host_guards_to_cancel_helper(self):
         await self.router.cancel_subscription_login(
             'claude', expected_machine_id='runner-a', expected_machine_revision=REVISION_A, user=self.admin
         )
-        self.service.cancel_login.assert_awaited_once_with(OWNER, 'claude', 'runner-a', REVISION_A)
+        self.service.cancel_login.assert_awaited_once_with(OWNER, 'claude', 'runner-a', REVISION_A, machine_id=None)
 
     async def test_post_logout_query_forwards_both_guards_to_action_and_description(self):
         await self.router.logout_subscription(
             'claude', expected_machine_id='runner-a', expected_machine_revision=REVISION_A, user=self.admin
         )
-        self.service.logout.assert_awaited_once_with(OWNER, 'claude', 'runner-a', REVISION_A)
+        self.service.logout.assert_awaited_once_with(OWNER, 'claude', 'runner-a', REVISION_A, machine_id=None)
         self.service.describe_provider.assert_awaited_once_with(
             OWNER, 'claude', fresh=True, expected_machine_id='runner-a', expected_machine_revision=REVISION_A
         )
+
+    async def test_sign_in_routes_forward_the_chosen_computer(self):
+        start = self.router.LoginForm(method='browser', expected_machine_revision=REVISION_B, machine_id='runner-b')
+        await self.router.start_subscription_login('claude', start, user=self.admin)
+        self.service.start_login.assert_awaited_once_with(
+            OWNER, 'claude', 'browser', None, REVISION_B, machine_id='runner-b'
+        )
+        code = self.router.LoginCodeForm(code='fixture-code', expected_machine_revision=REVISION_B, machine_id='runner-b')
+        await self.router.submit_subscription_login_code('claude', code, user=self.admin)
+        self.service.submit_login_code.assert_awaited_once_with(
+            OWNER, 'claude', 'fixture-code', None, REVISION_B, machine_id='runner-b'
+        )
+        await self.router.get_subscription_login('claude', machine_id='runner-b', user=self.admin)
+        self.service.login_state.assert_awaited_once_with(OWNER, 'claude', None, None, machine_id='runner-b')
+        await self.router.logout_subscription(
+            'claude', expected_machine_revision=REVISION_B, machine_id='runner-b', user=self.admin
+        )
+        self.service.logout.assert_awaited_once_with(OWNER, 'claude', None, REVISION_B, machine_id='runner-b')
+        # The plan's own computer is not what the page confirmed, so it is not checked.
+        self.service.describe_provider.assert_awaited_once_with(OWNER, 'claude', fresh=True)
 
     async def test_provider_description_query_forwards_refresh_and_both_host_guards(self):
         await self.router.get_subscription(
