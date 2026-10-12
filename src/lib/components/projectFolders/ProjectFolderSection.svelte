@@ -1,7 +1,8 @@
 <script lang="ts">
 	// "Project folder" in a chat folder's settings: where Claude and ChatGPT
 	// work for chats in it. Each person chooses for themselves.
-	import { getContext, onMount, tick } from 'svelte';
+	import { getContext, onDestroy, onMount, tick } from 'svelte';
+	import { toast } from 'svelte-sonner';
 
 	import {
 		clearFolderProject,
@@ -27,6 +28,7 @@
 		plansWithoutComputer,
 		sameDraft,
 		waitsForOwnChoice,
+		type FileAccess,
 		type FileAccessNeed,
 		type ProjectDraft
 	} from './project-folders';
@@ -48,14 +50,22 @@
 	let pickingFor: ProjectFolderComputer | null = null;
 	// Why loading again after a plan change failed; what was loaded before still saves.
 	let refreshError = '';
-	// Why an Allow was refused, once that plan is no longer offered here.
+	// Why an Allow was refused, when its request could not show it.
 	let refusal = '';
+	// The dialog can close while an Allow is still saving.
+	let destroyed = false;
+
+	onDestroy(() => {
+		destroyed = true;
+	});
 	let sectionElement: HTMLElement | null = null;
 
 	$: dirty = !sameDraft(draft, saved);
 	$: need = project ? fileAccessNeed(project) : 'ready';
 	$: allowablePlans = project ? plansToAllow(project) : [];
 	$: homelessPlans = project ? plansWithoutComputer(project) : [];
+	// The request under the choices hides while picking a folder, and when the folder is just chat.
+	$: compactHidden = pickingFor !== null || draft.mode === 'chat';
 
 	/** Shows a loaded project; the caller decides what happens to the draft. */
 	function showProject(loaded: FolderProject | null) {
@@ -156,11 +166,16 @@
 		);
 	}
 
-	async function planRefused(planName: string, reason: string) {
-		refusal = $i18n.t('{{name}} was not given access: {{reason}}', {
-			name: planName,
+	async function planRefused(plan: FolderPlan, access: FileAccess, reason: string) {
+		const message = $i18n.t('{{name}} was not given access: {{reason}}', {
+			name: plan.name,
 			reason
 		});
+		if (destroyed) {
+			toast.error(message);
+			return;
+		}
+		refusal = message;
 		await keepFocusInSection();
 	}
 
@@ -463,9 +478,10 @@
 		     folder, and moot when this folder is just chat, but kept mounted so an Allow
 		     in progress stays busy. -->
 		{#if need === 'ready' && allowablePlans.length > 0}
-			<div hidden={pickingFor !== null || draft.mode === 'chat'}>
+			<div hidden={compactHidden}>
 				<PlanAccessRequest
 					compact
+					hidden={compactHidden}
 					plans={allowablePlans}
 					reload={refresh}
 					onAllowed={planAllowed}

@@ -428,6 +428,10 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	let holdProjectRead = false;
 	let heldProjectRead = null;
 	let failProjectRead = false;
+	// The next plan config save can be held open, or refused.
+	let holdPlanConfig = false;
+	let heldPlanConfig = null;
+	let refusePlanConfig = '';
 	const projectGrant = {
 		id: 'grant-code',
 		name: 'code',
@@ -493,6 +497,11 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			'expected_machine_revision'
 		]);
 		assert.equal(body.expected_machine_id, plan.machine.id, 'The plan stays on its computer');
+		if (refusePlanConfig) {
+			const detail = refusePlanConfig;
+			refusePlanConfig = '';
+			return { status: 400, json: { detail } };
+		}
 		if (body.expected_machine_revision !== plan.machine.revision) {
 			showsOldRevision = false;
 			return {
@@ -624,6 +633,11 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		) {
 			const body = request.postDataJSON();
 			requests.push({ method, path, body });
+			if (holdPlanConfig) {
+				holdPlanConfig = false;
+				heldPlanConfig = { route, providerId: path.split('/')[4], body };
+				return true;
+			}
 			reply = savePlanConfig(path.split('/')[4], body);
 		} else if (path === '/api/v1/subscriptions/machines/pc-1/folders/check' && method === 'POST') {
 			const body = request.postDataJSON();
@@ -918,6 +932,20 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		},
 		failNextProjectRead() {
 			failProjectRead = true;
+		},
+		holdNextPlanConfig() {
+			holdPlanConfig = true;
+		},
+		hasHeldPlanConfig: () => Boolean(heldPlanConfig),
+		async releasePlanConfig() {
+			const { route, providerId, body } = heldPlanConfig;
+			heldPlanConfig = null;
+			const reply = savePlanConfig(providerId, body);
+			if (typeof reply.status === 'number') await route.fulfill(reply);
+			else await route.fulfill({ status: 200, json: reply });
+		},
+		refuseNextPlanConfig(detail) {
+			refusePlanConfig = detail;
 		},
 		// Work PC removed elsewhere: like the server, its plans turn off and only chat.
 		removeWorkPc() {
@@ -3247,6 +3275,68 @@ async function folderAllowGoneCase(browser, profile) {
 	);
 }
 
+async function folderAllowHiddenRefusalCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'folder-allow-hidden-refusal',
+		'folder-allow-beside',
+		async ({ page }, fixtures) => {
+			const dialog = await openFolderSettings(page);
+			const request = dialog.getByRole('group', { name: 'Plans that only chat', exact: true });
+			await request.getByRole('button', { name: 'Allow full access', exact: true }).click();
+			fixtures.refuseNextPlanConfig('The start folder does not exist on Work PC: C:\\old');
+			fixtures.holdNextProjectRead();
+			await request.getByRole('button', { name: 'Allow', exact: true }).click();
+			await waitUntil(
+				() => fixtures.hasHeldProjectRead(),
+				'The plans load again after the refusal'
+			);
+
+			// The request hides before it can say why; the section says it instead.
+			await dialog.getByRole('radio', { name: /^No files, just chat/ }).check();
+			await fixtures.releaseProjectRead();
+			await dialog
+				.getByText(
+					'ChatGPT was not given access: The start folder does not exist on Work PC: C:\\old',
+					{ exact: true }
+				)
+				.waitFor();
+		}
+	);
+}
+
+async function folderAllowClosedCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'folder-allow-closed',
+		'folder-allow',
+		async ({ page }, fixtures) => {
+			const dialog = await openFolderSettings(page);
+			const request = dialog.getByRole('group', {
+				name: 'Let a plan work with files',
+				exact: true
+			});
+			await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
+			fixtures.holdNextPlanConfig();
+			await request.getByRole('button', { name: 'Allow', exact: true }).click();
+			await waitUntil(() => fixtures.hasHeldPlanConfig(), 'The Allow is saving');
+
+			// The dialog closes before the answer; a refusal still reaches the person.
+			await dialog.getByRole('button', { name: 'Close', exact: true }).first().click();
+			await dialog.waitFor({ state: 'hidden' });
+			fixtures.refuseNextPlanConfig('Synthetic refusal after the dialog closed');
+			await fixtures.releasePlanConfig();
+			await page
+				.getByText('Claude was not given access: Synthetic refusal after the dialog closed', {
+					exact: true
+				})
+				.waitFor();
+		}
+	);
+}
+
 async function folderAllowHomelessCase(browser, profile) {
 	await runCase(
 		browser,
@@ -3348,6 +3438,8 @@ try {
 		await folderAllowRaceCase(browser, profile);
 		await folderAllowReloadErrorCase(browser, profile);
 		await folderAllowGoneCase(browser, profile);
+		await folderAllowHiddenRefusalCase(browser, profile);
+		await folderAllowClosedCase(browser, profile);
 		await folderAllowHomelessCase(browser, profile);
 		await folderNoPlansCase(browser, profile);
 		await cancellationCase(browser, profile, 'x');

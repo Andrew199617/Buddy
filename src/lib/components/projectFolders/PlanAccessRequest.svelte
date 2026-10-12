@@ -11,11 +11,9 @@
 		fullAccessWarning,
 		readFilesDescription
 	} from '$lib/components/admin/Settings/Connections/plan-access';
-	import { focusWasLost } from './project-folders';
+	import { focusWasLost, type FileAccess } from './project-folders';
 
 	const i18n: any = getContext('i18n');
-
-	type FileAccess = 'read' | 'full';
 
 	// Plans that are on, Chat only, and have a computer they can use.
 	export let plans: FolderPlan[];
@@ -23,10 +21,13 @@
 	export let reload: () => Promise<void>;
 	// Called once a plan may use files and the plans were loaded again.
 	export let onAllowed: () => void = () => {};
-	// Called when an Allow was refused and, loaded again, the plan is no longer offered.
-	export let onRefused: (planName: string, reason: string) => void = () => {};
+	// Called when an Allow was refused and this request cannot show why: the plan
+	// is gone, or the request was removed or hidden meanwhile.
+	export let onRefused: (plan: FolderPlan, access: FileAccess, reason: string) => void = () => {};
 	// Shown under the folder choices, because another plan already opens folders.
 	export let compact = false;
+	// Hidden for now, but kept so an Allow in progress stays busy.
+	export let hidden = false;
 
 	// The plan being asked about, by ID: a reload replaces the plan objects.
 	let confirming: { planId: string; access: FileAccess } | null = null;
@@ -87,7 +88,7 @@
 				machine.revision
 			);
 		} catch (cause) {
-			await refused(plan, `${cause}`);
+			await refused(plan, access, `${cause}`);
 			return;
 		}
 		// The question stays, busy, until the plans show the change.
@@ -99,12 +100,12 @@
 	}
 
 	/** The plan may have changed elsewhere, so the plans load again before saying why. */
-	async function refused(plan: FolderPlan, reason: string) {
+	async function refused(plan: FolderPlan, access: FileAccess, reason: string) {
 		await reload();
 		await tick();
 		saving = false;
-		const stillOffered = !destroyed && plans.some((candidate) => candidate.id === plan.id);
-		if (stillOffered) {
+		const stillOffered = plans.some((candidate) => candidate.id === plan.id);
+		if (!destroyed && !hidden && stillOffered) {
 			// Still offered: the question stays, and the next try confirms the plan as it is now.
 			error = reason;
 			await tick();
@@ -112,7 +113,7 @@
 			return;
 		}
 		confirming = null;
-		onRefused(plan.name, reason);
+		onRefused(plan, access, reason);
 	}
 
 	function question(plan: FolderPlan, access: FileAccess, computerName: string): string {
