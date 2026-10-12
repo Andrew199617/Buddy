@@ -126,6 +126,9 @@ class ProviderRef:
     owner_id: str
     provider_id: str
 
+    def on(self, machine_id: str) -> 'MachineRef':
+        return MachineRef(self.owner_id, self.provider_id, machine_id)
+
 
 @dataclass(frozen=True)
 class MachineRef:
@@ -647,7 +650,7 @@ def _require_provider_cleanup(ref: ProviderRef) -> None:
 
 def _tracking_machine(ref: ProviderRef, machine, credential_env: dict | None = None) -> TrackingMachine:
     _require_provider_cleanup(ref)
-    key = MachineRef(ref.owner_id, ref.provider_id, machine.id)
+    key = ref.on(machine.id)
     tracked = _tracked_machines.get(key)
     if tracked is None or tracked.machine is not machine or not tracked.valid:
         tracked = TrackingMachine(machine, credential_env)
@@ -2042,7 +2045,7 @@ class _CacheEntry:
 
 
 class CachedLoader:
-    """Caches one value per user's provider and serves the old value while refreshing.
+    """Caches one value per user's provider on each computer and serves the old value while refreshing.
 
     Model lists are requested on most page loads, and the CLIs take a few
     seconds to answer, so only the first load waits for them. A caller that
@@ -2063,6 +2066,12 @@ class CachedLoader:
         self._generations[key] = self._generations.get(key, 0) + 1
         if refresh is not None and not refresh.done():
             refresh.cancel()
+
+    def invalidate_where(self, matches: Callable[[Any], bool]) -> None:
+        keys = set(self._entries) | set(self._refreshes) | set(self._generations)
+        for key in keys:
+            if matches(key):
+                self.invalidate(key)
 
     def cached(self, key) -> Any:
         """The last loaded value, even if expired, without loading; None when there is none."""
@@ -2118,12 +2127,24 @@ def _log_refresh_failure(task: asyncio.Task) -> None:
         log.warning('Could not refresh subscription details: %s', error)
 
 
-async def _load_status(ref: ProviderRef) -> dict:
+def _settings_on(settings: ProviderSettings, machine_id: str) -> ProviderSettings:
+    """The plan's settings for work on one computer.
+
+    The start folder and CLI path were chosen for the plan's own computer, so
+    on another computer the CLI is found there and no start folder is assumed.
+    """
+    if machine_id == settings.machine_id:
+        return settings
+    return replace(settings, machine_id=machine_id, workspace='', cli_path='')
+
+
+async def _load_status(machine_ref: MachineRef) -> dict:
+    ref = machine_ref.ref
     task = asyncio.current_task()
     try:
         _require_single_worker()
         async with _provider_lock(ref):
-            settings = await _load_settings(ref)
+            settings = _settings_on(await _load_settings(ref), machine_ref.machine_id)
             await _require_verified_machine(ref, settings)
             _require_provider_cleanup(ref)
             machine = await _tracked(ref, settings)
@@ -2140,12 +2161,13 @@ async def _load_status(ref: ProviderRef) -> dict:
         _active_provider_tasks.get(ref, set()).discard(task)
 
 
-async def _load_models(ref: ProviderRef) -> list[ProviderModel]:
+async def _load_models(machine_ref: MachineRef) -> list[ProviderModel]:
+    ref = machine_ref.ref
     task = asyncio.current_task()
     try:
         _require_single_worker()
         async with _provider_lock(ref):
-            settings = await _load_settings(ref)
+            settings = _settings_on(await _load_settings(ref), machine_ref.machine_id)
             await _require_verified_machine(ref, settings)
             _require_provider_cleanup(ref)
             machine = await _tracked(ref, settings)
@@ -2173,8 +2195,13 @@ def uses_plan(provider_status: dict) -> bool:
 
 
 def invalidate(ref: ProviderRef) -> None:
-    status_cache.invalidate(ref)
-    models_cache.invalidate(ref)
+    """Forget the provider's status and models on every computer."""
+
+    def of_provider(key: MachineRef) -> bool:
+        return key.ref == ref
+
+    status_cache.invalidate_where(of_provider)
+    models_cache.invalidate_where(of_provider)
 
 
 async def describe_provider(
@@ -2216,8 +2243,9 @@ async def _describe_provider_snapshot(
                 execution_ready = False
                 readiness_message = str(error)
                 log.info('Could not describe the machine for %s: %s', ref.provider_id, error)
+    on_plan_computer = ref.on(settings.machine_id)
     if execution_ready:
-        provider_status = await status_cache.get(ref, fresh=fresh)
+        provider_status = await status_cache.get(on_plan_computer, fresh=fresh)
     else:
         provider_status = {'installed': True, 'signed_in': False, 'message': readiness_message}
     if provider_status is None:
@@ -2225,7 +2253,7 @@ async def _describe_provider_snapshot(
         provider_status = {'checking': True}
     models = []
     if settings.enable and uses_plan(provider_status):
-        for model in await models_cache.get(ref, fresh=fresh) or []:
+        for model in await models_cache.get(on_plan_computer, fresh=fresh) or []:
             models.append({'id': _model_id(ref.provider_id, model), 'name': model.name})
 
     machine_name = 'Unavailable machine'
@@ -2305,24 +2333,25 @@ async def _provider_models(ref: ProviderRef) -> list[dict]:
         await _require_allowed_credential(ref, credential_mode)
     except SubscriptionError:
         return []
-    provider_status = await _cached_for_model_list(status_cache, ref) or {}
+    on_plan_computer = ref.on(settings.machine_id)
+    provider_status = await _cached_for_model_list(status_cache, on_plan_computer) or {}
     if not uses_plan(provider_status):
         return []
-    models = await _cached_for_model_list(models_cache, ref) or []
+    models = await _cached_for_model_list(models_cache, on_plan_computer) or []
     if generation != _provider_generations.get(ref, 0):
         return []
     return [_model_entry(ref.provider_id, model, credential_mode) for model in models]
 
 
-async def _cached_for_model_list(cache: CachedLoader, ref: ProviderRef) -> Any:
+async def _cached_for_model_list(cache: CachedLoader, machine_ref: MachineRef) -> Any:
     """Serve only what is cached while the user's own action holds the provider lock.
 
     Sign-in, sign-out and runner checks can hold it for up to a minute, and a
     refresh started now would wait behind them.
     """
-    if _provider_lock(ref).locked():
-        return cache.cached(ref)
-    return await cache.get(ref)
+    if _provider_lock(machine_ref.ref).locked():
+        return cache.cached(machine_ref)
+    return await cache.get(machine_ref)
 
 
 async def _listed_models(ref: ProviderRef) -> list[dict]:
@@ -2462,21 +2491,22 @@ async def _apply_preset(request, payload: dict, metadata: dict, user, models: di
     return model_id, payload, written_by_someone_else
 
 
-def _turn_model(ref: ProviderRef, model_id: str, subscription: dict) -> tuple[str, list[str]]:
+def _turn_model(machine_ref: MachineRef, model_id: str, subscription: dict) -> tuple[str, list[str]]:
     """The CLI model and reasoning levels a turn uses.
 
-    Once the user's own model list is loaded, it decides: a model it does not
-    offer is refused. Until then, for example right after a restart, the
-    registry entry is used; providers still check the reasoning levels
-    against the CLI that runs the turn.
+    Once the model list of the computer running the turn is loaded, it
+    decides: a model it does not offer is refused. Until then, for example
+    right after a restart, the registry entry is used; providers still check
+    the reasoning levels against the CLI that runs the turn.
     """
-    own_models = models_cache.cached(ref)
+    provider_id = machine_ref.provider_id
+    own_models = models_cache.cached(machine_ref)
     if own_models is not None:
         for model in own_models:
-            if _model_id(ref.provider_id, model) == model_id:
+            if _model_id(provider_id, model) == model_id:
                 return model.value, [effort for effort in model.efforts if isinstance(effort, str) and effort]
         raise SubscriptionError(
-            f'{PROVIDER_LABELS[ref.provider_id]} on your computer does not offer this model. Choose another model.'
+            f'{PROVIDER_LABELS[provider_id]} on your computer does not offer this model. Choose another model.'
         )
     efforts = subscription.get('efforts')
     if not isinstance(efforts, list):
@@ -2549,8 +2579,9 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
             )
         # A status older than its TTL may predate a switch to API billing on
         # the machine, so a turn waits for a current one.
-        _require_plan(ref.provider_id, await status_cache.get(ref, serve_expired=False))
-        cli_model, model_efforts = _turn_model(ref, model_id, subscription)
+        on_computer = ref.on(settings.machine_id)
+        _require_plan(ref.provider_id, await status_cache.get(on_computer, serve_expired=False))
+        cli_model, model_efforts = _turn_model(on_computer, model_id, subscription)
         folder_choice = await _turn_folder_choice(user, settings, metadata, foreign_preset)
         async with _provider_lock(ref):
             if generation != _provider_generations.get(ref, 0):
