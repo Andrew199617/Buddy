@@ -1,6 +1,6 @@
 import { dialog, type BrowserWindow, type MessageBoxOptions } from 'electron';
 
-import type { Dialogs } from './desktop-service';
+import type { ConnectAnswer, Dialogs } from './desktop-service';
 import type { DesktopPermission } from './status';
 
 // The app's own questions. They come from Windows, not from the web page, so a
@@ -17,6 +17,18 @@ async function ask(parent: BrowserWindow | null, options: MessageBoxOptions): Pr
 	return result.response === 0;
 }
 
+/** The connect question's answer, with its checkbox; Cancel connects nothing. */
+async function askToConnect(parent: BrowserWindow | null, options: MessageBoxOptions): Promise<ConnectAnswer> {
+	const question: MessageBoxOptions = { type: 'warning', noLink: true, defaultId: 1, cancelId: 1, ...options };
+	let result;
+	if (parent) {
+		result = await dialog.showMessageBox(parent, question);
+	} else {
+		result = await dialog.showMessageBox(question);
+	}
+	return { connect: result.response === 0, allowFolderBrowsing: result.checkboxChecked === true };
+}
+
 function connectQuestion(serverUrl: string, accountName: string): MessageBoxOptions {
 	return {
 		title: 'Connect this computer',
@@ -25,7 +37,9 @@ function connectQuestion(serverUrl: string, accountName: string): MessageBoxOpti
 			`They run as ${accountName}, with access to your files and apps. Anyone who controls ` +
 			'that Buddy server can use them through this connection. You can disconnect at any time ' +
 			"in Buddy's Settings → Machines or from the Buddy icon in the taskbar.",
-		buttons: ['Connect', 'Cancel']
+		buttons: ['Connect', 'Cancel'],
+		checkboxLabel: 'Let Buddy suggest and browse folders on this computer (names only)',
+		checkboxChecked: true
 	};
 }
 
@@ -78,7 +92,7 @@ async function pickFolder(
 
 export function createNativeDialogs(parentWindow: () => BrowserWindow | null, accountName: string): Dialogs {
 	return {
-		confirmConnect: (serverUrl, account) => ask(parentWindow(), connectQuestion(serverUrl, account)),
+		confirmConnect: (serverUrl, account) => askToConnect(parentWindow(), connectQuestion(serverUrl, account)),
 
 		chooseFolder: () =>
 			pickFolder(parentWindow(), {
