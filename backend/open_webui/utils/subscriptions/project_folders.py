@@ -1,0 +1,341 @@
+"""Each person's project folder for a chat folder: where Claude and ChatGPT start for its chats.
+
+The choice is stored per person in Config, never in the chat folder's own row.
+A path only means something on one person's computer, and someone who can edit
+a shared chat folder must not be able to point another person's agent at a
+folder. Subfolders follow their nearest parent that has a choice.
+"""
+
+import asyncio
+import re
+import time
+from dataclasses import dataclass, field
+from pathlib import PurePosixPath, PureWindowsPath
+
+from open_webui.models.chats import Chats
+from open_webui.models.config import Config
+from open_webui.models.folders import Folders
+from open_webui.utils.access_control.folders import has_folder_access
+from open_webui.utils.chat_id import is_saved_chat_id
+from open_webui.utils.subscriptions.events import SubscriptionError
+
+# "Let the AI choose": start in the plan's start folder; the agent finds the project.
+MODE_AUTO = 'auto'
+# An exact folder on each computer.
+MODE_FOLDER = 'folder'
+# No files: plans run chat-only for chats in this folder.
+MODE_CHAT = 'chat'
+MODES = (MODE_AUTO, MODE_FOLDER, MODE_CHAT)
+
+MAX_FOLDER_CHOICES = 500
+MAX_PATH_CHARS = 1024
+MAX_PARENT_DEPTH = 32
+MAX_RECENT_PATHS = 5
+
+WINDOWS_EXAMPLE = 'C:\\Users\\you\\code\\project'
+POSIX_EXAMPLE = '/home/you/code/project'
+DRIVE_PREFIX = re.compile(r'^[A-Za-z]:')
+
+
+@dataclass
+class SavedPath:
+    path: str
+    # The computer's revision when the path was chosen; a new one means the computer was set up again.
+    revision: str
+
+
+@dataclass
+class FolderChoice:
+    folder_id: str
+    mode: str
+    paths: dict[str, SavedPath] = field(default_factory=dict)
+    updated_at: int = 0
+    # Filled in when resolved, for messages.
+    folder_name: str = ''
+
+
+# --- Path rules ----------------------------------------------------------------
+
+
+def _not_absolute_message(platform: str | None) -> str:
+    if platform == 'win32':
+        return f'Enter a full path, like {WINDOWS_EXAMPLE}.'
+    if platform:
+        return f'Enter a full path, like {POSIX_EXAMPLE}.'
+    return f'Enter a full path, like {WINDOWS_EXAMPLE} or {POSIX_EXAMPLE}.'
+
+
+def _has_dot_parts(path: str) -> bool:
+    return any(part in ('.', '..') for part in re.split(r'[\\/]', path))
+
+
+def _clean_windows_path(path: str, platform: str | None) -> str:
+    if path.startswith(('\\\\', '//')):
+        raise SubscriptionError("Network paths aren't supported. Choose a folder on one of this computer's drives.")
+    if _has_dot_parts(path):
+        raise SubscriptionError('Use the folder\'s full path without . or .. parts.')
+    windows_path = PureWindowsPath(path.replace('/', '\\'))
+    if not windows_path.drive or not windows_path.root:
+        raise SubscriptionError(_not_absolute_message(platform))
+    if windows_path == PureWindowsPath(windows_path.anchor):
+        raise SubscriptionError('Choose a folder, not a whole drive.')
+    return str(windows_path)
+
+
+def _clean_posix_path(path: str, platform: str | None) -> str:
+    if not path.startswith('/'):
+        raise SubscriptionError(_not_absolute_message(platform))
+    if _has_dot_parts(path):
+        raise SubscriptionError('Use the folder\'s full path without . or .. parts.')
+    posix_path = PurePosixPath(path)
+    if str(posix_path) in ('/', '//'):
+        raise SubscriptionError('Choose a folder, not a whole drive.')
+    return str(posix_path)
+
+
+def clean_project_path(path: str, platform: str | None) -> str:
+    """The path in its tidy form for the computer's platform, or a plain reason it can't be used.
+
+    platform is the computer's sys.platform, or None when Buddy doesn't know it yet.
+    """
+    text = (path or '').strip()
+    if not text:
+        raise SubscriptionError("Enter the folder's full path.")
+    if any(ord(character) < 32 for character in text):
+        raise SubscriptionError("That path has characters Buddy can't use.")
+    if len(text) > MAX_PATH_CHARS:
+        raise SubscriptionError('That path is too long.')
+    if platform == 'win32':
+        return _clean_windows_path(text, platform)
+    if platform:
+        return _clean_posix_path(text, platform)
+    # Unknown platform: a drive letter or a network prefix means Windows.
+    if DRIVE_PREFIX.match(text) or text.startswith(('\\\\', '//')):
+        return _clean_windows_path(text, platform)
+    return _clean_posix_path(text, platform)
+
+
+# --- Storage ---------------------------------------------------------------------
+
+_user_locks: dict[str, asyncio.Lock] = {}
+
+
+def _user_lock(user_id: str) -> asyncio.Lock:
+    lock = _user_locks.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _user_locks[user_id] = lock
+    return lock
+
+
+def choices_key(user_id: str) -> str:
+    return f'subscriptions.users.{user_id}.project_folders'
+
+
+def _parse_paths(value) -> dict[str, SavedPath]:
+    if not isinstance(value, dict):
+        return {}
+    paths = {}
+    for machine_id, saved in value.items():
+        if not isinstance(saved, dict):
+            continue
+        path = saved.get('path')
+        revision = saved.get('revision')
+        if isinstance(machine_id, str) and isinstance(path, str) and path and isinstance(revision, str):
+            paths[machine_id] = SavedPath(path, revision)
+    return paths
+
+
+def _parse_choices(value) -> dict[str, FolderChoice]:
+    """Anything unreadable reads as no choice."""
+    folders = value.get('folders') if isinstance(value, dict) else None
+    if not isinstance(folders, dict):
+        return {}
+    choices = {}
+    for folder_id, entry in folders.items():
+        if not isinstance(folder_id, str) or not isinstance(entry, dict) or entry.get('mode') not in MODES:
+            continue
+        paths = {}
+        if entry['mode'] == MODE_FOLDER:
+            paths = _parse_paths(entry.get('paths'))
+            if not paths:
+                continue
+        updated_at = entry.get('updated_at')
+        if not isinstance(updated_at, int):
+            updated_at = 0
+        choices[folder_id] = FolderChoice(folder_id, entry['mode'], paths, updated_at)
+    return choices
+
+
+def _serialize(choices: dict[str, FolderChoice]) -> dict:
+    folders = {}
+    for folder_id, choice in choices.items():
+        folders[folder_id] = {
+            'mode': choice.mode,
+            'paths': {
+                machine_id: {'path': saved.path, 'revision': saved.revision}
+                for machine_id, saved in choice.paths.items()
+            },
+            'updated_at': choice.updated_at,
+        }
+    return {'version': 1, 'folders': folders}
+
+
+async def load_choices(user_id: str) -> dict[str, FolderChoice]:
+    return _parse_choices(await Config.get(choices_key(user_id), None))
+
+
+async def _without_missing_folders(choices: dict[str, FolderChoice]) -> dict[str, FolderChoice]:
+    if not choices:
+        return choices
+    existing = {folder.id for folder in await Folders.get_folders_by_ids(list(choices))}
+    return {folder_id: choice for folder_id, choice in choices.items() if folder_id in existing}
+
+
+def _without_removed_computers(choices: dict[str, FolderChoice], machine_ids: set[str]) -> dict[str, FolderChoice]:
+    """Forget paths on computers the person no longer has; a folder left with none is forgotten too."""
+    kept = {}
+    for folder_id, choice in choices.items():
+        if choice.mode != MODE_FOLDER:
+            kept[folder_id] = choice
+            continue
+        paths = {machine_id: saved for machine_id, saved in choice.paths.items() if machine_id in machine_ids}
+        if paths:
+            kept[folder_id] = FolderChoice(folder_id, choice.mode, paths, choice.updated_at)
+    return kept
+
+
+async def _store(user_id: str, choices: dict[str, FolderChoice], machine_ids: set[str]) -> None:
+    choices = await _without_missing_folders(choices)
+    choices = _without_removed_computers(choices, machine_ids)
+    if len(choices) > MAX_FOLDER_CHOICES:
+        raise SubscriptionError(f'You can set project folders for up to {MAX_FOLDER_CHOICES} chat folders.')
+    await Config.upsert({choices_key(user_id): _serialize(choices)})
+
+
+async def save_choice(
+    user_id: str, folder_id: str, mode: str, paths: dict[str, SavedPath], machine_ids: set[str]
+) -> None:
+    """Replace this person's choice for one chat folder.
+
+    machine_ids are the computers the person has now; paths on any other
+    computer are forgotten, in every entry.
+    """
+    if mode not in MODES:
+        raise SubscriptionError('Choose how chats in this folder work.')
+    if mode != MODE_FOLDER:
+        paths = {}
+    elif not paths:
+        raise SubscriptionError('Choose a folder on at least one computer.')
+    async with _user_lock(user_id):
+        choices = await load_choices(user_id)
+        choices[folder_id] = FolderChoice(folder_id, mode, dict(paths), int(time.time()))
+        await _store(user_id, choices, machine_ids | set(paths))
+
+
+async def clear_choice(user_id: str, folder_id: str, machine_ids: set[str]) -> None:
+    """Forget this person's choice, so the folder follows its parent again."""
+    async with _user_lock(user_id):
+        choices = await load_choices(user_id)
+        choices.pop(folder_id, None)
+        await _store(user_id, choices, machine_ids)
+
+
+# --- Resolving -------------------------------------------------------------------
+
+
+async def readable_folder(user_id: str, folder_id):
+    """The chat folder, when it still exists and this person may read it."""
+    if not isinstance(folder_id, str) or not folder_id:
+        return None
+    folder = await Folders.get_folder_by_id(folder_id)
+    if folder is None:
+        return None
+    if not await has_folder_access(user_id, folder, 'read', None):
+        return None
+    return folder
+
+
+async def resolve_folder(user_id: str, folder, choices: dict[str, FolderChoice] | None = None):
+    """This person's own choice for the folder, and the one it would follow from a parent folder.
+
+    Returns (own, inherited); each is None when absent. Only this person's
+    entries are read, never anyone else's.
+    """
+    if choices is None:
+        choices = await load_choices(user_id)
+    own = choices.get(folder.id)
+    if own is not None:
+        own.folder_name = folder.name
+    inherited = None
+    seen = {folder.id}
+    parent_id = folder.parent_id
+    depth = 0
+    while parent_id and parent_id not in seen and depth < MAX_PARENT_DEPTH:
+        seen.add(parent_id)
+        depth += 1
+        parent = await Folders.get_folder_by_id(parent_id)
+        if parent is None:
+            break
+        entry = choices.get(parent.id)
+        if entry is not None:
+            entry.folder_name = parent.name
+            inherited = entry
+            break
+        parent_id = parent.parent_id
+    return own, inherited
+
+
+async def choice_for_turn(user_id: str, metadata: dict) -> FolderChoice | None:
+    """The project folder choice for the chat a turn belongs to, or None outside chat folders."""
+    chat_id = metadata.get('chat_id')
+    if is_saved_chat_id(chat_id):
+        folder_id = await Chats.get_chat_folder_id(chat_id, user_id)
+    else:
+        folder_id = metadata.get('folder_id')
+    folder = await readable_folder(user_id, folder_id)
+    if folder is None:
+        return None
+    own, inherited = await resolve_folder(user_id, folder)
+    if own is not None:
+        return own
+    return inherited
+
+
+def turn_project_path(choice: FolderChoice, machine_id: str, machine_name: str, provider_label: str, revision) -> str:
+    """The folder this turn starts in. Messages name the chat folder and computer, never the path:
+    chat errors are stored and can end up in shared links."""
+    saved = choice.paths.get(machine_id)
+    if saved is None:
+        raise SubscriptionError(
+            f'The chat folder “{choice.folder_name}” has a project folder on another computer, not on '
+            f'{machine_name} where {provider_label} runs. Choose one for {machine_name} in the folder\'s '
+            f'settings, or change where {provider_label} runs in Settings → Machines.'
+        )
+    if saved.revision != revision:
+        raise SubscriptionError(
+            f'{machine_name} was set up again after the project folder for “{choice.folder_name}” was '
+            'chosen. Choose it again in the folder\'s settings.'
+        )
+    return saved.path
+
+
+def missing_project_folder_message(choice: FolderChoice, machine_name: str) -> str:
+    return (
+        f'The project folder for “{choice.folder_name}” no longer exists on {machine_name}. '
+        'Choose another in the folder\'s settings, or move this chat out of the folder.'
+    )
+
+
+def recent_paths(choices: dict[str, FolderChoice], machine_id: str, revision) -> list[str]:
+    """Paths already chosen on this computer, newest first."""
+    ordered = sorted(choices.values(), key=lambda choice: choice.updated_at, reverse=True)
+    recent = []
+    for choice in ordered:
+        saved = choice.paths.get(machine_id)
+        if saved is None or saved.revision != revision or saved.path in recent:
+            continue
+        recent.append(saved.path)
+        if len(recent) == MAX_RECENT_PATHS:
+            break
+    return recent
