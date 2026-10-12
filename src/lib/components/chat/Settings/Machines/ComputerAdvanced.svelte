@@ -10,6 +10,7 @@
 		type SubscriptionProviderId
 	} from '$lib/apis/subscriptions';
 	import Spinner from '$lib/components/common/Spinner.svelte';
+	import { draftFromSettings } from './computer-settings';
 
 	const i18n: any = getContext('i18n');
 
@@ -35,8 +36,9 @@
 
 	function show(loaded: ComputerSettings) {
 		settings = loaded;
-		startFolder = loaded.start_folder;
-		cliPaths = { claude: loaded.cli_paths.claude ?? '', codex: loaded.cli_paths.codex ?? '' };
+		const draft = draftFromSettings(loaded);
+		startFolder = draft.startFolder;
+		cliPaths = draft.cliPaths;
 	}
 
 	onMount(async () => {
@@ -92,6 +94,9 @@
 						<li class="break-all">
 							{PLAN_NAMES[providerId]}:
 							<span class="font-mono" dir="ltr">{fromPlans[providerId]?.start_folder || '—'}</span>
+							{#if fromPlans[providerId]?.cli_path}
+								· <span class="font-mono" dir="ltr">{fromPlans[providerId]?.cli_path}</span>
+							{/if}
 						</li>
 					{/if}
 				{/each}
