@@ -3249,6 +3249,10 @@ async function folderNoPlansCase(browser, profile) {
 			assert.ok(readsAfter > readsBefore, 'The plans load again');
 			await page.waitForTimeout(500);
 			assert.equal(projectReads(), readsAfter, 'Loading settles');
+			await waitUntil(
+				async () => (await page.evaluate(() => document.activeElement?.type)) === 'radio',
+				'Focus moves to the folder choices that replaced the button'
+			);
 			assert.equal(await dialog.isVisible(), true, 'The folder settings stay open');
 			assert.equal(fixtures.requests.filter((entry) => entry.method === 'PUT').length, 0);
 		}

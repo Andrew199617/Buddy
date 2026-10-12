@@ -47,6 +47,7 @@
 	let pickingFor: ProjectFolderComputer | null = null;
 	// Why loading again after a plan change failed; what was loaded before still saves.
 	let refreshError = '';
+	let sectionElement: HTMLElement | null = null;
 
 	$: dirty = !sameDraft(draft, saved);
 	$: need = project ? fileAccessNeed(project) : 'ready';
@@ -99,6 +100,21 @@
 		if (!unsaved) startFromSaved();
 	}
 
+	/** Puts keyboard focus back in the section when what had it was replaced. */
+	async function keepFocusInSection() {
+		await tick();
+		const active = document.activeElement;
+		if (active && active !== document.body && active.isConnected) return;
+		if (!sectionElement) return;
+		const name = `project-folder-mode-${folderId}`;
+		const choices = Array.from(
+			sectionElement.querySelectorAll<HTMLInputElement>(`input[name="${name}"]`)
+		);
+		let target: HTMLElement | null = choices.find((choice) => choice.checked) ?? choices[0] ?? null;
+		if (!target) target = sectionElement.querySelector<HTMLElement>('button');
+		target?.focus();
+	}
+
 	// Set while Settings → Machines is open from here; plans may change there.
 	let waitingForSettings = false;
 
@@ -111,6 +127,7 @@
 		waitingForSettings = false;
 		await refresh();
 		announceProjectFolderChange(folderId);
+		await keepFocusInSection();
 	}
 
 	$: if (waitingForSettings && !$showSettings) void settingsClosed();
@@ -140,12 +157,7 @@
 	async function planAllowed() {
 		// The folder page chip and a chat's Project tab list this folder's computers too.
 		announceProjectFolderChange(folderId);
-		await tick();
-		// The choices took the place of the request; keep keyboard focus in the section.
-		const name = `project-folder-mode-${folderId}`;
-		const checked = document.querySelector<HTMLInputElement>(`input[name="${name}"]:checked`);
-		const first = document.querySelector<HTMLInputElement>(`input[name="${name}"]`);
-		(checked ?? first)?.focus();
+		await keepFocusInSection();
 	}
 
 	function computerProviders(computer: ProjectFolderComputer): string {
@@ -230,7 +242,11 @@
 		</button>
 	</div>
 {:else if !hidden && project}
-	<section aria-labelledby="project-folder-heading" class="flex flex-col gap-2">
+	<section
+		bind:this={sectionElement}
+		aria-labelledby="project-folder-heading"
+		class="flex flex-col gap-2"
+	>
 		<div>
 			<h3 id="project-folder-heading" class="text-xs text-gray-500">{$i18n.t('Project folder')}</h3>
 			<p class="mt-0.5 text-[0.6875rem] text-gray-500 dark:text-gray-400">
