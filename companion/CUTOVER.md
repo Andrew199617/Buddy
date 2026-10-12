@@ -65,8 +65,10 @@ Once both providers run on the app's connection:
 2. In Admin Settings → AI plans, remove the PC from **Your Runner addresses (older
    setup)**. Removing it earlier would turn off any provider still using it.
 
-The Projects page now opens the PC through Buddy, including from a phone, so
-the Runner's browser address and pairing are no longer needed.
+Each chat's Project tab opens the PC through Buddy, including from a phone,
+so the Runner's browser address and pairing are no longer needed. Choose
+where Claude and ChatGPT work per chat folder, in its **Project folder**
+setting; see [Project folders](../BUDDY.md#project-folders).
 
 ## Rolling back
 
