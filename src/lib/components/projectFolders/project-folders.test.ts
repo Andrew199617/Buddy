@@ -231,6 +231,18 @@ describe('where new chats run', () => {
 		expect(draftWithRunOn(folder, 'inherit').mode).toBe('inherit');
 	});
 
+	it('comes back to a specific folder after passing through detached or the parent', () => {
+		const folder = { ...emptyDraft('folder'), paths: { 'pc-1': 'C:\site' }, machineId: 'pc-1' };
+		for (const via of ['detached', 'inherit']) {
+			const back = draftWithRunOn(draftWithRunOn(folder, via), 'pc-1');
+			expect(back).toEqual(folder);
+		}
+		const automatic = draftWithRunOn(draftWithRunOn(folder, 'detached'), 'automatic');
+		expect(automatic.mode).toBe('folder');
+		// A computer with no folder picked yet lets the AI choose.
+		expect(draftWithRunOn(draftWithRunOn(folder, 'detached'), 'pc-2').mode).toBe('auto');
+	});
+
 	it('needs a folder on the chosen computer before saving a specific folder', () => {
 		const folder = { ...emptyDraft('folder'), paths: { 'pc-2': 'D:\\x' }, machineId: 'pc-1' };
 		expect(draftProblem(folder)).toEqual({ kind: 'needs_folder', machineId: 'pc-1' });

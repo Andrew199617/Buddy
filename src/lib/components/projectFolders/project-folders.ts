@@ -282,14 +282,23 @@ export function runOnValue(draft: ProjectDraft): string | null {
 }
 
 /** The draft after choosing where new chats run; a folder choice already made is kept. */
+function hasPathFor(draft: ProjectDraft, machineId: string): boolean {
+	if (machineId) return Boolean(draft.paths[machineId]);
+	return Object.values(draft.paths).some(Boolean);
+}
+
 export function draftWithRunOn(draft: ProjectDraft, value: string): ProjectDraft {
 	if (value === RUN_ON_INHERIT) return { ...draft, mode: 'inherit' };
 	if (value === RUN_ON_DETACHED) return { ...draft, mode: 'chat' };
 	let machineId = value;
 	if (value === RUN_ON_AUTOMATIC) machineId = '';
 	let mode = draft.mode;
-	// Coming from no choice or detached, the AI chooses the folder until one is picked.
-	if (mode !== 'auto' && mode !== 'folder') mode = 'auto';
+	// Coming back from no choice or detached: a folder still picked on that computer
+	// (on any, for Automatic) is used again; otherwise the AI chooses.
+	if (mode !== 'auto' && mode !== 'folder') {
+		mode = 'auto';
+		if (hasPathFor(draft, machineId)) mode = 'folder';
+	}
 	return { ...draft, mode, machineId };
 }
 
