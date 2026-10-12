@@ -725,12 +725,27 @@ async def describe_machines(owner_id: str) -> list[dict]:
 async def describe_all_machines() -> list[dict]:
     """Every user's machines, for administrators: owners and status, never keys or settings."""
     server_owner = await server_owner_id()
+    owner_names: dict[str, str] = {}
     machines = []
     for config in await _machine_configs():
         machine = _public_machine(config)
-        machine['owner_id'] = _machine_owner(config, server_owner)
+        owner_id = _machine_owner(config, server_owner)
+        if owner_id and owner_id not in owner_names:
+            owner = await Users.get_user_by_id(owner_id)
+            owner_names[owner_id] = (getattr(owner, 'name', None) or getattr(owner, 'email', None) or owner_id)
+        machine['owner_id'] = owner_id
+        machine['owner_name'] = owner_names.get(owner_id, '')
         machines.append(machine)
     return machines
+
+
+async def admin_delete_machine(machine_id: str) -> None:
+    """An administrator removes anyone's machine, as its owner would."""
+    server_owner = await server_owner_id()
+    config = next((machine for machine in await _machine_configs() if machine['id'] == machine_id), None)
+    if config is None:
+        raise SubscriptionError('That machine no longer exists.')
+    await delete_machine(_machine_owner(config, server_owner), machine_id)
 
 
 def _public_machine(config: dict) -> dict:

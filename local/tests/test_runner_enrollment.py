@@ -217,6 +217,16 @@ class RunnerEnrollmentTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(self.service.SubscriptionError, 'no longer exists'):
             await self.service.relay_connection(OWNER, enrollment['machine_id'])
 
+    async def test_administrators_see_owners_and_can_remove_anyones_computer(self):
+        enrollment = await self.enroll()
+        websocket, _ = await self.connect(self.hello(enrollment))
+        [machine] = await self.service.describe_all_machines()
+        self.assertEqual((machine['owner_id'], machine['online']), (MEMBER, True))
+        self.assertNotIn('credential_hash', machine)
+        await self.service.admin_delete_machine(enrollment['machine_id'])
+        self.assertEqual(websocket.closed_with[0], protocol.CLOSE_UNKNOWN_MACHINE)
+        self.assertEqual(await self.service.describe_all_machines(), [])
+
     async def test_renaming_changes_only_the_name(self):
         enrollment = await self.enroll()
         await self.service.rename_machine(MEMBER, enrollment['machine_id'], '  Studio PC  ')

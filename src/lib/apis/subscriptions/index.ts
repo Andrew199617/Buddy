@@ -56,6 +56,7 @@ export type SubscriptionMachine = {
 	last_seen_at?: number;
 	// Only in the administrators' list of every user's machines.
 	owner_id?: string | null;
+	owner_name?: string;
 };
 
 export type SubscriptionMachineCapabilities = {
@@ -352,6 +353,13 @@ export const getAllSubscriptionMachines = async (
 	token: string
 ): Promise<{ machines: SubscriptionMachine[] }> => {
 	return subscriptionRequest(token, '/admin/machines');
+};
+
+export const deleteAnySubscriptionMachine = async (
+	token: string,
+	machineId: string
+): Promise<{ machines: SubscriptionMachine[] }> => {
+	return subscriptionRequest(token, `/admin/machines/${encodeURIComponent(machineId)}`, 'DELETE');
 };
 
 export const getSubscriptionPolicy = async (token: string): Promise<SubscriptionPolicy> => {
