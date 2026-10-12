@@ -228,6 +228,21 @@ class ChatTargetTests(RunTargetTestCase):
         self.assertEqual((described['would_bind']['machine_id'], described['would_bind']['folder_mode']), ('runner-a', 'auto'))
         self.assertEqual(self.targets.rows, {})
 
+    async def test_a_newer_chat_not_bound_yet_shows_the_default(self):
+        self.config.values['subscriptions.run_targets_started_at'] = 1000
+        self.chats.add('chat-new', OWNER, created_at=2000)
+        described = await self.service.describe_chat_run_target(OWNER_USER, 'chat-new')
+        self.assertFalse(described['bound'])
+        self.assertEqual(described['would_bind']['kind'], 'detached')
+
+    async def test_the_time_targets_started_is_saved_once(self):
+        first = await self.service.mark_run_targets_started()
+        self.assertEqual(self.config.values['subscriptions.run_targets_started_at'], first)
+        self.config.values['subscriptions.run_targets_started_at'] = first + 50
+        self.assertEqual(await self.service.mark_run_targets_started(), first)
+        reloaded = load_service(self.config, ROOT / 'unused-run-target-data')
+        self.assertEqual(await reloaded.mark_run_targets_started(), first + 50)
+
     async def test_only_the_owner_sees_a_chats_target(self):
         await self.bind(self.computer())
         for user, chat_id in ((MEMBER_USER, 'chat-1'), (OWNER_USER, 'temporary:x'), (OWNER_USER, 'missing-chat')):

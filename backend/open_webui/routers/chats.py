@@ -860,6 +860,9 @@ async def import_chats(
 
     try:
         chats = await Chats.import_chats(user.id, form_data.chats, db=db)
+        # Imported chats keep their dates but start like new chats, not where chats from before targets ran.
+        for chat in chats:
+            await bind_chat_target(user, chat.id)
         await publish_event(
             request,
             EVENTS.CHAT_IMPORTED,
