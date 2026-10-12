@@ -356,10 +356,16 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		'folder-edit',
 		'folder-allow',
 		'folder-allow-stale',
-		'folder-allow-beside'
+		'folder-allow-beside',
+		'folder-no-plans'
 	]);
-	// Modes where the folder settings ask to let a Chat-only plan use files.
-	const askingModes = new Set(['folder-allow', 'folder-allow-stale', 'folder-allow-beside']);
+	// Modes where the folder settings ask for something before the choices show.
+	const askingModes = new Set([
+		'folder-allow',
+		'folder-allow-stale',
+		'folder-allow-beside',
+		'folder-no-plans'
+	]);
 	// Modes where every plan that is on is Chat only.
 	const chatOnlyModes = new Set(['folder-allow', 'folder-allow-stale']);
 	const projectRelayBase = '/api/v1/runners/machines/pc-1/workspace';
@@ -398,6 +404,9 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			machine: { id: 'local', name: 'This server', revision: 'local' }
 		}
 	];
+	if (mode === 'folder-no-plans') {
+		folderPlans[0].enable = false;
+	}
 	if (mode === 'folder-allow-beside') {
 		// Claude already opens folders on Work PC; ChatGPT is on there but only chats.
 		folderPlans[1].enable = true;
@@ -869,6 +878,12 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		projectSaves,
 		projectRelayClients,
 		planConfigs,
+		// A plan turned on elsewhere, such as in Settings → Machines.
+		turnOnPlan(id, access) {
+			const plan = folderPlans.find((candidate) => candidate.id === id);
+			plan.enable = true;
+			plan.access = access;
+		},
 		beforeNavigation: async (context) => {
 			await context.routeWebSocket('**/*', (socket) => {
 				webSocketRequests.push(socket.url());
@@ -3053,6 +3068,56 @@ async function folderAllowBesideCase(browser, profile) {
 	);
 }
 
+async function folderNoPlansCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'folder-no-plans',
+		'folder-no-plans',
+		async ({ page }, fixtures) => {
+			const dialog = await openFolderSettings(page);
+			await dialog
+				.getByText(
+					'Claude and ChatGPT aren’t turned on. Turn one on in Settings → Machines to let it work in a folder on your computer.',
+					{ exact: true }
+				)
+				.waitFor();
+			const projectReads = () =>
+				fixtures.requests.filter(
+					(entry) =>
+						entry.method === 'GET' && entry.path === '/api/v1/subscriptions/folders/website/project'
+				).length;
+			const readsBefore = projectReads();
+			await captureScreenshot(page, profile.name + '-folder-no-plans');
+
+			await dialog.getByRole('button', { name: 'Open Settings → Machines', exact: true }).click();
+			const settings = page.locator('.modal').filter({ hasText: 'AI plans' });
+			await settings.waitFor();
+			fixtures.turnOnPlan('claude', 'full');
+			// Phones show Settings as a page with its own close button.
+			let closeSettings = page.locator('#settings-tabs-container').getByRole('button', {
+				name: 'Back',
+				exact: true
+			});
+			if (profile.mobile) {
+				closeSettings = settings.getByRole('button', { name: 'Close Settings', exact: true });
+			}
+			await closeSettings.click();
+			await settings.waitFor({ state: 'hidden' });
+
+			// Back in the folder settings, which load the plans again; the folder chip
+			// and Project tab follow the change too.
+			await dialog.getByText('Let the AI choose', { exact: true }).waitFor();
+			const readsAfter = projectReads();
+			assert.ok(readsAfter > readsBefore, 'The plans load again');
+			await page.waitForTimeout(500);
+			assert.equal(projectReads(), readsAfter, 'Loading settles');
+			assert.equal(await dialog.isVisible(), true, 'The folder settings stay open');
+			assert.equal(fixtures.requests.filter((entry) => entry.method === 'PUT').length, 0);
+		}
+	);
+}
+
 const { chromium } = await import(process.env.BUDDY_PLAYWRIGHT_MODULE || 'playwright');
 mkdirSync(outputDirectory, { recursive: true });
 const browser = await chromium.launch({ headless: true });
@@ -3067,6 +3132,7 @@ try {
 		await folderAllowCase(browser, profile);
 		await folderAllowStaleCase(browser, profile);
 		await folderAllowBesideCase(browser, profile);
+		await folderNoPlansCase(browser, profile);
 		await cancellationCase(browser, profile, 'x');
 		await cancellationCase(browser, profile, 'escape');
 		await cancellationCase(browser, profile, 'backdrop');

@@ -12,6 +12,7 @@
 		type ProjectFolderComputer
 	} from '$lib/apis/subscriptions';
 	import Spinner from '$lib/components/common/Spinner.svelte';
+	import { showSettings } from '$lib/stores';
 	import PlanAccessRequest from './PlanAccessRequest.svelte';
 	import ProjectFolderPicker from './ProjectFolderPicker.svelte';
 	import { announceProjectFolderChange } from './project-folder-changes';
@@ -49,7 +50,7 @@
 	async function fetchProject() {
 		const loaded = await getFolderProject(localStorage.token, folderId);
 		// Null: not allowed to use computers, or the folder is gone; nothing to choose here.
-		hidden = loaded === null || !loaded.has_plans;
+		hidden = loaded === null;
 		project = loaded;
 		if (loaded) {
 			saved = draftFromProject(loaded);
@@ -85,6 +86,22 @@
 		}
 		if (unsaved) draft = unsaved;
 	}
+
+	// Set while Settings → Machines is open from here; plans may change there.
+	let waitingForSettings = false;
+
+	function openMachineSettings() {
+		waitingForSettings = true;
+		showSettings.set('machines');
+	}
+
+	async function settingsClosed() {
+		waitingForSettings = false;
+		await refresh();
+		announceProjectFolderChange(folderId);
+	}
+
+	$: if (waitingForSettings && !$showSettings) void settingsClosed();
 
 	async function planAllowed() {
 		// The folder page chip and a chat's Project tab list this folder's computers too.
@@ -202,11 +219,26 @@
 		{:else if need === 'allow'}
 			<PlanAccessRequest plans={allowablePlans} reload={refresh} onAllowed={planAllowed} />
 		{:else if need !== 'ready'}
-			<p class="text-xs text-gray-600 dark:text-gray-300">
-				{$i18n.t(
-					"Your plans are set to Chat only, so they don't open folders. Change their access in Settings → Machines."
-				)}
-			</p>
+			<div class="flex flex-col gap-1.5">
+				<p class="text-xs text-gray-600 dark:text-gray-300">
+					{#if need === 'computer'}
+						{$i18n.t(
+							'The plans you turned on have no computer they can use. Choose one in Settings → Machines.'
+						)}
+					{:else}
+						{$i18n.t(
+							'Claude and ChatGPT aren’t turned on. Turn one on in Settings → Machines to let it work in a folder on your computer.'
+						)}
+					{/if}
+				</p>
+				<button
+					type="button"
+					class="min-h-11 self-start rounded-lg border border-gray-100 px-3 text-xs font-medium hover:bg-gray-100 dark:border-gray-850 dark:hover:bg-gray-850 md:min-h-8"
+					on:click={openMachineSettings}
+				>
+					{$i18n.t('Open Settings → Machines')}
+				</button>
+			</div>
 		{:else}
 			<div class="flex flex-col gap-1.5" role="radiogroup" aria-labelledby="project-folder-heading">
 				{#if waitsForOwnChoice(project)}
