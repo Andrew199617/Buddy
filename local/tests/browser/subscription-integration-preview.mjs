@@ -350,7 +350,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	}
 
 	// --- Chat folders' project folders and the chat's Project tab -------------
-	const projectModes = new Set(['project-tab', 'folder-chip']);
+	const projectModes = new Set(['project-tab', 'folder-chip', 'folder-edit']);
 	const projectRelayBase = '/api/v1/runners/machines/pc-1/workspace';
 	const workPc = {
 		machine_id: 'pc-1',
@@ -498,14 +498,17 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			requests.push({ method, path, body: request.postDataJSON() });
 			if (method === 'PUT') {
 				const body = request.postDataJSON();
-				projectChoice = {
-					folder_id: 'website',
-					folder_name: 'Website',
-					mode: body.mode,
-					paths: {}
-				};
+				const paths = {};
+				for (const [machineId, path] of Object.entries(body.paths || {})) {
+					paths[machineId] = { path, problem: null };
+				}
+				projectChoice = { folder_id: 'website', folder_name: 'Website', mode: body.mode, paths };
 			}
 			reply = folderProject();
+		} else if (path === '/api/v1/subscriptions/machines/pc-1/folders/check' && method === 'POST') {
+			const body = request.postDataJSON();
+			requests.push({ method, path, body });
+			reply = { path: body.path };
 		} else if (path.startsWith(projectRelayBase + '/')) {
 			requests.push({ method, path });
 			reply = await routeProjectRelay(route, request, url, path.slice(projectRelayBase.length));
@@ -522,7 +525,8 @@ function createFixtures(mode = 'normal', role = 'admin') {
 
 	let sessionOptions = {};
 	if (mode === 'project-tab') sessionOptions = { folderId: 'website' };
-	if (mode === 'folder-chip') sessionOptions = { path: '/folders/website' };
+	if (mode === 'folder-chip' || mode === 'folder-edit')
+		sessionOptions = { path: '/folders/website' };
 
 	async function routeRequest(route) {
 		const request = route.request();
@@ -2738,6 +2742,23 @@ async function projectTabCase(browser, profile) {
 		assert.equal(fixtures.projectSaves[0].baseVersion, 'readme-1');
 		assert.equal(fixtures.projectSaves[0].overwrite, false);
 
+		// The tab keeps its open file while the panel shows another tab or closes.
+		await editor.fill('# Site\nKept while away\n');
+		await panel.getByRole('button', { name: 'Controls', exact: true }).click();
+		await panel.getByRole('button', { name: 'Project', exact: true }).click();
+		assert.equal(await editor.inputValue(), '# Site\nKept while away\n');
+		await panel.getByRole('button', { name: 'Close', exact: true }).first().click();
+		await page
+			.locator('.buddy-chat-header')
+			.getByRole('button', { name: 'Controls', exact: true })
+			.click();
+		await editor.waitFor();
+		assert.equal(
+			await editor.inputValue(),
+			'# Site\nKept while away\n',
+			'Closing the panel keeps unsaved edits'
+		);
+
 		await editor.fill('# Site\nHello once more\n');
 		await panel.getByRole('button', { name: 'Save', exact: true }).click();
 		await panel.getByText(/README\.md changed on Work PC after you opened it/).waitFor();
@@ -2803,6 +2824,35 @@ async function folderChipCase(browser, profile) {
 	});
 }
 
+async function folderEditCase(browser, profile) {
+	await runCase(browser, profile, 'folder-edit', 'folder-edit', async ({ page }, fixtures) => {
+		await page.locator('button[aria-label="Folder options"]').click();
+		await page.getByRole('button', { name: 'Edit', exact: true }).click();
+		const dialog = page.locator('.modal').filter({ hasText: 'Project folder' });
+		await dialog.getByRole('button', { name: 'Change', exact: true }).click();
+		const pathInput = dialog.getByLabel('Folder path', { exact: true });
+		await pathInput.fill('C:\\code\\docs');
+		await pathInput.press('Enter');
+		await dialog.getByText('C:\\code\\docs', { exact: true }).waitFor();
+		assert.equal(
+			await dialog.isVisible(),
+			true,
+			'Enter in the path picker does not submit the dialog'
+		);
+		assert.equal(fixtures.requests.filter((request) => request.method === 'PUT').length, 0);
+		await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+		await dialog.waitFor({ state: 'hidden' });
+		const saved = fixtures.requests.filter((request) => request.method === 'PUT');
+		assert.deepEqual(saved[0].body, {
+			mode: 'folder',
+			paths: { 'pc-1': 'C:\\code\\docs' }
+		});
+		await page
+			.getByRole('button', { name: 'Project folder: Work PC · docs', exact: true })
+			.waitFor();
+	});
+}
+
 const { chromium } = await import(process.env.BUDDY_PLAYWRIGHT_MODULE || 'playwright');
 mkdirSync(outputDirectory, { recursive: true });
 const browser = await chromium.launch({ headless: true });
@@ -2813,6 +2863,7 @@ try {
 	]) {
 		await projectTabCase(browser, profile);
 		await folderChipCase(browser, profile);
+		await folderEditCase(browser, profile);
 		await cancellationCase(browser, profile, 'x');
 		await cancellationCase(browser, profile, 'escape');
 		await cancellationCase(browser, profile, 'backdrop');
