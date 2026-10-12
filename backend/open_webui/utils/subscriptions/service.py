@@ -35,6 +35,7 @@ from open_webui.env import DATA_DIR, UVICORN_WORKERS
 from open_webui.models.config import Config
 from open_webui.models.groups import Groups
 from open_webui.models.models import Models
+from open_webui.models.subscription_credentials import KIND_API_KEY, KIND_PLAN_TOKEN, SubscriptionCredentials
 from open_webui.models.users import Users
 from open_webui.utils.chat_id import CHANNEL_CHAT_ID_PREFIX
 from open_webui.utils.payload import apply_model_params_to_body_openai, apply_system_prompt_to_body
@@ -43,6 +44,10 @@ from open_webui.utils.subscriptions.codex import CodexProvider
 from open_webui.utils.subscriptions.common import (
     ACCESS_CHAT,
     ACCESS_LEVELS,
+    CREDENTIAL_API_KEY,
+    CREDENTIAL_MACHINE,
+    CREDENTIAL_MODES,
+    CREDENTIAL_PLAN_TOKEN,
     SUBSCRIPTION_OWNED_BY,
     ProviderModel,
     ProviderSettings,
@@ -96,6 +101,12 @@ PROVIDER_IDS = ('claude', 'codex')
 PROVIDER_LABELS = {'claude': 'Claude', 'codex': 'ChatGPT'}
 MODEL_ID_PREFIXES = {'claude': 'claude-code', 'codex': 'codex'}
 MODEL_TAGS = {'claude': 'Claude plan', 'codex': 'ChatGPT plan'}
+API_KEY_MODEL_TAGS = {'claude': 'Anthropic API key', 'codex': 'OpenAI API key'}
+API_KEY_LABELS = {'claude': 'Anthropic API key', 'codex': 'OpenAI API key'}
+# A token from ``claude setup-token`` lasts a year; warn this long before it ends.
+PLAN_TOKEN_DAYS = 365
+CREDENTIAL_EXPIRY_WARNING_DAYS = 30
+MAX_SECRET_LENGTH = 1024
 
 # Who may connect their own computers and use AI plans on them.
 POLICY_ALL = 'all'
@@ -355,8 +366,10 @@ async def _finish_cancelled_cleanup(operation) -> None:
 class TrackingMachine:
     """One provider's stable machine handle, revoked on authority changes."""
 
-    def __init__(self, machine):
+    def __init__(self, machine, credential_env: dict | None = None):
         self.machine = machine
+        # The token or API key the CLI signs in with, when Buddy keeps one for the user.
+        self.credential_env = dict(credential_env or {})
         self.valid = True
         self.processes = set()
         self.startups = set()
@@ -415,6 +428,8 @@ class TrackingMachine:
 
     async def start_process(self, args, cwd, extra_env=None, temp_files=None):
         self._check()
+        if self.credential_env:
+            extra_env = {**self.credential_env, **(extra_env or {})}
         startup = asyncio.create_task(self._start_process_owned(args, cwd, extra_env, temp_files))
         self.startups.add(startup)
         startup.add_done_callback(self.startups.discard)
@@ -527,13 +542,31 @@ def _require_provider_cleanup(ref: ProviderRef) -> None:
         tracked._check_cleanup()
 
 
-def _tracking_machine(ref: ProviderRef, machine) -> TrackingMachine:
+def _tracking_machine(ref: ProviderRef, machine, credential_env: dict | None = None) -> TrackingMachine:
     _require_provider_cleanup(ref)
     tracked = _tracked_machines.get(ref)
     if tracked is None or tracked.machine is not machine or not tracked.valid:
-        tracked = TrackingMachine(machine)
+        tracked = TrackingMachine(machine, credential_env)
         _tracked_machines[ref] = tracked
     return tracked
+
+
+async def _tracked(ref: ProviderRef, settings: ProviderSettings) -> TrackingMachine:
+    """The provider's machine handle, with the sign-in Buddy gives its CLI.
+
+    A credential change always quiesces the provider first, which drops the
+    old handle, so a kept handle never carries an old token or key.
+    """
+    credential_mode = await _load_credential_mode(ref)
+    await _require_allowed_credential(ref, credential_mode)
+    machine = await get_machine(ref.owner_id, settings.machine_id)
+    credential_env = await _credential_env(ref, credential_mode)
+    provider = await get_provider(ref)
+    if isinstance(provider, CodexProvider):
+        provider.use_credential(credential_mode, await _codex_api_key(ref, credential_mode))
+    else:
+        provider.credential_mode = credential_mode
+    return _tracking_machine(ref, machine, credential_env)
 
 
 async def _quiesce_provider(ref: ProviderRef) -> None:
@@ -1273,7 +1306,7 @@ async def start_login(
         settings = await _load_settings(ref)
         await _check_expected_machine(owner_id, settings, expected_machine_id, expected_machine_revision, mutation=True)
         await _quiesce_provider(ref)
-        machine = _tracking_machine(ref, await get_machine(owner_id, settings.machine_id))
+        machine = await _tracked(ref, settings)
         return await (await get_provider(ref)).start_login(settings, machine, method)
 
 
@@ -1337,7 +1370,15 @@ async def logout(
         settings = await _load_settings(ref)
         await _check_expected_machine(owner_id, settings, expected_machine_id, expected_machine_revision, mutation=True)
         await _quiesce_provider(ref)
-        machine = _tracking_machine(ref, await get_machine(owner_id, settings.machine_id))
+        credential_mode = await _load_credential_mode(ref)
+        if credential_mode != CREDENTIAL_MACHINE:
+            # The token or key is Buddy's to forget. The computer's own CLI
+            # sign-in is not touched.
+            await SubscriptionCredentials.delete(owner_id, provider_id, credential_mode)
+            await Config.upsert({await _credential_mode_key(ref): CREDENTIAL_MACHINE})
+            invalidate(ref)
+            return
+        machine = await _tracked(ref, settings)
         try:
             await (await get_provider(ref)).logout(settings, machine)
         finally:
@@ -1391,13 +1432,143 @@ async def forget_user(user_id: str) -> None:
         if user_id != server_owner:
             for ref in refs:
                 updates[await _settings_key(ref)] = {}
+        for ref in refs:
+            updates[await _credential_mode_key(ref)] = CREDENTIAL_MACHINE
         await Config.upsert(updates)
+        await SubscriptionCredentials.delete_user(user_id)
         for ref in refs:
             _providers.pop(ref, None)
             invalidate(ref)
     for machine_id in removed_runner_ids:
         _tunnel_machines.pop(machine_id, None)
         await HUB.disconnect(machine_id, CLOSE_UNKNOWN_MACHINE, REMOVED_MACHINE_MESSAGE)
+
+
+# Stored sign-ins and API keys
+
+
+async def _credential_mode_key(ref: ProviderRef) -> str:
+    return f'{await _settings_key(ref)}.credential'
+
+
+async def _load_credential_mode(ref: ProviderRef) -> str:
+    stored = await Config.get(await _credential_mode_key(ref), CREDENTIAL_MACHINE)
+    if stored in CREDENTIAL_MODES:
+        return stored
+    return CREDENTIAL_MACHINE
+
+
+async def _require_allowed_credential(ref: ProviderRef, credential_mode: str) -> None:
+    """Refuse a sign-in the administrator's policy turned off."""
+    policy = await get_policy()
+    if credential_mode == CREDENTIAL_API_KEY:
+        if not policy.api_keys:
+            raise SubscriptionError('API keys are turned off on this Buddy. Ask an administrator.')
+        return
+    if not policy.plan_sign_in:
+        raise SubscriptionError(
+            f'Signing in with a {PROVIDER_LABELS[ref.provider_id]} plan is turned off on this Buddy. '
+            f'Add your own {API_KEY_LABELS[ref.provider_id]} in Settings → Machines.'
+        )
+
+
+async def _credential_env(ref: ProviderRef, credential_mode: str) -> dict:
+    """Environment variables that sign Claude Code in with what Buddy keeps for the user."""
+    if ref.provider_id != 'claude' or credential_mode == CREDENTIAL_MACHINE:
+        return {}
+    secret = await SubscriptionCredentials.secret(ref.owner_id, ref.provider_id, credential_mode)
+    if not secret:
+        raise SubscriptionError('Your stored Claude sign-in is missing. Add it again in Settings → Machines.')
+    if credential_mode == CREDENTIAL_PLAN_TOKEN:
+        return {'CLAUDE_CODE_OAUTH_TOKEN': secret}
+    return {'ANTHROPIC_API_KEY': secret}
+
+
+async def _codex_api_key(ref: ProviderRef, credential_mode: str) -> str | None:
+    if credential_mode != CREDENTIAL_API_KEY:
+        return None
+    secret = await SubscriptionCredentials.secret(ref.owner_id, ref.provider_id, KIND_API_KEY)
+    if not secret:
+        raise SubscriptionError('Your OpenAI API key is missing. Add it again in Settings → Machines.')
+    return secret
+
+
+async def _describe_credential(ref: ProviderRef) -> dict:
+    """Which sign-in the provider uses and what Buddy keeps for it: fingerprints and expiry, never secrets."""
+    stored = {}
+    now = int(time.time())
+    for credential in await SubscriptionCredentials.describe(ref.owner_id):
+        if credential.provider != ref.provider_id:
+            continue
+        entry = {'fingerprint': credential.fingerprint, 'expires_at': credential.expires_at}
+        if credential.expires_at is not None:
+            entry['expires_soon'] = credential.expires_at - now <= CREDENTIAL_EXPIRY_WARNING_DAYS * 86400
+        stored[credential.kind] = entry
+    return {'mode': await _load_credential_mode(ref), 'stored': stored}
+
+
+def _clean_secret(secret: str, what: str) -> str:
+    secret = (secret or '').strip()
+    if not secret or len(secret) > MAX_SECRET_LENGTH or any(character.isspace() for character in secret):
+        raise SubscriptionError(f'Paste the whole {what}, without spaces.')
+    return secret
+
+
+async def _use_credential(ref: ProviderRef, credential_mode: str) -> None:
+    """Switch the provider to a sign-in; called with its lock held. Running work stops first."""
+    await Config.upsert({await _credential_mode_key(ref): credential_mode})
+    await _quiesce_provider(ref)
+    invalidate(ref)
+
+
+async def save_api_key(owner_id: str, provider_id: str, api_key: str) -> dict:
+    """Keep the user's own API key and use it for this provider on all their machines."""
+    ref = _ref(owner_id, provider_id)
+    _require_single_worker()
+    await _require_allowed_credential(ref, CREDENTIAL_API_KEY)
+    api_key = _clean_secret(api_key, API_KEY_LABELS[provider_id])
+    async with _provider_lock(ref):
+        await SubscriptionCredentials.save(owner_id, provider_id, KIND_API_KEY, api_key)
+        await _use_credential(ref, CREDENTIAL_API_KEY)
+    return await _describe_credential(ref)
+
+
+async def save_plan_token(owner_id: str, token: str) -> dict:
+    """Keep a one-year Claude token from ``claude setup-token`` and use it on all the user's machines."""
+    ref = _ref(owner_id, 'claude')
+    _require_single_worker()
+    await _require_allowed_credential(ref, CREDENTIAL_PLAN_TOKEN)
+    token = _clean_secret(token, 'Claude token')
+    if not token.startswith('sk-ant-oat'):
+        raise SubscriptionError('That is not a Claude token. Run claude setup-token and paste the token it prints.')
+    expires_at = int(time.time()) + PLAN_TOKEN_DAYS * 86400
+    async with _provider_lock(ref):
+        await SubscriptionCredentials.save(owner_id, 'claude', KIND_PLAN_TOKEN, token, expires_at)
+        await _use_credential(ref, CREDENTIAL_PLAN_TOKEN)
+    return await _describe_credential(ref)
+
+
+async def delete_credential(owner_id: str, provider_id: str, kind: str) -> dict:
+    """Forget a stored token or key; a provider using it goes back to the computer's own sign-in."""
+    ref = _ref(owner_id, provider_id)
+    if kind not in (KIND_API_KEY, KIND_PLAN_TOKEN):
+        raise SubscriptionError('Unknown kind of sign-in.')
+    _require_single_worker()
+    async with _provider_lock(ref):
+        await SubscriptionCredentials.delete(owner_id, provider_id, kind)
+        if await _load_credential_mode(ref) == kind:
+            await _use_credential(ref, CREDENTIAL_MACHINE)
+    return await _describe_credential(ref)
+
+
+async def use_machine_sign_in(owner_id: str, provider_id: str) -> dict:
+    """Use the CLI's own sign-in on the computer, keeping any stored token or key for later."""
+    ref = _ref(owner_id, provider_id)
+    _require_single_worker()
+    async with _provider_lock(ref):
+        if await _load_credential_mode(ref) != CREDENTIAL_MACHINE:
+            await _use_credential(ref, CREDENTIAL_MACHINE)
+    return await _describe_credential(ref)
 
 
 # Cached status and model lists
@@ -1494,7 +1665,7 @@ async def _load_status(ref: ProviderRef) -> dict:
             settings = await _load_settings(ref)
             await _require_verified_machine(ref, settings)
             _require_provider_cleanup(ref)
-            machine = _tracking_machine(ref, await get_machine(ref.owner_id, settings.machine_id))
+            machine = await _tracked(ref, settings)
             _active_provider_tasks.setdefault(ref, set()).add(task)
         return await (await get_provider(ref)).status(settings, machine)
     except (SubscriptionError, OSError) as error:
@@ -1516,7 +1687,7 @@ async def _load_models(ref: ProviderRef) -> list[ProviderModel]:
             settings = await _load_settings(ref)
             await _require_verified_machine(ref, settings)
             _require_provider_cleanup(ref)
-            machine = _tracking_machine(ref, await get_machine(ref.owner_id, settings.machine_id))
+            machine = await _tracked(ref, settings)
             _active_provider_tasks.setdefault(ref, set()).add(task)
         return await (await get_provider(ref)).list_models(settings, machine)
     except Exception as error:
@@ -1532,7 +1703,11 @@ models_cache = CachedLoader(MODELS_TTL_SECONDS, _load_models)
 
 
 def uses_plan(provider_status: dict) -> bool:
-    """Signed in with a Claude or ChatGPT plan, not an account that bills the API."""
+    """Signed in the way Buddy expects: a plan, or the user's own API key when they chose one.
+
+    Providers flag any other sign-in with api_billing, for example an API
+    account on a machine where a plan was expected.
+    """
     return bool(provider_status.get('signed_in')) and not provider_status.get('api_billing')
 
 
@@ -1575,7 +1750,7 @@ async def _describe_provider_snapshot(
         if execution_ready:
             try:
                 _require_provider_cleanup(ref)
-                machine = _tracking_machine(ref, await get_machine(ref.owner_id, settings.machine_id))
+                machine = await _tracked(ref, settings)
             except SubscriptionError as error:
                 execution_ready = False
                 readiness_message = str(error)
@@ -1608,6 +1783,7 @@ async def _describe_provider_snapshot(
     public_machine = {'id': settings.machine_id, 'name': machine_name}
     if revision is not None:
         public_machine['revision'] = revision
+    credential = await _describe_credential(ref)
     return {
         'id': ref.provider_id,
         'name': PROVIDER_LABELS[ref.provider_id],
@@ -1617,6 +1793,7 @@ async def _describe_provider_snapshot(
         'models': models,
         'machine': public_machine,
         'default_workspace': default_workspace,
+        'credential': credential,
     }
 
 
@@ -1627,7 +1804,10 @@ def _model_id(provider_id: str, model: ProviderModel) -> str:
     return f'{MODEL_ID_PREFIXES[provider_id]}.{model.key}'
 
 
-def _model_entry(provider_id: str, model: ProviderModel) -> dict:
+def _model_entry(provider_id: str, model: ProviderModel, credential_mode: str = CREDENTIAL_MACHINE) -> dict:
+    tag = MODEL_TAGS[provider_id]
+    if credential_mode == CREDENTIAL_API_KEY:
+        tag = API_KEY_MODEL_TAGS[provider_id]
     return {
         'id': _model_id(provider_id, model),
         'name': model.name,
@@ -1635,7 +1815,7 @@ def _model_entry(provider_id: str, model: ProviderModel) -> dict:
         'created': 0,
         'owned_by': SUBSCRIPTION_OWNED_BY,
         'connection_type': 'external',
-        'tags': [{'name': MODEL_TAGS[provider_id]}],
+        'tags': [{'name': tag}],
         'subscription': {
             'provider': provider_id,
             'model': model.value,
@@ -1659,13 +1839,18 @@ async def _provider_models(ref: ProviderRef) -> list[dict]:
         return []
     if not settings.enable:
         return []
+    credential_mode = await _load_credential_mode(ref)
+    try:
+        await _require_allowed_credential(ref, credential_mode)
+    except SubscriptionError:
+        return []
     provider_status = await _cached_for_model_list(status_cache, ref) or {}
     if not uses_plan(provider_status):
         return []
     models = await _cached_for_model_list(models_cache, ref) or []
     if generation != _provider_generations.get(ref, 0):
         return []
-    return [_model_entry(ref.provider_id, model) for model in models]
+    return [_model_entry(ref.provider_id, model, credential_mode) for model in models]
 
 
 async def _cached_for_model_list(cache: CachedLoader, ref: ProviderRef) -> Any:
@@ -1857,7 +2042,7 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
         async with _provider_lock(ref):
             if generation != _provider_generations.get(ref, 0):
                 raise SubscriptionError('The provider machine changed; refresh before starting another turn.')
-            machine = _tracking_machine(ref, await get_machine(ref.owner_id, settings.machine_id))
+            machine = await _tracked(ref, settings)
             access = _turn_access(settings, metadata)
             if foreign_preset:
                 access = ACCESS_CHAT

@@ -103,6 +103,41 @@ class FakeCodexProvider(FakeProvider):
             self.observe_cleanup()
         self.calls.append('stop')
 
+    def use_credential(self, credential_mode, api_key):
+        self.credential_mode = credential_mode
+        self.api_key = api_key
+
+
+class MemoryCredentials:
+    """Stored sign-ins in memory, with the same methods as SubscriptionCredentials."""
+
+    def __init__(self):
+        self.secrets = {}
+
+    async def save(self, user_id, provider, kind, secret, expires_at=None):
+        self.secrets[(user_id, provider, kind)] = (secret, expires_at)
+        return self._describe(user_id, provider, kind)
+
+    async def secret(self, user_id, provider, kind):
+        stored = self.secrets.get((user_id, provider, kind))
+        return stored[0] if stored else None
+
+    def _describe(self, user_id, provider, kind):
+        secret, expires_at = self.secrets[(user_id, provider, kind)]
+        return types.SimpleNamespace(
+            user_id=user_id, provider=provider, kind=kind, fingerprint='…' + secret[-4:], expires_at=expires_at,
+        )
+
+    async def describe(self, user_id):
+        return [self._describe(*key) for key in self.secrets if key[0] == user_id]
+
+    async def delete(self, user_id, provider, kind):
+        return self.secrets.pop((user_id, provider, kind), None) is not None
+
+    async def delete_user(self, user_id):
+        for key in [key for key in self.secrets if key[0] == user_id]:
+            del self.secrets[key]
+
 
 class FakeLocalMachine:
     id = 'local'
@@ -179,6 +214,9 @@ def load_service(config, data_dir):
         'Models': types.SimpleNamespace(),
         'Users': FakeUsers(),
         'Groups': FakeGroups(),
+        'SubscriptionCredentials': MemoryCredentials(),
+        'KIND_API_KEY': 'api_key',
+        'KIND_PLAN_TOKEN': 'plan_token',
         'CHANNEL_CHAT_ID_PREFIX': 'channel:',
         'ClaudeCodeProvider': FakeProvider,
         'CodexProvider': FakeCodexProvider,
@@ -200,7 +238,8 @@ def load_service(config, data_dir):
             common_nodes.append(node)
         if isinstance(node, ast.Assign):
             names = {target.id for target in node.targets if isinstance(target, ast.Name)}
-            if names & {'ACCESS_CHAT', 'ACCESS_READ', 'ACCESS_FULL', 'ACCESS_LEVELS'}:
+            if names & {'ACCESS_CHAT', 'ACCESS_READ', 'ACCESS_FULL', 'ACCESS_LEVELS', 'CREDENTIAL_MACHINE',
+                         'CREDENTIAL_PLAN_TOKEN', 'CREDENTIAL_API_KEY', 'CREDENTIAL_MODES'}:
                 common_nodes.append(node)
     error_nodes = []
     machines_tree = ast.parse((SUBSCRIPTIONS / 'machines.py').read_text(encoding='utf-8'))

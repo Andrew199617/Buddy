@@ -20,7 +20,13 @@ Routes:
   GET    /{provider}/login         — sign-in progress
   POST   /{provider}/login/code    — paste the code shown after approving (Claude)
   DELETE /{provider}/login         — cancel signing in
-  POST   /{provider}/logout        — sign the CLI out
+  POST   /{provider}/logout        — sign the CLI out, or forget the stored token or key it uses
+  PUT    /{provider}/credentials/api_key    — keep the user's own API key and use it everywhere
+  PUT    /claude/credentials/plan_token     — keep a one-year Claude token and use it everywhere
+  DELETE /{provider}/credentials/{kind}     — forget a stored token or key
+  POST   /{provider}/credentials/machine    — use the computer's own sign-in again
+
+Stored tokens and keys never come back: responses show a fingerprint and expiry.
 """
 
 import asyncio
@@ -80,6 +86,14 @@ class MachineVerifyForm(BaseModel):
 
 class MachineRenameForm(BaseModel):
     name: str
+
+
+class ApiKeyForm(BaseModel):
+    key: str
+
+
+class PlanTokenForm(BaseModel):
+    token: str
 
 
 class PolicyForm(BaseModel):
@@ -292,3 +306,39 @@ async def logout_subscription(
         user.id, provider_id, fresh=True, expected_machine_id=expected_machine_id,
         expected_machine_revision=expected_machine_revision
     )
+
+
+@router.put('/{provider_id}/credentials/api_key')
+async def save_api_key(provider_id: str, form_data: ApiKeyForm, user=Depends(get_machine_session_user)):
+    try:
+        await service.save_api_key(user.id, provider_id, form_data.key)
+    except SubscriptionError as error:
+        raise _bad_request(error)
+    return await service.describe_provider(user.id, provider_id, fresh=True)
+
+
+@router.put('/claude/credentials/plan_token')
+async def save_plan_token(form_data: PlanTokenForm, user=Depends(get_machine_session_user)):
+    try:
+        await service.save_plan_token(user.id, form_data.token)
+    except SubscriptionError as error:
+        raise _bad_request(error)
+    return await service.describe_provider(user.id, 'claude', fresh=True)
+
+
+@router.delete('/{provider_id}/credentials/{kind}')
+async def delete_credential(provider_id: str, kind: str, user=Depends(get_machine_session_user)):
+    try:
+        await service.delete_credential(user.id, provider_id, kind)
+    except SubscriptionError as error:
+        raise _bad_request(error)
+    return await service.describe_provider(user.id, provider_id, fresh=True)
+
+
+@router.post('/{provider_id}/credentials/machine')
+async def use_machine_sign_in(provider_id: str, user=Depends(get_machine_session_user)):
+    try:
+        await service.use_machine_sign_in(user.id, provider_id)
+    except SubscriptionError as error:
+        raise _bad_request(error)
+    return await service.describe_provider(user.id, provider_id, fresh=True)
