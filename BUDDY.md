@@ -225,7 +225,7 @@ date.
 
 ### Policy for administrators
 
-**Admin Settings → Connections → Subscriptions** sets:
+**Admin Settings → AI plans** sets:
 
 - **Who can connect computers and use AI plans**: everyone, selected groups,
   or administrators only. Computers of people who are no longer allowed
@@ -291,7 +291,7 @@ Notes:
 
 Before the app, the instance owner ran the Buddy Runner by hand and added it by
 address. This keeps working until production has moved to the app, and is
-listed as **Your Runner addresses (older setup)** in admin Connections:
+listed as **Your Runner addresses (older setup)** in Admin Settings → AI plans:
 
 1. On that computer, run `local\start-buddy-runner.ps1` from this checkout in
    PowerShell. From Command Prompt, or where PowerShell scripts are disabled,

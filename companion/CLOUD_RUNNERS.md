@@ -117,7 +117,7 @@ records feed the invoices.
 - **Settings → Machines**, when granted: a **Cloud computer** card with
   Create, Start or Stop, status, this month's hours and a link to its
   workspace in Projects.
-- **Admin Connections**: the policy above, and cloud Runners in **Everyone's
+- **Admin Settings → AI plans**: the policy above, and cloud Runners in **Everyone's
   computers**, marked as cloud, with their usage.
 
 ## Open questions
