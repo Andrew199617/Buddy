@@ -422,6 +422,19 @@ export type ProjectFolderChoice = {
 	mode: ProjectFolderMode;
 	// Machine ID to path; only for mode 'folder'.
 	paths: Record<string, ProjectFolderPath>;
+	// What new chats in the folder start with; '' follows the usual default.
+	machine_id: string;
+	access: SubscriptionAccess | '';
+	// More folders new chats here can pick from, per machine ID.
+	offered: Record<string, ProjectFolderPath[]>;
+};
+
+export type FolderProjectChoice = {
+	mode: ProjectFolderMode;
+	paths: Record<string, string>;
+	machine_id?: string;
+	access?: SubscriptionAccess | '';
+	offered?: Record<string, string[]>;
 };
 
 export type ProjectFolderComputer = {
@@ -469,7 +482,7 @@ export const getFolderProject = async (
 export const saveFolderProject = async (
 	token: string,
 	folderId: string,
-	choice: { mode: ProjectFolderMode; paths: Record<string, string> }
+	choice: FolderProjectChoice
 ): Promise<FolderProject> => {
 	return subscriptionRequest(
 		token,

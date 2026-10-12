@@ -43,7 +43,15 @@ function project(overrides: Partial<FolderProject> = {}): FolderProject {
 }
 
 function choice(mode: 'auto' | 'folder' | 'chat', paths = {}, folderName = 'Website') {
-	return { folder_id: 'f', folder_name: folderName, mode, paths };
+	return {
+		folder_id: 'f',
+		folder_name: folderName,
+		mode,
+		paths,
+		machine_id: '',
+		access: '' as const,
+		offered: {}
+	};
 }
 
 describe('the effective choice', () => {
