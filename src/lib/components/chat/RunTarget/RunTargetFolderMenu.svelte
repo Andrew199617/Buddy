@@ -29,7 +29,7 @@
 	import { buildFolderSections, looksLikePath } from './folder-menu';
 	import { computerPlace, type RunTargetDraft } from './run-target';
 
-	const i18n = getContext('i18n');
+	const i18n: any = getContext('i18n');
 	const desktop = getDesktop();
 
 	export let options: RunTargetOptions;

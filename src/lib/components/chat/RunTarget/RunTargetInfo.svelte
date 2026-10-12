@@ -5,7 +5,7 @@
 	import type { ChatRunTargetDetails, SubscriptionAccess } from '$lib/apis/subscriptions';
 	import { lastSegment } from '$lib/components/projectFolders/project-folders';
 
-	const i18n = getContext('i18n');
+	const i18n: any = getContext('i18n');
 
 	export let details: ChatRunTargetDetails;
 	// False for a chat from before targets: this is where its next plan message runs.
