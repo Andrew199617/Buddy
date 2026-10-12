@@ -1652,6 +1652,62 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.config.values['subscriptions.codex']['machine_id'], 'runner-b')
         self.assertFalse(self.config.values['subscriptions.codex']['enable'])
 
+    async def start_blocked_claude_turn(self, machine):
+        """A Claude turn that has started a process on the machine and waits until stopped."""
+        turn_started = asyncio.Event()
+        turn_finished = asyncio.Event()
+        release = self.gate()
+
+        async def blocked_turn(turn):
+            await turn.machine.start_process(['fixture-cli'], 'fixture-cwd')
+            turn_started.set()
+            try:
+                yield {'text': 'partial response'}
+                await release.wait()
+            finally:
+                turn_finished.set()
+
+        self.providers['claude'].turn_hook = blocked_turn
+        ref = self.service.ProviderRef(OWNER, 'claude')
+        wrapper = self.service._tracking_machine(ref, machine)
+        turn = types.SimpleNamespace(machine=wrapper, settings=await self.service.get_settings(OWNER, 'claude'))
+
+        async def consume_turn():
+            return [event async for event in self.service._tracked_turn(ref, self.providers['claude'], turn)]
+
+        active = self.launch(consume_turn())
+        await asyncio.wait_for(turn_started.wait(), 1)
+        return active, turn_finished
+
+    async def assert_policy_stops_turn(self, machine, policy_change):
+        active, turn_finished = await self.start_blocked_claude_turn(machine)
+        await asyncio.wait_for(self.service.save_policy(policy_change), 1)
+        await asyncio.wait_for(asyncio.gather(active, return_exceptions=True), 1)
+        self.assertTrue(turn_finished.is_set())
+        self.assertGreaterEqual(machine.processes[0].kill_count, 1)
+        # Only stopped: turning the switch back on needs nothing else.
+        self.assertTrue(self.config.values['subscriptions.claude']['enable'])
+
+    async def test_turning_off_plan_sign_in_stops_a_running_plan_turn(self):
+        await self.assert_policy_stops_turn(self.machines['runner-a'], {'plan_sign_in': False})
+
+    async def test_turning_off_api_keys_stops_a_running_api_key_turn(self):
+        self.config.values['subscriptions.claude.credential'] = 'api_key'
+        await self.assert_policy_stops_turn(self.machines['runner-a'], {'api_keys': False})
+
+    async def test_turning_off_this_server_stops_a_turn_running_on_it(self):
+        self.config.values['subscriptions.claude'] = enabled_settings('local')
+        local = ProcessMachine({'id': 'local', 'name': 'This server', 'url': 'https://local.example.invalid', 'key': 'unused'})
+        await self.assert_policy_stops_turn(local, {'server_machine': False})
+
+    async def test_turning_off_another_sign_in_leaves_a_plan_turn_running(self):
+        active, turn_finished = await self.start_blocked_claude_turn(self.machines['runner-a'])
+        await asyncio.wait_for(self.service.save_policy({'api_keys': False, 'server_machine': False}), 1)
+        await asyncio.sleep(0.05)
+        self.assertFalse(active.done())
+        self.assertFalse(turn_finished.is_set())
+        self.assertEqual(self.machines['runner-a'].processes[0].kill_count, 0)
+
     async def test_stale_turn_iterator_never_calls_the_provider_after_generation_changes(self):
         provider = self.providers['claude']
         wrapper = self.service._tracking_machine(self.service.ProviderRef(OWNER, 'claude'), self.machines['runner-a'])
