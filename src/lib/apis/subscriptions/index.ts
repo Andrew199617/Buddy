@@ -126,12 +126,24 @@ export type SubscriptionLogin = {
 	message?: string | null;
 };
 
+// Whether a plan is signed in on one of the person's computers.
+export type SubscriptionComputer = {
+	machine_id: string;
+	name: string;
+	online: boolean;
+	state: 'ready' | 'api_billing' | 'signed_out' | 'not_installed' | 'not_checked';
+	message?: string;
+};
+
 export type SubscriptionProvider = {
 	id: SubscriptionProviderId;
 	name: string;
 	settings: SubscriptionSettings;
 	status: SubscriptionStatus;
 	login: SubscriptionLogin;
+	// The computer the sign-in in progress runs on.
+	login_machine_id?: string | null;
+	computers?: SubscriptionComputer[];
 	models: { id: string; name: string }[];
 	machine: { id: string; name: string; revision?: string };
 	default_workspace: string;

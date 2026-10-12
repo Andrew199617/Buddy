@@ -2335,6 +2335,7 @@ async def _describe_provider_snapshot(
     except SubscriptionError as error:
         log.info('Could not describe the machine for %s: %s', ref.provider_id, error)
 
+    computers = await _describe_plan_computers(ref, settings, check=fresh and execution_ready)
     if generation != _provider_generations.get(ref, 0):
         return None
     public_machine = {'id': settings.machine_id, 'name': machine_name}
@@ -2347,6 +2348,9 @@ async def _describe_provider_snapshot(
         'settings': asdict(settings),
         'status': provider_status,
         'login': provider.login_state() if execution_ready else {'state': 'idle'},
+        # The computer the sign-in in progress runs on, when there is one.
+        'login_machine_id': _login_computers.get(ref),
+        'computers': computers,
         'models': models,
         'machine': public_machine,
         'default_workspace': default_workspace,
@@ -2385,46 +2389,99 @@ def _model_entry(provider_id: str, model: ProviderModel, credential_mode: str = 
 @dataclass(frozen=True)
 class _PlanComputer:
     machine_id: str
-    # Whether a model list may ask the computer now. Listing models starts
-    # the CLI there, and Codex keeps its app-server running afterwards, so
-    # only the plan's own computer is asked, and only while it is online.
-    # The others offer the models they last reported, for example during a
-    # turn there.
-    may_load: bool
+    name: str
+    # False for a Buddy app computer that is offline. Buddy never asks it
+    # anything then, and it keeps what it last reported.
+    reachable: bool
+    is_plan_computer: bool
+
+    @property
+    def may_load_models(self) -> bool:
+        """Listing models starts the CLI, and Codex keeps its app-server running afterwards.
+
+        So a model list asks only the plan's own computer. The others offer
+        the models they last reported, for example during a turn there.
+        """
+        return self.is_plan_computer and self.reachable
 
 
 async def _plan_computers(ref: ProviderRef, settings: ProviderSettings) -> list[_PlanComputer]:
     """Every computer the user's plan can run on, the plan's own computer first."""
-    machine_ids = []
-    if settings.machine_id:
-        machine_ids.append(settings.machine_id)
-    if await _may_use_server_machine(ref.owner_id):
-        machine_ids.append(LOCAL_MACHINE_ID)
+    names = {}
     app_machine_ids = set()
+    if await _may_use_server_machine(ref.owner_id):
+        names[LOCAL_MACHINE_ID] = LOCAL_MACHINE.name
     for config in await _owned_machine_configs(ref.owner_id):
-        machine_ids.append(config['id'])
+        names[config['id']] = config['name']
         if config.get('kind') == MACHINE_KIND_RUNNER:
             app_machine_ids.add(config['id'])
+    machine_ids = list(names)
+    if settings.machine_id in names:
+        machine_ids.remove(settings.machine_id)
+        machine_ids.insert(0, settings.machine_id)
 
     computers = []
-    for machine_id in dict.fromkeys(machine_ids):
+    for machine_id in machine_ids:
         try:
             await _require_verified_machine(ref, _settings_on(settings, machine_id))
         except SubscriptionError:
             continue
-        may_load = machine_id == settings.machine_id
-        if machine_id in app_machine_ids and not HUB.is_online(machine_id):
-            may_load = False
-        computers.append(_PlanComputer(machine_id, may_load))
+        reachable = True
+        if machine_id in app_machine_ids:
+            reachable = HUB.is_online(machine_id)
+        is_plan_computer = machine_id == settings.machine_id
+        computers.append(_PlanComputer(machine_id, names[machine_id], reachable, is_plan_computer))
     return computers
 
 
 async def _computer_models(ref: ProviderRef, computer: _PlanComputer) -> list[ProviderModel]:
     on_computer = ref.on(computer.machine_id)
-    provider_status = await _cached_for_model_list(status_cache, on_computer, computer.may_load) or {}
+    may_load = computer.may_load_models
+    provider_status = await _cached_for_model_list(status_cache, on_computer, may_load) or {}
     if not uses_plan(provider_status):
         return []
-    return await _cached_for_model_list(models_cache, on_computer, computer.may_load) or []
+    return await _cached_for_model_list(models_cache, on_computer, may_load) or []
+
+
+def _sign_in_state(provider_status: dict | None) -> str:
+    if provider_status is None:
+        return 'not_checked'
+    if not provider_status.get('installed', True):
+        return 'not_installed'
+    if uses_plan(provider_status):
+        return 'ready'
+    if provider_status.get('signed_in'):
+        return 'api_billing'
+    return 'signed_out'
+
+
+async def _describe_plan_computers(ref: ProviderRef, settings: ProviderSettings, check: bool) -> list[dict]:
+    """Whether the plan is signed in on each of the user's computers, for the Machines page.
+
+    The plan's own computer was just checked by the description. The others
+    show what they last reported, and are asked again only when the person
+    asks for a check and they are reachable.
+    """
+
+    async def describe(computer: _PlanComputer) -> dict:
+        on_computer = ref.on(computer.machine_id)
+        if check and computer.reachable and not computer.is_plan_computer:
+            provider_status = await status_cache.get(on_computer, fresh=True)
+        else:
+            provider_status = status_cache.cached(on_computer)
+        entry = {
+            'machine_id': computer.machine_id,
+            'name': computer.name,
+            'online': computer.reachable,
+            'state': _sign_in_state(provider_status),
+        }
+        message = (provider_status or {}).get('message')
+        if isinstance(message, str) and message:
+            entry['message'] = message
+        return entry
+
+    computers = await _plan_computers(ref, settings)
+    return list(await asyncio.gather(*(describe(computer) for computer in computers)))
 
 
 async def _provider_models(ref: ProviderRef) -> list[dict]:
