@@ -43,7 +43,7 @@ from buddy_runner.discovery import find_tool
 from buddy_runner.local_process import start_local_process
 from buddy_runner.pinned_paths import PinnedPath, PinnedPathError
 from buddy_runner.process import OutputLimitError, ProcessClosedError, run_command, subscription_env
-from open_webui.utils.subscriptions.workspace_capabilities import WorkspaceCapabilities
+from buddy_runner.workspace_capabilities import WorkspaceCapabilities
 
 log = logging.getLogger('buddy_runner')
 
