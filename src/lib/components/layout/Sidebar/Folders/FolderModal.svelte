@@ -51,6 +51,7 @@
 	let projectSummary = '';
 	let projectError = '';
 	let projectLoadError = '';
+	let dialogRoot: HTMLElement | null = null;
 	let projectPicking = false;
 	// Phones show the folder on one screen and each row's settings on their own.
 	type Screen = 'main' | 'knowledge' | 'project';
@@ -280,6 +281,16 @@
 		if ($mobile) screen = 'project';
 	}
 
+	/** Leaving the project settings also leaves a folder picker open in them. */
+	async function leavePicker() {
+		if (projectPicking) await projectSection?.closePicker(false);
+	}
+
+	async function toggleProjectRow() {
+		if (projectOpen) await leavePicker();
+		projectOpen = !projectOpen;
+	}
+
 	async function openScreen(next: Screen) {
 		screen = next;
 		await tick();
@@ -288,6 +299,7 @@
 
 	async function backToFolder() {
 		const leaving = screen;
+		await leavePicker();
 		screen = 'main';
 		await tick();
 		document.getElementById(`${formId}-row-${leaving}`)?.focus();
@@ -371,9 +383,16 @@
 		return $i18n.t('New folder');
 	}
 
+	/** Whether this dialog is the top one, not under Settings or a confirmation opened from it. */
+	function isTopDialog(): boolean {
+		const own = dialogRoot?.closest('.modal');
+		const modals = document.getElementsByClassName('modal');
+		return Boolean(own) && modals[modals.length - 1] === own;
+	}
+
 	/** Escape first leaves a folder picker or a phone screen, before it closes the dialog. */
 	function stepBackOnEscape(event: KeyboardEvent) {
-		if (!show || event.key !== 'Escape') return;
+		if (!show || event.key !== 'Escape' || !isTopDialog()) return;
 		if (projectPicking) {
 			event.stopPropagation();
 			event.preventDefault();
@@ -417,7 +436,7 @@
 	className={layout.modalSurface}
 	bind:show
 >
-	<div class="flex flex-col text-gray-900 dark:text-gray-100 {layout.root}">
+	<div bind:this={dialogRoot} class="flex flex-col text-gray-900 dark:text-gray-100 {layout.root}">
 		{#if $mobile}
 			<div
 				class="grid shrink-0 grid-cols-3 items-center border-b border-gray-100 px-2 pt-[max(env(safe-area-inset-top),0.75rem)] pb-2 dark:border-gray-850"
@@ -688,7 +707,7 @@
 							aria-controls="folder-project-panel-{projectKey}"
 							on:click={() => {
 								if ($mobile) void openScreen('project');
-								else projectOpen = !projectOpen;
+								else void toggleProjectRow();
 							}}
 						>
 							<span

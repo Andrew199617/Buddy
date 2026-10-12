@@ -3117,7 +3117,16 @@ async function folderDialogCase(browser, profile) {
 			await back.click();
 			assert.equal(await activeElementId(page), 'folder-form-website-row-knowledge');
 			await projectRow.click();
+			await dialog.getByRole('button', { name: 'Change', exact: true }).click();
+			await dialog.getByLabel('Folder path', { exact: true }).waitFor();
+			await back.click();
+			await projectRow.click();
 			await dialog.getByText('Run on', { exact: true }).waitFor();
+			assert.equal(
+				await dialog.getByLabel('Folder path', { exact: true }).count(),
+				0,
+				'Back closed the picker too'
+			);
 			await page.keyboard.press('Escape');
 			await dialog.locator('#folder-name').waitFor();
 			assert.equal(await dialog.isVisible(), true, 'Escape leaves the screen, not the dialog');
@@ -3397,6 +3406,13 @@ async function folderNoPlansCase(browser, profile) {
 			await dialog.getByRole('button', { name: 'Open Settings → Machines', exact: true }).click();
 			const settings = page.locator('.modal').filter({ hasText: 'AI plans' });
 			await settings.waitFor();
+			await page.keyboard.press('Escape');
+			if (!profile.mobile) {
+				// Escape closes Settings, the top dialog; open it again to go on.
+				await settings.waitFor({ state: 'hidden' });
+				await dialog.getByRole('button', { name: 'Open Settings → Machines', exact: true }).click();
+				await settings.waitFor();
+			}
 			fixtures.turnOnPlan('claude', 'full');
 			// Phones show Settings as a page with its own close button.
 			let closeSettings = page.locator('#settings-tabs-container').getByRole('button', {
@@ -3409,6 +3425,8 @@ async function folderNoPlansCase(browser, profile) {
 			await closeSettings.click();
 			await settings.waitFor({ state: 'hidden' });
 
+			// Still on the project settings: Escape didn't step the folder dialog back.
+			await dialog.getByText('Run on', { exact: true }).waitFor();
 			// Back in the folder settings, which load the plans again; the folder chip
 			// and Project tab follow the change too.
 			await dialog

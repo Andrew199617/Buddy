@@ -401,12 +401,12 @@
 		picker = { computer, purpose };
 	}
 
-	/** Closes the folder picker; returns focus to the button that opened it. */
-	export async function closePicker() {
+	/** Closes the folder picker; returns focus to the button that opened it, unless leaving. */
+	export async function closePicker(restoreFocus = true) {
 		const closing = picker;
 		picker = null;
 		await tick();
-		if (!closing) return;
+		if (!closing || !restoreFocus) return;
 		const machineId = closing.computer.machine_id;
 		let opener = `project-folder-change-${machineId}`;
 		if (closing.purpose === 'offered') opener = `project-folder-offer-${machineId}`;
