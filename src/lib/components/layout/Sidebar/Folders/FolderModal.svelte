@@ -79,12 +79,17 @@
 			return;
 		}
 
-		await onSubmit({
+		const result = await onSubmit({
 			name,
 			meta,
 			data,
 			parent_id: edit ? undefined : parentId
 		});
+		// A folder that could not be made keeps the dialog open, with what was typed.
+		if (!edit && !result) {
+			loading = false;
+			return;
+		}
 		show = false;
 		loading = false;
 	};

@@ -464,11 +464,12 @@
 		folders = folderMap;
 	};
 
+	/** Creates a folder; returns it, or null when it could not be made. */
 	const createFolder = async ({ name, data, meta, parent_id }) => {
 		name = name?.trim();
 		if (!name) {
 			toast.error($i18n.t('Folder name cannot be empty.'));
-			return;
+			return null;
 		}
 
 		// Check for duplicate names in the same parent
@@ -509,10 +510,10 @@
 		});
 
 		if (res) {
-			// newFolderId = res.id;
 			await initFolders();
 			showFolders = true;
 		}
+		return res;
 	};
 
 	const initChannels = async () => {
