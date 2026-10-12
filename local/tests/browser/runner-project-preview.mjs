@@ -21,7 +21,7 @@ const fixtureScript = `
 import asyncio, json, sys
 from pathlib import Path
 from aiohttp import web
-from open_webui.utils.subscriptions import runner
+from buddy_runner import runner
 
 async def main():
     base = Path(sys.argv[1])

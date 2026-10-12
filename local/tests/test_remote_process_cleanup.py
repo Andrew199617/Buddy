@@ -18,7 +18,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'backend'))
-from open_webui.utils.subscriptions import machines, runner
+from buddy_runner import runner
+from open_webui.utils.subscriptions import machines
 from buddy_runner.process import (
     MAX_CAPTURE_BYTES, MAX_PENDING_CHUNKS, MAX_STDERR_BYTES,
     OutputLimitError, ProcessClosedError,
