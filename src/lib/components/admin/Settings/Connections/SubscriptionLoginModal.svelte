@@ -47,6 +47,8 @@
 
 	export let show = false;
 	export let provider: SubscriptionProvider;
+	// The computer to sign in on; without one, the plan's own computer.
+	export let computer: { machine_id: string; name: string; revision: string | null } | null = null;
 	export let onSignedIn: () => void = () => {};
 
 	const POLL_INTERVAL_MS = 2000;
@@ -55,6 +57,8 @@
 		providerId: SubscriptionProviderId;
 		machineId: string;
 		machineRevision?: string;
+		// Signing in on a chosen computer rather than the plan's own.
+		chosen: boolean;
 	};
 
 	let login: SubscriptionLogin = { state: 'idle' };
@@ -68,7 +72,7 @@
 	let pollInFlight = false;
 	$: busy = $pendingProviderActions[provider.id] > 0;
 	// The CLI signs in, and a browser sign-in returns, on the machine that runs it.
-	$: machineName = provider.machine?.name || $i18n.t('the selected machine');
+	$: machineName = computer?.name || provider.machine?.name || $i18n.t('the selected machine');
 	$: signInUrl = getHttpsSignInUrl(login.url);
 
 	const inputClass =
@@ -86,9 +90,32 @@
 	};
 
 	// A sign-in belongs to the computer that was selected when it started.
-	const ownsSelectedMachine = (owner: LoginOwner, selected: SubscriptionProvider) =>
-		owner.machineId === selected.settings.machine_id &&
-		owner.machineRevision === selected.machine?.revision;
+	const ownsSelectedMachine = (owner: LoginOwner, selected: SubscriptionProvider) => {
+		if (owner.chosen) {
+			return (
+				owner.machineId === computer?.machine_id && owner.machineRevision === revisionOf(computer)
+			);
+		}
+		return (
+			owner.machineId === selected.settings.machine_id &&
+			owner.machineRevision === selected.machine?.revision
+		);
+	};
+
+	function revisionOf(target: typeof computer): string | undefined {
+		return target?.revision ?? undefined;
+	}
+
+	// A chosen computer goes as machine_id; the plan's own is guarded as the expected one.
+	function expectedMachineFor(owner: LoginOwner): string | undefined {
+		if (owner.chosen) return undefined;
+		return owner.machineId;
+	}
+
+	function chosenMachineFor(owner: LoginOwner): string | undefined {
+		if (owner.chosen) return owner.machineId;
+		return undefined;
+	}
 
 	// True while this dialog still shows the attempt that sent a request.
 	const isCurrentAttempt = (owner: LoginOwner, generation: number) =>
@@ -109,8 +136,9 @@
 		cancellation = cancelSubscriptionLogin(
 			localStorage.token,
 			owner.providerId,
-			owner.machineId,
-			owner.machineRevision
+			expectedMachineFor(owner),
+			owner.machineRevision,
+			chosenMachineFor(owner)
 		)
 			.then(() => {})
 			.catch(() => {})
@@ -175,8 +203,9 @@
 				await getSubscriptionLogin(
 					localStorage.token,
 					owner.providerId,
-					owner.machineId,
-					owner.machineRevision
+					expectedMachineFor(owner),
+					owner.machineRevision,
+					chosenMachineFor(owner)
 				),
 				generation
 			);
@@ -201,11 +230,20 @@
 			return;
 		}
 		const generation = ++loginGeneration;
-		const owner = {
+		let owner: LoginOwner = {
 			providerId: provider.id,
 			machineId: provider.settings.machine_id,
-			machineRevision: provider.machine?.revision
+			machineRevision: provider.machine?.revision,
+			chosen: false
 		};
+		if (computer) {
+			owner = {
+				providerId: provider.id,
+				machineId: computer.machine_id,
+				machineRevision: revisionOf(computer),
+				chosen: true
+			};
+		}
 		loginOwner = owner;
 		const finishAction = beginProviderAction(provider.id);
 		code = '';
@@ -214,8 +252,9 @@
 				localStorage.token,
 				owner.providerId,
 				method,
-				owner.machineId,
-				owner.machineRevision
+				expectedMachineFor(owner),
+				owner.machineRevision,
+				chosenMachineFor(owner)
 			);
 			if (!isCurrentAttempt(owner, generation)) {
 				if (update.state === 'waiting') {
@@ -247,8 +286,9 @@
 					localStorage.token,
 					owner.providerId,
 					code,
-					owner.machineId,
-					owner.machineRevision
+					expectedMachineFor(owner),
+					owner.machineRevision,
+					chosenMachineFor(owner)
 				),
 				generation
 			);

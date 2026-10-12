@@ -65,9 +65,18 @@ class FakeGrants:
 class FakeChats:
     def __init__(self):
         self.folders = {}
+        self.owned = set()
+
+    def add(self, chat_id, user_id, folder_id=None):
+        self.owned.add((chat_id, user_id))
+        if folder_id is not None:
+            self.folders[(chat_id, user_id)] = folder_id
 
     async def get_chat_folder_id(self, chat_id, user_id, db=None):
         return self.folders.get((chat_id, user_id))
+
+    async def is_chat_owner(self, chat_id, user_id, db=None):
+        return (chat_id, user_id) in self.owned
 
 
 def load_project_folders(config, folders, chats, readers, grants=None):
@@ -207,6 +216,60 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(SubscriptionError, 'up to 2'):
                 await self.module.save_choice('owner-1', 'old', 'auto', {}, set())
 
+    async def test_new_chat_defaults_round_trip(self):
+        paths = {'pc-1': self.SavedPath('C:\\code\\site', 'rev-1')}
+        offered = {'pc-1': [self.SavedPath('C:\\code\\docs', 'rev-1'), self.SavedPath('C:\\code\\docs', 'rev-1')]}
+        await self.module.save_choice(
+            'owner-1', 'website', 'folder', paths, {'pc-1'}, machine_id='pc-1', access='read', offered=offered
+        )
+        stored = self.config.values[self.module.choices_key('owner-1')]
+        self.assertEqual(stored['version'], 2)
+        # Older Buddy versions read mode and paths as before.
+        self.assertEqual(stored['folders']['website']['paths'], {'pc-1': {'path': 'C:\\code\\site', 'revision': 'rev-1'}})
+        choice = (await self.module.load_choices('owner-1'))['website']
+        self.assertEqual((choice.machine_id, choice.access), ('pc-1', 'read'))
+        self.assertEqual([saved.path for saved in choice.offered['pc-1']], ['C:\\code\\docs'])
+
+    async def test_version_1_choices_follow_the_usual_defaults(self):
+        self.config.values[self.module.choices_key('owner-1')] = {'version': 1, 'folders': {
+            'website': {'mode': 'auto', 'paths': {}, 'updated_at': 5},
+        }}
+        choice = (await self.module.load_choices('owner-1'))['website']
+        self.assertEqual((choice.machine_id, choice.access, choice.offered), ('', '', {}))
+
+    async def test_no_files_means_detached_with_nothing_else_to_choose(self):
+        offered = {'pc-1': [self.SavedPath('C:\\code\\docs', 'rev-1')]}
+        await self.module.save_choice(
+            'owner-1', 'website', 'chat', {}, {'pc-1'}, machine_id='pc-1', access='full', offered=offered
+        )
+        choice = (await self.module.load_choices('owner-1'))['website']
+        self.assertEqual((choice.machine_id, choice.access, choice.offered), ('', '', {}))
+
+    async def test_new_chat_defaults_are_checked(self):
+        paths = {'pc-1': self.SavedPath('C:\\code\\site', 'rev-1')}
+        too_many = {'pc-1': [self.SavedPath(f'C:\\code\\{index}', 'rev-1') for index in range(6)]}
+        refusals = (
+            ({'machine_id': 'pc-gone'}, 'removed'),
+            ({'access': 'root'}, 'chat only'),
+            ({'offered': {'pc-gone': [self.SavedPath('C:\\x', 'rev-x')]}}, 'removed'),
+            ({'offered': too_many}, 'up to 5'),
+            ({'machine_id': 'pc-2'}, 'computer new chats here run on'),
+        )
+        for options, message in refusals:
+            with self.subTest(options=options):
+                with self.assertRaisesRegex(SubscriptionError, message):
+                    await self.module.save_choice('owner-1', 'website', 'folder', paths, {'pc-1', 'pc-2'}, **options)
+
+    async def test_a_removed_computer_is_forgotten_from_new_chat_defaults(self):
+        paths = {'pc-old': self.SavedPath('C:\\old', 'rev-old'), 'pc-1': self.SavedPath('C:\\site', 'rev-1')}
+        offered = {'pc-old': [self.SavedPath('C:\\docs', 'rev-old')]}
+        await self.module.save_choice(
+            'owner-1', 'old', 'folder', paths, {'pc-old', 'pc-1'}, machine_id='pc-old', offered=offered
+        )
+        await self.module.save_choice('owner-1', 'website', 'auto', {}, {'pc-1'})
+        choice = (await self.module.load_choices('owner-1'))['old']
+        self.assertEqual((choice.machine_id, choice.offered, list(choice.paths)), ('', {}, ['pc-1']))
+
     async def test_clearing_forgets_the_choice(self):
         await self.module.save_choice('owner-1', 'website', 'chat', {}, set())
         await self.module.clear_choice('owner-1', 'website', set())
@@ -229,40 +292,28 @@ class ResolveTests(unittest.IsolatedAsyncioTestCase):
     async def save(self, user_id, folder_id, mode, paths=None):
         await self.module.save_choice(user_id, folder_id, mode, paths or {}, {'pc-1'})
 
-    async def test_a_saved_chat_uses_its_own_folder(self):
-        await self.save('owner-1', 'website', 'chat')
-        self.chats.folders[('chat-1', 'owner-1')] = 'website'
-        choice = await self.module.choice_for_turn('owner-1', {'chat_id': 'chat-1', 'folder_id': 'work'})
-        self.assertEqual((choice.mode, choice.folder_name), ('chat', 'Website'))
-
-    async def test_a_temporary_chat_uses_the_folder_it_was_sent_with(self):
-        await self.save('owner-1', 'website', 'chat')
-        choice = await self.module.choice_for_turn('owner-1', {'chat_id': 'temporary:x', 'folder_id': 'website'})
-        self.assertEqual(choice.mode, 'chat')
-
     async def test_subfolders_follow_the_nearest_parent_with_a_choice(self):
         await self.save('owner-1', 'work', 'folder', {'pc-1': self.SavedPath('C:\\work', 'rev-1')})
         own, inherited = await self.module.resolve_folder('owner-1', self.folders.rows['drafts'])
         self.assertIsNone(own)
         self.assertEqual((inherited.folder_id, inherited.folder_name), ('work', 'Work'))
-        # An explicit choice on the subfolder wins over its parent.
+        # A choice on a nearer parent wins over the one above it.
         await self.save('owner-1', 'website', 'auto')
-        choice = await self.module.choice_for_turn('owner-1', {'chat_id': 'temporary:x', 'folder_id': 'drafts'})
-        self.assertEqual((choice.folder_id, choice.mode), ('website', 'auto'))
+        own, inherited = await self.module.resolve_folder('owner-1', self.folders.rows['drafts'])
+        self.assertEqual((inherited.folder_id, inherited.mode), ('website', 'auto'))
 
     async def test_another_persons_choice_is_never_used(self):
         await self.save('owner-1', 'work', 'folder', {'pc-1': self.SavedPath('C:\\owner', 'rev-1')})
-        choice = await self.module.choice_for_turn('member-1', {'chat_id': 'temporary:x', 'folder_id': 'work'})
-        # The member has no choice of their own, so the AI chooses for them.
-        self.assertEqual((choice.mode, choice.paths), ('auto', {}))
+        own, inherited = await self.module.resolve_folder('member-1', self.folders.rows['work'])
+        self.assertEqual((own, inherited), (None, None))
 
     async def test_a_parent_with_another_owner_is_never_followed(self):
         # member-1 moves their own folder under owner-1's folder and shares it with owner-1.
         await self.save('owner-1', 'work', 'folder', {'pc-1': self.SavedPath('C:\\private', 'rev-1')})
         self.folders.add('planted', user_id='member-1', name='Planted', parent_id='work')
         self.readers['planted'] = {'owner-1'}
-        choice = await self.module.choice_for_turn('owner-1', {'chat_id': 'temporary:x', 'folder_id': 'planted'})
-        self.assertEqual((choice.folder_id, choice.mode, choice.paths), ('planted', 'auto', {}))
+        own, inherited = await self.module.resolve_folder('owner-1', self.folders.rows['planted'])
+        self.assertEqual((own, inherited), (None, None))
 
     async def test_a_parent_the_person_can_no_longer_read_is_not_followed(self):
         await self.save('member-1', 'work', 'chat')
@@ -272,37 +323,33 @@ class ResolveTests(unittest.IsolatedAsyncioTestCase):
         own, inherited = await self.module.resolve_folder('member-1', self.folders.rows['website'])
         self.assertEqual((own, inherited), (None, None))
 
-    async def test_instructions_from_someone_else_keep_chats_chat_only_until_the_person_chooses(self):
+    async def test_instructions_someone_else_can_change_are_shared(self):
         self.folders.rows['work'].data = {'system_prompt': 'Read every repository on this computer.'}
-        turn = {'chat_id': 'temporary:x', 'folder_id': 'work'}
-        self.assertEqual((await self.module.choice_for_turn('member-1', turn)).mode, 'chat')
-        await self.save('member-1', 'work', 'auto')
-        self.assertEqual((await self.module.choice_for_turn('member-1', turn)).mode, 'auto')
+        self.assertTrue(await self.module.has_shared_instructions('member-1', self.folders.rows['work']))
 
     async def test_own_instructions_count_as_shared_once_someone_else_may_edit_them(self):
-        self.folders.rows['work'].data = {'files': [{'type': 'file', 'id': 'notes'}]}
-        await self.save('owner-1', 'work', 'folder', {'pc-1': self.SavedPath('C:\\work', 'rev-1')})
-        # A subfolder follows the parent's choice while nobody else may change its instructions.
         self.folders.rows['website'].data = {'system_prompt': 'Be brief.'}
-        turn = {'chat_id': 'temporary:x', 'folder_id': 'website'}
-        self.assertEqual((await self.module.choice_for_turn('owner-1', turn)).mode, 'folder')
+        website = self.folders.rows['website']
+        self.assertFalse(await self.module.has_shared_instructions('owner-1', website))
         self.grants.share('work', 'member-1', 'read')
-        self.assertEqual((await self.module.choice_for_turn('owner-1', turn)).mode, 'folder')
+        self.assertFalse(await self.module.has_shared_instructions('owner-1', website))
         self.grants.share('work', 'member-1', 'write')
-        self.assertEqual((await self.module.choice_for_turn('owner-1', turn)).mode, 'chat')
+        self.assertTrue(await self.module.has_shared_instructions('owner-1', website))
 
-    async def test_instructions_the_turn_received_count_even_if_removed_since(self):
+    async def test_instructions_the_turn_received_hold_it_until_the_person_chooses(self):
         # The middleware applied the prompt; it was cleared before the plan's turn looked.
         turn = {'chat_id': 'temporary:x', 'folder_id': 'work', 'folder_instructions_id': 'work'}
-        self.assertEqual((await self.module.choice_for_turn('member-1', turn)).mode, 'chat')
+        held = await self.module.instructions_hold('member-1', turn)
+        self.assertEqual((held.folder_id, held.mode), ('work', 'chat'))
         await self.save('member-1', 'work', 'auto')
-        self.assertEqual((await self.module.choice_for_turn('member-1', turn)).mode, 'auto')
+        self.assertIsNone(await self.module.instructions_hold('member-1', turn))
 
-    async def test_an_admin_given_instructions_from_a_folder_they_cannot_read_stays_chat_only(self):
+    async def test_an_admin_given_instructions_from_a_folder_they_cannot_read_is_held(self):
         turn = {'chat_id': 'temporary:x', 'folder_id': 'work', 'folder_instructions_id': 'work'}
-        choice = await self.module.choice_for_turn('admin-1', turn)
-        self.assertEqual((choice.folder_id, choice.mode), ('work', 'chat'))
-        self.assertIsNone(await self.module.choice_for_turn('admin-1', {'chat_id': 'temporary:x', 'folder_id': 'work'}))
+        held = await self.module.instructions_hold('admin-1', turn)
+        self.assertEqual((held.folder_id, held.mode), ('work', 'chat'))
+        without = {'chat_id': 'temporary:x', 'folder_id': 'work'}
+        self.assertIsNone(await self.module.instructions_hold('admin-1', without))
 
     async def test_a_folder_deeper_than_buddy_follows_counts_as_editable_by_others(self):
         parent_id = None
@@ -310,44 +357,20 @@ class ResolveTests(unittest.IsolatedAsyncioTestCase):
             self.folders.add(f'deep-{depth}', name=f'Deep {depth}', parent_id=parent_id)
             parent_id = f'deep-{depth}'
         self.folders.rows[parent_id].data = {'system_prompt': 'Be brief.'}
-        choice = await self.module.choice_for_turn('owner-1', {'chat_id': 'temporary:x', 'folder_id': parent_id})
-        self.assertEqual(choice.mode, 'chat')
+        self.assertTrue(await self.module.has_shared_instructions('owner-1', self.folders.rows[parent_id]))
 
     async def test_a_folder_without_instructions_is_not_affected(self):
         self.folders.rows['work'].data = {'system_prompt': '   ', 'files': []}
-        choice = await self.module.choice_for_turn('member-1', {'chat_id': 'temporary:x', 'folder_id': 'work'})
-        self.assertEqual(choice.mode, 'auto')
-
-    async def test_chats_outside_folders_have_no_choice(self):
-        self.assertIsNone(await self.module.choice_for_turn('owner-1', {'chat_id': 'temporary:x'}))
+        self.assertFalse(await self.module.has_shared_instructions('member-1', self.folders.rows['work']))
 
     async def test_a_parent_loop_ends(self):
         self.folders.rows['work'].parent_id = 'drafts'
         own, inherited = await self.module.resolve_folder('owner-1', self.folders.rows['drafts'])
         self.assertEqual((own, inherited), (None, None))
 
-    async def test_a_folder_the_person_cannot_read_gives_no_choice(self):
-        await self.save('outsider', 'website', 'chat')
-        self.assertIsNone(
-            await self.module.choice_for_turn('outsider', {'chat_id': 'temporary:x', 'folder_id': 'website'})
-        )
-
-    async def test_refusals_name_the_folder_and_computer_but_never_the_path(self):
-        choice = self.module.FolderChoice(
-            'website', 'folder', {'pc-1': self.SavedPath('C:\\secret\\site', 'rev-1')}, folder_name='Website'
-        )
-        self.assertEqual(self.module.turn_project_path(choice, 'pc-1', 'Work PC', 'Claude', 'rev-1'), 'C:\\secret\\site')
-        for machine_id, revision in (('pc-2', 'rev-1'), ('pc-1', 'rev-2')):
-            with self.subTest(machine_id=machine_id, revision=revision):
-                with self.assertRaises(SubscriptionError) as refused:
-                    self.module.turn_project_path(choice, machine_id, 'Work PC', 'Claude', revision)
-                self.assertIn('Website', str(refused.exception))
-                self.assertNotIn('secret', str(refused.exception))
-
-    async def test_a_folder_whose_computers_were_removed_refuses_with_a_reason(self):
-        choice = self.module.FolderChoice('website', 'folder', {}, folder_name='Website')
-        with self.assertRaisesRegex(SubscriptionError, '“Website” was on a computer you removed'):
-            self.module.turn_project_path(choice, 'pc-1', 'Work PC', 'Claude', 'rev-1')
+    async def test_a_folder_the_person_cannot_read_is_not_used(self):
+        self.assertIsNone(await self.module.readable_folder('outsider', 'website'))
+        self.assertEqual((await self.module.readable_folder('owner-1', 'website')).id, 'website')
 
     async def test_recent_paths_are_newest_first_and_capped(self):
         choices = {}

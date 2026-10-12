@@ -274,7 +274,12 @@ from open_webui.utils.plugin import install_tool_and_function_dependencies
 from open_webui.utils.redis import get_redis_client
 from open_webui.utils.session_pool import cleanup_response, get_client_timeout, get_session, stream_wrapper
 from open_webui.utils.subscriptions.common import SUBSCRIPTION_OWNED_BY
-from open_webui.utils.subscriptions.service import is_conflicting_preset_row
+from open_webui.utils.subscriptions.service import (
+    API_KEY_TARGET_MESSAGE,
+    REQUESTED_RUN_TARGET_KEY,
+    bind_chat_target,
+    is_conflicting_preset_row,
+)
 from open_webui.utils.tool_approval import (
     ResolveToolCallForm,
     build_tool_approval_resume_payload,
@@ -1302,6 +1307,15 @@ async def chat_completion(
         if is_new_chat:
             metadata['chat_id'] = str(uuid4())
 
+        # Where a new or temporary chat runs, from the composer's bar. A saved
+        # chat's target was fixed when it started, so the body can't change it.
+        run_target = form_data.pop('run_target', None)
+        if run_target is not None and (is_new_chat or is_temporary_chat_id(metadata['chat_id'])):
+            if getattr(request.state, 'auth_type', None) == 'api_key':
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=API_KEY_TARGET_MESSAGE)
+            if is_temporary_chat_id(metadata['chat_id']):
+                metadata[REQUESTED_RUN_TARGET_KEY] = run_target
+
         initial_title_generation = None
         if is_new_chat and tasks and TASKS.TITLE_GENERATION in tasks:
             initial_title_generation = tasks.pop(TASKS.TITLE_GENERATION)
@@ -1417,6 +1431,9 @@ async def chat_completion(
                             variables=chat_variables,
                             folder_id=metadata.get('folder_id'),
                         ),
+                    )
+                    await bind_chat_target(
+                        user, chat_id, run_target, provider_id=(model.get('subscription') or {}).get('provider')
                     )
                     await publish_event(
                         request,

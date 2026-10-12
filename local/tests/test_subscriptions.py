@@ -145,6 +145,17 @@ class ConversationTests(unittest.TestCase):
             self.assertIsNone(reloaded.get('a'))
             self.assertEqual(reloaded.get('c'), 'session-c')
 
+    def test_session_store_forgets_one_computers_sessions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'sessions.json'
+            store = SessionStore(path)
+            store.put('laptop|/code|key-1', 'session-1')
+            store.put('desktop|/code|key-1', 'session-2')
+            store.forget_prefix('laptop|')
+            reloaded = SessionStore(path)
+            self.assertIsNone(reloaded.get('laptop|/code|key-1'))
+            self.assertEqual(reloaded.get('desktop|/code|key-1'), 'session-2')
+
 
 class CommonTests(unittest.TestCase):
     def test_requested_effort_reads_chip_and_responses_format(self):
@@ -1452,6 +1463,11 @@ def load_subscription_service(data_dir: Path, config: StandInConfig):
         'open_webui.utils.payload': types.SimpleNamespace(
             apply_model_params_to_body_openai=None,
             apply_system_prompt_to_body=None,
+        ),
+        # Where chats run; these tests start no chats.
+        'open_webui.models.chat_run_targets': types.SimpleNamespace(
+            SOURCE_BAR='bar', SOURCE_DEFAULT='default', SOURCE_REFUSED='refused',
+            ChatRunTargetModel=type('ChatRunTargetModel', (), {}), ChatRunTargets=None,
         ),
         # Project folders read chat folders; these tests use none.
         'open_webui.models.access_grants': types.SimpleNamespace(AccessGrants=None),

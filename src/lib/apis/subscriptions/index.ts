@@ -126,12 +126,24 @@ export type SubscriptionLogin = {
 	message?: string | null;
 };
 
+// Whether a plan is signed in on one of the person's computers.
+export type SubscriptionComputer = {
+	machine_id: string;
+	name: string;
+	online: boolean;
+	state: 'ready' | 'api_billing' | 'signed_out' | 'not_installed' | 'not_checked';
+	message?: string;
+};
+
 export type SubscriptionProvider = {
 	id: SubscriptionProviderId;
 	name: string;
 	settings: SubscriptionSettings;
 	status: SubscriptionStatus;
 	login: SubscriptionLogin;
+	// The computer the sign-in in progress runs on.
+	login_machine_id?: string | null;
+	computers?: SubscriptionComputer[];
 	models: { id: string; name: string }[];
 	machine: { id: string; name: string; revision?: string };
 	default_workspace: string;
@@ -173,10 +185,17 @@ const subscriptionRequest = async (
 	return readSubscriptionResponse(await sendSubscriptionRequest(token, path, method, body));
 };
 
-const withExpectedMachine = (path: string, machineId?: string, machineRevision?: string) => {
+// chosenMachineId names the computer a sign-in action is for; without it, the plan's own computer.
+const withExpectedMachine = (
+	path: string,
+	machineId?: string,
+	machineRevision?: string,
+	chosenMachineId?: string
+) => {
 	const guards = new URLSearchParams();
 	if (machineId !== undefined) guards.set('expected_machine_id', machineId);
 	if (machineRevision !== undefined) guards.set('expected_machine_revision', machineRevision);
+	if (chosenMachineId !== undefined) guards.set('machine_id', chosenMachineId);
 	// URLSearchParams.size is missing before Safari 17 and Chrome 113; the string is not.
 	const query = guards.toString();
 	if (!query) return path;
@@ -268,12 +287,14 @@ export const startSubscriptionLogin = async (
 	providerId: SubscriptionProviderId,
 	method: 'browser' | 'device' = 'browser',
 	expectedMachineId?: string,
-	expectedMachineRevision?: string
+	expectedMachineRevision?: string,
+	machineId?: string
 ): Promise<SubscriptionLogin> => {
 	return subscriptionRequest(token, `/${providerId}/login`, 'POST', {
 		method,
 		expected_machine_id: expectedMachineId,
-		expected_machine_revision: expectedMachineRevision
+		expected_machine_revision: expectedMachineRevision,
+		machine_id: machineId
 	});
 };
 
@@ -281,11 +302,17 @@ export const getSubscriptionLogin = async (
 	token: string,
 	providerId: SubscriptionProviderId,
 	expectedMachineId?: string,
-	expectedMachineRevision?: string
+	expectedMachineRevision?: string,
+	machineId?: string
 ): Promise<SubscriptionLogin> => {
 	return subscriptionRequest(
 		token,
-		withExpectedMachine(`/${providerId}/login`, expectedMachineId, expectedMachineRevision)
+		withExpectedMachine(
+			`/${providerId}/login`,
+			expectedMachineId,
+			expectedMachineRevision,
+			machineId
+		)
 	);
 };
 
@@ -294,12 +321,14 @@ export const submitSubscriptionLoginCode = async (
 	providerId: SubscriptionProviderId,
 	code: string,
 	expectedMachineId?: string,
-	expectedMachineRevision?: string
+	expectedMachineRevision?: string,
+	machineId?: string
 ): Promise<SubscriptionLogin> => {
 	return subscriptionRequest(token, `/${providerId}/login/code`, 'POST', {
 		code,
 		expected_machine_id: expectedMachineId,
-		expected_machine_revision: expectedMachineRevision
+		expected_machine_revision: expectedMachineRevision,
+		machine_id: machineId
 	});
 };
 
@@ -307,11 +336,17 @@ export const cancelSubscriptionLogin = async (
 	token: string,
 	providerId: SubscriptionProviderId,
 	expectedMachineId?: string,
-	expectedMachineRevision?: string
+	expectedMachineRevision?: string,
+	machineId?: string
 ): Promise<SubscriptionLogin> => {
 	return subscriptionRequest(
 		token,
-		withExpectedMachine(`/${providerId}/login`, expectedMachineId, expectedMachineRevision),
+		withExpectedMachine(
+			`/${providerId}/login`,
+			expectedMachineId,
+			expectedMachineRevision,
+			machineId
+		),
 		'DELETE'
 	);
 };
@@ -320,11 +355,17 @@ export const logoutSubscription = async (
 	token: string,
 	providerId: SubscriptionProviderId,
 	expectedMachineId?: string,
-	expectedMachineRevision?: string
+	expectedMachineRevision?: string,
+	machineId?: string
 ): Promise<SubscriptionProvider> => {
 	return subscriptionRequest(
 		token,
-		withExpectedMachine(`/${providerId}/logout`, expectedMachineId, expectedMachineRevision),
+		withExpectedMachine(
+			`/${providerId}/logout`,
+			expectedMachineId,
+			expectedMachineRevision,
+			machineId
+		),
 		'POST'
 	);
 };
@@ -410,6 +451,19 @@ export type ProjectFolderChoice = {
 	mode: ProjectFolderMode;
 	// Machine ID to path; only for mode 'folder'.
 	paths: Record<string, ProjectFolderPath>;
+	// What new chats in the folder start with; '' follows the usual default.
+	machine_id: string;
+	access: SubscriptionAccess | '';
+	// More folders new chats here can pick from, per machine ID.
+	offered: Record<string, ProjectFolderPath[]>;
+};
+
+export type FolderProjectChoice = {
+	mode: ProjectFolderMode;
+	paths: Record<string, string>;
+	machine_id?: string;
+	access?: SubscriptionAccess | '';
+	offered?: Record<string, string[]>;
 };
 
 export type ProjectFolderComputer = {
@@ -420,6 +474,8 @@ export type ProjectFolderComputer = {
 	online: boolean | null;
 	platform: string | null;
 	can_browse: boolean;
+	// Whether its folders can be browsed and suggested: only with the Buddy app, when allowed there.
+	folders: 'on' | 'off' | 'offline' | 'unsupported';
 	providers: { id: SubscriptionProviderId; name: string; access: SubscriptionAccess }[];
 	recent_paths: string[];
 };
@@ -468,7 +524,7 @@ export const getFolderProject = async (
 export const saveFolderProject = async (
 	token: string,
 	folderId: string,
-	choice: { mode: ProjectFolderMode; paths: Record<string, string> }
+	choice: FolderProjectChoice
 ): Promise<FolderProject> => {
 	return subscriptionRequest(
 		token,
@@ -498,5 +554,215 @@ export const checkMachineFolder = async (
 		{
 			path
 		}
+	);
+};
+
+// Browsing a computer's folders to choose where a chat works. Folder names
+// only; the server checks every name and builds each path itself.
+
+export type FolderEntry = {
+	name: string;
+	path: string;
+	hidden: boolean;
+	// A symlink or junction to another folder.
+	link: boolean;
+	// False for a folder that can't be a project folder, such as a whole drive.
+	selectable: boolean;
+};
+
+export type FolderRoot = {
+	name: string;
+	path: string;
+	kind: 'drive' | 'remote_drive' | 'removable' | 'place';
+};
+
+export type FolderListing = {
+	// '' for the drives and places to start from.
+	path: string;
+	parent: string | null;
+	roots: FolderRoot[];
+	entries: FolderEntry[];
+	truncated: boolean;
+};
+
+export type FolderSuggestion = {
+	path: string;
+	sources: ('claude' | 'codex')[];
+	// Seconds since 1970, rounded down to the day.
+	last_used: number;
+};
+
+export type FolderSuggestions = {
+	// 'off': not allowed in the Buddy app there; 'unsupported': no Buddy app, or an older one.
+	state: 'ok' | 'off' | 'offline' | 'unsupported';
+	folders: FolderSuggestion[];
+};
+
+export const listMachineFolders = async (
+	token: string,
+	machineId: string,
+	options: { path?: string; hidden?: boolean; prefix?: string } = {}
+): Promise<FolderListing> => {
+	const query = new URLSearchParams({
+		path: options.path ?? '',
+		hidden: String(options.hidden === true),
+		prefix: options.prefix ?? ''
+	});
+	return subscriptionRequest(token, `/machines/${encodeURIComponent(machineId)}/folders?${query}`);
+};
+
+export const getSuggestedFolders = async (
+	token: string,
+	machineId: string
+): Promise<FolderSuggestions> => {
+	return subscriptionRequest(token, `/machines/${encodeURIComponent(machineId)}/folders/suggested`);
+};
+
+// --- Where chats run ---------------------------------------------------------------
+
+export type RunTargetFolder = { mode: 'path'; path: string } | { mode: 'auto' };
+
+// What the composer's bar sends when a chat starts.
+export type RunTargetRequest =
+	| { kind: 'detached'; access: 'chat' }
+	| {
+			kind: 'computer';
+			machine_id: string;
+			// The computer's revision the bar showed; the server compares it.
+			expected_revision: string | null;
+			folder: RunTargetFolder;
+			access: SubscriptionAccess;
+			acknowledged_instructions_folder_id: string | null;
+	  };
+
+export type RunTargetPlanState =
+	| 'ready'
+	| 'unknown'
+	| 'checking'
+	| 'sign_in'
+	| 'not_installed'
+	| 'api_billing'
+	| 'offline'
+	| 'not_allowed';
+
+export type RunTargetComputer = Omit<ProjectFolderComputer, 'providers'> & {
+	revision: string | null;
+	providers: Partial<
+		Record<SubscriptionProviderId, { state: RunTargetPlanState; message: string | null }>
+	>;
+};
+
+export type RunTargetDefault = {
+	kind: 'computer' | 'detached';
+	machine_id: string | null;
+	folder: RunTargetFolder | null;
+	// null means each plan's own access.
+	access: SubscriptionAccess | null;
+	from: 'chat_folder' | 'this_pc' | 'last_used' | 'plan' | 'first_ready' | 'none';
+	// The chat folder's shared instructions keep it chat only until the person acknowledges them.
+	access_locked: boolean;
+};
+
+export type RunTargetOptions = {
+	allowed: boolean;
+	has_plans: boolean;
+	plan_access?: Partial<Record<SubscriptionProviderId, SubscriptionAccess>>;
+	computers?: RunTargetComputer[];
+	recent?: { machine_id: string; path: string; last_used: number }[];
+	chat_folder?: {
+		id: string;
+		name: string;
+		mode: ProjectFolderMode | null;
+		paths: Record<string, string>;
+		offered: Record<string, string[]>;
+		shared_instructions: boolean;
+	} | null;
+	default?: RunTargetDefault;
+};
+
+export type ChatRunTargetDetails = {
+	kind: 'computer' | 'detached';
+	machine_id: string | null;
+	computer: { name: string; kind: ProjectFolderComputer['kind']; online: boolean | null } | null;
+	folder_mode: 'path' | 'auto' | 'none';
+	path: string | null;
+	access: SubscriptionAccess;
+	source: 'bar' | 'default' | 'copy' | 'refused';
+	note: string | null;
+	note_message?: string | null;
+	problem: 'removed' | 'reset' | 'server_off' | 'offline' | null;
+};
+
+export type ChatRunTarget =
+	| ({ bound: true } & ChatRunTargetDetails)
+	| { bound: false; would_bind: ChatRunTargetDetails };
+
+export const getRunTargetOptions = async (
+	token: string,
+	options: { folderId?: string | null; thisMachineId?: string | null } = {}
+): Promise<RunTargetOptions> => {
+	const query = new URLSearchParams();
+	if (options.folderId) query.set('folder_id', options.folderId);
+	if (options.thisMachineId) query.set('this_machine_id', options.thisMachineId);
+	const search = query.toString();
+	let path = '/run-target/options';
+	if (search) path = `${path}?${search}`;
+	return subscriptionRequest(token, path);
+};
+
+export const getRunTargetReadiness = async (
+	token: string,
+	providerId: SubscriptionProviderId,
+	machineId: string
+): Promise<{ state: RunTargetPlanState; message: string | null }> => {
+	const query = new URLSearchParams({ provider: providerId, machine_id: machineId });
+	return subscriptionRequest(token, `/run-target/readiness?${query}`);
+};
+
+/** Where the person's chat runs, or null when it isn't theirs (404). */
+export const getChatRunTarget = async (
+	token: string,
+	chatId: string
+): Promise<ChatRunTarget | null> => {
+	const path = `/chats/${encodeURIComponent(chatId)}/run-target`;
+	const response = await sendSubscriptionRequest(token, path, 'GET');
+	if (response.status === 404) return null;
+	return readSubscriptionResponse(response);
+};
+
+// --- Each computer's own start folder and CLI paths -------------------------------
+
+export type ComputerSettings = {
+	machine_id: string;
+	revision: string;
+	// False while the computer still uses what a plan saved for it.
+	saved: boolean;
+	start_folder: string;
+	cli_paths: Record<SubscriptionProviderId, string>;
+	// What each plan saved for this computer before it had its own; turns still use these.
+	from_plans: Partial<Record<SubscriptionProviderId, { start_folder: string; cli_path: string }>>;
+};
+
+export const getComputerSettings = async (
+	token: string,
+	machineId: string
+): Promise<ComputerSettings> => {
+	return subscriptionRequest(token, `/machines/${encodeURIComponent(machineId)}/settings`);
+};
+
+export const saveComputerSettings = async (
+	token: string,
+	machineId: string,
+	settings: {
+		expected_revision: string;
+		start_folder: string;
+		cli_paths: Partial<Record<SubscriptionProviderId, string>>;
+	}
+): Promise<ComputerSettings> => {
+	return subscriptionRequest(
+		token,
+		`/machines/${encodeURIComponent(machineId)}/settings`,
+		'PUT',
+		settings
 	);
 };
