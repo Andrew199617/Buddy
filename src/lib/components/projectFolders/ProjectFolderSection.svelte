@@ -457,9 +457,13 @@
 					)}
 				</p>
 			</div>
+		{/if}
 
-			<!-- Another plan already opens folders; these could too. Moot when this folder is just chat. -->
-			{#if allowablePlans.length > 0 && draft.mode !== 'chat'}
+		<!-- Another plan already opens folders; these could too. Hidden while picking a
+		     folder, and moot when this folder is just chat, but kept mounted so an Allow
+		     in progress stays busy. -->
+		{#if need === 'ready' && allowablePlans.length > 0}
+			<div hidden={pickingFor !== null || draft.mode === 'chat'}>
 				<PlanAccessRequest
 					compact
 					plans={allowablePlans}
@@ -467,7 +471,7 @@
 					onAllowed={planAllowed}
 					onRefused={planRefused}
 				/>
-			{/if}
+			</div>
 		{/if}
 
 		{#if refusal}

@@ -3145,14 +3145,32 @@ async function folderAllowRaceCase(browser, profile) {
 			await request.getByRole('button', { name: 'Allow', exact: true }).click();
 			await waitUntil(() => fixtures.hasHeldProjectRead(), 'The plans are loading again');
 
-			// A choice made while the plans load is kept, and so is focus.
-			const justChat = dialog.getByRole('radio', { name: /^No files, just chat/ });
-			await justChat.check();
+			// The question stays, busy, until the plans show the change.
+			const question = dialog.getByRole('group', {
+				name: 'Give ChatGPT full access on Work PC?',
+				exact: true
+			});
+			const allow = question.getByRole('button', { name: 'Allow', exact: true });
+			assert.equal(await allow.isDisabled(), true, 'Allow is busy');
+			const toast = page.getByText('ChatGPT now has full access on Work PC.', { exact: true });
+			assert.equal(await toast.count(), 0, 'No success before the plans show it');
+
+			// Choices made meanwhile are kept, and the busy question survives being hidden.
+			await dialog.getByRole('radio', { name: /^No files, just chat/ }).check();
+			await question.waitFor({ state: 'hidden' });
+			const specificFolder = dialog.getByRole('radio', { name: /^A specific folder/ });
+			await specificFolder.check();
+			await question.waitFor();
+			assert.equal(await allow.isDisabled(), true, 'Still busy after being hidden');
+
+			// The person moves on while the plans load; focus stays with them.
+			const folderName = page.locator('#folder-name');
+			await folderName.focus();
 			await fixtures.releaseProjectRead();
-			await page.getByText('ChatGPT now has full access on Work PC.', { exact: true }).waitFor();
-			assert.equal(await justChat.isChecked(), true, 'The choice made meanwhile is kept');
+			await toast.waitFor();
+			assert.equal(await specificFolder.isChecked(), true, 'The choice made meanwhile is kept');
 			assert.equal(
-				await justChat.evaluate((radio) => radio === document.activeElement),
+				await folderName.evaluate((input) => input === document.activeElement),
 				true,
 				'Focus stays where the person put it'
 			);
