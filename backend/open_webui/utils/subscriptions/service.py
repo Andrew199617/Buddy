@@ -15,9 +15,12 @@ without an owner are theirs, so upgrading needs no data migration.
 """
 
 import asyncio
+import hashlib
+import hmac
 import ipaddress
 import logging
 import re
+import secrets
 import time
 import uuid
 from dataclasses import asdict, dataclass, field, fields, replace
@@ -49,8 +52,9 @@ from open_webui.utils.subscriptions.common import (
 from open_webui.utils.subscriptions.conversation import parse_messages
 from open_webui.utils.subscriptions.events import SubscriptionError
 from open_webui.utils.subscriptions.machines import (
-    LOCAL_MACHINE_ID, LocalMachine, RemoteMachine, StartupCleanupUnconfirmedError,
+    LOCAL_MACHINE_ID, LocalMachine, RemoteMachine, StartupCleanupUnconfirmedError, TunnelMachine,
 )
+from open_webui.utils.subscriptions.tunnel_hub import HUB
 from open_webui.utils.subscriptions.runner_transport import normalize_runner_url
 from open_webui.utils.subscriptions.streaming import collect_events, failure_events, stream_events
 
@@ -76,6 +80,17 @@ STARTUP_CLEANUP_MESSAGE = (
     'An earlier provider startup could not confirm that it stopped. '
     'Ask the host operator to stop or restart that host, then restart the Buddy backend before using this provider.'
 )
+
+# A computer connected through the Buddy app's Runner, over the tunnel.
+MACHINE_KIND_RUNNER = 'runner'
+MAX_MACHINES_PER_USER = 10
+# How long the token behind "Connect this PC" stays usable.
+ENROLLMENT_SECONDS = 60
+MAX_PENDING_ENROLLMENTS = 500
+# Tunnel close codes, from buddy_runner.protocol.
+CLOSE_UNKNOWN_MACHINE = 4401
+CLOSE_NOT_ALLOWED = 4403
+REMOVED_MACHINE_MESSAGE = 'This computer was removed from Buddy. Connect it again from the Buddy app.'
 
 PROVIDER_IDS = ('claude', 'codex')
 PROVIDER_LABELS = {'claude': 'Claude', 'codex': 'ChatGPT'}
@@ -116,6 +131,10 @@ LOCAL_MACHINE = LocalMachine(STATE_DIR)
 # RemoteMachine objects keep an HTTP session, so they are reused until their
 # address or key changes.
 _remote_machines: dict[str, RemoteMachine] = {}
+# One handle per connected computer, so tracked processes keep their machine.
+_tunnel_machines: dict[str, TunnelMachine] = {}
+# Pending "Connect this PC" requests: token digest -> owner and expiry.
+_enrollments: dict[str, dict] = {}
 _providers: dict[ProviderRef, Any] = {}
 _provider_locks: dict[ProviderRef, asyncio.Lock] = {}
 _machine_lock = asyncio.Lock()
@@ -237,7 +256,15 @@ async def save_policy(updates: dict) -> SubscriptionPolicy:
     await Config.upsert({POLICY_CONFIG_KEY: asdict(policy)})
     for ref in list(_provider_generations) + list(_tracked_machines) + list(_providers):
         invalidate(ref)
+    await _disconnect_disallowed_runners()
     return policy
+
+
+async def _disconnect_disallowed_runners() -> None:
+    for connection in HUB.connections():
+        owner = await Users.get_user_by_id(connection.owner_id)
+        if owner is None or not await may_use_machines(owner):
+            await HUB.disconnect(connection.machine_id, CLOSE_NOT_ALLOWED, NOT_ALLOWED_MESSAGE)
 
 
 async def may_use_machines(user) -> bool:
@@ -628,6 +655,14 @@ async def get_machine(owner_id: str, machine_id: str):
     if not config:
         raise SubscriptionError('The selected machine no longer exists. Choose another in the subscription settings.')
 
+    if config.get('kind') == MACHINE_KIND_RUNNER:
+        machine = _tunnel_machines.get(machine_id)
+        if machine is None:
+            machine = TunnelMachine(machine_id, config['name'], HUB)
+            _tunnel_machines[machine_id] = machine
+        machine.name = config['name']
+        return machine
+
     key = config.get('key') or ''
     if not key:
         # A config import keeps no key for a machine whose address changed.
@@ -666,12 +701,34 @@ async def describe_all_machines() -> list[dict]:
 
 
 def _public_machine(config: dict) -> dict:
+    if config.get('kind') == MACHINE_KIND_RUNNER:
+        return _public_runner_machine(config)
     # A config import can store a machine without its key; the form then asks for one.
     machine = {'id': config['id'], 'name': config['name'], 'url': config['url'], 'has_key': bool(config.get('key'))}
     if isinstance(config.get('revision'), str):
         machine['revision'] = config['revision']
     if isinstance(config.get('browser_url'), str):
         machine['browser_url'] = config['browser_url']
+    observed_host = _observed_host(config)
+    if observed_host is not None:
+        machine['host'] = observed_host
+    observed_capabilities = _observed_capabilities(config)
+    if observed_capabilities is not None:
+        machine['capabilities'] = observed_capabilities
+    return machine
+
+
+def _public_runner_machine(config: dict) -> dict:
+    machine = {
+        'id': config['id'],
+        'name': config['name'],
+        'kind': MACHINE_KIND_RUNNER,
+        'url': None,
+        'online': HUB.is_online(config['id']),
+    }
+    for field_name in ('revision', 'created_at', 'last_seen_at'):
+        if config.get(field_name) is not None:
+            machine[field_name] = config[field_name]
     observed_host = _observed_host(config)
     if observed_host is not None:
         machine['host'] = observed_host
@@ -689,7 +746,7 @@ def redact_runner_keys(values: dict) -> dict:
     redacted = []
     for machine in machines:
         if isinstance(machine, dict):
-            machine = {field: value for field, value in machine.items() if field != 'key'}
+            machine = {field: value for field, value in machine.items() if field not in ('key', 'credential_hash')}
         redacted.append(machine)
     return {**values, MACHINES_CONFIG_KEY: redacted}
 
@@ -706,7 +763,13 @@ async def keep_runner_keys(imported: dict) -> dict:
     saved_machines = {machine['id']: machine for machine in await _machine_configs()}
     restored = []
     for machine in machines:
-        if isinstance(machine, dict) and not machine.get('key'):
+        if isinstance(machine, dict) and machine.get('kind') == MACHINE_KIND_RUNNER:
+            # A connected computer keeps its credential only as that same machine.
+            saved = saved_machines.get(machine.get('id')) or {}
+            machine = {field: value for field, value in machine.items() if field != 'credential_hash'}
+            if saved.get('kind') == MACHINE_KIND_RUNNER and saved.get('credential_hash'):
+                machine['credential_hash'] = saved['credential_hash']
+        elif isinstance(machine, dict) and not machine.get('key'):
             saved = saved_machines.get(machine.get('id')) or {}
             same_address = _runner_address(saved.get('url')) == _runner_address(machine.get('url'))
             if saved.get('key') and same_address:
@@ -911,10 +974,13 @@ async def _delete_machine(owner_id: str, machine_id: str) -> None:
     if machine_id == LOCAL_MACHINE_ID:
         raise SubscriptionError('This server cannot be removed.')
     server_owner = await server_owner_id()
-    configs = [
-        config for config in await _machine_configs()
-        if not (config['id'] == machine_id and _machine_owner(config, server_owner) == owner_id)
-    ]
+    all_configs = await _machine_configs()
+    removed = next(
+        (config for config in all_configs
+         if config['id'] == machine_id and _machine_owner(config, server_owner) == owner_id),
+        None,
+    )
+    configs = [config for config in all_configs if config is not removed]
     updates = {MACHINES_CONFIG_KEY: configs}
     affected = []
     for ref in _owner_refs(owner_id):
@@ -931,6 +997,147 @@ async def _delete_machine(owner_id: str, machine_id: str) -> None:
         cached = _remote_machines.pop(machine_id, None)
         if cached:
             await cached.close()
+        if removed is not None and removed.get('kind') == MACHINE_KIND_RUNNER:
+            _tunnel_machines.pop(machine_id, None)
+            await HUB.disconnect(machine_id, CLOSE_UNKNOWN_MACHINE, REMOVED_MACHINE_MESSAGE)
+
+
+async def rename_machine(owner_id: str, machine_id: str, name: str) -> dict:
+    """Rename one of the user's computers; nothing about its authority changes."""
+    name = (name or '').strip()[:80]
+    if not name:
+        raise SubscriptionError('Enter a name for this computer.')
+    async with _machine_lock:
+        configs = await _machine_configs()
+        server_owner = await server_owner_id()
+        config = next(
+            (machine for machine in configs
+             if machine['id'] == machine_id and _machine_owner(machine, server_owner) == owner_id),
+            None,
+        )
+        if config is None:
+            raise SubscriptionError('That computer no longer exists.')
+        config['name'] = name
+        await Config.upsert({MACHINES_CONFIG_KEY: configs})
+    return _public_machine(config)
+
+
+# Connecting computers through the Buddy app
+
+
+def _digest(secret: str) -> str:
+    return hashlib.sha256(secret.encode('utf-8')).hexdigest()
+
+
+def _forget_expired_enrollments() -> None:
+    now = time.monotonic()
+    for digest, enrollment in list(_enrollments.items()):
+        if enrollment['expires_at'] <= now:
+            _enrollments.pop(digest, None)
+
+
+async def create_enrollment(user) -> dict:
+    """A single-use token the user's Buddy app trades for a credential for this computer."""
+    _require_single_worker()
+    if not await may_use_machines(user):
+        raise SubscriptionError(NOT_ALLOWED_MESSAGE)
+    owned = [config for config in await _owned_machine_configs(user.id) if config.get('kind') == MACHINE_KIND_RUNNER]
+    if len(owned) >= MAX_MACHINES_PER_USER:
+        raise SubscriptionError(f'You can connect up to {MAX_MACHINES_PER_USER} computers. Remove one first.')
+    _forget_expired_enrollments()
+    if len(_enrollments) >= MAX_PENDING_ENROLLMENTS:
+        raise SubscriptionError('Too many computers are connecting right now. Try again in a minute.')
+    token = 'bde1_' + secrets.token_urlsafe(32)
+    _enrollments[_digest(token)] = {'owner_id': user.id, 'expires_at': time.monotonic() + ENROLLMENT_SECONDS}
+    return {'token': token, 'expires_in': ENROLLMENT_SECONDS}
+
+
+async def redeem_enrollment(token: str, name: str | None, host: dict | None) -> dict:
+    """Trade an enrollment token, once, for a new machine and its credential.
+
+    The credential is returned only here; Buddy keeps just its digest.
+    """
+    _require_single_worker()
+    _forget_expired_enrollments()
+    enrollment = _enrollments.pop(_digest(token or ''), None)
+    if enrollment is None:
+        raise SubscriptionError('This connection request expired. Choose Connect this PC again.')
+    owner = await Users.get_user_by_id(enrollment['owner_id'])
+    if owner is None or not await may_use_machines(owner):
+        raise SubscriptionError(NOT_ALLOWED_MESSAGE)
+    credential = 'bdr1_' + secrets.token_urlsafe(32)
+    observed_host = _observed_host({'host': host}) if isinstance(host, dict) else None
+    clean_name = (name or '').strip()[:80]
+    if not clean_name and observed_host:
+        clean_name = (observed_host.get('name') or '').strip()[:80]
+    if not clean_name:
+        clean_name = 'My computer'
+    async with _machine_lock:
+        configs = await _machine_configs()
+        taken = await _taken_machine_ids(configs)
+        machine_id = uuid.uuid4().hex
+        while machine_id in taken:
+            machine_id = uuid.uuid4().hex
+        saved = {
+            'id': machine_id,
+            'user_id': owner.id,
+            'kind': MACHINE_KIND_RUNNER,
+            'name': clean_name,
+            'credential_hash': _digest(credential),
+            # Fixed for the machine's lifetime: a Runner restart keeps the
+            # access and folders approved for it.
+            'revision': uuid.uuid4().hex,
+            'created_at': int(time.time()),
+        }
+        if observed_host:
+            saved['host'] = observed_host
+        configs.append(saved)
+        await Config.upsert({MACHINES_CONFIG_KEY: configs})
+    for ref in _owner_refs(owner.id):
+        invalidate(ref)
+    return {'machine_id': machine_id, 'credential': credential, 'name': clean_name}
+
+
+async def authenticate_runner(machine_id, credential) -> dict | None:
+    """The connected computer's machine entry, with its owner, when the credential matches."""
+    if not isinstance(machine_id, str) or not isinstance(credential, str) or not credential:
+        return None
+    config = next((machine for machine in await _machine_configs() if machine['id'] == machine_id), None)
+    if config is None or config.get('kind') != MACHINE_KIND_RUNNER:
+        return None
+    expected = config.get('credential_hash')
+    if not isinstance(expected, str) or not hmac.compare_digest(expected, _digest(credential)):
+        return None
+    return {**config, 'user_id': _machine_owner(config, await server_owner_id())}
+
+
+async def record_runner_connected(machine_id: str, info: dict) -> None:
+    """Save what a connecting computer reports about itself, and when it was seen."""
+    async with _machine_lock:
+        configs = await _machine_configs()
+        config = next((machine for machine in configs if machine['id'] == machine_id), None)
+        if config is None:
+            return
+        observed_host = _observed_host(info)
+        if observed_host is not None:
+            config['host'] = observed_host
+        observed_capabilities = _observed_capabilities(info)
+        if observed_capabilities is not None:
+            config['capabilities'] = observed_capabilities
+        config['last_seen_at'] = int(time.time())
+        await Config.upsert({MACHINES_CONFIG_KEY: configs})
+    for ref in _owner_refs(_machine_owner(config, await server_owner_id())):
+        invalidate(ref)
+
+
+async def record_runner_disconnected(machine_id: str) -> None:
+    async with _machine_lock:
+        configs = await _machine_configs()
+        config = next((machine for machine in configs if machine['id'] == machine_id), None)
+        if config is None:
+            return
+        config['last_seen_at'] = int(time.time())
+        await Config.upsert({MACHINES_CONFIG_KEY: configs})
 
 
 # Provider settings
@@ -1174,7 +1381,12 @@ async def forget_user(user_id: str) -> None:
         except SubscriptionError as error:
             log.warning('Cleanup for deleted user %s is unconfirmed: %s', user_id, error)
         server_owner = await server_owner_id()
-        configs = [config for config in await _machine_configs() if _machine_owner(config, server_owner) != user_id]
+        all_configs = await _machine_configs()
+        configs = [config for config in all_configs if _machine_owner(config, server_owner) != user_id]
+        removed_runner_ids = [
+            config['id'] for config in all_configs
+            if _machine_owner(config, server_owner) == user_id and config.get('kind') == MACHINE_KIND_RUNNER
+        ]
         updates = {MACHINES_CONFIG_KEY: configs}
         if user_id != server_owner:
             for ref in refs:
@@ -1183,6 +1395,9 @@ async def forget_user(user_id: str) -> None:
         for ref in refs:
             _providers.pop(ref, None)
             invalidate(ref)
+    for machine_id in removed_runner_ids:
+        _tunnel_machines.pop(machine_id, None)
+        await HUB.disconnect(machine_id, CLOSE_UNKNOWN_MACHINE, REMOVED_MACHINE_MESSAGE)
 
 
 # Cached status and model lists

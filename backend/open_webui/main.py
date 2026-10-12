@@ -172,6 +172,7 @@ from open_webui.routers import (
     pipelines,
     prompts,
     retrieval,
+    runners,
     scim,
     skills,
     subscriptions,
@@ -870,6 +871,7 @@ if ENABLE_ADMIN_ANALYTICS:
 app.include_router(utils.router, prefix='/api/v1/utils', tags=['utils'])
 app.include_router(terminals.router, prefix='/api/v1/terminals', tags=['terminals'])
 app.include_router(subscriptions.router, prefix='/api/v1/subscriptions', tags=['subscriptions'])
+app.include_router(runners.router, prefix='/api/v1/runners', tags=['runners'])
 app.include_router(backups.router, prefix='/api/v1/backups', tags=['backups'])
 app.include_router(automations.router, prefix='/api/v1/automations', tags=['automations'])
 app.include_router(calendar.router, prefix='/api/v1/calendars', tags=['calendars'])

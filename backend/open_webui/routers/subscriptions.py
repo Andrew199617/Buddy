@@ -9,6 +9,7 @@ Routes:
   GET    /machines                 — the user's machines (runner keys are never returned)
   POST   /machines                 — add or update a listen-mode Buddy Runner (administrators)
   POST   /machines/verify          — check a runner address and key (administrators)
+  PATCH  /machines/{machine}       — rename one of the user's machines
   DELETE /machines/{machine}       — remove one of the user's machines
   GET    /admin/machines           — every user's machines, for administrators
   GET    /admin/policy             — who may use machines, and which sign-ins are allowed
@@ -75,6 +76,10 @@ class MachineVerifyForm(BaseModel):
     key: str
     # Optional; checked the same way Save checks it, so Verify cannot pass an address Save rejects.
     browser_url: Optional[str] = None
+
+
+class MachineRenameForm(BaseModel):
+    name: str
 
 
 class PolicyForm(BaseModel):
@@ -156,6 +161,15 @@ async def verify_machine(form_data: MachineVerifyForm, user=Depends(get_admin_se
         return await service.verify_machine(form_data.url, form_data.key, form_data.browser_url)
     except SubscriptionError as error:
         raise _bad_request(error)
+
+
+@router.patch('/machines/{machine_id}')
+async def rename_machine(machine_id: str, form_data: MachineRenameForm, user=Depends(get_machine_session_user)):
+    try:
+        await service.rename_machine(user.id, machine_id, form_data.name)
+    except SubscriptionError as error:
+        raise _bad_request(error)
+    return {'machines': await service.describe_machines(user.id)}
 
 
 @router.delete('/machines/{machine_id}')
