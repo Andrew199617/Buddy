@@ -2,13 +2,12 @@
 	import { getContext, onDestroy, onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
 
-	import { getModels as fetchModels } from '$lib/apis';
 	import {
 		getSubscriptions,
 		type SubscriptionMachine,
 		type SubscriptionProvider
 	} from '$lib/apis/subscriptions';
-	import { config, models, settings } from '$lib/stores';
+	import { refreshModelList } from '$lib/utils/model-list';
 
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
@@ -54,11 +53,7 @@
 	// Removing or changing a machine turns off the providers on it, so the model list changes.
 	const refreshModels = async () => {
 		try {
-			const directConnections = $config?.features?.enable_direct_connections
-				? ($settings?.directConnections ?? null)
-				: null;
-			const nextModels = await fetchModels(localStorage.token, directConnections, false, true);
-			if (!disposed) models.set(nextModels);
+			await refreshModelList();
 		} catch (error) {
 			if (!disposed) toast.error(`${error}`);
 		}

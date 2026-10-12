@@ -12,6 +12,7 @@
 	} from '$lib/apis/subscriptions';
 	import { createRunnerEnrollment } from '$lib/apis/runners';
 	import { getDesktop, type DesktopStatus } from '$lib/desktop/bridge';
+	import { refreshModelList } from '$lib/utils/model-list';
 
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import SubscriptionConnection from '$lib/components/admin/Settings/Connections/SubscriptionConnection.svelte';
@@ -51,6 +52,16 @@
 			if (!disposed) toast.error(`${error}`);
 		} finally {
 			loaded = true;
+		}
+	};
+
+	// Turning a plan on, signing in or changing its computer changes the model picker too.
+	const reloadAfterChange = async () => {
+		await load();
+		try {
+			await refreshModelList();
+		} catch (error) {
+			if (!disposed) toast.error(`${error}`);
 		}
 	};
 
@@ -208,10 +219,10 @@
 							<SubscriptionConnection
 								{provider}
 								{machines}
-								onModelsChanged={load}
-								onSettingsChanged={load}
+								onModelsChanged={reloadAfterChange}
+								onSettingsChanged={reloadAfterChange}
 							/>
-							<ProviderSignIn {provider} {policy} onChanged={load} />
+							<ProviderSignIn {provider} {policy} onChanged={reloadAfterChange} />
 						</div>
 					{/each}
 				</div>
