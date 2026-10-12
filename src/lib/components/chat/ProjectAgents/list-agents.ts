@@ -1,11 +1,16 @@
-// Finds the custom agents in a chat folder's project folder, reading them from
-// the computer the way the Project tab does. The computer still decides which
-// folders are shared.
+// Finds the custom agents in a chat folder's project folder. On a computer
+// connected with the Buddy app they are read through the relay, the way the
+// Project tab reads files, and the computer still decides which folders are
+// shared. On This server, Buddy reads them itself.
 
 import { CompanionError, type CompanionGrant, type WorkspaceClient } from '$lib/apis/companion';
+import type { AgentFileText } from '$lib/apis/subscriptions';
 import {
 	isReadableGrant,
-	type ProjectTarget
+	preferredTarget,
+	targetProblem,
+	type ProjectTarget,
+	type TargetProblem
 } from '$lib/components/chat/ProjectPanel/project-session';
 import { grantContaining } from '$lib/components/projectFolders/project-folders';
 
@@ -20,6 +25,36 @@ export type AgentReader = Pick<WorkspaceClient, 'getGrants' | 'getDirectory' | '
 export type AgentListing =
 	| { status: 'ready'; agents: ChatAgent[]; leftOut: number }
 	| { status: 'not_shared' };
+
+/** Why agents can't be read from this computer now, or null when they can. */
+export function agentReadProblem(target: ProjectTarget): TargetProblem {
+	if (target.chooseAgain) return 'choose_again';
+	// Buddy reads This server itself, so it needs no relay.
+	if (target.computer.kind === 'server') return null;
+	return targetProblem(target);
+}
+
+/**
+ * The computer to read agents from: one that can be read now, preferring one
+ * that runs a plan. Otherwise one that could be, so the menu can say what to
+ * do; null when none ever can.
+ */
+export function agentTarget(targets: ProjectTarget[]): ProjectTarget | null {
+	const readable = targets.filter((target) => agentReadProblem(target) === null);
+	if (readable.length > 0) return preferredTarget(readable);
+	const fixable = targets.filter((target) => agentReadProblem(target) !== 'not_browsable');
+	return preferredTarget(fixable);
+}
+
+/** The agents these files describe, without the ones hidden from the picker, sorted. */
+export function agentsFromFiles(files: AgentFileText[]): ChatAgent[] {
+	const agents: ChatAgent[] = [];
+	for (const file of files) {
+		const agent = parseAgentFile(file.content, file.path);
+		if (agent) agents.push(agent);
+	}
+	return sortAgents(agents);
+}
 
 type AgentFile = {
 	// Relative to the shared folder, for the computer.
@@ -62,14 +97,14 @@ async function agentFilesIn(
 	return files;
 }
 
-async function readAgent(
+async function readAgentFile(
 	reader: AgentReader,
 	grant: CompanionGrant,
 	file: AgentFile
-): Promise<ChatAgent | null> {
+): Promise<AgentFileText | null> {
 	try {
 		const read = await reader.getFile(grant.id, file.sharedPath);
-		return parseAgentFile(read.content, file.projectPath);
+		return { path: file.projectPath, content: read.content };
 	} catch (cause) {
 		if (isPassedOver(cause)) return null;
 		throw cause;
@@ -95,10 +130,10 @@ export async function listProjectAgents(
 	const files = perFolder.flat();
 	const kept = files.slice(0, MAX_AGENT_FILES);
 
-	const read = await Promise.all(kept.map((file) => readAgent(reader, match.grant, file)));
-	const agents: ChatAgent[] = [];
-	for (const agent of read) {
-		if (agent) agents.push(agent);
+	const read = await Promise.all(kept.map((file) => readAgentFile(reader, match.grant, file)));
+	const texts: AgentFileText[] = [];
+	for (const text of read) {
+		if (text) texts.push(text);
 	}
-	return { status: 'ready', agents: sortAgents(agents), leftOut: files.length - kept.length };
+	return { status: 'ready', agents: agentsFromFiles(texts), leftOut: files.length - kept.length };
 }

@@ -8,7 +8,14 @@ import {
 import type { ProjectFolderComputer } from '$lib/apis/subscriptions';
 import type { ProjectTarget } from '$lib/components/chat/ProjectPanel/project-session';
 
-import { listProjectAgents, MAX_AGENT_FILES, type AgentReader } from './list-agents';
+import {
+	agentReadProblem,
+	agentsFromFiles,
+	agentTarget,
+	listProjectAgents,
+	MAX_AGENT_FILES,
+	type AgentReader
+} from './list-agents';
 
 const workPc: ProjectFolderComputer = {
 	machine_id: 'pc-1',
@@ -196,5 +203,62 @@ describe('listProjectAgents', () => {
 			{ [`${folder}/a.agent.md`]: new CompanionError('Work PC is offline.', 503) }
 		);
 		await expect(listProjectAgents(reader, target)).rejects.toThrow('Work PC is offline.');
+	});
+});
+
+describe('agentTarget', () => {
+	const server: ProjectFolderComputer = {
+		...workPc,
+		machine_id: 'local',
+		name: 'This server',
+		kind: 'server',
+		online: true,
+		providers: [{ id: 'claude', name: 'Claude', access: 'full' }]
+	};
+	const onServer: ProjectTarget = {
+		computer: server,
+		path: 'C:\\baseball\\src',
+		chooseAgain: false
+	};
+	const offlinePc: ProjectTarget = { ...target, computer: { ...workPc, online: false } };
+	const addressPc: ProjectTarget = { ...target, computer: { ...workPc, kind: 'address' } };
+	const cloud: ProjectTarget = { ...target, computer: { ...workPc, kind: 'cloud' } };
+
+	it('reads This server itself, unless it was set up again', () => {
+		expect(agentReadProblem(onServer)).toBeNull();
+		expect(agentReadProblem({ ...onServer, chooseAgain: true })).toBe('choose_again');
+		expect(agentReadProblem(target)).toBeNull();
+		expect(agentReadProblem(offlinePc)).toBe('offline');
+		expect(agentReadProblem(cloud)).toBe('not_browsable');
+	});
+
+	it('prefers a computer it can read now, then one that runs a plan', () => {
+		expect(agentTarget([offlinePc, onServer])).toBe(onServer);
+		expect(agentTarget([target, onServer])).toBe(onServer);
+		expect(agentTarget([cloud, target])).toBe(target);
+	});
+
+	it('falls back to one that could be read, so the menu can say why', () => {
+		expect(agentTarget([cloud, offlinePc])).toBe(offlinePc);
+		expect(agentTarget([addressPc])).toBe(addressPc);
+	});
+
+	it('has none when no computer can ever be read', () => {
+		expect(agentTarget([cloud])).toBeNull();
+		expect(agentTarget([])).toBeNull();
+	});
+});
+
+describe('agentsFromFiles', () => {
+	it('parses the files, leaves out hidden agents and sorts the rest', () => {
+		const agents = agentsFromFiles([
+			{ path: '.github/agents/tester.agent.md', content: 'Test.' },
+			{ path: '.github/agents/helper.agent.md', content: '---\nuser-invocable: false\n---\nHelp.' },
+			{ path: '.claude/agents/planner.md', content: '---\nname: Planner\n---\nPlan.' }
+		]);
+		expect(agents.map((agent) => [agent.name, agent.path])).toEqual([
+			['Planner', '.claude/agents/planner.md'],
+			['tester', '.github/agents/tester.agent.md']
+		]);
 	});
 });

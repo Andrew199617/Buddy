@@ -500,3 +500,17 @@ export const checkMachineFolder = async (
 		}
 	);
 };
+
+export type AgentFileText = { path: string; content: string };
+
+/**
+ * The agent files in this person's project folder on This server for a chat
+ * folder. Agents on Buddy app computers are read through the relay instead.
+ * Throws the server's reason when there are none to read.
+ */
+export const getFolderAgentFiles = async (
+	token: string,
+	folderId: string
+): Promise<{ files: AgentFileText[]; left_out: number }> => {
+	return subscriptionRequest(token, `/folders/${encodeURIComponent(folderId)}/agents`);
+};
