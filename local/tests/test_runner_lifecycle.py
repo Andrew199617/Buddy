@@ -13,7 +13,7 @@ from aiohttp import ClientSession
 from aiohttp.test_utils import TestServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'backend'))
-from open_webui.utils.subscriptions import runner
+from buddy_runner import runner
 from buddy_runner.process import OutputLimitError
 
 

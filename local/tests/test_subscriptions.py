@@ -19,7 +19,8 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT_DIR / 'backend'))
 
 from buddy_runner import discovery  # noqa: E402
-from open_webui.utils.subscriptions import claude_code, codex, runner, streaming  # noqa: E402
+from buddy_runner import runner  # noqa: E402
+from open_webui.utils.subscriptions import claude_code, codex, streaming  # noqa: E402
 from open_webui.utils.subscriptions.common import (  # noqa: E402
     ProviderSettings,
     TurnRequest,

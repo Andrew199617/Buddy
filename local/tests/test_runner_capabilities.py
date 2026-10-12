@@ -177,7 +177,7 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status, 401)
 
     async def test_real_runner_separates_provider_key_pair_token_and_operator_controls(self):
-        from open_webui.utils.subscriptions import runner
+        from buddy_runner import runner
 
         provider_key = secrets.token_urlsafe(32)
         app = runner.build_app(
@@ -483,7 +483,7 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_one_missing_root_leaves_other_grants_listed_and_revocable(self):
         import shutil
-        from open_webui.utils.subscriptions import runner
+        from buddy_runner import runner
 
         second = self.base / 'second'
         second.mkdir()

@@ -18,7 +18,8 @@ from aiohttp.test_utils import TestServer
 from cryptography.hazmat.primitives import serialization
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'backend'))
-from open_webui.utils.subscriptions import machines, runner
+from buddy_runner import runner
+from open_webui.utils.subscriptions import machines
 from local.tests.test_remote_process_cleanup import is_running
 from local.tests.tls_fixtures import TemporaryCertificateAuthority
 
