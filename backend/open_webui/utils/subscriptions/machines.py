@@ -127,12 +127,53 @@ class LocalMachine:
         pass
 
 
+class AiohttpProcessChannel:
+    """A Runner process stream over its own aiohttp WebSocket.
+
+    RemoteProcess reads and writes one process through a channel: ``closed``,
+    ``receive_event(timeout)``, ``events()``, ``send_text(text)``,
+    ``send_json(message)`` and ``close()``. The outbound tunnel provides the
+    same methods for its streams.
+    """
+
+    def __init__(self, websocket: aiohttp.ClientWebSocketResponse):
+        self._websocket = websocket
+
+    @property
+    def closed(self) -> bool:
+        return self._websocket.closed
+
+    async def receive_event(self, timeout: float):
+        reply = await self._websocket.receive(timeout=timeout)
+        if reply.type != aiohttp.WSMsgType.TEXT:
+            return {}
+        return json.loads(reply.data)
+
+    async def events(self):
+        async for message in self._websocket:
+            if message.type != aiohttp.WSMsgType.TEXT:
+                continue
+            yield json.loads(message.data)
+
+    async def send_text(self, text: str) -> None:
+        await self._websocket.send_str(text)
+
+    async def send_json(self, message: dict) -> None:
+        await self._websocket.send_json(message)
+
+    async def close(self) -> None:
+        await self._websocket.close()
+
+
 class RemoteProcess(StreamedOutput):
     """A process on a Buddy Runner, with the same methods as ChildProcess."""
 
+    # How long a stop may take to be confirmed, unless the caller says otherwise.
+    cleanup_timeout = 5.0
+
     def __init__(
-        self, websocket: aiohttp.ClientWebSocketResponse, args: list[str], pid: int,
-        *, process_id: str | None = None, machine: 'RemoteMachine | None' = None,
+        self, channel, args: list[str], pid: int,
+        *, process_id: str | None = None, machine=None,
     ):
         super().__init__()
         self._output_limit_bytes = MAX_REMOTE_STDOUT_BYTES
@@ -143,7 +184,7 @@ class RemoteProcess(StreamedOutput):
         self.process_id = process_id
         self._machine = machine
         self.returncode: int | None = None
-        self._websocket = websocket
+        self._channel = channel
         self._stderr = ''
         self._exited = asyncio.Event()
         self._confirmed_stopped = asyncio.Event()
@@ -159,7 +200,7 @@ class RemoteProcess(StreamedOutput):
     def cleanup_confirmed(self) -> bool:
         return (
             self._confirmed_stopped.is_set() and self._receiver.done()
-            and self._websocket.closed
+            and self._channel.closed
         )
 
     @property
@@ -197,10 +238,7 @@ class RemoteProcess(StreamedOutput):
 
     async def _receive(self) -> None:
         try:
-            async for message in self._websocket:
-                if message.type != aiohttp.WSMsgType.TEXT:
-                    continue
-                event = json.loads(message.data)
+            async for event in self._channel.events():
                 if not isinstance(event, dict):
                     raise ValueError('Runner process event must be an object')
                 if event.get('type') == 'stdout':
@@ -236,7 +274,7 @@ class RemoteProcess(StreamedOutput):
                 )
             self._post_eof()
             self._exited.set()
-            await self._websocket.close()
+            await self._channel.close()
 
     def stderr_text(self) -> str:
         return self._stderr
@@ -248,19 +286,19 @@ class RemoteProcess(StreamedOutput):
         # Large input, such as a history with images, goes in bounded pieces.
         # The Runner writes them in order, so the CLI reads the same bytes.
         async with self._write_lock:
-            if self._websocket.closed or self._exited.is_set():
+            if self._channel.closed or self._exited.is_set():
                 raise self._closed_error()
             for start in range(0, len(text), MAX_STDIN_MESSAGE_CHARS):
                 piece = text[start:start + MAX_STDIN_MESSAGE_CHARS]
                 try:
-                    await self._websocket.send_json({'type': 'stdin', 'data': piece})
+                    await self._channel.send_json({'type': 'stdin', 'data': piece})
                 except (aiohttp.ClientError, ConnectionResetError) as error:
                     raise self._closed_error() from error
 
     async def _send_quietly(self, message: dict) -> None:
         try:
-            if not self._websocket.closed:
-                await self._websocket.send_json(message)
+            if not self._channel.closed:
+                await self._channel.send_json(message)
         except (aiohttp.ClientError, ConnectionResetError, RuntimeError):
             pass
 
@@ -286,7 +324,7 @@ class RemoteProcess(StreamedOutput):
 
     def kill(self) -> None:
         """Schedule verified cleanup; async callers should await ``close``."""
-        operation = self._ensure_close_task(5.0)
+        operation = self._ensure_close_task(self.cleanup_timeout)
         operation.add_done_callback(self._log_cleanup_failure)
 
     def _log_cleanup_failure(self, operation: asyncio.Task) -> None:
@@ -357,7 +395,7 @@ class RemoteProcess(StreamedOutput):
                 # Keep the transport alive until the host has acknowledged
                 # native cleanup. A stopped acknowledgement need not include
                 # exit output, so explicitly release that open stream here.
-                await self._websocket.close()
+                await self._channel.close()
                 await self._receiver
         except TimeoutError as error:
             raise TimeoutError(f'Runner did not confirm cleanup of process {self.pid} within {timeout:g} seconds') from error
@@ -368,10 +406,12 @@ class RemoteProcess(StreamedOutput):
             if not self._confirmed_stopped.is_set():
                 # Release a failed transport without calling that release a
                 # successful process stop. The caller still receives failure.
-                await self._websocket.close()
+                await self._channel.close()
 
-    async def kill_and_wait(self, timeout: float = 5.0) -> None:
+    async def kill_and_wait(self, timeout: float | None = None) -> None:
         self._disposal_started = True
+        if timeout is None:
+            timeout = self.cleanup_timeout
         operation = self._ensure_close_task(timeout)
         try:
             await asyncio.shield(operation)
@@ -379,9 +419,72 @@ class RemoteProcess(StreamedOutput):
             await _finish_cancelled_cleanup(operation)
             raise
 
-    async def close(self, timeout: float = 5.0) -> None:
+    async def close(self, timeout: float | None = None) -> None:
         self._disposal_started = True
         await self.kill_and_wait(timeout)
+
+
+def _parse_startup_reply(event) -> tuple[int, str | None]:
+    """The process ID and stop ID from a Runner's startup reply, or why it started nothing."""
+    if not isinstance(event, dict):
+        raise ValueError('Runner startup response must be an object')
+    if event.get('type') == 'start_failed':
+        message = event.get('message')
+        if not isinstance(message, str) or not message:
+            message = 'The Runner did not start the process.'
+        raise _StartRefusedError(message)
+    if event.get('type') != 'started':
+        raise ValueError(event.get('message') or 'Runner did not acknowledge startup')
+    pid = event.get('pid')
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        raise ValueError('Runner startup response has no valid process ID')
+    # Runners without this ID can only confirm cleanup on this connection.
+    process_id = None
+    if isinstance(event.get('id'), str) and event['id']:
+        process_id = event['id']
+    return pid, process_id
+
+
+async def _close_refused_start(machine, channel) -> None:
+    # The Runner reported that nothing started, so a failed close cannot
+    # leave a process behind.
+    try:
+        await channel.close()
+    except Exception as error:
+        log.debug('Could not close the refused %s startup connection: %s', machine.name, error)
+
+
+async def start_over_channel(machine, channel, args: list[str], start_message: str | None, process_class=None):
+    """Wait for a Runner's startup reply on ``channel`` and own cleanup of whatever it started.
+
+    ``start_message`` is sent first unless the transport already carried it.
+    A startup that fails after the Runner may have started something goes to
+    ``machine.dispose_failed_start``, which raises unless cleanup is proven.
+    """
+    if process_class is None:
+        process_class = RemoteProcess
+    program = os.path.basename(args[0])
+    pid = None
+    process_id = None
+    try:
+        if start_message is not None:
+            await channel.send_text(start_message)
+        event = await channel.receive_event(timeout=60)
+        if isinstance(event, dict) and event.get('type') != 'start_failed':
+            # A malformed reply that still names a process leaves its cleanup to prove.
+            pid = event.get('pid')
+        pid, process_id = _parse_startup_reply(event)
+    except _StartRefusedError as refusal:
+        await _close_refused_start(machine, channel)
+        raise SubscriptionError(f'{machine.name} could not start {program}: {refusal}') from refusal
+    except Exception as error:
+        await machine.dispose_failed_start(channel, args, pid)
+        raise SubscriptionError(f'{machine.name} could not start {program}: {error}') from error
+    except asyncio.CancelledError:
+        cleanup = asyncio.create_task(machine.dispose_failed_start(channel, args, pid))
+        await _finish_cancelled_cleanup(cleanup)
+        raise
+    return process_class(channel, args, pid, process_id=process_id, machine=machine)
 
 
 def check_runner_url(url: str) -> None:
@@ -505,39 +608,7 @@ class RemoteMachine:
             )
         except (aiohttp.ClientError, TimeoutError) as error:
             raise SubscriptionError(f'Could not reach {self.name} at {self.url}: {error}') from error
-
-        pid = None
-        process_id = None
-        try:
-            await websocket.send_str(start_message)
-            reply = await websocket.receive(timeout=60)
-            event = json.loads(reply.data) if reply.type == aiohttp.WSMsgType.TEXT else {}
-            if not isinstance(event, dict):
-                raise ValueError('Runner startup response must be an object')
-            if event.get('type') == 'start_failed':
-                message = event.get('message')
-                if not isinstance(message, str) or not message:
-                    message = 'The Runner did not start the process.'
-                raise _StartRefusedError(message)
-            pid = event.get('pid')
-            if event.get('type') != 'started':
-                raise ValueError(event.get('message') or 'Runner did not acknowledge startup')
-            if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
-                raise ValueError('Runner startup response has no valid process ID')
-            # Runners without this ID can only confirm cleanup on this connection.
-            if isinstance(event.get('id'), str) and event['id']:
-                process_id = event['id']
-        except _StartRefusedError as refusal:
-            await self._close_refused_start(websocket)
-            raise SubscriptionError(f'{self.name} could not start {program}: {refusal}') from refusal
-        except Exception as error:
-            await self._dispose_failed_start(websocket, args, pid)
-            raise SubscriptionError(f'{self.name} could not start {program}: {error}') from error
-        except asyncio.CancelledError:
-            cleanup = asyncio.create_task(self._dispose_failed_start(websocket, args, pid))
-            await _finish_cancelled_cleanup(cleanup)
-            raise
-        return RemoteProcess(websocket, args, pid, process_id=process_id, machine=self)
+        return await start_over_channel(self, AiohttpProcessChannel(websocket), args, start_message)
 
     async def confirm_process_stopped(self, process_id: str) -> bool:
         """Ask the Runner to stop a process whose connection ended, and confirm its cleanup.
@@ -554,18 +625,10 @@ class RemoteMachine:
                 result = await self._request('POST', path, timeout=15, session=session)
         return result.get('stopped') is True
 
-    async def _close_refused_start(self, websocket) -> None:
-        # The Runner reported that nothing started, so a failed close cannot
-        # leave a process behind.
-        try:
-            await websocket.close()
-        except Exception as error:
-            log.debug('Could not close the refused %s startup connection: %s', self.name, error)
-
-    async def _dispose_failed_start(self, websocket, args: list[str], pid: int | None) -> None:
+    async def dispose_failed_start(self, channel, args: list[str], pid: int | None) -> None:
         if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
             try:
-                await RemoteProcess(websocket, args, pid).close()
+                await RemoteProcess(channel, args, pid).close()
             except Exception as error:
                 raise StartupCleanupUnconfirmedError(
                     f'{self.name} could not confirm cleanup of startup process {pid}'
@@ -573,7 +636,7 @@ class RemoteMachine:
             return
         detail = f'{self.name} startup ended before a process identity was received; process cleanup unconfirmed'
         try:
-            await websocket.close()
+            await channel.close()
         except Exception as error:
             raise StartupCleanupUnconfirmedError(detail) from error
         log.warning(detail)

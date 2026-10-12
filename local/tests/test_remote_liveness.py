@@ -103,7 +103,7 @@ class RemoteLivenessTests(unittest.IsolatedAsyncioTestCase):
     async def join_receiver(self, process):
         await asyncio.wait_for(process._receiver, 2)
         self.assertTrue(process._exited.is_set())
-        self.assertTrue(process._websocket.closed)
+        self.assertTrue(process._channel.closed)
 
     def tracked(self, remote):
         service = load_service(MemoryConfig(), self.root / 'unused-offline-state')
