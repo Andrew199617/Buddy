@@ -1381,6 +1381,22 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(claude.on('runner-b'), self.service._tracked_machines)
         self.assertTrue(self.config.values['subscriptions.claude']['enable'])
 
+    async def test_turning_off_this_server_stops_work_there_for_plans_that_run_elsewhere(self):
+        claude = self.service.ProviderRef(OWNER, 'claude')
+        on_plan_computer = self.service._tracking_machine(claude, self.machines['runner-a'])
+        kept = await on_plan_computer.start_process(['fixture-turn'], 'fixture-cwd')
+        on_server = self.service._tracking_machine(claude, self.service.LOCAL_MACHINE)
+        self.service._login_computers[claude] = 'local'
+        await self.service.save_policy({'server_machine': False})
+        self.assertFalse(on_server.valid)
+        self.assertNotIn(claude.on('local'), self.service._tracked_machines)
+        self.assertNotIn(claude, self.service._login_computers)
+        self.assertEqual(kept.kill_count, 0)
+        self.assertTrue(self.config.values['subscriptions.claude']['enable'])
+        # A code can no longer finish a sign-in there.
+        with self.assertRaises(self.service.SubscriptionError):
+            await self.service.submit_login_code(OWNER, 'claude', 'fixture-code', machine_id='local')
+
     async def test_unconfirmed_cleanup_on_an_offline_app_computer_waits_for_that_computer_alone(self):
         ref = self.service.ProviderRef(OWNER, 'claude')
         laptop = self.service.TunnelMachine('laptop', 'Laptop', self.service.HUB)

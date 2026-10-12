@@ -359,10 +359,12 @@ async def _stop_provider_if_disallowed(ref: ProviderRef) -> None:
         log.warning('Could not check the policy for %s of %s, so it is stopped: %s',
                     PROVIDER_LABELS[ref.provider_id], ref.owner_id, error)
         allowed = False
-    if allowed:
-        return
     async with _provider_lock(ref):
-        await _quiesce_provider(ref)
+        if not allowed:
+            await _quiesce_provider(ref)
+        elif _has_work_on(ref, LOCAL_MACHINE_ID) and not await _may_use_server_machine(ref.owner_id):
+            # The plan runs elsewhere, but a sign-in or turn on this server must stop too.
+            await _quiesce_computer(ref, LOCAL_MACHINE_ID)
 
 
 async def _stop_disallowed_providers() -> None:
@@ -2260,6 +2262,8 @@ async def submit_login_code(
             ref, settings, machine_id, expected_machine_id, expected_machine_revision, mutation=True
         )
         await _require_login_on(ref, on_computer.machine_id)
+        # A code never finishes a sign-in on a computer the person may no longer use.
+        await _require_verified_machine(ref, on_computer)
         _require_computer_cleanup(ref, on_computer.machine_id)
         login = await (await get_provider(ref)).submit_login_code(code)
         if login.get('state') == 'success':
