@@ -15,6 +15,15 @@ ACCESS_READ = 'read'
 ACCESS_FULL = 'full'
 ACCESS_LEVELS = (ACCESS_CHAT, ACCESS_READ, ACCESS_FULL)
 
+# How a provider signs in on the user's machines.
+# The CLI's own sign-in on that machine, which must be a plan.
+CREDENTIAL_MACHINE = 'machine'
+# A one-year Claude token, from ``claude setup-token``, that Buddy keeps for the user.
+CREDENTIAL_PLAN_TOKEN = 'plan_token'
+# The user's own Anthropic or OpenAI API key, billed per use.
+CREDENTIAL_API_KEY = 'api_key'
+CREDENTIAL_MODES = (CREDENTIAL_MACHINE, CREDENTIAL_PLAN_TOKEN, CREDENTIAL_API_KEY)
+
 # Shown to the model in chat-only mode, ahead of the chat's own system prompt.
 CHAT_INSTRUCTIONS = (
     'You are chatting with the user in Buddy, their personal chat app. '
