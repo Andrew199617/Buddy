@@ -1580,15 +1580,19 @@ async def _checked_project_path(user, machine_id: str, path, current) -> 'projec
     """A path to save, checked on its computer unless it is the same as the one already saved there."""
     if not isinstance(path, str):
         raise SubscriptionError("Enter the folder's full path.")
-    # Confirms the computer is the user's and, for This server, that the policy allows it.
-    await get_machine(user.id, machine_id)
-    revision = await _machine_revision(user.id, machine_id)
-    if revision is None:
-        raise SubscriptionError('That computer was removed. Choose another.')
-    cleaned = project_folders.clean_project_path(path, await _machine_platform(user.id, machine_id))
     previous = None
     if current is not None:
         previous = current.paths.get(machine_id)
+    revision = await _machine_revision(user.id, machine_id)
+    if previous is not None and previous.path == path and previous.revision == revision:
+        # Unchanged, so it is kept even while the policy has This server off for a
+        # while; turns still check the policy before using it.
+        return previous
+    # Confirms the computer is the user's and, for This server, that the policy allows it.
+    await get_machine(user.id, machine_id)
+    if revision is None:
+        raise SubscriptionError('That computer was removed. Choose another.')
+    cleaned = project_folders.clean_project_path(path, await _machine_platform(user.id, machine_id))
     if previous is not None and previous.path == cleaned and previous.revision == revision:
         # Checked when it was chosen, so it saves even while that computer is offline.
         return previous
