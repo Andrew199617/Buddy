@@ -6,6 +6,7 @@ import {
 	computerPlace,
 	computerReadiness,
 	defaultAccess,
+	detailsFromDraft,
 	draftFromDefault,
 	draftFromTarget,
 	folderLabel,
@@ -201,6 +202,25 @@ describe('changing the draft', () => {
 			folder: { mode: 'path', path: 'D:\\site' },
 			access: 'read'
 		});
+	});
+});
+
+describe('a started chat before the server answers', () => {
+	it('shows the draft as its target', () => {
+		const chosen = chooseComputer(
+			draftFromDefault(options(), ['claude']),
+			options(),
+			['claude'],
+			'pc-1'
+		);
+		expect(detailsFromDraft(chosen, options())).toMatchObject({
+			kind: 'computer',
+			machine_id: 'pc-1',
+			computer: { name: 'Work PC', kind: 'app', online: true },
+			folder_mode: 'auto',
+			access: 'full'
+		});
+		expect(detailsFromDraft(draftFromDefault(options(), []), options()).kind).toBe('detached');
 	});
 });
 
