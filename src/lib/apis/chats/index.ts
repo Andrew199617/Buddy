@@ -818,6 +818,21 @@ export const getChatById = async (token: string, id: string) => {
 	return res;
 };
 
+/** Whether the person's chat still exists: false only when Buddy says it is gone; other failures throw. */
+export const chatExists = async (token: string, id: string): Promise<boolean> => {
+	const res = await fetch(`${WEBUI_API_BASE_URL}/chats/${id}`, {
+		method: 'GET',
+		headers: {
+			Accept: 'application/json',
+			...(token && { authorization: `Bearer ${token}` })
+		}
+	});
+	if (res.ok) return true;
+	// Buddy answers 401 for a chat that is gone or isn't the person's.
+	if (res.status === 401 || res.status === 404) return false;
+	throw new Error(`Buddy could not check the chat (${res.status}).`);
+};
+
 export const getChatByShareId = async (token: string, share_id: string) => {
 	let error = null;
 
