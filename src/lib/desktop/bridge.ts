@@ -49,7 +49,8 @@ export type BuddyDesktop = {
 	openClaudeTokenSetup(): Promise<void>;
 	// Asks for a project folder in the system folder dialog. Shares nothing and changes no setting.
 	// Older apps lack it, so callers check that it exists.
-	chooseProjectFolder?(): Promise<string | null>;
+	// Older apps ignore defaultPath.
+	chooseProjectFolder?(options?: { defaultPath?: string }): Promise<string | null>;
 	onStatusChanged(listener: (status: DesktopStatus) => void): () => void;
 };
 

@@ -62,10 +62,16 @@ test('requests are checked before they reach the service', () => {
 	ipc.call(BRIDGE_CHANNELS.connect, true, { enrollmentToken: 'bde1_token', name: 'Studio PC' });
 	ipc.call(BRIDGE_CHANNELS.setPermission, true, 'allowEdits', true);
 	ipc.call(BRIDGE_CHANNELS.setPermission, true, 'allowFolderBrowsing', true);
+	ipc.call(BRIDGE_CHANNELS.chooseProjectFolder, true, { defaultPath: 'C:\\Projects' });
+	ipc.call(BRIDGE_CHANNELS.chooseProjectFolder, true, { defaultPath: 'relative' });
+	ipc.call(BRIDGE_CHANNELS.chooseProjectFolder, true, { defaultPath: 'C:\\' + 'a'.repeat(1100) });
 	assert.deepEqual(calls, [
 		['connectThisPC', 'bde1_token', 'Studio PC'],
 		['setPermission', 'allowEdits', true],
-		['setPermission', 'allowFolderBrowsing', true]
+		['setPermission', 'allowFolderBrowsing', true],
+		['chooseProjectFolder', 'C:\\Projects'],
+		['chooseProjectFolder', undefined],
+		['chooseProjectFolder', undefined]
 	]);
 });
 

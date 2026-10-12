@@ -1,4 +1,5 @@
 import type { IpcMain, IpcMainInvokeEvent } from 'electron';
+import path from 'node:path';
 
 import { BRIDGE_CHANNELS, SETUP_CHANNELS } from './bridge-channels';
 import type { DesktopService } from './desktop-service';
@@ -20,6 +21,17 @@ function handleFrom(ipc: IpcMain, channel: string, isAllowed: SenderCheck, handl
 function readText(value: unknown, what: string): string {
 	if (typeof value !== 'string') throw new Error(`Buddy sent an invalid ${what}.`);
 	return value;
+}
+
+const MAX_PATH_CHARS = 1024;
+
+/** A folder the dialog may open at: an absolute path, or nothing. Anything else is ignored. */
+function readDefaultPath(value: unknown): string | undefined {
+	const request = value as { defaultPath?: unknown } | null;
+	const defaultPath = request?.defaultPath;
+	if (typeof defaultPath !== 'string' || defaultPath.length > MAX_PATH_CHARS) return undefined;
+	if (!path.isAbsolute(defaultPath)) return undefined;
+	return defaultPath;
 }
 
 function readConnectRequest(value: unknown): { token: string; name: string } {
@@ -51,7 +63,9 @@ export function registerBuddyBridge(
 
 	handleFrom(ipc, BRIDGE_CHANNELS.chooseFolder, isBuddyPage, () => service.chooseSharedFolder());
 
-	handleFrom(ipc, BRIDGE_CHANNELS.chooseProjectFolder, isBuddyPage, () => service.chooseProjectFolder());
+	handleFrom(ipc, BRIDGE_CHANNELS.chooseProjectFolder, isBuddyPage, (request) =>
+		service.chooseProjectFolder(readDefaultPath(request))
+	);
 
 	handleFrom(ipc, BRIDGE_CHANNELS.removeFolder, isBuddyPage, (folder) =>
 		service.removeSharedFolder(readText(folder, 'folder'))

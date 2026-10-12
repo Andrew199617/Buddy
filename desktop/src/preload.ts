@@ -46,7 +46,8 @@ const buddyDesktop = {
 		}),
 	disconnectThisPC: () => invoke('buddy-desktop:disconnect'),
 	chooseSharedFolder: () => invoke('buddy-desktop:choose-folder'),
-	chooseProjectFolder: () => invoke('buddy-desktop:choose-project-folder'),
+	chooseProjectFolder: (options?: { defaultPath?: unknown }) =>
+		invoke('buddy-desktop:choose-project-folder', { defaultPath: options?.defaultPath }),
 	removeSharedFolder: (folder: unknown) => invoke('buddy-desktop:remove-folder', String(folder)),
 	setPermission: (permission: unknown, allowed: unknown) =>
 		invoke('buddy-desktop:set-permission', String(permission), allowed === true),

@@ -73,6 +73,7 @@ function setUp(answers: Answers = {}, initial: Partial<DesktopSettings> = {}) {
 	const credentials = new MemoryCredentials();
 	const supervisor = new FakeSupervisor();
 	const asked: string[] = [];
+	const openedAt: (string | undefined)[] = [];
 	const enrollments: { token: string; host: HostDetails }[] = [];
 	let loginItem = false;
 	const dialogs: Dialogs = {
@@ -84,7 +85,8 @@ function setUp(answers: Answers = {}, initial: Partial<DesktopSettings> = {}) {
 			asked.push('folder');
 			return answers.folder ?? null;
 		},
-		chooseProjectFolder: async () => {
+		chooseProjectFolder: async (defaultPath?: string) => {
+			openedAt.push(defaultPath);
 			asked.push('project folder');
 			return answers.projectFolder ?? null;
 		},
@@ -108,7 +110,7 @@ function setUp(answers: Answers = {}, initial: Partial<DesktopSettings> = {}) {
 		hostName: 'STUDIO-PC',
 		accountName: 'sam'
 	});
-	return { service, settings, credentials, supervisor, asked, enrollments };
+	return { service, settings, credentials, supervisor, asked, enrollments, openedAt };
 }
 
 test('connecting asks first, and a no changes nothing', async () => {
@@ -254,20 +256,22 @@ test('starting at sign-in is reported back', () => {
 });
 
 test('choosing a project folder returns its path and changes nothing on this computer', async () => {
-	const folder = 'C:\Projects\site';
-	const { service, settings, supervisor, asked } = setUp({ projectFolder: folder });
+	const folder = 'C:\\Projects\\site';
+	const { service, settings, supervisor, asked, openedAt } = setUp({ projectFolder: folder });
 	await service.connectThisPC('bde1_token', 'PC');
 	const before = structuredClone(settings.saved);
 	const starts = supervisor.started.length;
 	assert.equal(await service.chooseProjectFolder(), folder);
+	await service.chooseProjectFolder('C:\\Projects');
+	assert.deepEqual(openedAt, [undefined, 'C:\\Projects']);
 	assert.deepEqual(settings.saved, before);
 	assert.equal(supervisor.started.length, starts);
 	assert.equal(supervisor.stops, 0);
-	assert.deepEqual(asked, ['connect', 'project folder']);
+	assert.deepEqual(asked, ['connect', 'project folder', 'project folder']);
 });
 
 test('a project folder can be chosen only on a connected computer', async () => {
-	const { service, asked } = setUp({ projectFolder: 'C:\Projects\site' });
+	const { service, asked } = setUp({ projectFolder: 'C:\\Projects\\site' });
 	await assert.rejects(service.chooseProjectFolder(), /Connect this computer/);
 	assert.deepEqual(asked, []);
 });

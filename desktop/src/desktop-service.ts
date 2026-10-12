@@ -16,7 +16,7 @@ export type ConnectAnswer = { connect: boolean; allowFolderBrowsing: boolean };
 export type Dialogs = {
 	confirmConnect(serverUrl: string, accountName: string): Promise<ConnectAnswer>;
 	chooseFolder(): Promise<string | null>;
-	chooseProjectFolder(): Promise<string | null>;
+	chooseProjectFolder(defaultPath?: string): Promise<string | null>;
 	confirmPermission(permission: DesktopPermission): Promise<boolean>;
 };
 
@@ -156,9 +156,9 @@ export class DesktopService extends EventEmitter {
 	 * It shares nothing and changes no permission: Buddy checks the folder on this
 	 * computer through the Runner before it is used.
 	 */
-	async chooseProjectFolder(): Promise<string | null> {
+	async chooseProjectFolder(defaultPath?: string): Promise<string | null> {
 		if (!this.settings.machine) throw new Error('Connect this computer to Buddy first.');
-		return this.options.dialogs.chooseProjectFolder();
+		return this.options.dialogs.chooseProjectFolder(defaultPath);
 	}
 
 	async removeSharedFolder(folder: string): Promise<DesktopStatus> {
