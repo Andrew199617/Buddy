@@ -6,8 +6,8 @@ from typing import Any
 
 from open_webui.utils.subscriptions.conversation import Conversation
 
-# ``owned_by`` of subscription models. They run on the administrator's personal
-# plan, so only administrators may use them.
+# ``owned_by`` of subscription models. Each runs on one user's own plan and
+# machine, so only that user sees and uses it.
 SUBSCRIPTION_OWNED_BY = 'subscription'
 
 ACCESS_CHAT = 'chat'
@@ -29,7 +29,8 @@ class ProviderSettings:
     access: str = ACCESS_CHAT
     workspace: str = ''
     cli_path: str = ''
-    # Which machine runs the CLI: 'local' (this server) or a Buddy Runner id.
+    # Which machine runs the CLI: one of the user's computers, 'local' (this
+    # server, for the instance owner), or '' before one is chosen.
     machine_id: str = 'local'
 
 

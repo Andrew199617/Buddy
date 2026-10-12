@@ -33,6 +33,32 @@ sys.path.insert(0, str(ROOT / 'backend'))
 from open_webui.utils.subscriptions.runner_transport import normalize_runner_url  # noqa: E402
 from open_webui.utils.subscriptions.events import SubscriptionError  # noqa: E402
 
+# The instance owner: the user whose setup predates per-user machines. Most
+# tests act as this user, whose settings keep the original config keys.
+OWNER = 'owner-1'
+OWNER_USER = types.SimpleNamespace(id=OWNER, role='admin')
+
+
+def owner_providers(service, providers_by_id):
+    """Install stand-in providers as the owner's own."""
+    return {service.ProviderRef(OWNER, provider_id): provider for provider_id, provider in providers_by_id.items()}
+
+
+class FakeUsers:
+    async def get_first_user(self):
+        return OWNER_USER
+
+    async def get_super_admin_user(self):
+        return OWNER_USER
+
+
+class FakeGroups:
+    def __init__(self, memberships=None):
+        self.memberships = memberships or {}
+
+    async def get_groups_by_member_id(self, user_id):
+        return [types.SimpleNamespace(id=group_id) for group_id in self.memberships.get(user_id, [])]
+
 
 class MemoryConfig:
     def __init__(self, initial=None):
@@ -137,6 +163,8 @@ def load_service(config, data_dir):
         'UVICORN_WORKERS': 1,
         'Config': config,
         'Models': types.SimpleNamespace(),
+        'Users': FakeUsers(),
+        'Groups': FakeGroups(),
         'CHANNEL_CHAT_ID_PREFIX': 'channel:',
         'ClaudeCodeProvider': FakeProvider,
         'CodexProvider': FakeCodexProvider,
@@ -173,6 +201,7 @@ def load_service(config, data_dir):
     ast.fix_missing_locations(tree)
     with patch.dict(sys.modules, {module.__name__: module}):
         exec(compile(tree, module.__file__, 'exec'), module.__dict__)
+    module._server_owner_id = OWNER
     return module
 
 
@@ -206,6 +235,7 @@ def load_machine_router(service):
         'Optional': Optional,
         'Depends': lambda dependency: None,
         'get_admin_user': lambda: None,
+        'get_admin_session_user': lambda: None,
         'service': service,
         'SubscriptionError': Exception,
         'HTTPException': FakeHTTPException,
@@ -276,7 +306,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         # These are the only provider objects exercised; their cleanup has no
         # CLI, process, sign-in, credential-store, or network implementation.
         self.providers = {'claude': FakeProvider(), 'codex': FakeCodexProvider()}
-        self.service.PROVIDERS = self.providers
+        self.service._providers = owner_providers(self.service, self.providers)
         self.cached = {}
         for config in self.config.values['subscriptions.machines']:
             cached = FakeRemoteMachine(config['id'], config['name'], config['url'], config['key'])
@@ -303,10 +333,10 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
 
         for provider in self.providers.values():
             provider.observe_cleanup = observe_committed_reset
-        self.service.status_cache._entries['claude'] = object()
-        self.service.models_cache._entries['codex'] = object()
+        self.service.status_cache._entries[self.service.ProviderRef(OWNER, 'claude')] = object()
+        self.service.models_cache._entries[self.service.ProviderRef(OWNER, 'codex')] = object()
 
-        await self.service.delete_machine('runner-a')
+        await self.service.delete_machine(OWNER, 'runner-a')
 
         self.assertEqual(set(self.config.commits[0]), {
             'subscriptions.machines', 'subscriptions.claude', 'subscriptions.codex'
@@ -317,18 +347,18 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cached['runner-a'].closed, 1)
         self.assertEqual(self.cached['runner-b'].closed, 0)
         self.assertNotIn('runner-a', self.service._remote_machines)
-        self.assertNotIn('claude', self.service.status_cache._entries)
-        self.assertNotIn('codex', self.service.models_cache._entries)
+        self.assertNotIn(self.service.ProviderRef(OWNER, 'claude'), self.service.status_cache._entries)
+        self.assertNotIn(self.service.ProviderRef(OWNER, 'codex'), self.service.models_cache._entries)
         for provider_id in self.providers:
-            settings = await self.service.get_settings(provider_id)
+            settings = await self.service.get_settings(OWNER, provider_id)
             self.assertEqual(settings.machine_id, 'runner-a')
             with self.assertRaises(self.service.SubscriptionError):
-                await self.service.get_machine(settings.machine_id)
+                await self.service.get_machine(OWNER, settings.machine_id)
         self.assertEqual(self.service.LOCAL_MACHINE.path_checks, [])
 
     async def test_deletion_leaves_providers_on_other_machines_unchanged(self):
         previous = copy.deepcopy(self.config.values['subscriptions.codex'])
-        await self.service.delete_machine('runner-a')
+        await self.service.delete_machine(OWNER, 'runner-a')
         self.assert_reset('claude', 'runner-a')
         self.assertEqual(self.config.values['subscriptions.codex'], previous)
         self.assertEqual(self.providers['codex'].calls, [])
@@ -337,7 +367,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
     async def test_this_server_cannot_be_deleted(self):
         before = copy.deepcopy(self.config.values)
         with self.assertRaises(self.service.SubscriptionError):
-            await self.service.delete_machine('local')
+            await self.service.delete_machine(OWNER, 'local')
         self.assertEqual(self.config.values, before)
         self.assertEqual(self.config.commits, [])
         self.assertTrue(all(not provider.calls for provider in self.providers.values()))
@@ -345,7 +375,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_selecting_a_new_machine_discards_authority_in_an_old_full_settings_request(self):
         updates = enabled_settings('runner-b')
-        settings = await self.service.save_settings(
+        settings = await self.service.save_settings(OWNER, 
             'claude', updates, expected_machine_id='runner-a',
             expected_machine_revision='fixture-revision-runner-a'
         )
@@ -355,7 +385,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.providers['claude'].calls, ['cancel_login'])
 
         # Granting access on the new host requires a subsequent explicit save.
-        approved = await self.service.save_settings('claude', {
+        approved = await self.service.save_settings(OWNER, 'claude', {
             'enable': True, 'access': 'read', 'workspace': 'D:\\new-fixture-project'
         }, expected_machine_id='runner-b', expected_machine_revision='fixture-revision-runner-b')
         self.assertTrue(approved.enable)
@@ -364,7 +394,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cached['runner-b'].path_checks, [('D:\\new-fixture-project', 'dir')])
 
     async def test_selecting_a_new_machine_stops_the_codex_session(self):
-        await self.service.save_settings(
+        await self.service.save_settings(OWNER, 
             'codex', enabled_settings('runner-a'), expected_machine_id='runner-b',
             expected_machine_revision='fixture-revision-runner-b'
         )
@@ -376,7 +406,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
     async def test_unknown_machine_selection_does_not_save_or_use_the_local_host(self):
         before = copy.deepcopy(self.config.values)
         with self.assertRaises(self.service.SubscriptionError):
-            await self.service.save_settings(
+            await self.service.save_settings(OWNER, 
                 'claude', enabled_settings('missing-runner'), expected_machine_id='runner-a',
                 expected_machine_revision='fixture-revision-runner-a'
             )
@@ -385,7 +415,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.service.LOCAL_MACHINE.path_checks, [])
 
     async def test_saving_settings_on_the_same_machine_preserves_normal_access_and_path_checks(self):
-        settings = await self.service.save_settings('claude', {
+        settings = await self.service.save_settings(OWNER, 'claude', {
             'machine_id': 'runner-a',
             'enable': True,
             'access': 'read',
@@ -410,7 +440,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         info = {'host': {**original['host'], 'id': host_id}, 'capabilities': {'files': True}}
         verify = AsyncMock(return_value=info)
         with patch.object(self.service, 'verify_machine', verify):
-            await self.service.save_machine(
+            await self.service.save_machine(OWNER, 
                 'runner-a', original['name'], url or original['url'], key,
                 browser_url=original['browser_url']
             )
@@ -439,7 +469,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.service, 'verify_machine', verify):
             for key in (None, '', '   '):
                 with self.subTest(key=key), self.assertRaises(self.service.SubscriptionError) as caught:
-                    await self.service.save_machine(
+                    await self.service.save_machine(OWNER, 
                         'runner-a', 'Test runner-a', 'https://replacement.example.invalid:8083', key
                     )
                 self.assertIn('new address', str(caught.exception))
@@ -458,7 +488,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         original = copy.deepcopy(self.config.values['subscriptions.machines'][0])
         before_settings = copy.deepcopy(self.config.values['subscriptions.claude'])
         with patch.object(self.service, 'verify_machine', AsyncMock(return_value={'host': original['host']})):
-            public = await self.service.save_machine(
+            public = await self.service.save_machine(OWNER, 
                 'runner-a', 'Renamed fixture PC', original['url'], '',
                 browser_url='https://new-browser.example.invalid:9443/'
             )
@@ -472,7 +502,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         original = copy.deepcopy(self.config.values['subscriptions.machines'][0])
         before_settings = copy.deepcopy(self.config.values['subscriptions.claude'])
         with patch.object(self.service, 'verify_machine', AsyncMock(return_value={'host': original['host']})):
-            public = await self.service.save_machine('runner-a', 'Renamed fixture PC', original['url'], '')
+            public = await self.service.save_machine(OWNER, 'runner-a', 'Renamed fixture PC', original['url'], '')
         self.assertEqual(public['browser_url'], original['browser_url'])
         self.assertEqual(public['revision'], original['revision'])
         self.assertEqual(self.config.values['subscriptions.claude'], before_settings)
@@ -483,7 +513,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         original = copy.deepcopy(self.config.values['subscriptions.machines'][0])
         before_settings = copy.deepcopy(self.config.values['subscriptions.claude'])
         with patch.object(self.service, 'verify_machine', AsyncMock(return_value={'host': original['host']})):
-            public = await self.service.save_machine(
+            public = await self.service.save_machine(OWNER, 
                 'runner-a', original['name'], original['url'], None,
                 browser_url=None, browser_url_supplied=True
             )
@@ -496,7 +526,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
     async def test_blank_browser_address_still_explicitly_clears_the_saved_address(self):
         original = copy.deepcopy(self.config.values['subscriptions.machines'][0])
         with patch.object(self.service, 'verify_machine', AsyncMock(return_value={'host': original['host']})):
-            public = await self.service.save_machine(
+            public = await self.service.save_machine(OWNER, 
                 'runner-a', original['name'], original['url'], None, browser_url='   '
             )
         self.assertIsNone(self.config.values['subscriptions.machines'][0]['browser_url'])
@@ -508,7 +538,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         original = self.config.values['subscriptions.machines'][0]
         original.pop('browser_url')
         with patch.object(self.service, 'verify_machine', AsyncMock(return_value={'host': original['host']})):
-            public = await self.service.save_machine(
+            public = await self.service.save_machine(OWNER, 
                 'runner-a', 'Renamed fixture PC', original['url'], None,
                 browser_url=None, browser_url_supplied=False
             )
@@ -519,7 +549,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_machine_without_browser_address_registers_without_one(self):
         info = {'host': {'id': 'fixture-new-host'}}
         with patch.object(self.service, 'verify_machine', AsyncMock(return_value=info)):
-            public = await self.service.save_machine(
+            public = await self.service.save_machine(OWNER, 
                 None, 'New fixture PC', 'https://new-runner.example.invalid:8083', 'new-fixture-key'
             )
         self.assertNotIn('browser_url', public)
@@ -531,7 +561,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         original.pop('host')
         before_settings = copy.deepcopy(self.config.values['subscriptions.claude'])
         with patch.object(self.service, 'verify_machine', AsyncMock(return_value={'host': {'id': 'host-a'}})):
-            await self.service.save_machine(
+            await self.service.save_machine(OWNER, 
                 'runner-a', original['name'], original['url'], None,
                 browser_url=original['browser_url']
             )
@@ -543,7 +573,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         failed_probe = AsyncMock(side_effect=self.service.SubscriptionError('Fixture runner refused the key'))
         with patch.object(self.service, 'verify_machine', failed_probe):
             with self.assertRaises(self.service.SubscriptionError):
-                await self.service.save_machine(
+                await self.service.save_machine(OWNER, 
                     'runner-a', 'Replacement fixture', 'https://replacement.example.invalid', 'bad-fixture-key'
                 )
         self.assertEqual(self.config.values, before)
@@ -553,7 +583,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
     async def test_runner_address_is_canonical_before_verification_and_persistence(self):
         verify = AsyncMock(return_value={'host': {'id': 'fixture-new-host'}})
         with patch.object(self.service, 'verify_machine', verify):
-            public = await self.service.save_machine(
+            public = await self.service.save_machine(OWNER, 
                 None, 'New fixture PC', ' HTTPS://RUNNER.EXAMPLE.INVALID:443/ ', 'fixture-key'
             )
         verify.assert_awaited_once_with('https://runner.example.invalid', 'fixture-key')
@@ -569,7 +599,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
             for url in ('http://host.docker.internal:8083', 'http://100.122.80.32:8083',
                         'http://192.0.2.10:8083', '\nhttps://runner.example.invalid'):
                 with self.subTest(url=url), self.assertRaises(self.service.SubscriptionError):
-                    await self.service.save_machine('runner-a', 'Fixture PC', url, 'fixture-key')
+                    await self.service.save_machine(OWNER, 'runner-a', 'Fixture PC', url, 'fixture-key')
         verify.assert_not_awaited()
         self.assertEqual(self.config.values, before)
         self.assertEqual(self.config.commits, [])
@@ -580,7 +610,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         original['url'] = 'https://RUNNER-A.EXAMPLE.INVALID:443/'
         before_settings = copy.deepcopy(self.config.values['subscriptions.claude'])
         with patch.object(self.service, 'verify_machine', AsyncMock(return_value={'host': original['host']})):
-            public = await self.service.save_machine(
+            public = await self.service.save_machine(OWNER, 
                 'runner-a', original['name'], 'https://runner-a.example.invalid', None
             )
         self.assertEqual(public['url'], 'https://runner-a.example.invalid')
@@ -595,7 +625,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         old_revision = original['revision']
         with patch.object(self.service, 'verify_machine', AsyncMock(return_value={'host': original['host']})):
             # The HTTPS origin is a new address, so the key must be entered again.
-            public = await self.service.save_machine(
+            public = await self.service.save_machine(OWNER, 
                 'runner-a', original['name'], 'https://runner-a.example.invalid:8083', original['key']
             )
         self.assertNotEqual(public['revision'], old_revision)
@@ -657,7 +687,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         config.update({'workspace': 'private-workspace', 'chat_dir': 'private-chat-directory'})
         config['host'].update({'key': 'private-host-key', 'default_workspace': 'private-default-directory'})
         config['capabilities'].update({'grants': ['private-root'], 'key': 'private-capability-key', 'pty': 'yes'})
-        public = await self.service.describe_machines()
+        public = await self.service.describe_machines(OWNER, )
         remote = next(machine for machine in public if machine['id'] == 'runner-a')
         self.assertEqual(
             set(remote), {'id', 'name', 'url', 'has_key', 'revision', 'browser_url', 'host', 'capabilities'}
@@ -678,7 +708,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         config = self.config.values['subscriptions.machines'][0]
         config['host'] = 'not-a-host-record'
         config['capabilities'] = ['files']
-        public = await self.service.describe_machines()
+        public = await self.service.describe_machines(OWNER, )
         remote = next(machine for machine in public if machine['id'] == 'runner-a')
         self.assertNotIn('host', remote)
         self.assertNotIn('capabilities', remote)
@@ -697,7 +727,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
             'chat_dir': '/private/chat'
         }
         with patch.object(self.service, 'verify_machine', AsyncMock(return_value=info)):
-            public = await self.service.save_machine(
+            public = await self.service.save_machine(OWNER, 
                 None, 'New fixture PC', 'https://new-runner.example.invalid:8083/', 'new-fixture-key',
                 browser_url='http://127.0.0.1:8083/'
             )
@@ -720,7 +750,7 @@ class SubscriptionMachineTests(unittest.IsolatedAsyncioTestCase):
         verify = AsyncMock()
         with patch.object(self.service, 'verify_machine', verify):
             with self.assertRaises(self.service.SubscriptionError):
-                await self.service.save_machine(
+                await self.service.save_machine(OWNER, 
                     None, 'Fixture PC', 'https://runner.example.invalid', 'fixture-key',
                     browser_url='http://192.0.2.10:8083'
                 )
@@ -823,13 +853,13 @@ class RunnerKeyConfigExportTests(unittest.IsolatedAsyncioTestCase):
         self.config.values['subscriptions.machines'][0].pop('key')
         with patch.object(self.service, 'RemoteMachine') as factory:
             with self.assertRaises(self.service.SubscriptionError) as caught:
-                await self.service.get_machine('runner-a')
+                await self.service.get_machine(OWNER, 'runner-a')
         factory.assert_not_called()
         self.assertIn('runner key', str(caught.exception))
 
     async def test_the_machine_list_says_which_machines_need_their_key_again(self):
         self.config.values['subscriptions.machines'][0].pop('key')
-        public = {machine['id']: machine for machine in await self.service.describe_machines()}
+        public = {machine['id']: machine for machine in await self.service.describe_machines(OWNER, )}
         self.assertIs(public['runner-a']['has_key'], False)
         self.assertIs(public['runner-b']['has_key'], True)
         self.assertNotIn('key', public['runner-a'])
@@ -837,9 +867,9 @@ class RunnerKeyConfigExportTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_provider_on_a_machine_without_a_key_can_still_be_turned_off(self):
         self.config.values['subscriptions.machines'][0].pop('key')
-        self.service.PROVIDERS = {'claude': FakeProvider(), 'codex': FakeCodexProvider()}
+        self.service._providers = owner_providers(self.service, {'claude': FakeProvider(), 'codex': FakeCodexProvider()})
         with patch.object(self.service, 'RemoteMachine') as factory:
-            settings = await self.service.save_settings(
+            settings = await self.service.save_settings(OWNER, 
                 'claude', {'enable': False}, 'runner-a', 'fixture-revision-runner-a'
             )
             self.assertIs(settings.enable, False)
@@ -847,7 +877,7 @@ class RunnerKeyConfigExportTests(unittest.IsolatedAsyncioTestCase):
                 **enabled_settings('runner-a'), 'enable': False
             })
             with self.assertRaises(self.service.SubscriptionError) as caught:
-                await self.service.save_settings(
+                await self.service.save_settings(OWNER, 
                     'claude', {'enable': True}, 'runner-a', 'fixture-revision-runner-a'
                 )
         factory.assert_not_called()
@@ -869,9 +899,9 @@ class SubscriptionMachineRouterTests(unittest.IsolatedAsyncioTestCase):
             'id': 'runner-a', 'name': 'Renamed fixture PC', 'url': 'https://runner.example.invalid:8083',
             **fields,
         })
-        await self.router.save_machine(form, user=object())
+        await self.router.save_machine(form, user=OWNER_USER)
         self.service.save_machine.assert_awaited_once_with(
-            'runner-a', 'Renamed fixture PC', 'https://runner.example.invalid:8083', None,
+            OWNER, 'runner-a', 'Renamed fixture PC', 'https://runner.example.invalid:8083', None,
             fields.get('browser_url'), browser_url_supplied=supplied,
         )
 
@@ -889,7 +919,7 @@ class SubscriptionMachineRouterTests(unittest.IsolatedAsyncioTestCase):
             'url': 'https://runner.example.invalid:8083', 'key': 'fixture-key',
             'browser_url': 'http://127.0.0.1:8083',
         })
-        await self.router.verify_machine(form, user=object())
+        await self.router.verify_machine(form, user=OWNER_USER)
         self.service.verify_machine.assert_awaited_once_with(
             'https://runner.example.invalid:8083', 'fixture-key', 'http://127.0.0.1:8083'
         )
@@ -898,7 +928,7 @@ class SubscriptionMachineRouterTests(unittest.IsolatedAsyncioTestCase):
         form = self.router.MachineVerifyForm.model_validate({
             'url': 'https://runner.example.invalid:8083', 'key': 'fixture-key',
         })
-        await self.router.verify_machine(form, user=object())
+        await self.router.verify_machine(form, user=OWNER_USER)
         self.service.verify_machine.assert_awaited_once_with(
             'https://runner.example.invalid:8083', 'fixture-key', None
         )

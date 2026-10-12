@@ -1,11 +1,18 @@
-"""Admin endpoints for Claude and ChatGPT subscriptions and the machines that run them.
+"""Each user's Claude and ChatGPT subscriptions and the machines that run them.
+
+Every route acts on the signed-in user's own providers and machines. Changes
+need a browser session: API keys can read but not change machines, sign-ins,
+or keys.
 
 Routes:
-  GET    /                         — both providers plus the machine list
-  GET    /machines                 — machines (runner keys are never returned)
-  POST   /machines                 — add or update a Buddy Runner machine
-  POST   /machines/verify          — check a runner address and key (and a browser address)
-  DELETE /machines/{machine}       — remove a machine
+  GET    /                         — the user's providers plus their machines
+  GET    /machines                 — the user's machines (runner keys are never returned)
+  POST   /machines                 — add or update a listen-mode Buddy Runner (administrators)
+  POST   /machines/verify          — check a runner address and key (administrators)
+  DELETE /machines/{machine}       — remove one of the user's machines
+  GET    /admin/machines           — every user's machines, for administrators
+  GET    /admin/policy             — who may use machines, and which sign-ins are allowed
+  POST   /admin/policy             — save that policy
   GET    /{provider}               — one provider (?refresh=true checks again)
   POST   /{provider}/config        — save enable, access, workspace, CLI path, machine
   POST   /{provider}/login         — start signing in (browser or device code)
@@ -19,10 +26,10 @@ import asyncio
 import logging
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
-from open_webui.utils.auth import get_admin_user
+from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.subscriptions import service
 from open_webui.utils.subscriptions.events import SubscriptionError
 
@@ -70,39 +77,81 @@ class MachineVerifyForm(BaseModel):
     browser_url: Optional[str] = None
 
 
+class PolicyForm(BaseModel):
+    user_machines: Optional[Literal['all', 'groups', 'admins']] = None
+    machine_group_ids: Optional[list[str]] = None
+    plan_sign_in: Optional[bool] = None
+    api_keys: Optional[bool] = None
+    server_machine: Optional[bool] = None
+
+
 def _bad_request(error: Exception) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
 
 
+def _require_session(request: Request) -> None:
+    if getattr(request.state, 'auth_type', None) == 'api_key':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Sign in to Buddy to change machines, sign-ins, or keys; API keys cannot.',
+        )
+
+
+async def get_machine_user(user=Depends(get_verified_user)):
+    """A user the policy allows to use machines."""
+    if not await service.may_use_machines(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=service.NOT_ALLOWED_MESSAGE)
+    return user
+
+
+async def get_machine_session_user(request: Request, user=Depends(get_machine_user)):
+    """An allowed user in a signed-in session, for changes."""
+    _require_session(request)
+    return user
+
+
+async def get_admin_session_user(request: Request, user=Depends(get_admin_user)):
+    _require_session(request)
+    return user
+
+
 @router.get('/')
-async def get_subscriptions(user=Depends(get_admin_user)):
+async def get_subscriptions(user=Depends(get_verified_user)):
+    policy = await service.get_policy()
+    if not await service.may_use_machines(user):
+        return {'allowed': False, 'providers': [], 'machines': [], 'policy': _public_policy(policy)}
     claude, codex, machines = await asyncio.gather(
-        service.describe_provider('claude'),
-        service.describe_provider('codex'),
-        service.describe_machines(),
+        service.describe_provider(user.id, 'claude'),
+        service.describe_provider(user.id, 'codex'),
+        service.describe_machines(user.id),
     )
-    return {'providers': [claude, codex], 'machines': machines}
+    return {'allowed': True, 'providers': [claude, codex], 'machines': machines, 'policy': _public_policy(policy)}
+
+
+def _public_policy(policy) -> dict:
+    """What every user may know about the policy: which sign-ins are allowed."""
+    return {'plan_sign_in': policy.plan_sign_in, 'api_keys': policy.api_keys}
 
 
 @router.get('/machines')
-async def get_machines(user=Depends(get_admin_user)):
-    return {'machines': await service.describe_machines()}
+async def get_machines(user=Depends(get_machine_user)):
+    return {'machines': await service.describe_machines(user.id)}
 
 
 @router.post('/machines')
-async def save_machine(form_data: MachineForm, user=Depends(get_admin_user)):
+async def save_machine(form_data: MachineForm, user=Depends(get_admin_session_user)):
     try:
         machine = await service.save_machine(
-            form_data.id, form_data.name, form_data.url, form_data.key, form_data.browser_url,
+            user.id, form_data.id, form_data.name, form_data.url, form_data.key, form_data.browser_url,
             browser_url_supplied='browser_url' in form_data.model_fields_set
         )
     except SubscriptionError as error:
         raise _bad_request(error)
-    return {'machine': machine, 'machines': await service.describe_machines()}
+    return {'machine': machine, 'machines': await service.describe_machines(user.id)}
 
 
 @router.post('/machines/verify')
-async def verify_machine(form_data: MachineVerifyForm, user=Depends(get_admin_user)):
+async def verify_machine(form_data: MachineVerifyForm, user=Depends(get_admin_session_user)):
     try:
         return await service.verify_machine(form_data.url, form_data.key, form_data.browser_url)
     except SubscriptionError as error:
@@ -110,21 +159,52 @@ async def verify_machine(form_data: MachineVerifyForm, user=Depends(get_admin_us
 
 
 @router.delete('/machines/{machine_id}')
-async def delete_machine(machine_id: str, user=Depends(get_admin_user)):
+async def delete_machine(machine_id: str, user=Depends(get_machine_session_user)):
     try:
-        await service.delete_machine(machine_id)
+        await service.delete_machine(user.id, machine_id)
     except SubscriptionError as error:
         raise _bad_request(error)
-    return {'machines': await service.describe_machines()}
+    return {'machines': await service.describe_machines(user.id)}
+
+
+@router.get('/admin/machines')
+async def get_all_machines(user=Depends(get_admin_user)):
+    return {'machines': await service.describe_all_machines()}
+
+
+@router.get('/admin/policy')
+async def get_policy(user=Depends(get_admin_user)):
+    return await _policy_response()
+
+
+@router.post('/admin/policy')
+async def save_policy(form_data: PolicyForm, user=Depends(get_admin_session_user)):
+    try:
+        await service.save_policy(form_data.model_dump())
+    except SubscriptionError as error:
+        raise _bad_request(error)
+    return await _policy_response()
+
+
+async def _policy_response() -> dict:
+    policy = await service.get_policy()
+    return {
+        'user_machines': policy.user_machines,
+        'machine_group_ids': policy.machine_group_ids,
+        'plan_sign_in': policy.plan_sign_in,
+        'api_keys': policy.api_keys,
+        'server_machine': policy.server_machine,
+        'owner_id': await service.server_owner_id(),
+    }
 
 
 @router.get('/{provider_id}')
 async def get_subscription(
     provider_id: str, refresh: bool = False, expected_machine_id: Optional[str] = None,
-    expected_machine_revision: Optional[str] = None, user=Depends(get_admin_user)
+    expected_machine_revision: Optional[str] = None, user=Depends(get_machine_user)
 ):
     return await service.describe_provider(
-        provider_id, fresh=refresh, expected_machine_id=expected_machine_id,
+        user.id, provider_id, fresh=refresh, expected_machine_id=expected_machine_id,
         expected_machine_revision=expected_machine_revision
     )
 
@@ -133,20 +213,20 @@ async def get_subscription(
 async def update_subscription_config(
     provider_id: str,
     form_data: SubscriptionConfigForm,
-    user=Depends(get_admin_user),
+    user=Depends(get_machine_session_user),
 ):
     try:
-        await service.save_settings(provider_id, form_data.model_dump())
+        await service.save_settings(user.id, provider_id, form_data.model_dump())
     except (SubscriptionError, OSError) as error:
         raise _bad_request(error)
-    return await service.describe_provider(provider_id, fresh=True)
+    return await service.describe_provider(user.id, provider_id, fresh=True)
 
 
 @router.post('/{provider_id}/login')
-async def start_subscription_login(provider_id: str, form_data: LoginForm, user=Depends(get_admin_user)):
+async def start_subscription_login(provider_id: str, form_data: LoginForm, user=Depends(get_machine_session_user)):
     try:
         return await service.start_login(
-            provider_id, form_data.method, form_data.expected_machine_id, form_data.expected_machine_revision
+            user.id, provider_id, form_data.method, form_data.expected_machine_id, form_data.expected_machine_revision
         )
     except (SubscriptionError, OSError) as error:
         raise _bad_request(error)
@@ -155,20 +235,20 @@ async def start_subscription_login(provider_id: str, form_data: LoginForm, user=
 @router.get('/{provider_id}/login')
 async def get_subscription_login(
     provider_id: str, expected_machine_id: Optional[str] = None,
-    expected_machine_revision: Optional[str] = None, user=Depends(get_admin_user)
+    expected_machine_revision: Optional[str] = None, user=Depends(get_machine_user)
 ):
-    return await service.login_state(provider_id, expected_machine_id, expected_machine_revision)
+    return await service.login_state(user.id, provider_id, expected_machine_id, expected_machine_revision)
 
 
 @router.post('/{provider_id}/login/code')
 async def submit_subscription_login_code(
     provider_id: str,
     form_data: LoginCodeForm,
-    user=Depends(get_admin_user),
+    user=Depends(get_machine_session_user),
 ):
     try:
         return await service.submit_login_code(
-            provider_id, form_data.code, form_data.expected_machine_id, form_data.expected_machine_revision
+            user.id, provider_id, form_data.code, form_data.expected_machine_id, form_data.expected_machine_revision
         )
     except (SubscriptionError, OSError) as error:
         raise _bad_request(error)
@@ -177,10 +257,10 @@ async def submit_subscription_login_code(
 @router.delete('/{provider_id}/login')
 async def cancel_subscription_login(
     provider_id: str, expected_machine_id: Optional[str] = None,
-    expected_machine_revision: Optional[str] = None, user=Depends(get_admin_user)
+    expected_machine_revision: Optional[str] = None, user=Depends(get_machine_session_user)
 ):
     try:
-        return await service.cancel_login(provider_id, expected_machine_id, expected_machine_revision)
+        return await service.cancel_login(user.id, provider_id, expected_machine_id, expected_machine_revision)
     except (SubscriptionError, OSError) as error:
         raise _bad_request(error)
 
@@ -188,13 +268,13 @@ async def cancel_subscription_login(
 @router.post('/{provider_id}/logout')
 async def logout_subscription(
     provider_id: str, expected_machine_id: Optional[str] = None,
-    expected_machine_revision: Optional[str] = None, user=Depends(get_admin_user)
+    expected_machine_revision: Optional[str] = None, user=Depends(get_machine_session_user)
 ):
     try:
-        await service.logout(provider_id, expected_machine_id, expected_machine_revision)
+        await service.logout(user.id, provider_id, expected_machine_id, expected_machine_revision)
     except (SubscriptionError, OSError) as error:
         raise _bad_request(error)
     return await service.describe_provider(
-        provider_id, fresh=True, expected_machine_id=expected_machine_id,
+        user.id, provider_id, fresh=True, expected_machine_id=expected_machine_id,
         expected_machine_revision=expected_machine_revision
     )
