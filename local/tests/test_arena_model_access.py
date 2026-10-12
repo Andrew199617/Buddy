@@ -354,6 +354,22 @@ class ArenaModelAccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([model['id'] for model in visible],
                          ['public', 'subscription', 'owned-subscription-preset'])
 
+    async def test_a_preset_on_the_users_own_plan_still_needs_its_grant(self):
+        async def offers_every_base(models, user):
+            return [dict(model) for model in models]
+
+        self.models_namespace['personalize_models'] = offers_every_base
+
+        def subscription_preset(model_id):
+            return {
+                'id': model_id, 'owned_by': 'subscription', 'preset': True,
+                'info': {'id': model_id, 'user_id': 'another-user', 'base_model_id': 'subscription'},
+            }
+
+        candidates = [subscription_preset('private-preset'), subscription_preset('public')]
+        visible = await self.models_namespace['get_filtered_models'](candidates, self.user)
+        self.assertEqual([model['id'] for model in visible], ['public'])
+
     async def test_explicit_fallback_acl_bypass_still_excludes_subscription(self):
         response, _ = await self.fallback_selection(arena_entry(), [
             model_entry('public'), model_entry('private'), model_entry('subscription', 'subscription'),

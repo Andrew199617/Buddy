@@ -596,7 +596,11 @@ async def get_filtered_models(models, user, db=None):
     own_subscription_models = []
     if subscription_models:
         own_subscription_models = await personalize_models(subscription_models, user)
-    return await _filter_by_access(models, user, db) + own_subscription_models
+    # A preset on the user's own plan is still a Workspace row, so its access
+    # grants decide whether this user may see it.
+    own_presets = [model for model in own_subscription_models if model.get('preset')]
+    own_base_models = [model for model in own_subscription_models if not model.get('preset')]
+    return await _filter_by_access(models + own_presets, user, db) + own_base_models
 
 
 async def _filter_by_access(models, user, db=None):
