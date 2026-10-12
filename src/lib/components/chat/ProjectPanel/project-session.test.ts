@@ -51,7 +51,15 @@ function project(overrides: Partial<FolderProject> = {}): FolderProject {
 type SavedPaths = Record<string, { path: string; problem: 'computer_changed' | null }>;
 
 function folderChoice(paths: SavedPaths) {
-	return { folder_id: 'website', folder_name: 'Website', mode: 'folder' as const, paths };
+	return {
+		folder_id: 'website',
+		folder_name: 'Website',
+		mode: 'folder' as const,
+		paths,
+		machine_id: '',
+		access: '' as const,
+		offered: {}
+	};
 }
 
 describe('the project folders a chat can open', () => {

@@ -137,6 +137,30 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(project['own']['paths'], {'pc-1': {'path': 'C:\\code\\site', 'problem': None}})
         self.assertEqual(self.computer(project)['recent_paths'], ['C:\\code\\site'])
 
+    async def test_new_chat_defaults_round_trip_and_offered_folders_are_checked(self):
+        project = await self.service.save_folder_project(
+            OWNER_USER, 'website', 'folder', {'pc-1': 'C:\\code\\site'}, machine_id='pc-1', access='read',
+            offered={'pc-1': ['C:/code/docs/']}
+        )
+        own = project['own']
+        self.assertEqual((own['machine_id'], own['access']), ('pc-1', 'read'))
+        self.assertEqual(own['offered'], {'pc-1': [{'path': 'C:\\code\\docs', 'problem': None}]})
+        self.assertIn(('C:\\code\\docs', 'dir'), self.machine.path_checks)
+        # Saving again with the same folders checks nothing on the computer.
+        self.machine.path_checks.clear()
+        await self.service.save_folder_project(
+            OWNER_USER, 'website', 'folder', {'pc-1': 'C:\\code\\site'}, offered={'pc-1': ['C:\\code\\docs']}
+        )
+        self.assertEqual(self.machine.path_checks, [])
+
+    async def test_offered_folders_are_limited_and_must_exist(self):
+        too_many = {'pc-1': [f'C:\\code\\{index}' for index in range(6)]}
+        with self.assertRaisesRegex(SubscriptionError, 'up to 5'):
+            await self.service.save_folder_project(OWNER_USER, 'website', 'auto', {}, offered=too_many)
+        with self.assertRaisesRegex(SubscriptionError, 'has no folder at that path'):
+            await self.service.save_folder_project(OWNER_USER, 'website', 'auto', {}, offered={'pc-1': ['C:\\nowhere']})
+        self.assertEqual(self.machine.path_checks, [('C:\\nowhere', 'dir')])
+
     async def test_folder_mode_needs_a_path(self):
         with self.assertRaisesRegex(SubscriptionError, 'at least one computer'):
             await self.save(OWNER_USER, 'folder')

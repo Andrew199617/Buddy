@@ -272,6 +272,11 @@ class FolderProjectForm(BaseModel):
     mode: Literal['auto', 'folder', 'chat']
     # Machine ID to folder path; only for mode 'folder'.
     paths: dict[str, str] = {}
+    # What new chats in the folder start with: a computer and access, '' for the usual default.
+    machine_id: str = ''
+    access: Literal['', 'chat', 'read', 'full'] = ''
+    # More folders new chats here can pick from, per machine ID.
+    offered: dict[str, list[str]] = {}
 
 
 @router.post('/machines/{machine_id}/folders/check')
@@ -332,7 +337,10 @@ async def get_folder_project(folder_id: str, user=Depends(get_machine_user)):
 @router.put('/folders/{folder_id}/project')
 async def save_folder_project(folder_id: str, form_data: FolderProjectForm, user=Depends(get_machine_session_user)):
     try:
-        return await service.save_folder_project(user, folder_id, form_data.mode, form_data.paths)
+        return await service.save_folder_project(
+            user, folder_id, form_data.mode, form_data.paths, machine_id=form_data.machine_id,
+            access=form_data.access, offered=form_data.offered
+        )
     except SubscriptionError as error:
         raise _bad_request(error)
 

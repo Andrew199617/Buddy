@@ -1874,19 +1874,35 @@ async def _folder_computers(user, choices: dict, named_machine_ids: set[str]) ->
     return computers
 
 
+def _describe_saved_path(saved, revision: str) -> dict:
+    problem = None
+    if saved.revision != revision:
+        problem = 'computer_changed'
+    return {'path': saved.path, 'problem': problem}
+
+
 def _describe_folder_choice(choice, revisions: dict[str, str]) -> dict | None:
     if choice is None:
         return None
     paths = {}
     for machine_id, saved in choice.paths.items():
-        if machine_id not in revisions:
-            # The computer was removed.
-            continue
-        problem = None
-        if saved.revision != revisions[machine_id]:
-            problem = 'computer_changed'
-        paths[machine_id] = {'path': saved.path, 'problem': problem}
-    return {'folder_id': choice.folder_id, 'folder_name': choice.folder_name, 'mode': choice.mode, 'paths': paths}
+        # A computer that was removed has no revision, and is left out.
+        if machine_id in revisions:
+            paths[machine_id] = _describe_saved_path(saved, revisions[machine_id])
+    offered = {}
+    for machine_id, entries in choice.offered.items():
+        if machine_id in revisions:
+            offered[machine_id] = [_describe_saved_path(saved, revisions[machine_id]) for saved in entries]
+    return {
+        'folder_id': choice.folder_id,
+        'folder_name': choice.folder_name,
+        'mode': choice.mode,
+        'paths': paths,
+        # What new chats in the folder start with; '' follows the usual default.
+        'machine_id': choice.machine_id,
+        'access': choice.access,
+        'offered': offered,
+    }
 
 
 async def describe_folder_project(user, folder_id: str) -> dict:
@@ -1898,6 +1914,7 @@ async def describe_folder_project(user, folder_id: str) -> dict:
     for choice in (own, inherited):
         if choice is not None:
             named_machine_ids.update(choice.paths)
+            named_machine_ids.update(choice.offered)
     revisions = {}
     for machine_id in named_machine_ids:
         revision = await _machine_revision(user.id, machine_id)
@@ -1921,11 +1938,38 @@ async def describe_folder_project(user, folder_id: str) -> dict:
 
 async def _checked_project_path(user, machine_id: str, path, current) -> 'project_folders.SavedPath':
     """A path to save, checked on its computer unless it is the same as the one already saved there."""
-    if not isinstance(path, str):
-        raise SubscriptionError("Enter the folder's full path.")
     previous = None
     if current is not None:
         previous = current.paths.get(machine_id)
+    return await _checked_saved_path(user, machine_id, path, previous)
+
+
+async def _checked_offered_paths(user, offered, current) -> dict[str, list['project_folders.SavedPath']]:
+    """More folders to offer new chats on each computer, each checked there unless already saved."""
+    if not isinstance(offered, dict):
+        raise SubscriptionError('Choose the folders to offer on each computer.')
+    checked = {}
+    for machine_id, paths in offered.items():
+        if not isinstance(paths, list):
+            raise SubscriptionError('Choose the folders to offer on each computer.')
+        if len(paths) > project_folders.MAX_OFFERED_PER_COMPUTER:
+            raise SubscriptionError(
+                f'Offer up to {project_folders.MAX_OFFERED_PER_COMPUTER} folders on each computer.'
+            )
+        already_saved = {}
+        if current is not None:
+            for saved in current.offered.get(machine_id, []):
+                already_saved[saved.path] = saved
+        entries = []
+        for path in paths:
+            entries.append(await _checked_saved_path(user, machine_id, path, already_saved.get(path)))
+        checked[machine_id] = entries
+    return checked
+
+
+async def _checked_saved_path(user, machine_id: str, path, previous) -> 'project_folders.SavedPath':
+    if not isinstance(path, str):
+        raise SubscriptionError("Enter the folder's full path.")
     revision = await _machine_revision(user.id, machine_id)
     if previous is not None and previous.path == path and previous.revision == revision:
         # Unchanged, so it is kept even while the policy has This server off for a
@@ -1943,18 +1987,33 @@ async def _checked_project_path(user, machine_id: str, path, current) -> 'projec
     return project_folders.SavedPath(cleaned, revision)
 
 
-async def save_folder_project(user, folder_id: str, mode: str, paths: dict) -> dict:
-    """Replace this person's project folder choice for a chat folder."""
+async def save_folder_project(
+    user, folder_id: str, mode: str, paths: dict, machine_id: str = project_folders.FOLLOW_DEFAULT,
+    access: str = project_folders.FOLLOW_DEFAULT, offered: dict | None = None
+) -> dict:
+    """Replace this person's project folder choice for a chat folder, with what new chats in it start with."""
     _require_single_worker()
     folder = await _readable_chat_folder(user, folder_id)
     if mode not in project_folders.MODES:
         raise SubscriptionError('Choose how chats in this folder work.')
+    current, _ = await project_folders.resolve_folder(user.id, folder)
     saved_paths = {}
     if mode == project_folders.MODE_FOLDER:
-        current, _ = await project_folders.resolve_folder(user.id, folder)
-        for machine_id, path in (paths or {}).items():
-            saved_paths[machine_id] = await _checked_project_path(user, machine_id, path, current)
-    await project_folders.save_choice(user.id, folder.id, mode, saved_paths, await _owned_machine_ids(user.id))
+        for path_machine_id, path in (paths or {}).items():
+            saved_paths[path_machine_id] = await _checked_project_path(user, path_machine_id, path, current)
+    saved_offered = {}
+    if mode != project_folders.MODE_CHAT:
+        saved_offered = await _checked_offered_paths(user, offered or {}, current)
+    await project_folders.save_choice(
+        user.id,
+        folder.id,
+        mode,
+        saved_paths,
+        await _owned_machine_ids(user.id),
+        machine_id=machine_id,
+        access=access,
+        offered=saved_offered,
+    )
     return await describe_folder_project(user, folder.id)
 
 
