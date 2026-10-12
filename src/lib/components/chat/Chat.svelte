@@ -47,6 +47,12 @@
 		chatRequestQueues,
 		desktopEvent
 	} from '$lib/stores';
+	import { chatFolderMoves } from '$lib/stores/chatFolderMoves';
+	import {
+		afterFolderMove,
+		openChatFolderId,
+		type ChatFolderMove
+	} from '$lib/components/chat/ProjectPanel/chat-folder';
 	import { refreshChatList, refreshFolderChatLists } from '$lib/stores/chatList';
 
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
@@ -387,10 +393,13 @@
 
 	let chat = null;
 	// The chat folder this chat is in, for the side panel's Project tab.
-	$: sidePanelFolderId =
-		(chat as { folder_id?: string | null } | null)?.folder_id ??
-		($selectedFolder as { id?: string } | null)?.id ??
-		null;
+	$: sidePanelFolderId = openChatFolderId(chat, $chatId, $selectedFolder);
+	$: followChatFolderMove($chatFolderMoves);
+
+	function followChatFolderMove(move: ChatFolderMove | null) {
+		const moved = afterFolderMove(chat, move);
+		if (moved) chat = moved;
+	}
 	let tags = [];
 
 	// Read-only when viewing someone else's chat (e.g. via shared folder access)
