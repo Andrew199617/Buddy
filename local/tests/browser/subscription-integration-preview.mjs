@@ -3123,6 +3123,14 @@ async function runTargetNewCase(browser, profile) {
 				// since the composer stays put under the pointer.
 				await runTargetChip(bar, /^\s*api\s*$/).click();
 				await page.getByRole('option', { name: /^api C:\\code\\api/ }).waitFor();
+				const folderPopup = page.getByRole('dialog', { name: 'Folder', exact: true });
+				assert.equal(
+					await folderPopup
+						.locator('[role="listbox"] :is(button, input):not([role="option"])')
+						.count(),
+					0,
+					'The folder list holds only folder options'
+				);
 				await runTargetChip(bar, 'Full access').click();
 				await page.getByRole('menuitemradio', { name: /Read files/ }).waitFor();
 				await page.keyboard.press('Escape');
