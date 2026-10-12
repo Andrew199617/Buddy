@@ -355,6 +355,21 @@ describe('the choice to save', () => {
 		expect(choiceFromDraft({ ...draft, machineId: 'local' }, 'auto', [workPc]).machine_id).toBe(
 			'local'
 		);
+		const removedSince = {
+			...draft,
+			paths: { 'pc-1': 'C:\\site', gone: 'D:\\x', local: '/srv/site' },
+			offered: { gone: ['D:\\y'], local: ['/srv/docs'] }
+		};
+		const saved = choiceFromDraft(removedSince, 'folder', [workPc]);
+		expect(saved.paths).toEqual({ 'pc-1': 'C:\\site', local: '/srv/site' });
+		expect(saved.offered).toEqual({ local: ['/srv/docs'] });
+	});
+
+	it('starts a draft without a computer that was removed since', () => {
+		const own = { ...choice('auto'), machine_id: 'gone' };
+		expect(draftFromProject(project({ own })).machineId).toBe('');
+		const server = { ...choice('auto'), machine_id: 'local' };
+		expect(draftFromProject(project({ own: server })).machineId).toBe('local');
 	});
 });
 

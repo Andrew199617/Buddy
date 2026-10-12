@@ -187,13 +187,22 @@ export function draftFromProject(project: FolderProject): ProjectDraft {
 	for (const [machineId, entries] of Object.entries(own.offered ?? {})) {
 		offered[machineId] = entries.map((entry) => entry.path);
 	}
+	// The server keeps a removed computer's id until its next save; Buddy picks instead.
+	let machineId = own.machine_id ?? '';
+	if (!stillListed(project.computers, machineId)) machineId = '';
 	return {
 		mode: own.mode,
 		paths,
-		machineId: own.machine_id ?? '',
+		machineId,
 		access: own.access ?? '',
 		offered
 	};
+}
+
+/** Whether a computer is still one of the person's; This server counts while policy turns it off. */
+function stillListed(computers: ProjectFolderComputer[], machineId: string): boolean {
+	if (!machineId || machineId === 'local') return true;
+	return computers.some((computer) => computer.machine_id === machineId);
 }
 
 export function copyDraft(draft: ProjectDraft): ProjectDraft {
@@ -237,14 +246,17 @@ export function choiceFromDraft(
 	// Detached: new chats start with no computer, folder or access to keep.
 	if (mode === 'chat') return { mode, paths: {}, machine_id: '', access: '', offered: {} };
 	let machineId = draft.machineId;
-	const listed = computers.some((computer) => computer.machine_id === machineId);
-	// This server stays saved while the policy turns it off for a while.
-	if (!listed && machineId !== 'local') machineId = '';
-	let paths: Record<string, string> = {};
-	if (mode === 'folder') paths = { ...draft.paths };
+	if (!stillListed(computers, machineId)) machineId = '';
+	const paths: Record<string, string> = {};
+	if (mode === 'folder') {
+		for (const [computerId, path] of Object.entries(draft.paths)) {
+			if (stillListed(computers, computerId)) paths[computerId] = path;
+		}
+	}
 	const offered: Record<string, string[]> = {};
 	for (const [computerId, entries] of Object.entries(draft.offered)) {
-		if (entries.length > 0) offered[computerId] = [...entries];
+		if (entries.length > 0 && stillListed(computers, computerId))
+			offered[computerId] = [...entries];
 	}
 	return { mode, paths, machine_id: machineId, access: draft.access, offered };
 }
