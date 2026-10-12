@@ -42,8 +42,8 @@
 	export let onPick: (folder: RunTargetFolder, machineId: string) => void;
 
 	let query = '';
-	let suggestions: FolderSuggestion[] = prefetched ?? [];
-	let suggestionsLoaded = prefetched !== null;
+	let suggestions: FolderSuggestion[] = [];
+	let suggestionsLoaded = false;
 	let checking = false;
 	let problem = '';
 	let browsing = false;
@@ -61,6 +61,13 @@
 		platform: computer.platform
 	});
 	$: typedPath = looksLikePath(query, computer.platform) ? query.trim() : '';
+	// The bar's suggestions, also when they arrive after the menu opened.
+	$: if (prefetched) takeSuggestions(prefetched);
+
+	function takeSuggestions(found: FolderSuggestion[]) {
+		suggestions = found;
+		suggestionsLoaded = true;
+	}
 
 	function folderSource(target: RunTargetComputer) {
 		if (target.folders === 'on') return computerFolderSource(target.machine_id, target.platform);
@@ -87,9 +94,9 @@
 		}
 		try {
 			const found = await getSuggestedFolders(localStorage.token, computer.machine_id);
-			if (found.state === 'ok') suggestions = found.folders;
+			if (found.state === 'ok') takeSuggestions(found.folders);
 		} catch {
-			suggestions = [];
+			// Recent folders, typing and browsing still work.
 		} finally {
 			suggestionsLoaded = true;
 		}

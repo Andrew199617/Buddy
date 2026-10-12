@@ -54,6 +54,8 @@
 	// Fresh checks made when the person picks a computer, by computer and plan.
 	let freshStates: Record<string, Partial<Record<SubscriptionProviderId, RunTargetPlanState>>> = {};
 	let suggestionsByComputer: Record<string, FolderSuggestion[]> = {};
+	// Computers whose suggestions are on their way, so each is asked once at a time.
+	const prefetching = new Set<string>();
 
 	$: details = targetDetails(target);
 	$: forPlansOnly = providers.length === 0;
@@ -90,15 +92,17 @@
 	async function prefetchSuggestions(computer: RunTargetComputer) {
 		const machineId = computer.machine_id;
 		if (computer.folders !== 'on' || suggestionsByComputer[machineId]) return;
-		suggestionsByComputer[machineId] = [];
+		if (prefetching.has(machineId)) return;
+		prefetching.add(machineId);
 		try {
 			const found = await getSuggestedFolders(localStorage.token, machineId);
 			if (found.state === 'ok') {
 				suggestionsByComputer = { ...suggestionsByComputer, [machineId]: found.folders };
 			}
 		} catch {
-			// The menu loads them again when it opens.
-			delete suggestionsByComputer[machineId];
+			// The menu asks again when it opens.
+		} finally {
+			prefetching.delete(machineId);
 		}
 	}
 
