@@ -36,10 +36,12 @@
 		draftWithRunOn,
 		emptyDraft,
 		focusWasLost,
-		planDefaultAccess,
+		planAccesses,
 		projectSummary,
 		runOnValue,
 		sameDraft,
+		sharedPlanAccess,
+		type PlanAccess,
 		type ProjectDraft,
 		type ProjectSummary
 	} from './project-folders';
@@ -83,13 +85,16 @@
 	$: dirty = !sameDraft(draft, saved);
 	$: picking = picker !== null;
 	$: available = !loading && !loadError && !hidden && project !== null;
-	$: planDefault = project ? planDefaultAccess(project) : null;
+	$: plans = project ? planAccesses(project) : [];
+	$: sharedAccess = sharedPlanAccess(plans);
 	$: chosenComputer = findComputer(project, draft.machineId);
 	$: choosingFolders = draft.mode === 'auto' || draft.mode === 'folder';
-	$: summary = describeSummary(project ? projectSummary(draft, project) : null, planDefault);
+	$: summary = describeSummary(project ? projectSummary(draft, project) : null, sharedAccess);
 	$: runOnOptions = project ? describeRunOn(project, $thisPcMachineId) : [];
-	$: accessOptions = describeAccess(planDefault, chosenComputer);
-	$: effectiveAccess = draft.access || planDefault;
+	$: accessOptions = describeAccess(plans, sharedAccess, chosenComputer);
+	// Following the plans, new chats start with each plan's own access.
+	$: mayStartFull = startsWith(draft.access, plans, 'full');
+	$: mayStartRead = startsWith(draft.access, plans, 'read');
 
 	function findComputer(
 		current: FolderProject | null,
@@ -240,7 +245,9 @@
 		options.push({
 			value: RUN_ON_AUTOMATIC,
 			name: $i18n.t('Automatic'),
-			description: $i18n.t('This PC in the Buddy app, otherwise the computer you used last.'),
+			description: $i18n.t(
+				'Buddy picks one for each new chat, starting with this PC in the Buddy app.'
+			),
 			icon: 'automatic'
 		});
 		for (const computer of current.computers) {
@@ -260,20 +267,42 @@
 		return options;
 	}
 
+	function startsWith(
+		access: SubscriptionAccess | '',
+		current: PlanAccess[],
+		level: SubscriptionAccess
+	): boolean {
+		if (access) return access === level;
+		return current.some((plan) => plan.access === level);
+	}
+
+	function planDefaultName(shared: SubscriptionAccess | null): string {
+		if (shared) return $i18n.t('Plan default ({{access}})', { access: accessName(shared) });
+		return $i18n.t('Plan default');
+	}
+
+	function planDefaultDescription(
+		current: PlanAccess[],
+		shared: SubscriptionAccess | null
+	): string {
+		if (current.length > 1 && !shared) {
+			return current.map((plan) => `${plan.name}: ${accessName(plan.access)}`).join(' · ');
+		}
+		return $i18n.t('What your plans start with. Each chat can still change it.');
+	}
+
 	function describeAccess(
-		plans: SubscriptionAccess | null,
+		current: PlanAccess[],
+		shared: SubscriptionAccess | null,
 		computer: ProjectFolderComputer | null
 	): ChoiceOption[] {
-		let planDefaultName = $i18n.t('Plan default');
-		if (plans)
-			planDefaultName = $i18n.t('Plan default ({{access}})', { access: accessName(plans) });
 		let where = $i18n.t('your computer');
 		if (computer) where = computerName(computer);
 		return [
 			{
 				value: '',
-				name: planDefaultName,
-				description: $i18n.t('What your plans start with. Each chat can still change it.'),
+				name: planDefaultName(shared),
+				description: planDefaultDescription(current, shared),
 				icon: 'plan'
 			},
 			{
@@ -302,7 +331,7 @@
 
 	function describeSummary(
 		current: ProjectSummary | null,
-		plans: SubscriptionAccess | null
+		shared: SubscriptionAccess | null
 	): string {
 		if (!current) return '';
 		if (current.kind === 'inherit') {
@@ -316,9 +345,8 @@
 		if (current.folder) folder = current.folder;
 		let computer = $i18n.t('Automatic');
 		if (current.computer) computer = computerName(current.computer);
-		let access = $i18n.t('Plan default');
+		let access = planDefaultName(shared);
 		if (current.access) access = accessName(current.access);
-		else if (plans) access = $i18n.t('Plan default ({{access}})', { access: accessName(plans) });
 		return [folder, computer, access].join(' · ');
 	}
 
@@ -718,7 +746,7 @@
 					onChange={chooseAccess}
 				/>
 
-				{#if effectiveAccess === 'full'}
+				{#if mayStartFull}
 					<p class="text-xs text-amber-800 dark:text-amber-300">
 						{#if chosenComputer?.kind === 'server'}
 							{$i18n.t('Inside the Buddy server, Full access can change Buddy’s own files.')}
@@ -728,7 +756,7 @@
 							)}
 						{/if}
 					</p>
-				{:else if effectiveAccess === 'read' && draft.mode === 'auto'}
+				{:else if mayStartRead && draft.mode === 'auto'}
 					<p class="text-xs text-gray-600 dark:text-gray-400">
 						{$i18n.t(
 							'With Read files, the AI may read only inside the folder it starts in. Choose a specific folder so it can read your project.'

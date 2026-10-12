@@ -261,22 +261,21 @@ export function choiceFromDraft(
 	return { mode, paths, machine_id: machineId, access: draft.access, offered };
 }
 
-const ACCESS_ORDER: SubscriptionAccess[] = ['chat', 'read', 'full'];
+export type PlanAccess = { name: string; access: SubscriptionAccess };
 
-/**
- * The access new chats start with when the folder follows the plans: the lowest
- * of the plans that are on. Null when no plan is on.
- */
-export function planDefaultAccess(project: FolderProject): SubscriptionAccess | null {
+/** Each plan that is on, and the access its new chats start with when the folder follows the plans. */
+export function planAccesses(project: FolderProject): PlanAccess[] {
 	// Every computer lists the same plans, the ones that are on.
 	const providers = project.computers[0]?.providers ?? [];
-	let lowest: SubscriptionAccess | null = null;
-	for (const provider of providers) {
-		if (lowest === null || ACCESS_ORDER.indexOf(provider.access) < ACCESS_ORDER.indexOf(lowest)) {
-			lowest = provider.access;
-		}
-	}
-	return lowest;
+	return providers.map((provider) => ({ name: provider.name, access: provider.access }));
+}
+
+/** The access every plan starts with, or null when they differ or none is on. */
+export function sharedPlanAccess(plans: PlanAccess[]): SubscriptionAccess | null {
+	if (plans.length === 0) return null;
+	const first = plans[0].access;
+	if (plans.every((plan) => plan.access === first)) return first;
+	return null;
 }
 
 // Where new chats in the folder start: following the parent folder, a computer

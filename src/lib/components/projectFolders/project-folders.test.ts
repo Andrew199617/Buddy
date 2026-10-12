@@ -17,10 +17,11 @@ import {
 	lastUsedAgo,
 	needsAttention,
 	parentWithinRoot,
-	planDefaultAccess,
+	planAccesses,
 	projectSummary,
 	runOnValue,
 	sameDraft,
+	sharedPlanAccess,
 	suggestionTools,
 	waitsForOwnChoice
 } from './project-folders';
@@ -256,7 +257,7 @@ describe('where new chats run', () => {
 });
 
 describe('the plans’ default access', () => {
-	it('is the lowest of the plans that are on', () => {
+	it('is shared when every plan that is on starts the same, and listed otherwise', () => {
 		const both = {
 			...workPc,
 			providers: [
@@ -264,9 +265,14 @@ describe('the plans’ default access', () => {
 				{ id: 'codex' as const, name: 'ChatGPT', access: 'read' as const }
 			]
 		};
-		expect(planDefaultAccess(project({ computers: [both] }))).toBe('read');
-		expect(planDefaultAccess(project())).toBe('full');
-		expect(planDefaultAccess(project({ computers: [] }))).toBeNull();
+		const differing = planAccesses(project({ computers: [both] }));
+		expect(differing).toEqual([
+			{ name: 'Claude', access: 'full' },
+			{ name: 'ChatGPT', access: 'read' }
+		]);
+		expect(sharedPlanAccess(differing)).toBeNull();
+		expect(sharedPlanAccess(planAccesses(project()))).toBe('full');
+		expect(sharedPlanAccess(planAccesses(project({ computers: [] })))).toBeNull();
 	});
 });
 
