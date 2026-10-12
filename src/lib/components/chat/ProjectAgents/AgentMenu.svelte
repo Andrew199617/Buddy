@@ -1,17 +1,16 @@
 <script lang="ts">
 	// The composer's robot button. It picks one of the custom agents in the chat
-	// folder's project folder, read from the computer that folder is on. It shows
-	// for a chat folder with a project folder, and while the chat has an agent so
-	// that it can be cleared.
+	// folder's project folder: this person's own choice for the folder. Agents on a
+	// Buddy app computer are read through the relay; Buddy reads This server itself.
+	// It shows for a chat folder with a project folder it can read, and while the
+	// chat has an agent so that it can be cleared.
 	import { getContext } from 'svelte';
 
 	import { CompanionError } from '$lib/apis/companion';
 	import { RelayCompanionClient } from '$lib/apis/companion-relay';
-	import { getFolderProject } from '$lib/apis/subscriptions';
+	import { getFolderAgentFiles, getFolderProject } from '$lib/apis/subscriptions';
 	import {
-		preferredTarget,
 		projectTargets,
-		targetProblem,
 		type ProjectTarget
 	} from '$lib/components/chat/ProjectPanel/project-session';
 	import Dropdown from '$lib/components/common/Dropdown.svelte';
@@ -24,7 +23,13 @@
 	import { lastSegment } from '$lib/components/projectFolders/project-folders';
 
 	import type { ChatAgent } from './chat-agent';
-	import { listProjectAgents } from './list-agents';
+	import {
+		agentReadProblem,
+		agentsFromFiles,
+		agentTarget,
+		listProjectAgents,
+		type AgentListing
+	} from './list-agents';
 
 	const i18n: any = getContext('i18n');
 
@@ -50,9 +55,8 @@
 	let list: AgentList = { phase: 'loading' };
 	let listRequest = 0;
 
-	// This server's folders can never be read from here, so its chats get no button.
-	$: canReadFolder = target !== null && targetProblem(target) !== 'not_browsable';
-	$: available = canReadFolder || selectedAgent !== null;
+	// No button for a folder only on computers whose agents can never be read.
+	$: available = target !== null || selectedAgent !== null;
 	$: projectName = target ? lastSegment(target.path) : '';
 
 	async function loadTarget(id: string | null) {
@@ -67,7 +71,7 @@
 			const project = await getFolderProject(localStorage.token, id);
 			if (request !== targetRequest) return;
 			target = null;
-			if (project) target = preferredTarget(projectTargets(project));
+			if (project) target = agentTarget(projectTargets(project));
 		} catch {
 			// Keeps what is shown; opening the menu loads it again.
 		}
@@ -80,6 +84,8 @@
 	}
 
 	function describeFailure(cause: unknown, computerName: string): string {
+		// Buddy's own reason, such as a project folder that no longer exists.
+		if (typeof cause === 'string') return cause;
 		if (cause instanceof CompanionError && cause.status === 401) {
 			return $i18n.t('Your Buddy sign-in ended. Sign in again, then try again.');
 		}
@@ -94,7 +100,7 @@
 	}
 
 	function blockedMessage(opened: ProjectTarget): string | null {
-		const problem = targetProblem(opened);
+		const problem = agentReadProblem(opened);
 		const name = opened.computer.name;
 		if (problem === 'choose_again') {
 			return $i18n.t('{{name}} was set up again. Choose the folder again.', { name });
@@ -102,16 +108,25 @@
 		if (problem === 'needs_app') {
 			return $i18n.t('Reading agents here needs the Buddy app on {{name}}.', { name });
 		}
-		if (problem === 'not_browsable') {
-			return $i18n.t(
-				'Agents can be read only on computers connected with the Buddy app, so not on {{name}}.',
-				{ name }
-			);
-		}
 		if (problem === 'offline') {
 			return $i18n.t('{{name}} is offline. Open the Buddy app on it, then try again.', { name });
 		}
 		return null;
+	}
+
+	/** This server is read by Buddy itself; other computers through the relay. */
+	async function readAgents(opened: ProjectTarget, chatFolderId: string): Promise<AgentListing> {
+		if (opened.computer.kind === 'server') {
+			const reply = await getFolderAgentFiles(localStorage.token, chatFolderId);
+			return { status: 'ready', agents: agentsFromFiles(reply.files), leftOut: reply.left_out };
+		}
+		const client = new RelayCompanionClient(opened.computer.machine_id, localStorage.token);
+		try {
+			return await listProjectAgents(client, opened);
+		} finally {
+			// Ends this page's session on the computer.
+			void client.disconnect().catch(() => {});
+		}
 	}
 
 	/** Reads the agents again each time the menu opens, so new and changed files show up. */
@@ -122,7 +137,8 @@
 		if (request !== listRequest) return;
 
 		const opened = target;
-		if (!opened) {
+		const chatFolderId = targetFor;
+		if (!opened || !chatFolderId) {
 			list = {
 				phase: 'blocked',
 				message: $i18n.t("This chat's folder has no project folder on your computers.")
@@ -135,9 +151,8 @@
 			return;
 		}
 
-		const client = new RelayCompanionClient(opened.computer.machine_id, localStorage.token);
 		try {
-			const listing = await listProjectAgents(client, opened);
+			const listing = await readAgents(opened, chatFolderId);
 			if (request !== listRequest) return;
 			if (listing.status === 'not_shared') {
 				list = {
@@ -153,9 +168,6 @@
 		} catch (cause) {
 			if (request !== listRequest) return;
 			list = { phase: 'failed', message: describeFailure(cause, opened.computer.name) };
-		} finally {
-			// Ends this page's session on the computer.
-			void client.disconnect().catch(() => {});
 		}
 	}
 
