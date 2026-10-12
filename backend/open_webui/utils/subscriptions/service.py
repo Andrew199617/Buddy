@@ -2722,19 +2722,26 @@ def invalidate_computer(owner_id: str, machine_id: str) -> None:
 
 async def describe_provider(
     owner_id: str, provider_id: str, fresh: bool = False, expected_machine_id: str | None = None,
-    expected_machine_revision: str | None = None
+    expected_machine_revision: str | None = None, check_computers: bool = False
 ) -> dict:
-    """Everything the settings page shows for one of the user's providers."""
+    """Everything the settings page shows for one of the user's providers.
+
+    fresh checks the plan's own computer again. check_computers, for the
+    person's own Check again, asks every other reachable computer too.
+    """
     ref = _ref(owner_id, provider_id)
     for _ in range(2):
-        result = await _describe_provider_snapshot(ref, fresh, expected_machine_id, expected_machine_revision)
+        result = await _describe_provider_snapshot(
+            ref, fresh, expected_machine_id, expected_machine_revision, check_computers
+        )
         if result is not None:
             return result
     raise HTTPException(status_code=409, detail='The selected machine changed. Refresh before trying again.')
 
 
 async def _describe_provider_snapshot(
-    ref: ProviderRef, fresh: bool, expected_machine_id: str | None, expected_machine_revision: str | None
+    ref: ProviderRef, fresh: bool, expected_machine_id: str | None, expected_machine_revision: str | None,
+    check_computers: bool
 ) -> dict | None:
     provider = await get_provider(ref)
     async with _provider_lock(ref):
@@ -2783,7 +2790,7 @@ async def _describe_provider_snapshot(
     except SubscriptionError as error:
         log.info('Could not describe the machine for %s: %s', ref.provider_id, error)
 
-    computers = await _describe_plan_computers(ref, settings, check=fresh and execution_ready)
+    computers = await _describe_plan_computers(ref, settings, check=check_computers and execution_ready)
     if generation != _provider_generations.get(ref, 0):
         return None
     public_machine = {'id': settings.machine_id, 'name': machine_name}

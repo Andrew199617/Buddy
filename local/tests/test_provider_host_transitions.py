@@ -1322,9 +1322,15 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         statuses = [call for call in self.providers['claude'].calls if call[0] == 'status']
         self.assertEqual(statuses, [('status', 'runner-a', 'runner-a')])
 
-        # Checking again asks every computer that can be reached.
+        # A refresh after a change asks only the plan's own computer.
         self.providers['claude'].calls.clear()
-        described = await self.service.describe_provider(OWNER, 'claude', fresh=True)
+        await self.service.describe_provider(OWNER, 'claude', fresh=True)
+        statuses = [call for call in self.providers['claude'].calls if call[0] == 'status']
+        self.assertEqual(statuses, [('status', 'runner-a', 'runner-a')])
+
+        # Check again asks every computer that can be reached.
+        self.providers['claude'].calls.clear()
+        described = await self.service.describe_provider(OWNER, 'claude', fresh=True, check_computers=True)
         statuses = [call for call in self.providers['claude'].calls if call[0] == 'status']
         self.assertCountEqual(statuses, [
             ('status', 'runner-a', 'runner-a'), ('status', 'local', 'local'), ('status', 'runner-b', 'runner-b')
@@ -2214,6 +2220,17 @@ class ProviderHostRouterTests(unittest.IsolatedAsyncioTestCase):
             OWNER, 'runner-b', REVISION_B, 'C:\\code', {'claude': 'C:\\tools\\claude.exe'}
         )
 
+    async def test_check_again_asks_every_computer_and_a_refused_computer_is_a_bad_request(self):
+        await self.router.get_subscription('claude', refresh=True, user=self.admin)
+        self.service.describe_provider.assert_awaited_once_with(
+            OWNER, 'claude', fresh=True, expected_machine_id=None, expected_machine_revision=None,
+            check_computers=True
+        )
+        self.service.login_state = AsyncMock(side_effect=self.production.SubscriptionError('Fixture empty computer'))
+        with self.assertRaises(self.production.HTTPException) as refused:
+            await self.router.get_subscription_login('claude', machine_id='', user=self.admin)
+        self.assertEqual(refused.exception.status_code, 400)
+
     async def test_sign_in_routes_forward_the_chosen_computer(self):
         start = self.router.LoginForm(method='browser', expected_machine_revision=REVISION_B, machine_id='runner-b')
         await self.router.start_subscription_login('claude', start, user=self.admin)
@@ -2240,7 +2257,8 @@ class ProviderHostRouterTests(unittest.IsolatedAsyncioTestCase):
             expected_machine_revision=REVISION_A, user=self.admin
         )
         self.service.describe_provider.assert_awaited_once_with(
-            OWNER, 'claude', fresh=True, expected_machine_id='runner-a', expected_machine_revision=REVISION_A
+            OWNER, 'claude', fresh=True, expected_machine_id='runner-a', expected_machine_revision=REVISION_A,
+            check_computers=True
         )
 
     async def test_host_conflicts_propagate_without_becoming_bad_requests_or_running_followup(self):

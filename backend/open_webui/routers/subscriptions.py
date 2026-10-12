@@ -352,7 +352,7 @@ async def get_subscription(
 ):
     return await service.describe_provider(
         user.id, provider_id, fresh=refresh, expected_machine_id=expected_machine_id,
-        expected_machine_revision=expected_machine_revision
+        expected_machine_revision=expected_machine_revision, check_computers=refresh
     )
 
 
@@ -386,9 +386,12 @@ async def get_subscription_login(
     expected_machine_revision: Optional[str] = None, machine_id: Optional[str] = None,
     user=Depends(get_machine_user)
 ):
-    return await service.login_state(
-        user.id, provider_id, expected_machine_id, expected_machine_revision, machine_id=machine_id
-    )
+    try:
+        return await service.login_state(
+            user.id, provider_id, expected_machine_id, expected_machine_revision, machine_id=machine_id
+        )
+    except SubscriptionError as error:
+        raise _bad_request(error)
 
 
 @router.post('/{provider_id}/login/code')
