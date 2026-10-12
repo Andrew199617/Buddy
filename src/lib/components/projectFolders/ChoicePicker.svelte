@@ -25,9 +25,10 @@
 
 	let open = false;
 	let container: HTMLElement;
-	// Set while a press inside is under way: Safari doesn't focus a clicked button, so
-	// focus leaving then doesn't mean the person left the picker.
-	let pressInside = false;
+	// Set while a pointer press is under way. The list then closes on the click, not as
+	// focus moves at the press: the dialog is centered, so closing the list early moves
+	// what is being clicked. Safari doesn't focus a clicked button either.
+	let pressing = false;
 
 	$: current = options.find((option) => option.value === value) ?? null;
 	$: listShown = stacked || open;
@@ -79,23 +80,25 @@
 	}
 
 	function onFocusOut(event: FocusEvent) {
-		if (stacked || !open || pressInside) return;
+		if (stacked || !open || pressing) return;
 		const next = event.relatedTarget as Node | null;
 		if (next && container.contains(next)) return;
 		open = false;
 	}
 
-	function onPressStart(event: PointerEvent) {
-		if (container?.contains(event.target as Node)) {
-			pressInside = true;
-			return;
-		}
-		// A press anywhere else closes the list.
-		if (!stacked) open = false;
+	function onPressStart() {
+		pressing = true;
 	}
 
 	function onPressEnd() {
-		pressInside = false;
+		pressing = false;
+	}
+
+	// A click anywhere else closes the list, once it has reached what was clicked.
+	function closeOnClickOutside(event: MouseEvent) {
+		if (stacked || !open) return;
+		if (container?.contains(event.target as Node)) return;
+		open = false;
 	}
 
 	async function closeOnEscape(event: KeyboardEvent) {
@@ -143,6 +146,8 @@
 	on:keydown|capture={closeOnEscape}
 	on:pointerdown|capture={onPressStart}
 	on:pointerup|capture={onPressEnd}
+	on:pointercancel|capture={onPressEnd}
+	on:click|capture={closeOnClickOutside}
 />
 
 <div bind:this={container} class="flex flex-col gap-1.5" on:focusout={onFocusOut}>

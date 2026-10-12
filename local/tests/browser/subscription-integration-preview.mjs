@@ -3196,6 +3196,19 @@ async function folderCreateTopCase(browser, profile) {
 
 			await dialog.locator('#folder-name').fill('Notes');
 			await dialog.getByRole('button', { name: /^Project folder\s*Where the AI works/ }).click();
+			if (!profile.mobile) {
+				// A click lands with a list open, though closing the list re-centers the dialog.
+				const projectRow = dialog.locator('#folder-form-new-row-project');
+				await dialog.locator('#project-run-on-new-trigger').click();
+				await dialog.locator('#project-run-on-new-list').waitFor();
+				await projectRow.click();
+				assert.equal(
+					await projectRow.getAttribute('aria-expanded'),
+					'false',
+					'The click reached the row'
+				);
+				await projectRow.click();
+			}
 			await pickChoice(dialog, 'project-run-on-new', /^Work PC/);
 			await saveFolderSettings(dialog, 'Create');
 			await dialog.waitFor({ state: 'hidden' });
