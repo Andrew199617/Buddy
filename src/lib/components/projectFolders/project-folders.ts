@@ -1,5 +1,6 @@
 // What a chat folder's project folder choice means, for the folder dialog, the
-// folder page chip and the chat's project panel. No requests here.
+// folder page chip and the chat's project panel, and where keyboard focus goes
+// in the folder settings. No requests here.
 
 import type {
 	FolderPlan,
@@ -99,6 +100,9 @@ export function anyFullAccess(project: FolderProject): boolean {
 		computer.providers.some((provider) => provider.access === 'full')
 	);
 }
+
+// What a Chat-only plan can be allowed from the folder settings.
+export type FileAccess = 'read' | 'full';
 
 /** Plans that are on but Chat only, on a computer they can use: the folder's settings can let them use files. */
 export function plansToAllow(project: FolderProject): FolderPlan[] {

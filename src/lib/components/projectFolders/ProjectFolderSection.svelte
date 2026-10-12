@@ -1,7 +1,8 @@
 <script lang="ts">
 	// "Project folder" in a chat folder's settings: where Claude and ChatGPT
 	// work for chats in it. Each person chooses for themselves.
-	import { getContext, onMount, tick } from 'svelte';
+	import { getContext, onDestroy, onMount, tick } from 'svelte';
+	import { toast } from 'svelte-sonner';
 
 	import {
 		clearFolderProject,
@@ -27,6 +28,7 @@
 		plansWithoutComputer,
 		sameDraft,
 		waitsForOwnChoice,
+		type FileAccess,
 		type FileAccessNeed,
 		type ProjectDraft
 	} from './project-folders';
@@ -48,14 +50,22 @@
 	let pickingFor: ProjectFolderComputer | null = null;
 	// Why loading again after a plan change failed; what was loaded before still saves.
 	let refreshError = '';
-	// Why an Allow was refused, once that plan is no longer offered here.
+	// Why an Allow was refused, when its request could not show it.
 	let refusal = '';
+	// The dialog can close while an Allow is still saving.
+	let destroyed = false;
+
+	onDestroy(() => {
+		destroyed = true;
+	});
 	let sectionElement: HTMLElement | null = null;
 
 	$: dirty = !sameDraft(draft, saved);
 	$: need = project ? fileAccessNeed(project) : 'ready';
 	$: allowablePlans = project ? plansToAllow(project) : [];
 	$: homelessPlans = project ? plansWithoutComputer(project) : [];
+	// The request under the choices hides while picking a folder, and when the folder is just chat.
+	$: compactHidden = pickingFor !== null || draft.mode === 'chat';
 
 	/** Shows a loaded project; the caller decides what happens to the draft. */
 	function showProject(loaded: FolderProject | null) {
@@ -137,7 +147,7 @@
 	function machineSettingsReason(currentNeed: FileAccessNeed, homeless: FolderPlan[]): string {
 		if (currentNeed === 'turn_on') {
 			return $i18n.t(
-				'Claude and ChatGPT aren’t turned on. Turn one on in Settings → Machines to let it work in a folder on your computer.'
+				'No AI plan is turned on. Turn one on in Settings → Machines to let the AI work in a folder on your computer.'
 			);
 		}
 		if (currentNeed === 'computer') {
@@ -156,11 +166,27 @@
 		);
 	}
 
-	async function planRefused(planName: string, reason: string) {
-		refusal = $i18n.t('{{name}} was not given access: {{reason}}', {
-			name: planName,
-			reason
-		});
+	function refusalMessage(plan: FolderPlan, access: FileAccess, reason: string): string {
+		const now = project?.plans.find((candidate) => candidate.id === plan.id);
+		// The server can save the access and then turn the plan off, when a running
+		// reply cannot be confirmed stopped.
+		if (now && now.access === access && !now.enable) {
+			return $i18n.t('{{name}} was given the access but then turned off: {{reason}}', {
+				name: plan.name,
+				reason
+			});
+		}
+		return $i18n.t('{{name}} was not given access: {{reason}}', { name: plan.name, reason });
+	}
+
+	async function planRefused(plan: FolderPlan, access: FileAccess, reason: string) {
+		const message = refusalMessage(plan, access, reason);
+		// Closed, or the reload found the section has nothing to show (no access, folder gone).
+		if (destroyed || hidden || !project) {
+			toast.error(message);
+			return;
+		}
+		refusal = message;
 		await keepFocusInSection();
 	}
 
@@ -222,8 +248,8 @@
 				if (mode === 'folder') paths = draft.paths;
 				project = await saveFolderProject(localStorage.token, folderId, { mode, paths });
 			}
-			saved = draftFromProject(project);
-			draft = { mode: saved.mode, paths: { ...saved.paths } };
+			showProject(project);
+			startFromSaved();
 			announceProjectFolderChange(folderId);
 			return true;
 		} catch (cause) {
@@ -457,17 +483,22 @@
 					)}
 				</p>
 			</div>
+		{/if}
 
-			<!-- Another plan already opens folders; these could too. Moot when this folder is just chat. -->
-			{#if allowablePlans.length > 0 && draft.mode !== 'chat'}
+		<!-- Another plan already opens folders; these could too. Hidden while picking a
+		     folder, and moot when this folder is just chat, but kept mounted so an Allow
+		     in progress stays busy. -->
+		{#if need === 'ready' && allowablePlans.length > 0}
+			<div hidden={compactHidden}>
 				<PlanAccessRequest
 					compact
+					hidden={compactHidden}
 					plans={allowablePlans}
 					reload={refresh}
 					onAllowed={planAllowed}
 					onRefused={planRefused}
 				/>
-			{/if}
+			</div>
 		{/if}
 
 		{#if refusal}
