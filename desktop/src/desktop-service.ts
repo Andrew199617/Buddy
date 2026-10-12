@@ -13,6 +13,7 @@ import type { DesktopConnectionState, DesktopPermission, DesktopStatus } from '.
 export type Dialogs = {
 	confirmConnect(serverUrl: string, accountName: string): Promise<boolean>;
 	chooseFolder(): Promise<string | null>;
+	chooseProjectFolder(): Promise<string | null>;
 	confirmPermission(permission: DesktopPermission): Promise<boolean>;
 };
 
@@ -143,6 +144,16 @@ export class DesktopService extends EventEmitter {
 		this.settings.folders = [...this.settings.folders, folder];
 		await this.applyLocalChange();
 		return this.getStatus();
+	}
+
+	/**
+	 * Picks a chat folder's project folder on this computer and returns its path.
+	 * It shares nothing and changes no permission: Buddy checks the folder on this
+	 * computer through the Runner before it is used.
+	 */
+	async chooseProjectFolder(): Promise<string | null> {
+		if (!this.settings.machine) throw new Error('Connect this computer to Buddy first.');
+		return this.options.dialogs.chooseProjectFolder();
 	}
 
 	async removeSharedFolder(folder: string): Promise<DesktopStatus> {

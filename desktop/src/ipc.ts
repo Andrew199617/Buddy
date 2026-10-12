@@ -51,6 +51,8 @@ export function registerBuddyBridge(
 
 	handleFrom(ipc, BRIDGE_CHANNELS.chooseFolder, isBuddyPage, () => service.chooseSharedFolder());
 
+	handleFrom(ipc, BRIDGE_CHANNELS.chooseProjectFolder, isBuddyPage, () => service.chooseProjectFolder());
+
 	handleFrom(ipc, BRIDGE_CHANNELS.removeFolder, isBuddyPage, (folder) =>
 		service.removeSharedFolder(readText(folder, 'folder'))
 	);

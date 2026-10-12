@@ -7,6 +7,7 @@ export const BRIDGE_CHANNELS = {
 	connect: 'buddy-desktop:connect',
 	disconnect: 'buddy-desktop:disconnect',
 	chooseFolder: 'buddy-desktop:choose-folder',
+	chooseProjectFolder: 'buddy-desktop:choose-project-folder',
 	removeFolder: 'buddy-desktop:remove-folder',
 	setPermission: 'buddy-desktop:set-permission',
 	setStartAtLogin: 'buddy-desktop:set-start-at-login',

@@ -56,7 +56,7 @@ class FakeSupervisor extends EventEmitter {
 	}
 }
 
-type Answers = { connect?: boolean; folder?: string | null; permission?: boolean };
+type Answers = { connect?: boolean; folder?: string | null; projectFolder?: string | null; permission?: boolean };
 
 function setUp(answers: Answers = {}, initial: Partial<DesktopSettings> = {}) {
 	const settings = new MemorySettings(initial);
@@ -73,6 +73,10 @@ function setUp(answers: Answers = {}, initial: Partial<DesktopSettings> = {}) {
 		chooseFolder: async () => {
 			asked.push('folder');
 			return answers.folder ?? null;
+		},
+		chooseProjectFolder: async () => {
+			asked.push('project folder');
+			return answers.projectFolder ?? null;
 		},
 		confirmPermission: async (permission: DesktopPermission) => {
 			asked.push(permission);
@@ -205,4 +209,23 @@ test('changing the Buddy address disconnects this computer first', async () => {
 test('starting at sign-in is reported back', () => {
 	const { service } = setUp();
 	assert.equal(service.setStartAtLogin(true).startAtLogin, true);
+});
+
+test('choosing a project folder returns its path and changes nothing on this computer', async () => {
+	const folder = 'C:\Projects\site';
+	const { service, settings, supervisor, asked } = setUp({ projectFolder: folder });
+	await service.connectThisPC('bde1_token', 'PC');
+	const before = structuredClone(settings.saved);
+	const starts = supervisor.started.length;
+	assert.equal(await service.chooseProjectFolder(), folder);
+	assert.deepEqual(settings.saved, before);
+	assert.equal(supervisor.started.length, starts);
+	assert.equal(supervisor.stops, 0);
+	assert.deepEqual(asked, ['connect', 'project folder']);
+});
+
+test('a project folder can be chosen only on a connected computer', async () => {
+	const { service, asked } = setUp({ projectFolder: 'C:\Projects\site' });
+	await assert.rejects(service.chooseProjectFolder(), /Connect this computer/);
+	assert.deepEqual(asked, []);
 });
