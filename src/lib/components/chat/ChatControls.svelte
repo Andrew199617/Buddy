@@ -3,7 +3,7 @@
 </script>
 
 <script lang="ts">
-	import { onMount, tick, getContext } from 'svelte';
+	import { onDestroy, onMount, tick, getContext } from 'svelte';
 	import type { Writable } from 'svelte/store';
 	import type { i18n as I18n } from 'i18next';
 	import { createLazyComponent } from '$lib/utils/lazy-component';
@@ -26,6 +26,7 @@
 	import ResizableSidePanel from '../common/ResizableSidePanel.svelte';
 	import { isSavedChatId } from '$lib/utils/chatId';
 	import { getFolderProject, type FolderProject } from '$lib/apis/subscriptions';
+	import { KeptProjectPanel, showKeptPanel } from './ProjectPanel/kept-panel';
 
 	const i18n: Writable<I18n> = getContext('i18n');
 
@@ -159,6 +160,44 @@
 
 	$: refreshFolderProject(folderId, $showControls);
 	$: showProjectTab = folderProject !== null;
+
+	// The Project tab's panel starts the first time the tab shows, then lives as
+	// long as this chat stays in the same folder: switching tabs, an artifact
+	// opening or closing the panel keeps its open file and running command.
+	let keptProject: KeptProjectPanel | null = null;
+	let keptProjectFolder: string | null = null;
+
+	function keepProjectPanel(project: FolderProject, component: any) {
+		if (keptProject && keptProjectFolder === project.folder_id) {
+			keptProject.update({ project });
+			return;
+		}
+		dropProjectPanel();
+		keptProject = new KeptProjectPanel(
+			component,
+			{ project, onChanged: reloadFolderProject },
+			i18n
+		);
+		keptProjectFolder = project.folder_id;
+	}
+
+	/** Ends the panel's session on the computer, which also stops its commands. */
+	function dropProjectPanel() {
+		keptProject?.destroy();
+		keptProject = null;
+		keptProjectFolder = null;
+	}
+
+	$: if (activeTab === 'project' && $showControls && folderProject && $projectFeature.component) {
+		keepProjectPanel(folderProject, $projectFeature.component);
+	}
+	$: if (keptProject && folderProject && keptProjectFolder === folderProject.folder_id) {
+		keptProject.update({ project: folderProject });
+	}
+	$: if (keptProject && keptProjectFolder !== folderId) dropProjectPanel();
+	$: if (keptProject && !folderProject && !folderProjectLoading) dropProjectPanel();
+
+	onDestroy(dropProjectPanel);
 
 	// Tab fallback: if active tab becomes hidden, switch to next available
 	$: if (!showOverviewTab && activeTab === 'overview') activeTab = 'controls';
@@ -462,11 +501,7 @@
 								{/if}
 							{:else if activeTab === 'project' && folderProject}
 								{#if $projectFeature.component}
-									<svelte:component
-										this={$projectFeature.component}
-										project={folderProject}
-										onChanged={reloadFolderProject}
-									/>
+									<div class="h-full" use:showKeptPanel={keptProject}></div>
 								{:else}
 									<LazyFeatureStatus
 										feature={$i18n.t('Project')}
@@ -673,11 +708,7 @@
 								{/if}
 							{:else if activeTab === 'project' && folderProject}
 								{#if $projectFeature.component}
-									<svelte:component
-										this={$projectFeature.component}
-										project={folderProject}
-										onChanged={reloadFolderProject}
-									/>
+									<div class="h-full" use:showKeptPanel={keptProject}></div>
 								{:else}
 									<LazyFeatureStatus
 										feature={$i18n.t('Project')}
