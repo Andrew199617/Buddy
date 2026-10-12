@@ -29,7 +29,7 @@ from urllib.parse import urlsplit
 from aiohttp import web
 
 from open_webui.utils.subscriptions.pinned_paths import PinnedPath, PinnedPathError
-from open_webui.utils.subscriptions.process import ChildProcess, ProcessClosedError, subscription_env
+from buddy_runner.process import ChildProcess, ProcessClosedError, subscription_env
 
 FILE_BYTES = 1024 * 1024
 BODY_BYTES = 2 * 1024 * 1024
