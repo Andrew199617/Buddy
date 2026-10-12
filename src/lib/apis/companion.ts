@@ -129,47 +129,48 @@ export function normalizeCompanionEndpoint(value: string): string {
 	return url.origin;
 }
 
-/** Independent of Buddy/model authentication. The short-lived token stays in this instance. */
-export class CompanionClient {
-	readonly endpoint: string;
-	private token = '';
-	private closed = false;
+function describeFailure(data: unknown, status: number): string {
+	const reply = data as { error?: unknown; detail?: unknown } | null;
+	if (typeof reply?.error === 'string') return reply.error;
+	// Buddy's relay reports its own failures, such as an offline computer, this way.
+	if (typeof reply?.detail === 'string') return reply.detail;
+	return `Runner project request failed (${status}).`;
+}
+
+/**
+ * The Runner's projects protocol. Subclasses decide how a request reaches the
+ * computer: straight to its Runner after pairing, or relayed by Buddy.
+ */
+export abstract class WorkspaceClient {
+	/** Shown next to the computer's identity. */
+	abstract readonly description: string;
+	protected closed = false;
+	protected inspectedHost: CompanionHost | null = null;
 	private requests = new Set<AbortController>();
-	private inspectedHost: CompanionHost | null = null;
 	private disconnectPromise: Promise<void> | null = null;
 
-	constructor(endpoint: string = DEFAULT_COMPANION_ENDPOINT) {
-		this.endpoint = normalizeCompanionEndpoint(endpoint);
-	}
+	/** Sends one request; the caller owns the timeout and error handling. */
+	protected abstract send(
+		path: string,
+		method: string,
+		body: unknown,
+		signal: AbortSignal
+	): Promise<Response>;
 
-	private async request<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
+	/** Ends this page's session on the computer, stopping its commands. */
+	protected abstract endSession(): Promise<void>;
+
+	protected async request<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
 		if (this.closed)
-			throw new Error('This computer connection is closed. Inspect and pair again to reconnect.');
+			throw new Error('This computer connection is closed. Open the computer again to reconnect.');
 		const controller = new AbortController();
 		this.requests.add(controller);
 		const timeout = setTimeout(() => controller.abort(), 15000);
-		const headers: Record<string, string> = { Accept: 'application/json' };
-		if (this.token) headers.Authorization = `Bearer ${this.token}`;
-		if (body !== undefined) headers['Content-Type'] = 'application/json';
-
 		try {
-			const response = await fetch(`${this.endpoint}${path}`, {
-				method,
-				headers,
-				body: body === undefined ? undefined : JSON.stringify(body),
-				credentials: 'omit',
-				mode: 'cors',
-				redirect: 'error',
-				referrerPolicy: 'no-referrer',
-				signal: controller.signal
-			});
+			const response = await this.send(path, method, body, controller.signal);
 			if (!response.ok) {
 				const data = await response.json().catch(() => null);
-				const message =
-					typeof data?.error === 'string'
-						? data.error
-						: `Runner project request failed (${response.status}).`;
-				throw new CompanionError(message, response.status);
+				throw new CompanionError(describeFailure(data, response.status), response.status);
 			}
 			if (response.status === 204) return undefined as T;
 			return (await response.json()) as T;
@@ -179,7 +180,7 @@ export class CompanionClient {
 		}
 	}
 
-	private validateHost(value: unknown): CompanionHost {
+	protected validateHost(value: unknown): CompanionHost {
 		const host = value as CompanionHost | null;
 		if (
 			!host ||
@@ -228,47 +229,6 @@ export class CompanionClient {
 		}
 		this.inspectedHost = host;
 		return host;
-	}
-
-	async pair(code: string): Promise<{ host: CompanionHost; expiresAt: number }> {
-		const inspectedHost = this.inspectedHost;
-		if (!inspectedHost)
-			throw new Error('Inspect the computer and its project capabilities before pairing.');
-		const response = await this.request<{ token: string; expiresAt: number; host: CompanionHost }>(
-			'/v1/pair',
-			'POST',
-			{ code }
-		);
-		// If disposed while pairing, revoke any token that arrived after cancellation.
-		if (this.closed) {
-			await this.revokeToken(response.token);
-			throw new Error('The companion connection changed while pairing.');
-		}
-		try {
-			if (
-				typeof response.token !== 'string' ||
-				!response.token ||
-				!Number.isFinite(response.expiresAt) ||
-				response.expiresAt <= Date.now()
-			) {
-				throw new Error('The Runner returned an invalid pairing response.');
-			}
-			const pairedHost = this.validateHost(response.host);
-			if (pairedHost.id !== inspectedHost.id) {
-				throw new CompanionError(
-					'The computer changed during pairing. Inspect its identity and pair again.',
-					409,
-					true
-				);
-			}
-			this.token = response.token;
-			return { host: pairedHost, expiresAt: response.expiresAt };
-		} catch (cause) {
-			if (typeof response.token === 'string' && response.token) {
-				await this.revokeToken(response.token).catch(() => {});
-			}
-			throw cause;
-		}
 	}
 
 	async getGrants(): Promise<CompanionGrant[]> {
@@ -367,6 +327,86 @@ export class CompanionClient {
 		}
 	}
 
+	disconnect(): Promise<void> {
+		if (this.disconnectPromise) return this.disconnectPromise;
+		this.closed = true;
+		this.inspectedHost = null;
+		for (const request of this.requests) request.abort();
+		this.requests.clear();
+		this.disconnectPromise = this.endSession();
+		return this.disconnectPromise;
+	}
+}
+
+/** Independent of Buddy/model authentication. The short-lived token stays in this instance. */
+export class CompanionClient extends WorkspaceClient {
+	readonly endpoint: string;
+	readonly description: string;
+	private token = '';
+
+	constructor(endpoint: string = DEFAULT_COMPANION_ENDPOINT) {
+		super();
+		this.endpoint = normalizeCompanionEndpoint(endpoint);
+		this.description = this.endpoint;
+	}
+
+	protected send(path: string, method: string, body: unknown, signal: AbortSignal) {
+		const headers: Record<string, string> = { Accept: 'application/json' };
+		if (this.token) headers.Authorization = `Bearer ${this.token}`;
+		if (body !== undefined) headers['Content-Type'] = 'application/json';
+		return fetch(`${this.endpoint}${path}`, {
+			method,
+			headers,
+			body: body === undefined ? undefined : JSON.stringify(body),
+			credentials: 'omit',
+			mode: 'cors',
+			redirect: 'error',
+			referrerPolicy: 'no-referrer',
+			signal
+		});
+	}
+
+	async pair(code: string): Promise<{ host: CompanionHost; expiresAt: number }> {
+		const inspectedHost = this.inspectedHost;
+		if (!inspectedHost)
+			throw new Error('Inspect the computer and its project capabilities before pairing.');
+		const response = await this.request<{ token: string; expiresAt: number; host: CompanionHost }>(
+			'/v1/pair',
+			'POST',
+			{ code }
+		);
+		// If disposed while pairing, revoke any token that arrived after cancellation.
+		if (this.closed) {
+			await this.revokeToken(response.token);
+			throw new Error('The companion connection changed while pairing.');
+		}
+		try {
+			if (
+				typeof response.token !== 'string' ||
+				!response.token ||
+				!Number.isFinite(response.expiresAt) ||
+				response.expiresAt <= Date.now()
+			) {
+				throw new Error('The Runner returned an invalid pairing response.');
+			}
+			const pairedHost = this.validateHost(response.host);
+			if (pairedHost.id !== inspectedHost.id) {
+				throw new CompanionError(
+					'The computer changed during pairing. Inspect its identity and pair again.',
+					409,
+					true
+				);
+			}
+			this.token = response.token;
+			return { host: pairedHost, expiresAt: response.expiresAt };
+		} catch (cause) {
+			if (typeof response.token === 'string' && response.token) {
+				await this.revokeToken(response.token).catch(() => {});
+			}
+			throw cause;
+		}
+	}
+
 	private async revokeToken(token: string): Promise<void> {
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), 5000);
@@ -389,15 +429,10 @@ export class CompanionClient {
 		}
 	}
 
-	disconnect(): Promise<void> {
-		if (this.disconnectPromise) return this.disconnectPromise;
+	protected endSession(): Promise<void> {
 		const token = this.token;
 		this.token = '';
-		this.closed = true;
-		this.inspectedHost = null;
-		for (const request of this.requests) request.abort();
-		this.requests.clear();
-		this.disconnectPromise = token ? this.revokeToken(token) : Promise.resolve();
-		return this.disconnectPromise;
+		if (!token) return Promise.resolve();
+		return this.revokeToken(token);
 	}
 }
