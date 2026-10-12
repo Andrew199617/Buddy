@@ -355,9 +355,12 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		'folder-chip',
 		'folder-edit',
 		'folder-allow',
-		'folder-allow-stale'
+		'folder-allow-stale',
+		'folder-allow-beside'
 	]);
-	// Modes where every plan that is on is Chat only, so the folder settings ask in place.
+	// Modes where the folder settings ask to let a Chat-only plan use files.
+	const askingModes = new Set(['folder-allow', 'folder-allow-stale', 'folder-allow-beside']);
+	// Modes where every plan that is on is Chat only.
 	const chatOnlyModes = new Set(['folder-allow', 'folder-allow-stale']);
 	const projectRelayBase = '/api/v1/runners/machines/pc-1/workspace';
 	const workPc = {
@@ -375,7 +378,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		mode: 'folder',
 		paths: { 'pc-1': { path: 'C:\\code\\site', problem: null } }
 	};
-	if (chatOnlyModes.has(mode)) {
+	if (askingModes.has(mode)) {
 		projectChoice = { folder_id: 'website', folder_name: 'Website', mode: 'auto', paths: {} };
 	}
 	// The person's plans as the folder settings see them, changed by plan config saves.
@@ -395,6 +398,11 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			machine: { id: 'local', name: 'This server', revision: 'local' }
 		}
 	];
+	if (mode === 'folder-allow-beside') {
+		// Claude already opens folders on Work PC; ChatGPT is on there but only chats.
+		folderPlans[1].enable = true;
+		folderPlans[1].machine = { id: 'pc-1', name: 'Work PC', revision: 'rev-pc-1' };
+	}
 	// In the stale case the page first sees Work PC from before it was set up again.
 	let showsOldRevision = mode === 'folder-allow-stale';
 	const planConfigs = [];
@@ -599,7 +607,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 
 	let sessionOptions = {};
 	if (mode === 'project-tab') sessionOptions = { folderId: 'website' };
-	if (mode === 'folder-chip' || mode === 'folder-edit' || chatOnlyModes.has(mode))
+	if (mode === 'folder-chip' || mode === 'folder-edit' || askingModes.has(mode))
 		sessionOptions = { path: '/folders/website' };
 
 	async function routeRequest(route) {
@@ -3008,6 +3016,43 @@ async function folderAllowStaleCase(browser, profile) {
 	);
 }
 
+async function folderAllowBesideCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'folder-allow-beside',
+		'folder-allow-beside',
+		async ({ page }, fixtures) => {
+			const dialog = await openFolderSettings(page);
+			const request = dialog.getByRole('group', { name: 'Plans that only chat', exact: true });
+			await request.waitFor();
+			const offered = await request.innerText();
+			assert.match(offered, /ChatGPT\s*·\s*Work PC\s*·\s*Chat only/);
+			assert.doesNotMatch(offered, /Claude/, 'Claude already opens folders');
+
+			// A folder that is just chat has no use for files.
+			await dialog.getByText('No files, just chat', { exact: true }).click();
+			await request.waitFor({ state: 'hidden' });
+			// An unsaved choice survives the plans loading again.
+			await dialog.getByText('A specific folder', { exact: true }).click();
+			await request.waitFor();
+			await captureScreenshot(page, profile.name + '-folder-allow-beside');
+
+			await request.getByRole('button', { name: 'Allow full access', exact: true }).click();
+			await request.getByText('Give ChatGPT full access on Work PC?', { exact: true }).waitFor();
+			await request.getByRole('button', { name: 'Allow', exact: true }).click();
+			await request.waitFor({ state: 'hidden' });
+			assert.deepEqual(fixtures.planConfigs, [
+				{ access: 'full', expected_machine_id: 'pc-1', expected_machine_revision: 'rev-pc-1' }
+			]);
+			const specificFolder = dialog.getByRole('radio', { name: /^A specific folder/ });
+			assert.equal(await specificFolder.isChecked(), true, 'The unsaved choice is kept');
+			await dialog.getByText('Claude, ChatGPT', { exact: false }).waitFor();
+			assert.equal(fixtures.requests.filter((entry) => entry.method === 'PUT').length, 0);
+		}
+	);
+}
+
 const { chromium } = await import(process.env.BUDDY_PLAYWRIGHT_MODULE || 'playwright');
 mkdirSync(outputDirectory, { recursive: true });
 const browser = await chromium.launch({ headless: true });
@@ -3021,6 +3066,7 @@ try {
 		await folderEditCase(browser, profile);
 		await folderAllowCase(browser, profile);
 		await folderAllowStaleCase(browser, profile);
+		await folderAllowBesideCase(browser, profile);
 		await cancellationCase(browser, profile, 'x');
 		await cancellationCase(browser, profile, 'escape');
 		await cancellationCase(browser, profile, 'backdrop');

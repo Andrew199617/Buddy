@@ -365,6 +365,16 @@
 					)}
 				</p>
 			</div>
+
+			<!-- Another plan already opens folders; these could too. Moot when this folder is just chat. -->
+			{#if allowablePlans.length > 0 && draft.mode !== 'chat'}
+				<PlanAccessRequest
+					compact
+					plans={allowablePlans}
+					reload={refresh}
+					onAllowed={planAllowed}
+				/>
+			{/if}
 		{/if}
 
 		{#if error}

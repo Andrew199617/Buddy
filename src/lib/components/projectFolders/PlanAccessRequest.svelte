@@ -22,6 +22,8 @@
 	export let reload: () => Promise<void>;
 	// Called once a plan may use files and the plans were loaded again.
 	export let onAllowed: () => void = () => {};
+	// Shown under the folder choices, because another plan already opens folders.
+	export let compact = false;
 
 	// The plan being asked about, by ID: a reload replaces the plan objects.
 	let confirming: { planId: string; access: FileAccess } | null = null;
@@ -114,12 +116,23 @@
 	aria-labelledby="plan-access-heading"
 >
 	<div>
-		<p id="plan-access-heading" class="text-sm">{$i18n.t('Let a plan work with files')}</p>
-		<p class="text-[0.6875rem] text-gray-500 dark:text-gray-400">
-			{$i18n.t(
-				'Your plans are set to Chat only, so they can’t open a project folder. Allowing files changes the plan for all your chats, not just this folder.'
-			)}
-		</p>
+		{#if compact}
+			<p id="plan-access-heading" class="text-xs text-gray-500">
+				{$i18n.t('Plans that only chat')}
+			</p>
+			<p class="text-[0.6875rem] text-gray-500 dark:text-gray-400">
+				{$i18n.t(
+					'Their chats here don’t use files. Allowing files changes the plan for all your chats, not just this folder.'
+				)}
+			</p>
+		{:else}
+			<p id="plan-access-heading" class="text-sm">{$i18n.t('Let a plan work with files')}</p>
+			<p class="text-[0.6875rem] text-gray-500 dark:text-gray-400">
+				{$i18n.t(
+					'Your plans are set to Chat only, so they can’t open a project folder. Allowing files changes the plan for all your chats, not just this folder.'
+				)}
+			</p>
+		{/if}
 	</div>
 
 	<ul class="flex flex-col gap-2">
