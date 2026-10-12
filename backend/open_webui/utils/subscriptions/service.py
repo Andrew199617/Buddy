@@ -176,6 +176,9 @@ _active_provider_tasks: dict[ProviderRef, set[asyncio.Task]] = {}
 # One handle per computer a provider runs on, so a turn on one computer
 # never drops the handle of a turn still running on another.
 _tracked_machines: dict[MachineRef, 'TrackingMachine'] = {}
+# The computer each provider's sign-in in progress runs on. A provider signs
+# in on one computer at a time.
+_login_computers: dict[ProviderRef, str] = {}
 _server_owner_id: str | None = None
 
 
@@ -719,6 +722,7 @@ async def _quiesce_provider_work(ref: ProviderRef) -> None:
             cleanup_error = SubscriptionError('An old provider operation could not confirm that it stopped.')
     provider = await get_provider(ref)
     await provider.cancel_login()
+    _login_computers.pop(ref, None)
     if isinstance(provider, CodexProvider):
         provider.stop()
     if cleanup_error:
@@ -1743,35 +1747,82 @@ async def clear_folder_project(user, folder_id: str) -> dict:
     return await describe_folder_project(user, folder.id)
 
 
+async def _sign_in_settings(
+    ref: ProviderRef, settings: ProviderSettings, machine_id: str | None, expected_machine_id: str | None,
+    expected_machine_revision: str | None, mutation: bool
+) -> ProviderSettings:
+    """The plan's settings on the computer a sign-in action is for.
+
+    Without a chosen computer it is the plan's own, as the page last showed
+    it. A chosen computer must be one of the user's, at the revision the page
+    showed; an unknown computer and someone else's get the same answer.
+    """
+    if machine_id is None:
+        await _check_expected_machine(ref.owner_id, settings, expected_machine_id, expected_machine_revision, mutation)
+        return settings
+    if not machine_id:
+        raise SubscriptionError(NO_MACHINE_MESSAGE)
+    on_computer = _settings_on(settings, machine_id)
+    await _check_expected_machine(ref.owner_id, on_computer, machine_id, expected_machine_revision, mutation)
+    return on_computer
+
+
+async def _login_computer_name(ref: ProviderRef, machine_id: str) -> str:
+    try:
+        return (await get_machine(ref.owner_id, machine_id)).name
+    except SubscriptionError:
+        return 'another computer'
+
+
+async def _require_login_on(ref: ProviderRef, machine_id: str) -> None:
+    """A code or cancel for one computer never reaches a sign-in still waiting on another."""
+    running_on = _login_computers.get(ref)
+    if running_on is None or running_on == machine_id:
+        return
+    if (await get_provider(ref)).login_state().get('state') != 'waiting':
+        return
+    name = await _login_computer_name(ref, running_on)
+    raise HTTPException(status_code=409, detail=f'Finish signing in on {name} first.')
+
+
 async def start_login(
     owner_id: str, provider_id: str, method: str, expected_machine_id: str | None = None,
-    expected_machine_revision: str | None = None
+    expected_machine_revision: str | None = None, machine_id: str | None = None
 ) -> dict:
     ref = _ref(owner_id, provider_id)
     _require_single_worker()
     async with _provider_lock(ref):
         settings = await _load_settings(ref)
-        await _check_expected_machine(owner_id, settings, expected_machine_id, expected_machine_revision, mutation=True)
+        on_computer = await _sign_in_settings(
+            ref, settings, machine_id, expected_machine_id, expected_machine_revision, mutation=True
+        )
         await _quiesce_provider(ref)
-        machine = await _tracked(ref, settings)
-        return await (await get_provider(ref)).start_login(settings, machine, method)
+        machine = await _tracked(ref, on_computer)
+        login = await (await get_provider(ref)).start_login(on_computer, machine, method)
+        _login_computers[ref] = on_computer.machine_id
+        return login
 
 
 async def login_state(
     owner_id: str, provider_id: str, expected_machine_id: str | None = None,
-    expected_machine_revision: str | None = None
+    expected_machine_revision: str | None = None, machine_id: str | None = None
 ) -> dict:
     ref = _ref(owner_id, provider_id)
     async with _provider_lock(ref):
         settings = await _load_settings(ref)
-        await _check_expected_machine(owner_id, settings, expected_machine_id, expected_machine_revision)
+        on_computer = await _sign_in_settings(
+            ref, settings, machine_id, expected_machine_id, expected_machine_revision, mutation=False
+        )
         if UVICORN_WORKERS != 1:
             return {'state': 'idle', 'message': SINGLE_WORKER_MESSAGE}
         try:
-            await _require_verified_machine(ref, settings)
+            await _require_verified_machine(ref, on_computer)
             _require_provider_cleanup(ref)
         except SubscriptionError as error:
             return {'state': 'idle', 'message': str(error)}
+        running_on = _login_computers.get(ref)
+        if running_on is not None and running_on != on_computer.machine_id:
+            return {'state': 'idle'}
         login = (await get_provider(ref)).login_state()
         if login.get('state') == 'success':
             invalidate(ref)
@@ -1780,13 +1831,16 @@ async def login_state(
 
 async def submit_login_code(
     owner_id: str, provider_id: str, code: str, expected_machine_id: str | None = None,
-    expected_machine_revision: str | None = None
+    expected_machine_revision: str | None = None, machine_id: str | None = None
 ) -> dict:
     ref = _ref(owner_id, provider_id)
     _require_single_worker()
     async with _provider_lock(ref):
         settings = await _load_settings(ref)
-        await _check_expected_machine(owner_id, settings, expected_machine_id, expected_machine_revision, mutation=True)
+        on_computer = await _sign_in_settings(
+            ref, settings, machine_id, expected_machine_id, expected_machine_revision, mutation=True
+        )
+        await _require_login_on(ref, on_computer.machine_id)
         _require_provider_cleanup(ref)
         login = await (await get_provider(ref)).submit_login_code(code)
         if login.get('state') == 'success':
@@ -1796,26 +1850,31 @@ async def submit_login_code(
 
 async def cancel_login(
     owner_id: str, provider_id: str, expected_machine_id: str | None = None,
-    expected_machine_revision: str | None = None
+    expected_machine_revision: str | None = None, machine_id: str | None = None
 ) -> dict:
     ref = _ref(owner_id, provider_id)
     _require_single_worker()
     async with _provider_lock(ref):
         settings = await _load_settings(ref)
-        await _check_expected_machine(owner_id, settings, expected_machine_id, expected_machine_revision, mutation=True)
+        on_computer = await _sign_in_settings(
+            ref, settings, machine_id, expected_machine_id, expected_machine_revision, mutation=True
+        )
+        await _require_login_on(ref, on_computer.machine_id)
         await _quiesce_provider(ref)
         return {'state': 'idle'}
 
 
 async def logout(
     owner_id: str, provider_id: str, expected_machine_id: str | None = None,
-    expected_machine_revision: str | None = None
+    expected_machine_revision: str | None = None, machine_id: str | None = None
 ) -> None:
     ref = _ref(owner_id, provider_id)
     _require_single_worker()
     async with _provider_lock(ref):
         settings = await _load_settings(ref)
-        await _check_expected_machine(owner_id, settings, expected_machine_id, expected_machine_revision, mutation=True)
+        on_computer = await _sign_in_settings(
+            ref, settings, machine_id, expected_machine_id, expected_machine_revision, mutation=True
+        )
         await _quiesce_provider(ref)
         credential_mode = await _load_credential_mode(ref)
         if credential_mode != CREDENTIAL_MACHINE:
@@ -1825,9 +1884,9 @@ async def logout(
             await Config.upsert({await _credential_mode_key(ref): CREDENTIAL_MACHINE})
             invalidate(ref)
             return
-        machine = await _tracked(ref, settings)
+        machine = await _tracked(ref, on_computer)
         try:
-            await (await get_provider(ref)).logout(settings, machine)
+            await (await get_provider(ref)).logout(on_computer, machine)
         finally:
             invalidate(ref)
 
