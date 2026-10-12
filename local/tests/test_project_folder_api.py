@@ -254,6 +254,26 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second, first)
         self.assertEqual(self.machine.suggest_calls, 1)
 
+    async def test_each_computer_says_whether_its_folders_can_be_browsed(self):
+        await self.save(OWNER_USER, 'folder', {'pc-1': 'C:\\code\\site'})
+        project = await self.service.describe_folder_project(OWNER_USER, 'website')
+        self.assertEqual(project['computers'][0]['folders'], 'unsupported')
+        config = self.config.values['subscriptions.machines'][0]
+        config['kind'] = 'runner'
+        config['capabilities'] = {'folderBrowsing': True}
+        online = types.SimpleNamespace(is_online=lambda machine_id: True)
+        with patch.object(self.service, 'HUB', online):
+            project = await self.service.describe_folder_project(OWNER_USER, 'website')
+            self.assertEqual(project['computers'][0]['folders'], 'on')
+            # Learned from the app's answer that browsing is off there.
+            self.service._folder_browsing[(OWNER, 'pc-1')] = 'off'
+            project = await self.service.describe_folder_project(OWNER_USER, 'website')
+            self.assertEqual(project['computers'][0]['folders'], 'off')
+        offline = types.SimpleNamespace(is_online=lambda machine_id: False)
+        with patch.object(self.service, 'HUB', offline):
+            project = await self.service.describe_folder_project(OWNER_USER, 'website')
+        self.assertEqual(project['computers'][0]['folders'], 'offline')
+
     async def test_a_deleted_users_choices_are_forgotten(self):
         await self.save(MEMBER_USER, 'chat')
         await self.service.forget_user(MEMBER)
