@@ -107,7 +107,7 @@
 		<h4 class="text-xs text-gray-600 dark:text-gray-400">{$i18n.t('Shared folders')}</h4>
 		<p class="mt-1 text-[0.6875rem] text-gray-500 dark:text-gray-400">
 			{$i18n.t(
-				'Projects and file access can use only the folders you share here. Buddy cannot add any.'
+				"A chat's Project tab can open files only inside the folders you share here, and Buddy can't add any. Claude and ChatGPT work in the project folder each chat folder names."
 			)}
 		</p>
 		<ul class="mt-1 flex flex-col gap-1">
@@ -140,7 +140,7 @@
 			<div class="min-w-0">
 				<div class="text-sm">{$i18n.t('Allow editing files')}</div>
 				<div class="text-[0.6875rem] text-gray-500 dark:text-gray-400">
-					{$i18n.t('Lets the Projects page save changes to files in shared folders.')}
+					{$i18n.t("Lets a chat's Project tab save changes to files in shared folders.")}
 				</div>
 			</div>
 			<Switch
@@ -153,7 +153,9 @@
 			<div class="min-w-0">
 				<div class="text-sm">{$i18n.t('Allow running commands')}</div>
 				<div class="text-[0.6875rem] text-gray-500 dark:text-gray-400">
-					{$i18n.t('Commands run as your account on this computer; their folder is not a sandbox.')}
+					{$i18n.t(
+						"Lets a chat's Project tab run commands as your account here. Their folder is not a sandbox."
+					)}
 				</div>
 			</div>
 			<Switch
