@@ -137,7 +137,11 @@ from open_webui.utils.skills import (
     has_prior_real_chat_content,
     strip_skill_mentions,
 )
-from open_webui.utils.subscriptions.common import SUBSCRIPTION_OWNED_BY
+from open_webui.utils.subscriptions.common import (
+    FOLDER_INSTRUCTIONS_KEY,
+    SUBSCRIPTION_OWNED_BY,
+    folder_adds_instructions,
+)
 from open_webui.utils.task import (
     get_task_model_id,
     rag_template,
@@ -2572,6 +2576,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     if not folder_id:
         folder_id = metadata.get('folder_id', None)
 
+    # Buddy: the chat folder whose prompt or knowledge reaches this turn. Claude and
+    # ChatGPT plans stay chat-only when someone else can change them.
+    metadata[FOLDER_INSTRUCTIONS_KEY] = None
     if folder_id and user:
         folder = await Folders.get_folder_by_id(folder_id)
         if folder and user.role != 'admin' and not await has_folder_access(user.id, folder, 'read', db=None):
@@ -2590,6 +2597,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     # Native FC: skip RAG injection, builtin tools
                     # will read folder knowledge from metadata.
                     metadata['folder_knowledge'] = await get_owner_accessible_folder_files(folder)
+            if folder_adds_instructions(folder.data):
+                metadata[FOLDER_INSTRUCTIONS_KEY] = folder.id
 
     # Model "Knowledge" handling
     user_message = get_last_user_message(form_data['messages'])
