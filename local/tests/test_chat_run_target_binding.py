@@ -14,7 +14,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_subscription_machines import OWNER, OWNER_USER, ROOT, MemoryConfig, load_service, machine_config  # noqa: E402
+from test_subscription_machines import (  # noqa: E402
+    OWNER,
+    OWNER_USER,
+    ROOT,
+    FakeRemoteMachine,
+    MemoryConfig,
+    load_service,
+    machine_config,
+)
 
 MEMBER = 'member-1'
 MEMBER_USER = types.SimpleNamespace(id=MEMBER, role='user')
@@ -167,6 +175,25 @@ class OptionsTests(RunTargetTestCase):
         self.assertEqual(folder['offered'], {'runner-b': ['C:\\code\\docs']})
         self.assertEqual(options['default']['machine_id'], 'runner-b')
         self.assertEqual(options['default']['folder'], {'mode': 'path', 'path': 'C:\\code\\site'})
+
+    async def test_readiness_checks_one_plan_on_one_computer_again(self):
+        claude = self.service.ProviderRef(OWNER, 'claude')
+        provider = types.SimpleNamespace(calls=[])
+
+        async def status(settings, machine):
+            provider.calls.append(machine.id)
+            return {'installed': True, 'signed_in': True, 'api_billing': False}
+
+        self.service._providers[claude] = types.SimpleNamespace(status=status, credential_mode='machine')
+        config = machine_config('runner-b', 'host-b')
+        self.service._remote_machines['runner-b'] = FakeRemoteMachine('runner-b', config['name'], config['url'], config['key'])
+        ready = await self.service.run_target_readiness(OWNER_USER, 'claude', 'runner-b')
+        self.assertEqual(ready, {'state': 'ready', 'message': None})
+        self.assertEqual(provider.calls, ['runner-b'])
+        # Someone else's computer gets the same answer as an unknown one, and nothing runs there.
+        refused = await self.service.run_target_readiness(OWNER_USER, 'claude', 'member-pc')
+        self.assertEqual(refused['state'], 'not_allowed')
+        self.assertEqual(provider.calls, ['runner-b'])
 
     async def test_a_person_who_may_not_use_computers_gets_nothing(self):
         self.config.values['subscriptions.policy'] = {'user_machines': 'admins'}
