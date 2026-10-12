@@ -349,6 +349,178 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		await route.fulfill({ status: 200, json: { machine, machines } });
 	}
 
+	// --- Chat folders' project folders and the chat's Project tab -------------
+	const projectModes = new Set(['project-tab', 'folder-chip']);
+	const projectRelayBase = '/api/v1/runners/machines/pc-1/workspace';
+	const workPc = {
+		machine_id: 'pc-1',
+		name: 'Work PC',
+		kind: 'app',
+		online: true,
+		platform: 'win32',
+		can_browse: true,
+		providers: [{ id: 'claude', name: 'Claude', access: 'full' }],
+		recent_paths: ['C:\\code\\site']
+	};
+	let projectChoice = {
+		folder_id: 'website',
+		folder_name: 'Website',
+		mode: 'folder',
+		paths: { 'pc-1': { path: 'C:\\code\\site', problem: null } }
+	};
+	const projectGrant = {
+		id: 'grant-code',
+		name: 'code',
+		path: 'C:\\code',
+		capabilities: { read: true, write: true, execute: true },
+		available: true,
+		unavailableReason: null
+	};
+	const projectListings = {
+		site: [
+			{ name: 'src', path: 'site/src', type: 'directory' },
+			{ name: 'README.md', path: 'site/README.md', type: 'file' }
+		],
+		'site/src': [{ name: 'app.ts', path: 'site/src/app.ts', type: 'file' }]
+	};
+	let readmeContent = '# Site\r\nHello\r\n';
+	let readmeVersion = 'readme-1';
+	const projectSaves = [];
+	const projectRelayClients = new Set();
+	let projectTerminal = null;
+
+	function folderProject() {
+		return {
+			folder_id: 'website',
+			folder_name: 'Website',
+			own: projectChoice,
+			inherited: null,
+			shared_instructions: false,
+			has_plans: true,
+			computers: [workPc]
+		};
+	}
+
+	function terminalFixture(status, output, exitCode = null) {
+		projectTerminal = { id: 'term-1', workspaceId: 'work-1', status, output, exitCode };
+		return { terminal: projectTerminal };
+	}
+
+	async function routeProjectRelay(route, request, url, relayPath) {
+		const method = request.method();
+		const headers = request.headers();
+		assert.equal(
+			headers.authorization,
+			'Bearer buddy-design-fake-token',
+			'The relay uses the Buddy sign-in'
+		);
+		assert.match(headers['x-buddy-relay-client'] || '', /^[A-Za-z0-9_-]{1,64}$/);
+		projectRelayClients.add(headers['x-buddy-relay-client']);
+		const body = request.postDataJSON();
+		if (method === 'GET' && relayPath === '/v1/grants') {
+			return { grants: [projectGrant] };
+		}
+		if (method === 'GET' && relayPath === '/v1/directories') {
+			assert.equal(url.searchParams.get('grantId'), 'grant-code');
+			const listing = projectListings[url.searchParams.get('path')];
+			assert.ok(listing, 'Browsing stays inside the project folder');
+			return { path: url.searchParams.get('path'), entries: listing };
+		}
+		if (method === 'GET' && relayPath === '/v1/files') {
+			assert.equal(url.searchParams.get('path'), 'site/README.md');
+			return { path: 'site/README.md', content: readmeContent, version: readmeVersion };
+		}
+		if (method === 'PUT' && relayPath === '/v1/files') {
+			projectSaves.push(body);
+			if (projectSaves.length === 2 && !body.overwrite) {
+				return {
+					status: 409,
+					json: { error: 'This file changed on the host after it was opened.' }
+				};
+			}
+			readmeContent = body.content;
+			readmeVersion = 'readme-' + (projectSaves.length + 1);
+			return { path: body.path, content: body.content, version: readmeVersion };
+		}
+		if (method === 'POST' && relayPath === '/v1/workspaces') {
+			assert.deepEqual(body, { grantId: 'grant-code', path: 'site' });
+			return {
+				workspace: {
+					id: 'work-1',
+					name: 'site',
+					hostId: 'pc-host',
+					grantId: 'grant-code',
+					path: 'C:\\code\\site'
+				}
+			};
+		}
+		if (method === 'POST' && relayPath === '/v1/terminals') {
+			assert.deepEqual(body, { workspaceId: 'work-1' });
+			return terminalFixture('ready', '');
+		}
+		if (method === 'POST' && relayPath === '/v1/terminals/term-1/commands') {
+			assert.deepEqual(body, { executable: 'npm', args: ['run', 'test'] });
+			return terminalFixture('running', '> test\n');
+		}
+		if (method === 'GET' && relayPath === '/v1/terminals/term-1') {
+			return terminalFixture('exited', '> test\nok\n', 0);
+		}
+		if (method === 'DELETE' && relayPath === '/v1/terminals/term-1') {
+			return terminalFixture('closed', projectTerminal?.output ?? '', 0);
+		}
+		if (method === 'DELETE' && relayPath === '/v1/session') {
+			return { revoked: true };
+		}
+		throw new Error('Unexpected project relay request: ' + method + ' ' + relayPath);
+	}
+
+	/** Answers the folder and Project tab requests; returns false for anything else. */
+	async function routeProjectFolders(route, request, url, path) {
+		const method = request.method();
+		let reply = null;
+		if (path === '/api/v1/folders/website' && method === 'GET') {
+			reply = {
+				id: 'website',
+				name: 'Website',
+				user_id: 'buddy-design-user',
+				parent_id: null,
+				data: {},
+				meta: {},
+				items: { chats: [], files: [] },
+				write_access: true,
+				created_at: 1,
+				updated_at: 1
+			};
+		} else if (path === '/api/v1/subscriptions/folders/website/project') {
+			requests.push({ method, path, body: request.postDataJSON() });
+			if (method === 'PUT') {
+				const body = request.postDataJSON();
+				projectChoice = {
+					folder_id: 'website',
+					folder_name: 'Website',
+					mode: body.mode,
+					paths: {}
+				};
+			}
+			reply = folderProject();
+		} else if (path.startsWith(projectRelayBase + '/')) {
+			requests.push({ method, path });
+			reply = await routeProjectRelay(route, request, url, path.slice(projectRelayBase.length));
+		} else {
+			return false;
+		}
+		if (reply && typeof reply.status === 'number' && reply.json) {
+			await route.fulfill(reply);
+		} else {
+			await route.fulfill({ status: 200, json: reply });
+		}
+		return true;
+	}
+
+	let sessionOptions = {};
+	if (mode === 'project-tab') sessionOptions = { folderId: 'website' };
+	if (mode === 'folder-chip') sessionOptions = { path: '/folders/website' };
+
 	async function routeRequest(route) {
 		const request = route.request();
 		const url = new URL(request.url());
@@ -381,6 +553,9 @@ function createFixtures(mode = 'normal', role = 'admin') {
 				status: 200,
 				json: { ENABLE_OLLAMA_API: false, OLLAMA_BASE_URLS: [], OLLAMA_API_CONFIGS: {} }
 			});
+			return;
+		}
+		if (projectModes.has(mode) && (await routeProjectFolders(route, request, url, path))) {
 			return;
 		}
 		if (!path.startsWith('/api/v1/subscriptions')) {
@@ -601,6 +776,9 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		externalRequests,
 		webSocketRequests,
 		fixtureErrors,
+		sessionOptions,
+		projectSaves,
+		projectRelayClients,
 		beforeNavigation: async (context) => {
 			await context.routeWebSocket('**/*', (socket) => {
 				webSocketRequests.push(socket.url());
@@ -891,7 +1069,8 @@ async function runCase(browser, profile, name, mode, callback, role = 'admin') {
 			theme: profile.theme,
 			reducedMotion: true,
 			role,
-			beforeNavigation: fixtures.beforeNavigation
+			beforeNavigation: fixtures.beforeNavigation,
+			...fixtures.sessionOptions
 		});
 		await callback(session, fixtures);
 		assert.deepEqual(session.errors, [], 'No uncaught page errors');
@@ -2514,6 +2693,102 @@ async function loginRevisionCase(browser, profile, metadataOnly = false, equival
 	});
 }
 
+function chatPanel(page, profile) {
+	if (profile.mobile) return page.locator('.modal');
+	return page.locator('#controls-container');
+}
+
+async function projectTabCase(browser, profile) {
+	await runCase(browser, profile, 'project-tab', 'project-tab', async ({ page }, fixtures) => {
+		await page
+			.locator('.buddy-chat-header')
+			.getByRole('button', { name: 'Controls', exact: true })
+			.click();
+		const panel = chatPanel(page, profile);
+		await panel.getByRole('button', { name: 'Project', exact: true }).click();
+		await panel.getByText('C:\\code\\site', { exact: true }).waitFor();
+		const up = panel.getByRole('button', { name: 'Up one folder', exact: true });
+		await panel.getByRole('button', { name: 'README.md', exact: true }).waitFor();
+		assert.equal(
+			await up.isDisabled(),
+			true,
+			'Browsing starts at the project folder and stops there'
+		);
+		await panel.getByRole('button', { name: 'src', exact: true }).click();
+		await panel.getByRole('button', { name: 'app.ts', exact: true }).waitFor();
+		await up.click();
+		await panel.getByRole('button', { name: 'README.md', exact: true }).click();
+
+		const editor = panel.getByLabel('Contents of README.md', { exact: true });
+		await editor.waitFor();
+		assert.equal(await editor.inputValue(), '# Site\nHello\n');
+		assert.equal(await editor.getAttribute('readonly'), '', 'Files open read-only');
+		await panel.getByRole('button', { name: 'Edit', exact: true }).click();
+		await editor.fill('# Site\nHello again\n');
+		await panel.getByRole('button', { name: 'Save', exact: true }).click();
+		await panel.getByText('Saved on Work PC', { exact: true }).waitFor();
+		assert.equal(
+			fixtures.projectSaves[0].content,
+			'# Site\r\nHello again\r\n',
+			'Saving keeps CRLF'
+		);
+		assert.equal(fixtures.projectSaves[0].baseVersion, 'readme-1');
+		assert.equal(fixtures.projectSaves[0].overwrite, false);
+
+		await editor.fill('# Site\nHello once more\n');
+		await panel.getByRole('button', { name: 'Save', exact: true }).click();
+		await panel.getByText(/README\.md changed on Work PC after you opened it/).waitFor();
+		await panel.getByRole('button', { name: 'Overwrite', exact: true }).click();
+		await panel.getByText('Saved on Work PC', { exact: true }).waitFor();
+		assert.equal(fixtures.projectSaves.length, 3);
+		assert.equal(
+			fixtures.projectSaves[2].overwrite,
+			true,
+			'Overwrite is chosen only after a conflict'
+		);
+		assert.equal(fixtures.projectSaves[2].baseVersion, 'readme-2');
+		await panel.getByRole('button', { name: '← Files', exact: true }).click();
+		await panel.getByRole('button', { name: 'README.md', exact: true }).waitFor();
+
+		await panel.getByRole('tab', { name: 'Commands', exact: true }).click();
+		const start = panel.getByRole('button', { name: 'Start a command session', exact: true });
+		assert.equal(await start.isDisabled(), true, 'Commands wait for the risk to be confirmed');
+		await panel
+			.getByLabel('I understand. Let me run commands on Work PC.', { exact: true })
+			.check();
+		await start.click();
+		await panel.getByLabel('Program', { exact: true }).fill('npm');
+		await panel.getByLabel('Arguments, one per line', { exact: true }).fill('run\ntest');
+		await panel.getByRole('button', { name: 'Run', exact: true }).click();
+		await panel.getByText('Finished with exit code 0', { exact: true }).waitFor();
+		assert.match(await panel.getByLabel('Command output', { exact: true }).innerText(), /ok/);
+		await panel.getByRole('button', { name: 'Stop session', exact: true }).click();
+		await panel.getByText('The command session stopped.', { exact: true }).waitFor();
+		assert.equal(await start.isEnabled(), true, 'A new session can start after stopping');
+		assert.equal(fixtures.projectRelayClients.size, 1, 'One page session on the computer');
+		await captureScreenshot(page, profile.name + '-project-tab');
+	});
+}
+
+async function folderChipCase(browser, profile) {
+	await runCase(browser, profile, 'folder-chip', 'folder-chip', async ({ page }, fixtures) => {
+		const chip = page.getByRole('button', { name: 'Project folder: Work PC · site', exact: true });
+		await chip.waitFor();
+		await chip.click();
+		const dialog = page.locator('.modal').filter({ hasText: 'Project folder for “Website”' });
+		await dialog.getByText('Let the AI choose', { exact: true }).click();
+		await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+		await dialog.waitFor({ state: 'hidden' });
+		await page
+			.getByRole('button', { name: 'Project folder: AI chooses where to work', exact: true })
+			.waitFor();
+		const saved = fixtures.requests.filter((request) => request.method === 'PUT');
+		assert.equal(saved.length, 1);
+		assert.deepEqual(saved[0].body, { mode: 'auto', paths: {} });
+		await captureScreenshot(page, profile.name + '-folder-chip');
+	});
+}
+
 const { chromium } = await import(process.env.BUDDY_PLAYWRIGHT_MODULE || 'playwright');
 mkdirSync(outputDirectory, { recursive: true });
 const browser = await chromium.launch({ headless: true });
@@ -2522,6 +2797,8 @@ try {
 		{ name: 'desktop', mobile: false, theme: 'light' },
 		{ name: 'phone', mobile: true, theme: 'dark' }
 	]) {
+		await projectTabCase(browser, profile);
+		await folderChipCase(browser, profile);
 		await cancellationCase(browser, profile, 'x');
 		await cancellationCase(browser, profile, 'escape');
 		await cancellationCase(browser, profile, 'backdrop');
