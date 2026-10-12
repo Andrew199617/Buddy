@@ -22,7 +22,10 @@
 	import {
 		anyFullAccess,
 		claudeReadHint,
+		choiceFromDraft,
+		copyDraft,
 		draftFromProject,
+		emptyDraft,
 		fileAccessNeed,
 		focusWasLost,
 		plansToAllow,
@@ -46,8 +49,8 @@
 	let project: FolderProject | null = null;
 	let hidden = false;
 	let loading = true;
-	let draft: ProjectDraft = { mode: 'auto', paths: {} };
-	let saved: ProjectDraft = { mode: 'auto', paths: {} };
+	let draft: ProjectDraft = emptyDraft('auto');
+	let saved: ProjectDraft = emptyDraft('auto');
 	let pickingFor: ProjectFolderComputer | null = null;
 	// Why loading again after a plan change failed; what was loaded before still saves.
 	let refreshError = '';
@@ -77,7 +80,7 @@
 	}
 
 	function startFromSaved() {
-		draft = { mode: saved.mode, paths: { ...saved.paths } };
+		draft = copyDraft(saved);
 	}
 
 	async function load() {
@@ -234,12 +237,12 @@
 
 	function choosePath(path: string) {
 		if (!pickingFor) return;
-		draft = { mode: 'folder', paths: { ...draft.paths, [pickingFor.machine_id]: path } };
+		draft = { ...draft, mode: 'folder', paths: { ...draft.paths, [pickingFor.machine_id]: path } };
 		void closePicker();
 	}
 
 	function setMode(mode: ProjectDraft['mode']) {
-		draft = { mode, paths: draft.paths };
+		draft = { ...draft, mode };
 	}
 
 	/** Saves the choice; returns false when it could not be saved, with the reason in `error`. */
@@ -253,9 +256,8 @@
 			if (mode === 'inherit') {
 				project = await clearFolderProject(localStorage.token, folderId);
 			} else {
-				let paths: Record<string, string> = {};
-				if (mode === 'folder') paths = draft.paths;
-				project = await saveFolderProject(localStorage.token, folderId, { mode, paths });
+				const choice = choiceFromDraft(draft, mode, project.computers);
+				project = await saveFolderProject(localStorage.token, folderId, choice);
 			}
 			showProject(project);
 			startFromSaved();

@@ -396,10 +396,13 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		folder_id: 'website',
 		folder_name: 'Website',
 		mode: 'folder',
-		paths: { 'pc-1': { path: 'C:\\code\\site', problem: null } }
+		paths: { 'pc-1': { path: 'C:\\code\\site', problem: null } },
+		machine_id: '',
+		access: '',
+		offered: {}
 	};
 	if (askingModes.has(mode)) {
-		projectChoice = { folder_id: 'website', folder_name: 'Website', mode: 'auto', paths: {} };
+		projectChoice = { ...projectChoice, mode: 'auto', paths: {} };
 	}
 	// The person's plans as the folder settings see them, changed by plan config saves.
 	const folderPlans = [
@@ -657,7 +660,20 @@ function createFixtures(mode = 'normal', role = 'admin') {
 				for (const [machineId, path] of Object.entries(body.paths || {})) {
 					paths[machineId] = { path, problem: null };
 				}
-				projectChoice = { folder_id: 'website', folder_name: 'Website', mode: body.mode, paths };
+				// Like the server: the whole choice is replaced, every field included.
+				const offered = {};
+				for (const [machineId, entries] of Object.entries(body.offered || {})) {
+					offered[machineId] = entries.map((entry) => ({ path: entry, problem: null }));
+				}
+				projectChoice = {
+					folder_id: 'website',
+					folder_name: 'Website',
+					mode: body.mode,
+					paths,
+					machine_id: body.machine_id ?? '',
+					access: body.access ?? '',
+					offered
+				};
 			}
 			reply = folderProject();
 		} else if (
@@ -3167,7 +3183,13 @@ async function folderChipCase(browser, profile) {
 			.waitFor();
 		const saved = fixtures.requests.filter((request) => request.method === 'PUT');
 		assert.equal(saved.length, 1);
-		assert.deepEqual(saved[0].body, { mode: 'auto', paths: {} });
+		assert.deepEqual(saved[0].body, {
+			mode: 'auto',
+			paths: {},
+			machine_id: '',
+			access: '',
+			offered: {}
+		});
 		await captureScreenshot(page, profile.name + '-folder-chip');
 	});
 }
@@ -3193,7 +3215,10 @@ async function folderEditCase(browser, profile) {
 		const saved = fixtures.requests.filter((request) => request.method === 'PUT');
 		assert.deepEqual(saved[0].body, {
 			mode: 'folder',
-			paths: { 'pc-1': 'C:\\code\\docs' }
+			paths: { 'pc-1': 'C:\\code\\docs' },
+			machine_id: '',
+			access: '',
+			offered: {}
 		});
 		await page
 			.getByRole('button', { name: 'Project folder: Work PC · docs', exact: true })
@@ -3779,7 +3804,13 @@ async function folderBrowseCase(browser, profile) {
 		await dialog.getByRole('button', { name: 'Save', exact: true }).click();
 		await dialog.waitFor({ state: 'hidden' });
 		const saved = fixtures.requests.filter((request) => request.method === 'PUT');
-		assert.deepEqual(saved[0].body, { mode: 'folder', paths: { 'pc-1': 'C:\\code' } });
+		assert.deepEqual(saved[0].body, {
+			mode: 'folder',
+			paths: { 'pc-1': 'C:\\code' },
+			machine_id: '',
+			access: '',
+			offered: {}
+		});
 		const listed = fixtures.requests.filter((request) => request.listed !== undefined);
 		assert.deepEqual(
 			listed.map((request) => request.listed),

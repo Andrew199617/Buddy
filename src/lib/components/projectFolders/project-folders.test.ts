@@ -4,8 +4,10 @@ import type { FolderPlan, FolderProject, ProjectFolderComputer } from '$lib/apis
 import {
 	chipState,
 	claudeReadHint,
+	choiceFromDraft,
 	draftFromProject,
 	effectiveChoice,
+	emptyDraft,
 	fileAccessNeed,
 	grantContaining,
 	joinSharedPath,
@@ -91,7 +93,7 @@ describe('a folder whose instructions others can change', () => {
 		expect(effectiveChoice(shared).mode).toBe('chat');
 		// Nothing is selected, so choosing "No files, just chat" is a change that gets saved.
 		expect(draftFromProject(shared).mode).toBe('unchosen');
-		expect(sameDraft(draftFromProject(shared), { mode: 'chat', paths: {} })).toBe(false);
+		expect(sameDraft(draftFromProject(shared), emptyDraft('chat'))).toBe(false);
 		const chosen = project({ shared_instructions: true, own: choice('auto') });
 		expect(waitsForOwnChoice(chosen)).toBe(false);
 		expect(effectiveChoice(chosen).mode).toBe('auto');
@@ -250,19 +252,80 @@ describe('paths inside shared folders', () => {
 describe('drafts', () => {
 	it('start from the folder’s own choice, or follow the parent', () => {
 		const own = project({ own: choice('folder', { 'pc-1': { path: 'C:\\a', problem: null } }) });
-		expect(draftFromProject(own)).toEqual({ mode: 'folder', paths: { 'pc-1': 'C:\\a' } });
-		expect(draftFromProject(project({ inherited: choice('chat') }))).toEqual({
-			mode: 'inherit',
-			paths: {}
+		expect(draftFromProject(own)).toEqual({
+			mode: 'folder',
+			paths: { 'pc-1': 'C:\\a' },
+			machineId: '',
+			access: '',
+			offered: {}
 		});
-		expect(draftFromProject(project())).toEqual({ mode: 'auto', paths: {} });
+		expect(draftFromProject(project({ inherited: choice('chat') }))).toEqual(emptyDraft('inherit'));
+		expect(draftFromProject(project())).toEqual(emptyDraft('auto'));
 	});
 
-	it('compare by mode and paths', () => {
-		expect(sameDraft({ mode: 'auto', paths: {} }, { mode: 'auto', paths: {} })).toBe(true);
-		expect(
-			sameDraft({ mode: 'folder', paths: { a: 'x' } }, { mode: 'folder', paths: { a: 'y' } })
-		).toBe(false);
+	it('carry where new chats start, their access and the folders offered', () => {
+		const own = {
+			...choice('auto'),
+			machine_id: 'pc-1',
+			access: 'full' as const,
+			offered: { 'pc-1': [{ path: 'C:\\docs', problem: null }] }
+		};
+		const draft = draftFromProject(project({ own }));
+		expect(draft).toEqual({
+			mode: 'auto',
+			paths: {},
+			machineId: 'pc-1',
+			access: 'full',
+			offered: { 'pc-1': ['C:\\docs'] }
+		});
+	});
+
+	it('compare every field', () => {
+		const base = { ...emptyDraft('auto'), offered: { 'pc-1': ['C:\\a'] } };
+		expect(sameDraft(base, { ...base, offered: { 'pc-1': ['C:\\a'] } })).toBe(true);
+		expect(sameDraft(base, { ...base, machineId: 'pc-1' })).toBe(false);
+		expect(sameDraft(base, { ...base, access: 'read' })).toBe(false);
+		expect(sameDraft(base, { ...base, offered: { 'pc-1': ['C:\\b'] } })).toBe(false);
+		const folder = { ...emptyDraft('folder'), paths: { a: 'x' } };
+		expect(sameDraft(folder, { ...folder, paths: { a: 'y' } })).toBe(false);
+	});
+});
+
+describe('the choice to save', () => {
+	const draft = {
+		mode: 'folder' as const,
+		paths: { 'pc-1': 'C:\\site' },
+		machineId: 'pc-1',
+		access: 'full' as const,
+		offered: { 'pc-1': ['C:\\docs'], 'pc-2': [] }
+	};
+
+	it('always sends every field, so nothing saved is lost', () => {
+		expect(choiceFromDraft(draft, 'folder', [workPc])).toEqual({
+			mode: 'folder',
+			paths: { 'pc-1': 'C:\\site' },
+			machine_id: 'pc-1',
+			access: 'full',
+			offered: { 'pc-1': ['C:\\docs'] }
+		});
+		expect(choiceFromDraft(draft, 'auto', [workPc]).paths).toEqual({});
+	});
+
+	it('keeps nothing else for detached chats', () => {
+		expect(choiceFromDraft(draft, 'chat', [workPc])).toEqual({
+			mode: 'chat',
+			paths: {},
+			machine_id: '',
+			access: '',
+			offered: {}
+		});
+	});
+
+	it('forgets a computer that was removed, but keeps this server', () => {
+		expect(choiceFromDraft({ ...draft, machineId: 'gone' }, 'auto', [workPc]).machine_id).toBe('');
+		expect(choiceFromDraft({ ...draft, machineId: 'local' }, 'auto', [workPc]).machine_id).toBe(
+			'local'
+		);
 	});
 });
 

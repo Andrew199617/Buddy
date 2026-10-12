@@ -5,9 +5,11 @@
 import type {
 	FolderPlan,
 	FolderProject,
+	FolderProjectChoice,
 	ProjectFolderChoice,
 	ProjectFolderComputer,
-	ProjectFolderMode
+	ProjectFolderMode,
+	SubscriptionAccess
 } from '$lib/apis/subscriptions';
 
 export type EffectiveChoice = {
@@ -202,25 +204,90 @@ export type ProjectDraft = {
 	// 'unchosen': no own choice yet in a folder whose instructions others can change.
 	mode: ProjectFolderMode | 'inherit' | 'unchosen';
 	paths: Record<string, string>;
+	// The computer new chats start on; '' lets Buddy pick one.
+	machineId: string;
+	// '' follows each plan's default access.
+	access: SubscriptionAccess | '';
+	// More folders new chats can pick from, per computer.
+	offered: Record<string, string[]>;
 };
+
+/** A draft with no own choice beyond its mode. */
+export function emptyDraft(mode: ProjectDraft['mode']): ProjectDraft {
+	return { mode, paths: {}, machineId: '', access: '', offered: {} };
+}
 
 export function draftFromProject(project: FolderProject): ProjectDraft {
 	if (!project.own) {
-		if (waitsForOwnChoice(project)) return { mode: 'unchosen', paths: {} };
-		if (project.inherited) return { mode: 'inherit', paths: {} };
-		return { mode: 'auto', paths: {} };
+		if (waitsForOwnChoice(project)) return emptyDraft('unchosen');
+		if (project.inherited) return emptyDraft('inherit');
+		return emptyDraft('auto');
 	}
+	const own = project.own;
 	const paths: Record<string, string> = {};
-	for (const [machineId, saved] of Object.entries(project.own.paths)) paths[machineId] = saved.path;
-	return { mode: project.own.mode, paths };
+	for (const [machineId, saved] of Object.entries(own.paths)) paths[machineId] = saved.path;
+	const offered: Record<string, string[]> = {};
+	for (const [machineId, entries] of Object.entries(own.offered ?? {})) {
+		offered[machineId] = entries.map((entry) => entry.path);
+	}
+	return {
+		mode: own.mode,
+		paths,
+		machineId: own.machine_id ?? '',
+		access: own.access ?? '',
+		offered
+	};
+}
+
+export function copyDraft(draft: ProjectDraft): ProjectDraft {
+	const offered: Record<string, string[]> = {};
+	for (const [machineId, paths] of Object.entries(draft.offered)) offered[machineId] = [...paths];
+	return { ...draft, paths: { ...draft.paths }, offered };
+}
+
+function samePaths(first: Record<string, string>, second: Record<string, string>): boolean {
+	const firstKeys = Object.keys(first).sort();
+	const secondKeys = Object.keys(second).sort();
+	if (firstKeys.join('\n') !== secondKeys.join('\n')) return false;
+	return firstKeys.every((key) => first[key] === second[key]);
+}
+
+function sameOffered(first: Record<string, string[]>, second: Record<string, string[]>): boolean {
+	const firstKeys = Object.keys(first).sort();
+	const secondKeys = Object.keys(second).sort();
+	if (firstKeys.join('\n') !== secondKeys.join('\n')) return false;
+	return firstKeys.every((key) => first[key].join('\n') === second[key].join('\n'));
 }
 
 export function sameDraft(first: ProjectDraft, second: ProjectDraft): boolean {
 	if (first.mode !== second.mode) return false;
-	const firstKeys = Object.keys(first.paths).sort();
-	const secondKeys = Object.keys(second.paths).sort();
-	if (firstKeys.join('\n') !== secondKeys.join('\n')) return false;
-	return firstKeys.every((key) => first.paths[key] === second.paths[key]);
+	if (first.machineId !== second.machineId || first.access !== second.access) return false;
+	return samePaths(first.paths, second.paths) && sameOffered(first.offered, second.offered);
+}
+
+/**
+ * The whole choice to save. The server replaces the folder's choice, so every
+ * field goes, even unchanged ones. A computer that is no longer listed (removed
+ * since) is dropped from where new chats start, since saving would be refused.
+ */
+export function choiceFromDraft(
+	draft: ProjectDraft,
+	mode: ProjectFolderMode,
+	computers: ProjectFolderComputer[]
+): FolderProjectChoice {
+	// Detached: new chats start with no computer, folder or access to keep.
+	if (mode === 'chat') return { mode, paths: {}, machine_id: '', access: '', offered: {} };
+	let machineId = draft.machineId;
+	const listed = computers.some((computer) => computer.machine_id === machineId);
+	// This server stays saved while the policy turns it off for a while.
+	if (!listed && machineId !== 'local') machineId = '';
+	let paths: Record<string, string> = {};
+	if (mode === 'folder') paths = { ...draft.paths };
+	const offered: Record<string, string[]> = {};
+	for (const [computerId, entries] of Object.entries(draft.offered)) {
+		if (entries.length > 0) offered[computerId] = [...entries];
+	}
+	return { mode, paths, machine_id: machineId, access: draft.access, offered };
 }
 
 export type SuggestionTools = 'claude' | 'codex' | 'both';
