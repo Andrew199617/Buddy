@@ -1841,6 +1841,19 @@ class ChatTable:
         except Exception:
             return False
 
+    async def get_chat_created_at(self, id: str, user_id: str, db: AsyncSession | None = None) -> int | None:
+        """
+        Fetch only the created_at column for the user's chat, without loading the
+        full JSON blob. Returns None if the chat doesn't exist or isn't theirs.
+        """
+        try:
+            async with get_async_db_context(db) as session:
+                result = await session.execute(select(Chat.created_at).filter_by(id=id, user_id=user_id))
+                row = result.first()
+                return row[0] if row else None
+        except Exception:
+            return None
+
     async def get_chat_folder_id(self, id: str, user_id: str, db: AsyncSession | None = None) -> str | None:
         """
         Fetch only the folder_id column for a chat, without loading the full

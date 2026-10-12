@@ -66,14 +66,20 @@ class FakeChats:
     def __init__(self):
         self.folders = {}
         self.owned = set()
+        self.created = {}
 
-    def add(self, chat_id, user_id, folder_id=None):
+    def add(self, chat_id, user_id, folder_id=None, created_at=1):
+        """A chat; by default created long ago, before chats had targets."""
         self.owned.add((chat_id, user_id))
+        self.created[(chat_id, user_id)] = created_at
         if folder_id is not None:
             self.folders[(chat_id, user_id)] = folder_id
 
     async def get_chat_folder_id(self, chat_id, user_id, db=None):
         return self.folders.get((chat_id, user_id))
+
+    async def get_chat_created_at(self, chat_id, user_id, db=None):
+        return self.created.get((chat_id, user_id))
 
     async def is_chat_owner(self, chat_id, user_id, db=None):
         return (chat_id, user_id) in self.owned

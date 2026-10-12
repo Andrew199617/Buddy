@@ -279,6 +279,7 @@ from open_webui.utils.subscriptions.service import (
     REQUESTED_RUN_TARGET_KEY,
     bind_chat_target,
     is_conflicting_preset_row,
+    mark_run_targets_started,
 )
 from open_webui.utils.tool_approval import (
     ResolveToolCallForm,
@@ -363,6 +364,8 @@ async def lifespan(app: FastAPI):
     await seed_registered_defaults()
     await initialize_runtime_config(app)
     await migrate_legacy_webhook_config()
+    # Chats created from now on start where the composer's bar or their chat folder says.
+    await mark_run_targets_started()
     await publish_event(app, EVENTS.SYSTEM_STARTUP_STARTED, source='system')
 
     license_task = None
