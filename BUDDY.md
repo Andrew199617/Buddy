@@ -177,7 +177,12 @@ project folder must be inside a folder shared in the app:
 - **Commands**: with **Allow running commands** on in the app, confirm the
   risk, start a session in the project folder, and run one program with its
   arguments, one per line. There is no shell. The output keeps the latest
-  256 KiB. Leaving or reloading the page stops the session's commands.
+  256 KiB.
+
+The tab keeps its session while you switch side panel tabs or close the
+panel. Leaving the chat, or reloading the page, ends it and stops its
+commands; Buddy asks first if a file has unsaved changes or a command is
+running.
 
 This replaces the separate Projects page; old links to it go home.
 

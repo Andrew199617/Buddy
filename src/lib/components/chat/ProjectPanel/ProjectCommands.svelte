@@ -3,6 +3,7 @@
 	// one program with its own arguments; there is no shell. The computer must
 	// allow commands in its Buddy app, and the person confirms the risk first.
 	import { getContext, onDestroy } from 'svelte';
+	import { beforeNavigate } from '$app/navigation';
 
 	import type {
 		CompanionGrant,
@@ -223,13 +224,31 @@
 			if (!isCurrent(generation, current.id)) return;
 			stopUnconfirmed = true;
 			error = $i18n.t(
-				'{{name}} did not confirm the stop, so the command may still be running. Stop again, or close the Project tab to end the session. {{reason}}',
+				'{{name}} did not confirm the stop, so the command may still be running. Stop again, or leave this chat to end the session. {{reason}}',
 				{ name: computerName, reason: onFailure(cause) }
 			);
 		} finally {
 			if (!disposed && generation === terminalGeneration) stopping = false;
 		}
 	}
+
+	// Leaving the chat ends the session, which stops a running command, so ask first.
+	beforeNavigate((navigation) => {
+		const commandRunning = terminal?.status === 'running' || runUnconfirmed;
+		if (!commandRunning) return;
+		if (navigation.type === 'leave') {
+			// Closing or reloading the page: the browser asks.
+			navigation.cancel();
+			return;
+		}
+		const question = $i18n.t(
+			'A command is still running on {{name}}. Leaving this chat stops it.',
+			{
+				name: computerName
+			}
+		);
+		if (!confirm(question)) navigation.cancel();
+	});
 
 	onDestroy(() => {
 		disposed = true;
