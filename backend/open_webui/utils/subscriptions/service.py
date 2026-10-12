@@ -1,11 +1,17 @@
 """Subscription models inside Open WebUI: settings, machines, model list, and chat.
 
-Settings live in the config table under ``subscriptions.claude`` and
-``subscriptions.codex``; Buddy Runner machines under ``subscriptions.machines``.
-Each provider runs its CLI on one machine: this server, or a runner such as
-the administrator's PC. Models appear only when a provider is turned on and
-its CLI is signed in on that machine. Only administrators can use them: they
-run on the administrator's personal plan and, with tool access, on that machine.
+Every user runs Claude and ChatGPT on their own plan, on their own machines:
+computers they connect to Buddy, and for the instance owner also this server.
+Each provider runs its CLI on one of the user's machines. A user's models
+appear only to that user, once the provider is turned on and its CLI is
+signed in on that machine.
+
+Machines are one list under ``subscriptions.machines``; each entry names its
+owner. Provider settings are stored per user under
+``subscriptions.users.<user id>.<provider>``. Subscriptions were admin-only
+before machines were per user. The instance owner keeps that setup's keys
+(``subscriptions.claude`` and ``subscriptions.codex``), and machine entries
+without an owner are theirs, so upgrading needs no data migration.
 """
 
 import asyncio
@@ -14,7 +20,7 @@ import logging
 import re
 import time
 import uuid
-from dataclasses import asdict, dataclass, fields, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit
@@ -24,7 +30,9 @@ from starlette.responses import StreamingResponse
 
 from open_webui.env import DATA_DIR, UVICORN_WORKERS
 from open_webui.models.config import Config
+from open_webui.models.groups import Groups
 from open_webui.models.models import Models
+from open_webui.models.users import Users
 from open_webui.utils.chat_id import CHANNEL_CHAT_ID_PREFIX
 from open_webui.utils.payload import apply_model_params_to_body_openai, apply_system_prompt_to_body
 from open_webui.utils.subscriptions.claude_code import ClaudeCodeProvider
@@ -53,38 +61,86 @@ STATUS_TTL_SECONDS = 60
 MODELS_TTL_SECONDS = 600
 FIRST_LOAD_WAIT_SECONDS = 20
 MACHINES_CONFIG_KEY = 'subscriptions.machines'
+SERVER_OWNER_CONFIG_KEY = 'subscriptions.owner'
+POLICY_CONFIG_KEY = 'subscriptions.policy'
+USER_SETTINGS_PREFIX = 'subscriptions.users'
 # Key-free metadata a runner reports in /health that is saved and shown.
 HOST_FIELDS = ('id', 'name', 'platform', 'version')
 CAPABILITY_FIELDS = ('directories', 'files', 'workspaces', 'terminals', 'pty', 'providerExecution')
 REVERIFY_MACHINE_MESSAGE = 'Verify the selected machine again in subscription settings before using its provider.'
+NO_MACHINE_MESSAGE = 'Choose one of your computers for this provider in Settings → Machines.'
+SERVER_MACHINE_MESSAGE = 'This server is not available to your account. Choose one of your computers.'
+NOT_ALLOWED_MESSAGE = 'Your account cannot use AI plans on computers here. Ask an administrator.'
 SINGLE_WORKER_MESSAGE = 'Subscription provider execution and host changes require one Buddy backend worker.'
 STARTUP_CLEANUP_MESSAGE = (
     'An earlier provider startup could not confirm that it stopped. '
     'Ask the host operator to stop or restart that host, then restart the Buddy backend before using this provider.'
 )
 
-PROVIDERS = {
-    'claude': ClaudeCodeProvider(STATE_DIR),
-    'codex': CodexProvider(),
-}
+PROVIDER_IDS = ('claude', 'codex')
 PROVIDER_LABELS = {'claude': 'Claude', 'codex': 'ChatGPT'}
 MODEL_ID_PREFIXES = {'claude': 'claude-code', 'codex': 'codex'}
 MODEL_TAGS = {'claude': 'Claude plan', 'codex': 'ChatGPT plan'}
+
+# Who may connect their own computers and use AI plans on them.
+POLICY_ALL = 'all'
+POLICY_GROUPS = 'groups'
+POLICY_ADMINS = 'admins'
+USER_MACHINE_POLICIES = (POLICY_ALL, POLICY_GROUPS, POLICY_ADMINS)
+
+
+@dataclass(frozen=True)
+class ProviderRef:
+    """One user's provider: whose settings, sign-in, and machines a request uses."""
+
+    owner_id: str
+    provider_id: str
+
+
+@dataclass
+class SubscriptionPolicy:
+    user_machines: str = POLICY_ALL
+    # The groups whose members may connect computers when user_machines is 'groups'.
+    machine_group_ids: list[str] = field(default_factory=list)
+    # Signing in with a Claude or ChatGPT plan. A public deployment turns this
+    # off: Anthropic does not allow third-party products to offer claude.ai
+    # login without its approval. API keys are the alternative.
+    plan_sign_in: bool = True
+    # Users' own Anthropic and OpenAI API keys, billed per use.
+    api_keys: bool = True
+    # Whether the instance owner may also run providers on this server.
+    server_machine: bool = True
+
 
 LOCAL_MACHINE = LocalMachine(STATE_DIR)
 # RemoteMachine objects keep an HTTP session, so they are reused until their
 # address or key changes.
 _remote_machines: dict[str, RemoteMachine] = {}
-_provider_locks: dict[str, asyncio.Lock] = {}
+_providers: dict[ProviderRef, Any] = {}
+_provider_locks: dict[ProviderRef, asyncio.Lock] = {}
 _machine_lock = asyncio.Lock()
-_provider_generations: dict[str, int] = {}
-_active_provider_tasks: dict[str, set[asyncio.Task]] = {}
-_tracked_machines: dict[str, 'TrackingMachine'] = {}
+_provider_generations: dict[ProviderRef, int] = {}
+_active_provider_tasks: dict[ProviderRef, set[asyncio.Task]] = {}
+_tracked_machines: dict[ProviderRef, 'TrackingMachine'] = {}
+_server_owner_id: str | None = None
 
 
-def _provider_lock(provider_id: str) -> asyncio.Lock:
-    get_provider(provider_id)
-    return _provider_locks.setdefault(provider_id, asyncio.Lock())
+def check_provider_id(provider_id: str) -> None:
+    if provider_id not in PROVIDER_IDS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Unknown subscription provider.')
+
+
+def _ref(owner_id: str, provider_id: str) -> ProviderRef:
+    check_provider_id(provider_id)
+    return ProviderRef(owner_id, provider_id)
+
+
+def _owner_refs(owner_id: str) -> list[ProviderRef]:
+    return [ProviderRef(owner_id, provider_id) for provider_id in PROVIDER_IDS]
+
+
+def _provider_lock(ref: ProviderRef) -> asyncio.Lock:
+    return _provider_locks.setdefault(ref, asyncio.Lock())
 
 
 def _require_single_worker() -> None:
@@ -93,13 +149,16 @@ def _require_single_worker() -> None:
 
 
 class _ProviderLocks:
-    """Machine edits acquire provider locks in one consistent order."""
+    """Machine edits acquire one owner's provider locks in one consistent order."""
+
+    def __init__(self, owner_id: str):
+        self.owner_id = owner_id
 
     async def __aenter__(self):
         self.acquired = []
         try:
-            for provider_id in sorted(PROVIDERS):
-                lock = _provider_lock(provider_id)
+            for ref in _owner_refs(self.owner_id):
+                lock = _provider_lock(ref)
                 await lock.acquire()
                 self.acquired.append(lock)
         except BaseException:
@@ -112,31 +171,134 @@ class _ProviderLocks:
             lock.release()
 
 
-async def _machine_revision(machine_id: str) -> str | None:
+# Instance owner and policy
+
+
+async def server_owner_id() -> str | None:
+    """The user who owns this Buddy instance's original subscription setup.
+
+    That is the first account, which Open WebUI makes an administrator, or
+    else the first administrator found. It is remembered once found, so it
+    does not change when other administrators are added later.
+    """
+    global _server_owner_id
+    if _server_owner_id:
+        return _server_owner_id
+    stored = await Config.get(SERVER_OWNER_CONFIG_KEY)
+    if isinstance(stored, str) and stored:
+        _server_owner_id = stored
+        return stored
+    owner = await Users.get_first_user()
+    if owner is None or owner.role != 'admin':
+        owner = await Users.get_super_admin_user()
+    if owner is None:
+        return None
+    await Config.upsert({SERVER_OWNER_CONFIG_KEY: owner.id})
+    _server_owner_id = owner.id
+    return owner.id
+
+
+async def get_policy() -> SubscriptionPolicy:
+    stored = await Config.get(POLICY_CONFIG_KEY, {}) or {}
+    policy = SubscriptionPolicy()
+    if stored.get('user_machines') in USER_MACHINE_POLICIES:
+        policy.user_machines = stored['user_machines']
+    group_ids = stored.get('machine_group_ids')
+    if isinstance(group_ids, list):
+        policy.machine_group_ids = [group_id for group_id in group_ids if isinstance(group_id, str)]
+    if isinstance(stored.get('plan_sign_in'), bool):
+        policy.plan_sign_in = stored['plan_sign_in']
+    if isinstance(stored.get('api_keys'), bool):
+        policy.api_keys = stored['api_keys']
+    if isinstance(stored.get('server_machine'), bool):
+        policy.server_machine = stored['server_machine']
+    return policy
+
+
+async def save_policy(updates: dict) -> SubscriptionPolicy:
+    """Save the administrator's policy; work it no longer allows is stopped."""
+    _require_single_worker()
+    policy = await get_policy()
+    if updates.get('user_machines') is not None:
+        if updates['user_machines'] not in USER_MACHINE_POLICIES:
+            raise SubscriptionError('Choose everyone, selected groups, or administrators only.')
+        policy.user_machines = updates['user_machines']
+    if updates.get('machine_group_ids') is not None:
+        group_ids = updates['machine_group_ids']
+        if not isinstance(group_ids, list) or not all(isinstance(group_id, str) for group_id in group_ids):
+            raise SubscriptionError('Choose groups by their IDs.')
+        policy.machine_group_ids = list(dict.fromkeys(group_ids))
+    if updates.get('plan_sign_in') is not None:
+        policy.plan_sign_in = bool(updates['plan_sign_in'])
+    if updates.get('api_keys') is not None:
+        policy.api_keys = bool(updates['api_keys'])
+    if updates.get('server_machine') is not None:
+        policy.server_machine = bool(updates['server_machine'])
+    await Config.upsert({POLICY_CONFIG_KEY: asdict(policy)})
+    for ref in list(_provider_generations) + list(_tracked_machines) + list(_providers):
+        invalidate(ref)
+    return policy
+
+
+async def may_use_machines(user) -> bool:
+    """Whether this user may connect computers and use AI plans on them, under the policy."""
+    if user is None or getattr(user, 'role', None) not in ('user', 'admin'):
+        return False
+    if user.id == await server_owner_id():
+        return True
+    policy = await get_policy()
+    if policy.user_machines == POLICY_ALL:
+        return True
+    if user.role == 'admin':
+        return True
+    if policy.user_machines == POLICY_ADMINS:
+        return False
+    group_ids = {group.id for group in await Groups.get_groups_by_member_id(user.id)}
+    return bool(group_ids & set(policy.machine_group_ids))
+
+
+async def _may_use_server_machine(owner_id: str) -> bool:
+    if owner_id != await server_owner_id():
+        return False
+    return (await get_policy()).server_machine
+
+
+async def _machine_revision(owner_id: str, machine_id: str) -> str | None:
     if machine_id == LOCAL_MACHINE_ID:
         return 'local'
-    config = next((machine for machine in await _machine_configs() if machine['id'] == machine_id), None)
+    config = next((machine for machine in await _owned_machine_configs(owner_id) if machine['id'] == machine_id), None)
     revision = (config or {}).get('revision')
     if isinstance(revision, str) and revision:
         return revision
     return None
 
 
-async def _require_verified_machine(settings: ProviderSettings) -> None:
-    if settings.machine_id != LOCAL_MACHINE_ID and await _machine_revision(settings.machine_id) is None:
+async def _require_verified_machine(ref: ProviderRef, settings: ProviderSettings) -> None:
+    if not settings.machine_id:
+        raise SubscriptionError(NO_MACHINE_MESSAGE)
+    if settings.machine_id == LOCAL_MACHINE_ID:
+        if not await _may_use_server_machine(ref.owner_id):
+            raise SubscriptionError(SERVER_MACHINE_MESSAGE)
+        return
+    if await _machine_revision(ref.owner_id, settings.machine_id) is None:
         raise SubscriptionError(REVERIFY_MACHINE_MESSAGE)
 
 
+def _selects_computer(settings: ProviderSettings) -> bool:
+    """Whether the settings name one of the user's computers, rather than this server or nothing yet."""
+    return settings.machine_id not in ('', LOCAL_MACHINE_ID)
+
+
 async def _check_expected_machine(
-    settings: ProviderSettings, expected_machine_id: str | None,
+    owner_id: str, settings: ProviderSettings, expected_machine_id: str | None,
     expected_machine_revision: str | None = None, mutation=False
 ) -> None:
-    if expected_machine_id is None and mutation and settings.machine_id != LOCAL_MACHINE_ID:
+    if expected_machine_id is None and mutation and _selects_computer(settings):
         raise HTTPException(status_code=409, detail='Confirm the selected machine by refreshing before trying again.')
     if expected_machine_id is not None and expected_machine_id != settings.machine_id:
         raise HTTPException(status_code=409, detail='The selected machine changed. Refresh before trying again.')
-    revision = await _machine_revision(settings.machine_id)
-    if mutation and settings.machine_id != LOCAL_MACHINE_ID and (not revision or not expected_machine_revision):
+    revision = await _machine_revision(owner_id, settings.machine_id)
+    if mutation and _selects_computer(settings) and (not revision or not expected_machine_revision):
         raise HTTPException(status_code=409, detail='Verify the selected machine again, then refresh before trying again.')
     if expected_machine_revision is not None and expected_machine_revision != revision:
         raise HTTPException(status_code=409, detail='The selected machine changed. Refresh before trying again.')
@@ -279,6 +441,15 @@ class TrackingMachine:
             raise
         self.processes.discard(process)
 
+    async def retry_cleanup(self):
+        """Stop again the processes whose cleanup could not be confirmed; clear the error once all are."""
+        if self.cleanup_error is None:
+            return
+        processes = list(self.processes)
+        results = await asyncio.gather(*(self._dispose_process(process) for process in processes), return_exceptions=True)
+        if not any(isinstance(result, BaseException) for result in results):
+            self.cleanup_error = None
+
     async def run(self, args, cwd, timeout, extra_env=None):
         process = await self.start_process(args, cwd, extra_env=extra_env)
 
@@ -323,24 +494,24 @@ class TrackingMachine:
         self.cleanup_error = None
 
 
-def _require_provider_cleanup(provider_id: str) -> None:
-    tracked = _tracked_machines.get(provider_id)
+def _require_provider_cleanup(ref: ProviderRef) -> None:
+    tracked = _tracked_machines.get(ref)
     if tracked is not None:
         tracked._check_cleanup()
 
 
-def _tracking_machine(provider_id: str, machine) -> TrackingMachine:
-    _require_provider_cleanup(provider_id)
-    tracked = _tracked_machines.get(provider_id)
+def _tracking_machine(ref: ProviderRef, machine) -> TrackingMachine:
+    _require_provider_cleanup(ref)
+    tracked = _tracked_machines.get(ref)
     if tracked is None or tracked.machine is not machine or not tracked.valid:
         tracked = TrackingMachine(machine)
-        _tracked_machines[provider_id] = tracked
+        _tracked_machines[ref] = tracked
     return tracked
 
 
-async def _quiesce_provider(provider_id: str) -> None:
+async def _quiesce_provider(ref: ProviderRef) -> None:
     """Called with its provider lock held, after committing disabled settings."""
-    operation = asyncio.create_task(_quiesce_provider_safely(provider_id))
+    operation = asyncio.create_task(_quiesce_provider_safely(ref))
     try:
         await asyncio.shield(operation)
     except asyncio.CancelledError:
@@ -348,26 +519,26 @@ async def _quiesce_provider(provider_id: str) -> None:
         raise
 
 
-async def _quiesce_provider_safely(provider_id: str) -> None:
+async def _quiesce_provider_safely(ref: ProviderRef) -> None:
     try:
-        await _quiesce_provider_work(provider_id)
+        await _quiesce_provider_work(ref)
     except Exception:
         # Failed cleanup must never leave a provider enabled for new work.
         # Access, folder and CLI path stay, so turning it on retries cleanup.
-        settings = await get_settings(provider_id)
+        settings = await _load_settings(ref)
         settings.enable = False
-        await Config.upsert({_config_key(provider_id): asdict(settings)})
+        await Config.upsert({await _settings_key(ref): asdict(settings)})
         raise
 
 
-async def _quiesce_provider_work(provider_id: str) -> None:
-    _provider_generations[provider_id] = _provider_generations.get(provider_id, 0) + 1
-    invalidate(provider_id)
+async def _quiesce_provider_work(ref: ProviderRef) -> None:
+    _provider_generations[ref] = _provider_generations.get(ref, 0) + 1
+    invalidate(ref)
     current = asyncio.current_task()
-    tasks = {task for task in _active_provider_tasks.get(provider_id, set()) if task is not current and not task.done()}
+    tasks = {task for task in _active_provider_tasks.get(ref, set()) if task is not current and not task.done()}
     for task in tasks:
         task.cancel()
-    tracked = _tracked_machines.get(provider_id)
+    tracked = _tracked_machines.get(ref)
     cleanup_error = None
     if tracked:
         try:
@@ -378,28 +549,51 @@ async def _quiesce_provider_work(provider_id: str) -> None:
         _, pending = await asyncio.wait(tasks, timeout=10)
         if pending:
             cleanup_error = SubscriptionError('An old provider operation could not confirm that it stopped.')
-    provider = get_provider(provider_id)
+    provider = await get_provider(ref)
     await provider.cancel_login()
     if isinstance(provider, CodexProvider):
         provider.stop()
     if cleanup_error:
         raise cleanup_error
-    if tracked is not None and _tracked_machines.get(provider_id) is tracked:
-        _tracked_machines.pop(provider_id)
+    if tracked is not None and _tracked_machines.get(ref) is tracked:
+        _tracked_machines.pop(ref)
 
 
-async def _quiesce_providers(provider_ids: list[str]) -> None:
-    results = await asyncio.gather(*(_quiesce_provider(provider_id) for provider_id in provider_ids), return_exceptions=True)
+async def _quiesce_providers(refs: list[ProviderRef]) -> None:
+    results = await asyncio.gather(*(_quiesce_provider(ref) for ref in refs), return_exceptions=True)
     for result in results:
         if isinstance(result, BaseException):
             raise result
 
 
-def get_provider(provider_id: str):
-    provider = PROVIDERS.get(provider_id)
-    if not provider:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Unknown subscription provider.')
-    return provider
+async def _owner_state_dir(owner_id: str) -> Path:
+    """Where a user's provider keeps its own files, such as Claude's session map."""
+    if owner_id == await server_owner_id():
+        return STATE_DIR
+    return STATE_DIR / 'users' / owner_id
+
+
+async def get_provider(ref: ProviderRef):
+    provider = _providers.get(ref)
+    if provider is not None:
+        return provider
+    check_provider_id(ref.provider_id)
+    if ref.provider_id == 'claude':
+        provider = ClaudeCodeProvider(await _owner_state_dir(ref.owner_id))
+    else:
+        provider = CodexProvider()
+    # Another request may have created it while the state folder was looked up.
+    return _providers.setdefault(ref, provider)
+
+
+async def retry_machine_cleanups(machine_id: str) -> None:
+    """A machine came back: retry stopping processes whose cleanup could not be confirmed."""
+    for tracked in list(_tracked_machines.values()):
+        if tracked.id == machine_id:
+            try:
+                await tracked.retry_cleanup()
+            except Exception as error:
+                log.info('Cleanup on %s is still unconfirmed: %s', machine_id, error)
 
 
 # Machines
@@ -410,11 +604,27 @@ async def _machine_configs() -> list[dict]:
     return [machine for machine in stored if isinstance(machine, dict) and machine.get('id')]
 
 
-async def get_machine(machine_id: str):
-    if not machine_id or machine_id == LOCAL_MACHINE_ID:
-        return LOCAL_MACHINE
+def _machine_owner(config: dict, server_owner: str | None) -> str | None:
+    """A machine's owner; entries saved before machines were per user belong to the instance owner."""
+    return config.get('user_id') or server_owner
 
-    config = next((machine for machine in await _machine_configs() if machine['id'] == machine_id), None)
+
+async def _owned_machine_configs(owner_id: str) -> list[dict]:
+    server_owner = await server_owner_id()
+    return [machine for machine in await _machine_configs() if _machine_owner(machine, server_owner) == owner_id]
+
+
+async def get_machine(owner_id: str, machine_id: str):
+    if not machine_id:
+        if await _may_use_server_machine(owner_id):
+            return LOCAL_MACHINE
+        raise SubscriptionError(NO_MACHINE_MESSAGE)
+    if machine_id == LOCAL_MACHINE_ID:
+        if await _may_use_server_machine(owner_id):
+            return LOCAL_MACHINE
+        raise SubscriptionError(SERVER_MACHINE_MESSAGE)
+
+    config = next((machine for machine in await _owned_machine_configs(owner_id) if machine['id'] == machine_id), None)
     if not config:
         raise SubscriptionError('The selected machine no longer exists. Choose another in the subscription settings.')
 
@@ -434,11 +644,24 @@ async def get_machine(machine_id: str):
     return machine
 
 
-async def describe_machines() -> list[dict]:
-    """Machines for the settings page; runner keys never leave the server."""
-    machines = [{'id': LOCAL_MACHINE_ID, 'name': LOCAL_MACHINE.name, 'url': None}]
-    for config in await _machine_configs():
+async def describe_machines(owner_id: str) -> list[dict]:
+    """A user's machines for the settings page; runner keys never leave the server."""
+    machines = []
+    if await _may_use_server_machine(owner_id):
+        machines.append({'id': LOCAL_MACHINE_ID, 'name': LOCAL_MACHINE.name, 'url': None})
+    for config in await _owned_machine_configs(owner_id):
         machines.append(_public_machine(config))
+    return machines
+
+
+async def describe_all_machines() -> list[dict]:
+    """Every user's machines, for administrators: owners and status, never keys or settings."""
+    server_owner = await server_owner_id()
+    machines = []
+    for config in await _machine_configs():
+        machine = _public_machine(config)
+        machine['owner_id'] = _machine_owner(config, server_owner)
+        machines.append(machine)
     return machines
 
 
@@ -556,6 +779,15 @@ def _machine_id_from_name(name: str, taken: set[str]) -> str:
     return machine_id
 
 
+async def _taken_machine_ids(configs: list[dict]) -> set[str]:
+    """IDs a new machine must not reuse: every machine, selection, and cleanup owner."""
+    taken = {config['id'] for config in configs}
+    for ref in set(_provider_generations) | set(_tracked_machines) | set(_providers):
+        taken.add((await _load_settings(ref)).machine_id)
+    taken.update(tracked.id for tracked in _tracked_machines.values())
+    return taken
+
+
 async def verify_machine(url: str, key: str, browser_url: str | None = None) -> dict:
     """Check that the runner answers with the key. A browser address is validated as on save."""
     validate_browser_url(browser_url)
@@ -568,29 +800,33 @@ async def verify_machine(url: str, key: str, browser_url: str | None = None) -> 
 
 
 async def save_machine(
-    machine_id: str | None, name: str, url: str, key: str | None, browser_url: str | None = None,
+    owner_id: str, machine_id: str | None, name: str, url: str, key: str | None, browser_url: str | None = None,
     *, browser_url_supplied: bool | None = None
 ) -> dict:
     """Preserve an omitted browser address; explicit null uses its supplied flag."""
     _require_single_worker()
-    async with _machine_lock, _ProviderLocks():
+    async with _machine_lock, _ProviderLocks(owner_id):
         return await _save_machine(
-            machine_id, name, url, key, browser_url, browser_url_supplied=browser_url_supplied
+            owner_id, machine_id, name, url, key, browser_url, browser_url_supplied=browser_url_supplied
         )
 
 
 async def _save_machine(
-    machine_id: str | None, name: str, url: str, key: str | None, browser_url: str | None = None,
+    owner_id: str, machine_id: str | None, name: str, url: str, key: str | None, browser_url: str | None = None,
     *, browser_url_supplied: bool | None = None
 ) -> dict:
-    """Add or update a runner after checking that it answers with the key."""
+    """Add or update one of the owner's runners after checking that it answers with the key."""
     name = name.strip()
     url = normalize_runner_url(url)
     if not name or not url:
         raise SubscriptionError('Enter a name and the runner address.')
 
     configs = await _machine_configs()
-    existing = next((config for config in configs if config['id'] == machine_id), None) if machine_id else None
+    owned = await _owned_machine_configs(owner_id)
+    existing = None
+    if machine_id:
+        existing_id = next((config['id'] for config in owned if config['id'] == machine_id), None)
+        existing = next((config for config in configs if config['id'] == existing_id), None)
     # Replacing a legacy, unsafe address must reset provider authority.
     previous_endpoint = _runner_address((existing or {}).get('url'))
     previous_key = (existing or {}).get('key')
@@ -614,14 +850,15 @@ async def _save_machine(
         existing.update({'name': name, 'url': url, 'key': key})
         saved = existing
     else:
-        taken = {config['id'] for config in configs}
-        for provider_id in PROVIDERS:
-            taken.add((await get_settings(provider_id)).machine_id)
-        taken.update(tracked.id for tracked in _tracked_machines.values())
         # Deleted selections and retained cleanup owners must never reconnect
         # automatically when a different host registers under the same name.
+        taken = await _taken_machine_ids(configs)
+        for ref in _owner_refs(owner_id):
+            taken.add((await _load_settings(ref)).machine_id)
         saved = {'id': _machine_id_from_name(name, taken), 'name': name, 'url': url}
         saved['key'] = key
+        if owner_id != await server_owner_id():
+            saved['user_id'] = owner_id
         configs.append(saved)
     if browser_url_supplied:
         saved['browser_url'] = browser_url
@@ -645,12 +882,12 @@ async def _save_machine(
         saved['revision'] = uuid.uuid4().hex
     affected = []
     if host_changed:
-        for provider_id in PROVIDERS:
-            settings = await get_settings(provider_id)
+        for ref in _owner_refs(owner_id):
+            settings = await _load_settings(ref)
             if settings.machine_id == saved['id']:
                 _forget_machine_authority(settings)
-                updates[_config_key(provider_id)] = asdict(settings)
-                affected.append(provider_id)
+                updates[await _settings_key(ref)] = asdict(settings)
+                affected.append(ref)
     await Config.upsert(updates)
     try:
         await _quiesce_providers(affected)
@@ -659,30 +896,34 @@ async def _save_machine(
             cached = _remote_machines.pop(saved['id'], None)
             if cached:
                 await cached.close()
-    for provider_id in PROVIDERS:
-        invalidate(provider_id)
+    for ref in _owner_refs(owner_id):
+        invalidate(ref)
     return _public_machine(saved)
 
 
-async def delete_machine(machine_id: str) -> None:
+async def delete_machine(owner_id: str, machine_id: str) -> None:
     _require_single_worker()
-    async with _machine_lock, _ProviderLocks():
-        await _delete_machine(machine_id)
+    async with _machine_lock, _ProviderLocks(owner_id):
+        await _delete_machine(owner_id, machine_id)
 
 
-async def _delete_machine(machine_id: str) -> None:
+async def _delete_machine(owner_id: str, machine_id: str) -> None:
     if machine_id == LOCAL_MACHINE_ID:
         raise SubscriptionError('This server cannot be removed.')
-    configs = [config for config in await _machine_configs() if config['id'] != machine_id]
+    server_owner = await server_owner_id()
+    configs = [
+        config for config in await _machine_configs()
+        if not (config['id'] == machine_id and _machine_owner(config, server_owner) == owner_id)
+    ]
     updates = {MACHINES_CONFIG_KEY: configs}
     affected = []
-    for provider_id in PROVIDERS:
-        settings = await get_settings(provider_id)
+    for ref in _owner_refs(owner_id):
+        settings = await _load_settings(ref)
         if settings.machine_id == machine_id:
             _forget_machine_authority(settings)
             # Keep the missing ID so execution cannot silently move to another host.
-            updates[_config_key(provider_id)] = asdict(settings)
-            affected.append(provider_id)
+            updates[await _settings_key(ref)] = asdict(settings)
+            affected.append(ref)
     await Config.upsert(updates)
     try:
         await _quiesce_providers(affected)
@@ -695,22 +936,32 @@ async def _delete_machine(machine_id: str) -> None:
 # Provider settings
 
 
-def _config_key(provider_id: str) -> str:
-    return f'subscriptions.{provider_id}'
+async def _settings_key(ref: ProviderRef) -> str:
+    if ref.owner_id == await server_owner_id():
+        # The instance owner's settings predate per-user machines and keep their keys.
+        return f'subscriptions.{ref.provider_id}'
+    return f'{USER_SETTINGS_PREFIX}.{ref.owner_id}.{ref.provider_id}'
 
 
-async def get_settings(provider_id: str) -> ProviderSettings:
-    stored = await Config.get(_config_key(provider_id), {}) or {}
+async def _load_settings(ref: ProviderRef) -> ProviderSettings:
+    stored = await Config.get(await _settings_key(ref), {}) or {}
     access = stored.get('access')
     if access not in ACCESS_LEVELS:
         access = ACCESS_CHAT
+    default_machine_id = ''
+    if ref.owner_id == await server_owner_id():
+        default_machine_id = LOCAL_MACHINE_ID
     return ProviderSettings(
         enable=bool(stored.get('enable', False)),
         access=access,
         workspace=str(stored.get('workspace') or '').strip(),
         cli_path=str(stored.get('cli_path') or '').strip(),
-        machine_id=str(stored.get('machine_id') or LOCAL_MACHINE_ID),
+        machine_id=str(stored.get('machine_id') or default_machine_id),
     )
+
+
+async def get_settings(owner_id: str, provider_id: str) -> ProviderSettings:
+    return await _load_settings(_ref(owner_id, provider_id))
 
 
 def _forget_machine_authority(settings: ProviderSettings) -> None:
@@ -722,18 +973,19 @@ def _forget_machine_authority(settings: ProviderSettings) -> None:
 
 
 async def save_settings(
-    provider_id: str, updates: dict, expected_machine_id: str | None = None,
+    owner_id: str, provider_id: str, updates: dict, expected_machine_id: str | None = None,
     expected_machine_revision: str | None = None
 ) -> ProviderSettings:
+    ref = _ref(owner_id, provider_id)
     _require_single_worker()
-    async with _provider_lock(provider_id):
-        return await _save_settings(provider_id, updates, expected_machine_id, expected_machine_revision)
+    async with _provider_lock(ref):
+        return await _save_settings(ref, updates, expected_machine_id, expected_machine_revision)
 
 
 async def _save_settings(
-    provider_id: str, updates: dict, expected_machine_id: str | None, expected_machine_revision: str | None
+    ref: ProviderRef, updates: dict, expected_machine_id: str | None, expected_machine_revision: str | None
 ) -> ProviderSettings:
-    previous = await get_settings(provider_id)
+    previous = await _load_settings(ref)
     if expected_machine_id is None:
         expected_machine_id = updates.get('expected_machine_id')
     if expected_machine_revision is None:
@@ -741,7 +993,7 @@ async def _save_settings(
     requested_machine_id = updates.get('machine_id')
     recover_missing_machine = False
     if (
-        previous.machine_id != LOCAL_MACHINE_ID
+        _selects_computer(previous)
         and expected_machine_id == previous.machine_id
         and isinstance(requested_machine_id, str)
         and requested_machine_id
@@ -750,17 +1002,19 @@ async def _save_settings(
         # A deleted registry entry has no revision left to confirm. Only an
         # explicit change away from its retained ID can recover the selection.
         recover_missing_machine = not any(
-            machine['id'] == previous.machine_id for machine in await _machine_configs()
+            machine['id'] == previous.machine_id for machine in await _owned_machine_configs(ref.owner_id)
         )
     if recover_missing_machine:
         # Nothing else can retry cleanup of a removed machine's old process.
         # The move saves the provider turned off and quiesces it below, which
         # retries that cleanup. An unknown startup process cannot be retried.
-        tracked = _tracked_machines.get(provider_id)
+        tracked = _tracked_machines.get(ref)
         if tracked is not None:
             tracked._check_startup_cleanup()
     else:
-        await _check_expected_machine(previous, expected_machine_id, expected_machine_revision, mutation=True)
+        await _check_expected_machine(
+            ref.owner_id, previous, expected_machine_id, expected_machine_revision, mutation=True
+        )
     current = asdict(previous)
     for setting in fields(ProviderSettings):
         if updates.get(setting.name) is not None:
@@ -780,16 +1034,16 @@ async def _save_settings(
     # waiting for its runner key after a config import.
     only_turns_off = settings == replace(previous, enable=False)
     if not only_turns_off:
-        machine = await get_machine(settings.machine_id)
+        machine = await get_machine(ref.owner_id, settings.machine_id)
         if settings.workspace and not await machine.path_exists(settings.workspace, 'dir'):
             raise SubscriptionError(f'The working folder does not exist on {machine.name}: {settings.workspace}')
         if settings.cli_path and not await machine.path_exists(settings.cli_path, 'file'):
             raise SubscriptionError(f'The CLI path does not exist on {machine.name}: {settings.cli_path}')
 
-    await Config.upsert({_config_key(provider_id): asdict(settings)})
+    await Config.upsert({await _settings_key(ref): asdict(settings)})
     if settings != previous:
-        await _quiesce_provider(provider_id)
-    invalidate(provider_id)
+        await _quiesce_provider(ref)
+    invalidate(ref)
     return settings
 
 
@@ -803,94 +1057,103 @@ async def working_directory(settings: ProviderSettings, access: str, machine) ->
 
 
 async def start_login(
-    provider_id: str, method: str, expected_machine_id: str | None = None,
+    owner_id: str, provider_id: str, method: str, expected_machine_id: str | None = None,
     expected_machine_revision: str | None = None
 ) -> dict:
+    ref = _ref(owner_id, provider_id)
     _require_single_worker()
-    async with _provider_lock(provider_id):
-        settings = await get_settings(provider_id)
-        await _check_expected_machine(settings, expected_machine_id, expected_machine_revision, mutation=True)
-        await _quiesce_provider(provider_id)
-        machine = _tracking_machine(provider_id, await get_machine(settings.machine_id))
-        return await get_provider(provider_id).start_login(settings, machine, method)
+    async with _provider_lock(ref):
+        settings = await _load_settings(ref)
+        await _check_expected_machine(owner_id, settings, expected_machine_id, expected_machine_revision, mutation=True)
+        await _quiesce_provider(ref)
+        machine = _tracking_machine(ref, await get_machine(owner_id, settings.machine_id))
+        return await (await get_provider(ref)).start_login(settings, machine, method)
 
 
 async def login_state(
-    provider_id: str, expected_machine_id: str | None = None, expected_machine_revision: str | None = None
+    owner_id: str, provider_id: str, expected_machine_id: str | None = None,
+    expected_machine_revision: str | None = None
 ) -> dict:
-    async with _provider_lock(provider_id):
-        settings = await get_settings(provider_id)
-        await _check_expected_machine(settings, expected_machine_id, expected_machine_revision)
+    ref = _ref(owner_id, provider_id)
+    async with _provider_lock(ref):
+        settings = await _load_settings(ref)
+        await _check_expected_machine(owner_id, settings, expected_machine_id, expected_machine_revision)
         if UVICORN_WORKERS != 1:
             return {'state': 'idle', 'message': SINGLE_WORKER_MESSAGE}
         try:
-            await _require_verified_machine(settings)
-            _require_provider_cleanup(provider_id)
+            await _require_verified_machine(ref, settings)
+            _require_provider_cleanup(ref)
         except SubscriptionError as error:
             return {'state': 'idle', 'message': str(error)}
-        login = get_provider(provider_id).login_state()
+        login = (await get_provider(ref)).login_state()
         if login.get('state') == 'success':
-            invalidate(provider_id)
+            invalidate(ref)
         return login
 
 
 async def submit_login_code(
-    provider_id: str, code: str, expected_machine_id: str | None = None, expected_machine_revision: str | None = None
+    owner_id: str, provider_id: str, code: str, expected_machine_id: str | None = None,
+    expected_machine_revision: str | None = None
 ) -> dict:
+    ref = _ref(owner_id, provider_id)
     _require_single_worker()
-    async with _provider_lock(provider_id):
-        settings = await get_settings(provider_id)
-        await _check_expected_machine(settings, expected_machine_id, expected_machine_revision, mutation=True)
-        _require_provider_cleanup(provider_id)
-        login = await get_provider(provider_id).submit_login_code(code)
+    async with _provider_lock(ref):
+        settings = await _load_settings(ref)
+        await _check_expected_machine(owner_id, settings, expected_machine_id, expected_machine_revision, mutation=True)
+        _require_provider_cleanup(ref)
+        login = await (await get_provider(ref)).submit_login_code(code)
         if login.get('state') == 'success':
-            invalidate(provider_id)
+            invalidate(ref)
         return login
 
 
 async def cancel_login(
-    provider_id: str, expected_machine_id: str | None = None, expected_machine_revision: str | None = None
+    owner_id: str, provider_id: str, expected_machine_id: str | None = None,
+    expected_machine_revision: str | None = None
 ) -> dict:
+    ref = _ref(owner_id, provider_id)
     _require_single_worker()
-    async with _provider_lock(provider_id):
-        settings = await get_settings(provider_id)
-        await _check_expected_machine(settings, expected_machine_id, expected_machine_revision, mutation=True)
-        await _quiesce_provider(provider_id)
+    async with _provider_lock(ref):
+        settings = await _load_settings(ref)
+        await _check_expected_machine(owner_id, settings, expected_machine_id, expected_machine_revision, mutation=True)
+        await _quiesce_provider(ref)
         return {'state': 'idle'}
 
 
 async def logout(
-    provider_id: str, expected_machine_id: str | None = None, expected_machine_revision: str | None = None
+    owner_id: str, provider_id: str, expected_machine_id: str | None = None,
+    expected_machine_revision: str | None = None
 ) -> None:
+    ref = _ref(owner_id, provider_id)
     _require_single_worker()
-    async with _provider_lock(provider_id):
-        settings = await get_settings(provider_id)
-        await _check_expected_machine(settings, expected_machine_id, expected_machine_revision, mutation=True)
-        await _quiesce_provider(provider_id)
-        machine = _tracking_machine(provider_id, await get_machine(settings.machine_id))
+    async with _provider_lock(ref):
+        settings = await _load_settings(ref)
+        await _check_expected_machine(owner_id, settings, expected_machine_id, expected_machine_revision, mutation=True)
+        await _quiesce_provider(ref)
+        machine = _tracking_machine(ref, await get_machine(owner_id, settings.machine_id))
         try:
-            await get_provider(provider_id).logout(settings, machine)
+            await (await get_provider(ref)).logout(settings, machine)
         finally:
-            invalidate(provider_id)
+            invalidate(ref)
 
 
-async def _tracked_turn(provider_id: str, provider, turn: TurnRequest, generation: int | None = None):
+async def _tracked_turn(ref: ProviderRef, provider, turn: TurnRequest, generation: int | None = None):
     if generation is None:
-        generation = _provider_generations.get(provider_id, 0)
+        generation = _provider_generations.get(ref, 0)
     task = asyncio.current_task()
-    async with _provider_lock(provider_id):
+    async with _provider_lock(ref):
         error = None
-        if generation != _provider_generations.get(provider_id, 0):
+        if generation != _provider_generations.get(ref, 0):
             error = 'The provider machine changed; refresh before starting another turn.'
         else:
             try:
                 _require_single_worker()
-                await _require_verified_machine(turn.settings)
-                _require_provider_cleanup(provider_id)
+                await _require_verified_machine(ref, turn.settings)
+                _require_provider_cleanup(ref)
             except SubscriptionError as failure:
                 error = str(failure)
             if error is None:
-                _active_provider_tasks.setdefault(provider_id, set()).add(task)
+                _active_provider_tasks.setdefault(ref, set()).add(task)
     if error is not None:
         async for event in failure_events(error):
             yield event
@@ -899,7 +1162,27 @@ async def _tracked_turn(provider_id: str, provider, turn: TurnRequest, generatio
         async for event in provider.run_turn(turn):
             yield event
     finally:
-        _active_provider_tasks.get(provider_id, set()).discard(task)
+        _active_provider_tasks.get(ref, set()).discard(task)
+
+
+async def forget_user(user_id: str) -> None:
+    """A deleted user's providers stop, and their machines and settings are removed."""
+    async with _machine_lock, _ProviderLocks(user_id):
+        refs = _owner_refs(user_id)
+        try:
+            await _quiesce_providers(refs)
+        except SubscriptionError as error:
+            log.warning('Cleanup for deleted user %s is unconfirmed: %s', user_id, error)
+        server_owner = await server_owner_id()
+        configs = [config for config in await _machine_configs() if _machine_owner(config, server_owner) != user_id]
+        updates = {MACHINES_CONFIG_KEY: configs}
+        if user_id != server_owner:
+            for ref in refs:
+                updates[await _settings_key(ref)] = {}
+        await Config.upsert(updates)
+        for ref in refs:
+            _providers.pop(ref, None)
+            invalidate(ref)
 
 
 # Cached status and model lists
@@ -912,67 +1195,67 @@ class _CacheEntry:
 
 
 class CachedLoader:
-    """Caches one value per provider and serves the old value while refreshing.
+    """Caches one value per user's provider and serves the old value while refreshing.
 
     Model lists are requested on most page loads, and the CLIs take a few
     seconds to answer, so only the first load waits for them. A caller that
     must not act on an old value passes ``serve_expired=False`` and waits too.
     """
 
-    def __init__(self, ttl_seconds: float, load: Callable[[str], Awaitable[Any]]):
+    def __init__(self, ttl_seconds: float, load: Callable[[Any], Awaitable[Any]]):
         self._ttl_seconds = ttl_seconds
         self._load = load
-        self._entries: dict[str, _CacheEntry] = {}
-        self._refreshes: dict[str, asyncio.Task] = {}
+        self._entries: dict[Any, _CacheEntry] = {}
+        self._refreshes: dict[Any, asyncio.Task] = {}
         # Bumped on invalidate so a refresh started earlier cannot store old results.
-        self._generations: dict[str, int] = {}
+        self._generations: dict[Any, int] = {}
 
-    def invalidate(self, provider_id: str) -> None:
-        self._entries.pop(provider_id, None)
-        refresh = self._refreshes.pop(provider_id, None)
-        self._generations[provider_id] = self._generations.get(provider_id, 0) + 1
+    def invalidate(self, key) -> None:
+        self._entries.pop(key, None)
+        refresh = self._refreshes.pop(key, None)
+        self._generations[key] = self._generations.get(key, 0) + 1
         if refresh is not None and not refresh.done():
             refresh.cancel()
 
-    def cached(self, provider_id: str) -> Any:
+    def cached(self, key) -> Any:
         """The last loaded value, even if expired, without loading; None when there is none."""
-        entry = self._entries.get(provider_id)
+        entry = self._entries.get(key)
         if entry is None:
             return None
         return entry.value
 
-    async def _refresh(self, provider_id: str) -> Any:
-        generation = self._generations.get(provider_id, 0)
-        value = await self._load(provider_id)
-        if self._generations.get(provider_id, 0) != generation:
+    async def _refresh(self, key) -> Any:
+        generation = self._generations.get(key, 0)
+        value = await self._load(key)
+        if self._generations.get(key, 0) != generation:
             return None
-        self._entries[provider_id] = _CacheEntry(value, time.monotonic() + self._ttl_seconds)
+        self._entries[key] = _CacheEntry(value, time.monotonic() + self._ttl_seconds)
         return value
 
-    def _start_refresh(self, provider_id: str) -> asyncio.Task:
-        task = self._refreshes.get(provider_id)
+    def _start_refresh(self, key) -> asyncio.Task:
+        task = self._refreshes.get(key)
         if task is None or task.done():
-            task = asyncio.create_task(self._refresh(provider_id))
+            task = asyncio.create_task(self._refresh(key))
             task.add_done_callback(_log_refresh_failure)
-            self._refreshes[provider_id] = task
+            self._refreshes[key] = task
         return task
 
-    async def get(self, provider_id: str, fresh: bool = False, serve_expired: bool = True) -> Any:
-        generation = self._generations.get(provider_id, 0)
-        entry = self._entries.get(provider_id)
+    async def get(self, key, fresh: bool = False, serve_expired: bool = True) -> Any:
+        generation = self._generations.get(key, 0)
+        entry = self._entries.get(key)
         if entry and not fresh and entry.expires_at > time.monotonic():
             return entry.value
 
-        task = self._start_refresh(provider_id)
+        task = self._start_refresh(key)
         if entry and not fresh and serve_expired:
             return entry.value
         try:
             value = await asyncio.wait_for(asyncio.shield(task), FIRST_LOAD_WAIT_SECONDS)
-            if generation != self._generations.get(provider_id, 0):
+            if generation != self._generations.get(key, 0):
                 return None
             return value
         except TimeoutError:
-            log.warning('Subscription provider %s is slow to answer; continuing without it', provider_id)
+            log.warning('Subscription provider %s is slow to answer; continuing without it', key)
             return None
         except asyncio.CancelledError:
             if task.cancelled() and not asyncio.current_task().cancelling():
@@ -988,45 +1271,45 @@ def _log_refresh_failure(task: asyncio.Task) -> None:
         log.warning('Could not refresh subscription details: %s', error)
 
 
-async def _load_status(provider_id: str) -> dict:
+async def _load_status(ref: ProviderRef) -> dict:
     task = asyncio.current_task()
     try:
         _require_single_worker()
-        async with _provider_lock(provider_id):
-            settings = await get_settings(provider_id)
-            await _require_verified_machine(settings)
-            _require_provider_cleanup(provider_id)
-            machine = _tracking_machine(provider_id, await get_machine(settings.machine_id))
-            _active_provider_tasks.setdefault(provider_id, set()).add(task)
-        return await get_provider(provider_id).status(settings, machine)
+        async with _provider_lock(ref):
+            settings = await _load_settings(ref)
+            await _require_verified_machine(ref, settings)
+            _require_provider_cleanup(ref)
+            machine = _tracking_machine(ref, await get_machine(ref.owner_id, settings.machine_id))
+            _active_provider_tasks.setdefault(ref, set()).add(task)
+        return await (await get_provider(ref)).status(settings, machine)
     except (SubscriptionError, OSError) as error:
         return {'installed': True, 'signed_in': False, 'message': str(error)}
     except Exception as error:
-        # For example a runner connection that closed during the check. Every
+        # For example a runner connection that closed during the check. The
         # user's model list can wait on this refresh, so report signed out.
-        log.warning('Could not check the %s sign-in: %r', PROVIDER_LABELS[provider_id], error)
+        log.warning('Could not check the %s sign-in: %r', PROVIDER_LABELS[ref.provider_id], error)
         return {'installed': True, 'signed_in': False, 'message': f'Could not check the sign-in: {error}'}
     finally:
-        _active_provider_tasks.get(provider_id, set()).discard(task)
+        _active_provider_tasks.get(ref, set()).discard(task)
 
 
-async def _load_models(provider_id: str) -> list[ProviderModel]:
+async def _load_models(ref: ProviderRef) -> list[ProviderModel]:
     task = asyncio.current_task()
     try:
         _require_single_worker()
-        async with _provider_lock(provider_id):
-            settings = await get_settings(provider_id)
-            await _require_verified_machine(settings)
-            _require_provider_cleanup(provider_id)
-            machine = _tracking_machine(provider_id, await get_machine(settings.machine_id))
-            _active_provider_tasks.setdefault(provider_id, set()).add(task)
-        return await get_provider(provider_id).list_models(settings, machine)
+        async with _provider_lock(ref):
+            settings = await _load_settings(ref)
+            await _require_verified_machine(ref, settings)
+            _require_provider_cleanup(ref)
+            machine = _tracking_machine(ref, await get_machine(ref.owner_id, settings.machine_id))
+            _active_provider_tasks.setdefault(ref, set()).add(task)
+        return await (await get_provider(ref)).list_models(settings, machine)
     except Exception as error:
         # Includes a runner connection that closed during the request.
-        log.warning('Could not list %s models: %s', PROVIDER_LABELS[provider_id], error)
+        log.warning('Could not list %s models: %s', PROVIDER_LABELS[ref.provider_id], error)
         return []
     finally:
-        _active_provider_tasks.get(provider_id, set()).discard(task)
+        _active_provider_tasks.get(ref, set()).discard(task)
 
 
 status_cache = CachedLoader(STATUS_TTL_SECONDS, _load_status)
@@ -1038,46 +1321,52 @@ def uses_plan(provider_status: dict) -> bool:
     return bool(provider_status.get('signed_in')) and not provider_status.get('api_billing')
 
 
-def invalidate(provider_id: str) -> None:
-    status_cache.invalidate(provider_id)
-    models_cache.invalidate(provider_id)
+def invalidate(ref: ProviderRef) -> None:
+    status_cache.invalidate(ref)
+    models_cache.invalidate(ref)
 
 
 async def describe_provider(
-    provider_id: str, fresh: bool = False, expected_machine_id: str | None = None,
+    owner_id: str, provider_id: str, fresh: bool = False, expected_machine_id: str | None = None,
     expected_machine_revision: str | None = None
 ) -> dict:
-    """Everything the Connections page shows for one provider."""
+    """Everything the settings page shows for one of the user's providers."""
+    ref = _ref(owner_id, provider_id)
     for _ in range(2):
-        result = await _describe_provider_snapshot(provider_id, fresh, expected_machine_id, expected_machine_revision)
+        result = await _describe_provider_snapshot(ref, fresh, expected_machine_id, expected_machine_revision)
         if result is not None:
             return result
     raise HTTPException(status_code=409, detail='The selected machine changed. Refresh before trying again.')
 
 
 async def _describe_provider_snapshot(
-    provider_id: str, fresh: bool, expected_machine_id: str | None, expected_machine_revision: str | None
+    ref: ProviderRef, fresh: bool, expected_machine_id: str | None, expected_machine_revision: str | None
 ) -> dict | None:
-    provider = get_provider(provider_id)
-    async with _provider_lock(provider_id):
-        settings = await get_settings(provider_id)
-        await _check_expected_machine(settings, expected_machine_id, expected_machine_revision)
-        revision = await _machine_revision(settings.machine_id)
-        generation = _provider_generations.get(provider_id, 0)
+    provider = await get_provider(ref)
+    async with _provider_lock(ref):
+        settings = await _load_settings(ref)
+        await _check_expected_machine(ref.owner_id, settings, expected_machine_id, expected_machine_revision)
+        revision = await _machine_revision(ref.owner_id, settings.machine_id)
+        generation = _provider_generations.get(ref, 0)
         machine = None
-        verified = settings.machine_id == LOCAL_MACHINE_ID or revision is not None
-        execution_ready = verified and UVICORN_WORKERS == 1
-        readiness_message = REVERIFY_MACHINE_MESSAGE if UVICORN_WORKERS == 1 else SINGLE_WORKER_MESSAGE
+        execution_ready = UVICORN_WORKERS == 1
+        readiness_message = SINGLE_WORKER_MESSAGE
         if execution_ready:
             try:
-                _require_provider_cleanup(provider_id)
-                machine = _tracking_machine(provider_id, await get_machine(settings.machine_id))
+                await _require_verified_machine(ref, settings)
             except SubscriptionError as error:
                 execution_ready = False
                 readiness_message = str(error)
-                log.info('Could not describe the machine for %s: %s', provider_id, error)
+        if execution_ready:
+            try:
+                _require_provider_cleanup(ref)
+                machine = _tracking_machine(ref, await get_machine(ref.owner_id, settings.machine_id))
+            except SubscriptionError as error:
+                execution_ready = False
+                readiness_message = str(error)
+                log.info('Could not describe the machine for %s: %s', ref.provider_id, error)
     if execution_ready:
-        provider_status = await status_cache.get(provider_id, fresh=fresh)
+        provider_status = await status_cache.get(ref, fresh=fresh)
     else:
         provider_status = {'installed': True, 'signed_in': False, 'message': readiness_message}
     if provider_status is None:
@@ -1085,26 +1374,28 @@ async def _describe_provider_snapshot(
         provider_status = {'checking': True}
     models = []
     if settings.enable and uses_plan(provider_status):
-        for model in await models_cache.get(provider_id, fresh=fresh) or []:
-            models.append({'id': _model_id(provider_id, model), 'name': model.name})
+        for model in await models_cache.get(ref, fresh=fresh) or []:
+            models.append({'id': _model_id(ref.provider_id, model), 'name': model.name})
 
     machine_name = 'Unavailable machine'
+    if not settings.machine_id:
+        machine_name = 'No computer chosen'
     default_workspace = ''
     try:
         if machine is not None:
             machine_name = machine.name
             default_workspace = await machine.default_workspace()
     except SubscriptionError as error:
-        log.info('Could not describe the machine for %s: %s', provider_id, error)
+        log.info('Could not describe the machine for %s: %s', ref.provider_id, error)
 
-    if generation != _provider_generations.get(provider_id, 0):
+    if generation != _provider_generations.get(ref, 0):
         return None
     public_machine = {'id': settings.machine_id, 'name': machine_name}
     if revision is not None:
         public_machine['revision'] = revision
     return {
-        'id': provider_id,
-        'name': PROVIDER_LABELS[provider_id],
+        'id': ref.provider_id,
+        'name': PROVIDER_LABELS[ref.provider_id],
         'settings': asdict(settings),
         'status': provider_status,
         'login': provider.login_state() if execution_ready else {'state': 'idle'},
@@ -1139,52 +1430,94 @@ def _model_entry(provider_id: str, model: ProviderModel) -> dict:
     }
 
 
-async def _provider_models(provider_id: str) -> list[dict]:
-    # Every user's model list runs this, so it does not take the provider lock.
+async def _provider_models(ref: ProviderRef) -> list[dict]:
+    # Every model list runs this, so it does not take the provider lock.
     # Changes save settings before bumping the generation, so reading the
     # generation first means a change made meanwhile empties this result.
-    generation = _provider_generations.get(provider_id, 0)
-    settings = await get_settings(provider_id)
+    generation = _provider_generations.get(ref, 0)
+    settings = await _load_settings(ref)
     try:
         _require_single_worker()
-        await _require_verified_machine(settings)
-        _require_provider_cleanup(provider_id)
+        await _require_verified_machine(ref, settings)
+        _require_provider_cleanup(ref)
     except SubscriptionError:
         return []
     if not settings.enable:
         return []
-    provider_status = await _cached_for_model_list(status_cache, provider_id) or {}
+    provider_status = await _cached_for_model_list(status_cache, ref) or {}
     if not uses_plan(provider_status):
         return []
-    models = await _cached_for_model_list(models_cache, provider_id) or []
-    if generation != _provider_generations.get(provider_id, 0):
+    models = await _cached_for_model_list(models_cache, ref) or []
+    if generation != _provider_generations.get(ref, 0):
         return []
-    return [_model_entry(provider_id, model) for model in models]
+    return [_model_entry(ref.provider_id, model) for model in models]
 
 
-async def _cached_for_model_list(cache: CachedLoader, provider_id: str) -> Any:
-    """Serve only what is cached while an administrator's action holds the provider lock.
+async def _cached_for_model_list(cache: CachedLoader, ref: ProviderRef) -> Any:
+    """Serve only what is cached while the user's own action holds the provider lock.
 
     Sign-in, sign-out and runner checks can hold it for up to a minute, and a
     refresh started now would wait behind them.
     """
-    if _provider_lock(provider_id).locked():
-        return cache.cached(provider_id)
-    return await cache.get(provider_id)
+    if _provider_lock(ref).locked():
+        return cache.cached(ref)
+    return await cache.get(ref)
+
+
+async def _listed_models(ref: ProviderRef) -> list[dict]:
+    """A model list includes these, so a provider failure adds no models instead of failing it."""
+    try:
+        return await _provider_models(ref)
+    except Exception:
+        log.exception('Could not list %s subscription models', PROVIDER_LABELS[ref.provider_id])
+        return []
+
+
+# Every subscription model any user has offered. Model IDs are the same for
+# every user, such as "claude-code.opus", so the shared model registry can
+# route them; who sees a model, and which CLI model a turn uses, comes from
+# the requesting user's own providers.
+_catalog: dict[str, dict] = {}
+
+
+async def get_user_subscription_models(user) -> list[dict]:
+    """The user's own models: their providers, signed in on their machines."""
+    if user is None or not await may_use_machines(user):
+        return []
+    claude_models, codex_models = await asyncio.gather(
+        _listed_models(_ref(user.id, 'claude')), _listed_models(_ref(user.id, 'codex'))
+    )
+    models = claude_models + codex_models
+    for model in models:
+        _catalog[model['id']] = model
+    return models
+
+
+async def get_subscription_catalog(user=None) -> list[dict]:
+    """Registry entries for every known subscription model, refreshed with the user's own."""
+    await get_user_subscription_models(user)
+    return [dict(model) for model in _catalog.values()]
+
+
+async def personalize_models(models: list[dict], user) -> list[dict]:
+    """Keep only the subscription models this user's providers offer, with their own details."""
+    own = {model['id']: model for model in await get_user_subscription_models(user)}
+    personalized = []
+    for model in models:
+        entry = own.get(model.get('id'))
+        if entry is None:
+            continue
+        personalized.append({**model, 'tags': entry['tags'], 'subscription': entry['subscription']})
+    return personalized
+
+
+async def user_offers_model(user, model_id: str) -> bool:
+    return any(model['id'] == model_id for model in await get_user_subscription_models(user))
 
 
 async def get_subscription_models() -> list[dict]:
-    claude_models, codex_models = await asyncio.gather(_listed_models('claude'), _listed_models('codex'))
-    return claude_models + codex_models
-
-
-async def _listed_models(provider_id: str) -> list[dict]:
-    """Every user's model list includes these, so a provider failure adds no models instead of failing it."""
-    try:
-        return await _provider_models(provider_id)
-    except Exception:
-        log.exception('Could not list %s subscription models', PROVIDER_LABELS[provider_id])
-        return []
+    """Registry entries for every known subscription model, without refreshing anyone's."""
+    return [dict(model) for model in _catalog.values()]
 
 
 def _turn_access(settings: ProviderSettings, metadata: dict) -> str:
@@ -1192,7 +1525,7 @@ def _turn_access(settings: ProviderSettings, metadata: dict) -> str:
 
     A channel reply's prompt holds every member's messages and its answer is
     posted for every member to read, so it must not run tools or read files
-    on the administrator's machine.
+    on the user's machine.
     """
     if metadata.get('task'):
         return ACCESS_CHAT
@@ -1213,7 +1546,7 @@ def _require_plan(provider_id: str, provider_status: dict | None) -> None:
     if not uses_plan(provider_status):
         raise SubscriptionError(
             provider_status.get('message')
-            or f'{label} is not signed in. Sign in under Admin Settings → Connections → Subscriptions.'
+            or f'{label} is not signed in. Sign in under Settings → Machines.'
         )
 
 
@@ -1222,9 +1555,9 @@ def is_conflicting_preset_row(model: dict | None, model_info) -> bool:
 
     The model list shows the subscription model itself in that case, so the
     row is not its settings, and following it would let whoever created the
-    row choose the model and system prompt of a turn on the administrator's
-    plan. A subscription model's own settings are saved without a base model,
-    which only administrators can do.
+    row choose the model and system prompt of a turn on someone's plan. A
+    subscription model's own settings are saved without a base model, which
+    only administrators can do.
     """
     if not model or not model_info:
         return False
@@ -1232,16 +1565,21 @@ def is_conflicting_preset_row(model: dict | None, model_info) -> bool:
     return is_subscription_base_model and bool(model_info.base_model_id)
 
 
-async def _apply_preset(request, payload: dict, metadata: dict, user, models: dict) -> tuple[str, dict]:
-    """Apply a Workspace model preset's params and system prompt, like the OpenAI route."""
+async def _apply_preset(request, payload: dict, metadata: dict, user, models: dict) -> tuple[str, dict, bool]:
+    """Apply a Workspace model preset's params and system prompt, like the OpenAI route.
+
+    Also returns whether someone other than the user wrote the preset. Such a
+    preset runs chat-only, so it cannot steer tools on the user's machine.
+    """
     model_id = payload.get('model')
     model_info = await Models.get_model_by_id(model_id)
     if not model_info:
-        return model_id, payload
+        return model_id, payload, False
     if is_conflicting_preset_row(models.get(model_id), model_info):
         log.warning('Ignoring the Workspace model %s: it reuses a subscription model ID', model_id)
-        return model_id, payload
+        return model_id, payload, False
 
+    written_by_someone_else = getattr(model_info, 'user_id', None) != getattr(user, 'id', None)
     if model_info.base_model_id:
         model_id = model_info.base_model_id
     params = model_info.params.model_dump()
@@ -1250,54 +1588,71 @@ async def _apply_preset(request, payload: dict, metadata: dict, user, models: di
         payload = apply_model_params_to_body_openai(params, payload)
         if not getattr(request.state, 'bypass_system_prompt', False):
             payload = await apply_system_prompt_to_body(system, payload, metadata, user)
-    return model_id, payload
+    return model_id, payload, written_by_someone_else
+
+
+def _turn_model(ref: ProviderRef, model_id: str, subscription: dict) -> tuple[str, list[str]]:
+    """The CLI model and reasoning levels a turn uses.
+
+    Once the user's own model list is loaded, it decides: a model it does not
+    offer is refused. Until then, for example right after a restart, the
+    registry entry is used; providers still check the reasoning levels
+    against the CLI that runs the turn.
+    """
+    own_models = models_cache.cached(ref)
+    if own_models is not None:
+        for model in own_models:
+            if _model_id(ref.provider_id, model) == model_id:
+                return model.value, [effort for effort in model.efforts if isinstance(effort, str) and effort]
+        raise SubscriptionError(
+            f'{PROVIDER_LABELS[ref.provider_id]} on your computer does not offer this model. Choose another model.'
+        )
+    efforts = subscription.get('efforts')
+    if not isinstance(efforts, list):
+        efforts = []
+    return subscription['model'], [effort for effort in efforts if isinstance(effort, str) and effort]
 
 
 async def generate_subscription_chat_completion(request, form_data: dict, user, models):
-    if getattr(user, 'role', None) != 'admin':
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Subscription models use the administrator's personal plan and are only available to them.",
-        )
+    if not await may_use_machines(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=NOT_ALLOWED_MESSAGE)
 
     payload = {**form_data}
     metadata = payload.pop('metadata', None) or {}
-    model_id, payload = await _apply_preset(request, payload, metadata, user, models)
+    model_id, payload, foreign_preset = await _apply_preset(request, payload, metadata, user, models)
     base_model = models.get(model_id) or {}
     subscription = base_model.get('subscription')
-    if not subscription:
+    if not subscription or subscription.get('provider') not in PROVIDER_IDS:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Model not found')
 
-    provider_id = subscription['provider']
-    provider = get_provider(provider_id)
-    model_efforts = subscription.get('efforts')
-    if not isinstance(model_efforts, list):
-        model_efforts = []
-    model_efforts = [effort for effort in model_efforts if isinstance(effort, str) and effort]
+    ref = ProviderRef(user.id, subscription['provider'])
+    provider = await get_provider(ref)
     is_task = bool(metadata.get('task'))
 
     try:
-        async with _provider_lock(provider_id):
+        async with _provider_lock(ref):
             _require_single_worker()
-            settings = await get_settings(provider_id)
-            await _require_verified_machine(settings)
-            _require_provider_cleanup(provider_id)
-            generation = _provider_generations.get(provider_id, 0)
+            settings = await _load_settings(ref)
+            await _require_verified_machine(ref, settings)
+            _require_provider_cleanup(ref)
+            generation = _provider_generations.get(ref, 0)
         if not settings.enable:
             raise SubscriptionError(
-                f'{PROVIDER_LABELS[provider_id]} subscription models are turned off in '
-                'Admin Settings → Connections → Subscriptions.'
+                f'{PROVIDER_LABELS[ref.provider_id]} subscription models are turned off in Settings → Machines.'
             )
         # A status older than its TTL may predate a switch to API billing on
         # the machine, so a turn waits for a current one.
-        _require_plan(provider_id, await status_cache.get(provider_id, serve_expired=False))
-        async with _provider_lock(provider_id):
-            if generation != _provider_generations.get(provider_id, 0):
+        _require_plan(ref.provider_id, await status_cache.get(ref, serve_expired=False))
+        cli_model, model_efforts = _turn_model(ref, model_id, subscription)
+        async with _provider_lock(ref):
+            if generation != _provider_generations.get(ref, 0):
                 raise SubscriptionError('The provider machine changed; refresh before starting another turn.')
-            machine = _tracking_machine(provider_id, await get_machine(settings.machine_id))
+            machine = _tracking_machine(ref, await get_machine(ref.owner_id, settings.machine_id))
             access = _turn_access(settings, metadata)
+            if foreign_preset:
+                access = ACCESS_CHAT
             turn = TurnRequest(
-                model=subscription['model'],
+                model=cli_model,
                 conversation=parse_messages(payload.get('messages')),
                 settings=replace(settings, access=access),
                 cwd=await working_directory(settings, access, machine),
@@ -1309,7 +1664,7 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
     except SubscriptionError as error:
         events = failure_events(str(error))
     else:
-        events = _tracked_turn(provider_id, provider, turn, generation)
+        events = _tracked_turn(ref, provider, turn, generation)
 
     response_model_id = form_data.get('model') or model_id
     if payload.get('stream'):

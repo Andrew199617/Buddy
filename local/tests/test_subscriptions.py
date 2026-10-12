@@ -19,6 +19,7 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT_DIR / 'backend'))
 
 from buddy_runner import discovery  # noqa: E402
+from test_subscription_machines import OWNER, FakeGroups, FakeUsers, owner_providers  # noqa: E402
 from buddy_runner import runner  # noqa: E402
 from open_webui.utils.subscriptions import claude_code, codex, streaming  # noqa: E402
 from open_webui.utils.subscriptions.common import (  # noqa: E402
@@ -1443,6 +1444,8 @@ def load_subscription_service(data_dir: Path, config: StandInConfig):
         'open_webui.env': types.SimpleNamespace(DATA_DIR=str(data_dir), UVICORN_WORKERS=1),
         'open_webui.models.config': types.SimpleNamespace(Config=config),
         'open_webui.models.models': types.SimpleNamespace(Models=None),
+        'open_webui.models.users': types.SimpleNamespace(Users=FakeUsers()),
+        'open_webui.models.groups': types.SimpleNamespace(Groups=FakeGroups()),
         'open_webui.utils.payload': types.SimpleNamespace(
             apply_model_params_to_body_openai=None,
             apply_system_prompt_to_body=None,
@@ -1453,6 +1456,7 @@ def load_subscription_service(data_dir: Path, config: StandInConfig):
     service = importlib.util.module_from_spec(spec)
     with patch.dict(sys.modules, stand_ins):
         spec.loader.exec_module(service)
+    service._server_owner_id = OWNER
     return service
 
 
@@ -1463,7 +1467,7 @@ class DeleteMachineTests(unittest.TestCase):
         self.data_dir = Path(directory.name)
         self.config = StandInConfig()
         self.service = load_subscription_service(self.data_dir, self.config)
-        self.service.PROVIDERS = {provider: StandInProvider() for provider in ('claude', 'codex')}
+        self.service._providers = owner_providers(self.service, {provider: StandInProvider() for provider in ('claude', 'codex')})
 
     def test_providers_retain_the_removed_machine_and_forget_its_permissions_and_paths(self):
         # Paths that exist only on the machine being removed.
@@ -1487,7 +1491,7 @@ class DeleteMachineTests(unittest.TestCase):
         runner_connection = StandInRunnerConnection()
         self.service._remote_machines['office-pc'] = runner_connection
 
-        asyncio.run(self.service.delete_machine('office-pc'))
+        asyncio.run(self.service.delete_machine(OWNER, 'office-pc'))
 
         for provider_id in ('claude', 'codex'):
             settings = self.config.values[f'subscriptions.{provider_id}']
@@ -1498,7 +1502,7 @@ class DeleteMachineTests(unittest.TestCase):
             self.assertFalse(settings['enable'])
         self.assertEqual(self.config.values['subscriptions.machines'], [])
         self.assertTrue(runner_connection.closed)
-        self.assertTrue(all(provider.cancel_calls == 1 for provider in self.service.PROVIDERS.values()))
+        self.assertTrue(all(provider.cancel_calls == 1 for provider in self.service._providers.values()))
 
     def test_a_failed_atomic_reset_keeps_the_machine_and_provider_settings(self):
         office_pc = {'id': 'office-pc', 'name': 'Office PC', 'url': 'http://office-pc:8765', 'key': 'test-key'}
@@ -1513,18 +1517,18 @@ class DeleteMachineTests(unittest.TestCase):
         self.service._remote_machines['office-pc'] = runner_connection
 
         with self.assertRaises(RuntimeError):
-            asyncio.run(self.service.delete_machine('office-pc'))
+            asyncio.run(self.service.delete_machine(OWNER, 'office-pc'))
 
         self.assertEqual(self.config.values, original)
         self.assertFalse(runner_connection.closed)
-        self.assertTrue(all(provider.cancel_calls == 0 for provider in self.service.PROVIDERS.values()))
+        self.assertTrue(all(provider.cancel_calls == 0 for provider in self.service._providers.values()))
 
     def test_this_server_cannot_be_removed(self):
         workspace = str(self.data_dir)
         self.config.values['subscriptions.claude'] = {'workspace': workspace, 'machine_id': 'local'}
 
         with self.assertRaises(SubscriptionError):
-            asyncio.run(self.service.delete_machine('local'))
+            asyncio.run(self.service.delete_machine(OWNER, 'local'))
 
         self.assertEqual(self.config.values['subscriptions.claude']['workspace'], workspace)
 
