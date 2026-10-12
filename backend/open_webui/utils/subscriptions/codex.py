@@ -906,6 +906,16 @@ class CodexProvider:
             else:
                 self._release_thread(server, thread_id)
 
+    def stop_machine(self, machine_id: str) -> None:
+        """Stop one computer's app-server and forget its threads; other computers keep theirs."""
+        server = self._servers.pop(machine_id, None)
+        if server is not None:
+            server.stop()
+            if self._model_efforts_server is server:
+                self._model_efforts_server = None
+                self._model_efforts_generation = None
+        self._forget_machine_threads(machine_id)
+
     def stop(self) -> None:
         for server in self._servers.values():
             server.stop()

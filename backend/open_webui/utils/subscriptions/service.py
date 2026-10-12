@@ -182,7 +182,8 @@ _provider_locks: dict[ProviderRef, asyncio.Lock] = {}
 _machine_lock = asyncio.Lock()
 _computer_settings_lock = asyncio.Lock()
 _provider_generations: dict[ProviderRef, int] = {}
-_active_provider_tasks: dict[ProviderRef, set[asyncio.Task]] = {}
+# Each running status check, model list or turn, with the computer it runs on.
+_active_provider_tasks: dict[ProviderRef, dict[asyncio.Task, str]] = {}
 # One handle per computer a provider runs on, so a turn on one computer
 # never drops the handle of a turn still running on another.
 _tracked_machines: dict[MachineRef, 'TrackingMachine'] = {}
@@ -655,6 +656,26 @@ def _tracked_refs() -> list[ProviderRef]:
     return list({key.ref for key in _tracked_machines})
 
 
+def _track_task(ref: ProviderRef, machine_id: str, task: asyncio.Task) -> None:
+    _active_provider_tasks.setdefault(ref, {})[task] = machine_id
+
+
+def _untrack_task(ref: ProviderRef, task: asyncio.Task) -> None:
+    _active_provider_tasks.get(ref, {}).pop(task, None)
+
+
+def _running_tasks(ref: ProviderRef, machine_id: str | None = None) -> set[asyncio.Task]:
+    """The provider's other unfinished tasks, on one computer or on all of them."""
+    current = asyncio.current_task()
+    tasks = set()
+    for task, task_machine_id in _active_provider_tasks.get(ref, {}).items():
+        if task is current or task.done():
+            continue
+        if machine_id is None or task_machine_id == machine_id:
+            tasks.add(task)
+    return tasks
+
+
 def _waits_for_its_computer(tracked: TrackingMachine) -> bool:
     """A Buddy app computer that is offline: its stops are confirmed when it connects again."""
     return isinstance(tracked.machine, TunnelMachine) and not HUB.is_online(tracked.id)
@@ -730,8 +751,7 @@ async def _quiesce_provider_safely(ref: ProviderRef) -> None:
 async def _quiesce_provider_work(ref: ProviderRef) -> None:
     _provider_generations[ref] = _provider_generations.get(ref, 0) + 1
     invalidate(ref)
-    current = asyncio.current_task()
-    tasks = {task for task in _active_provider_tasks.get(ref, set()) if task is not current and not task.done()}
+    tasks = _running_tasks(ref)
     for task in tasks:
         task.cancel()
     handles = [(key, tracked) for key, tracked in _tracked_machines.items() if key.ref == ref]
@@ -763,6 +783,64 @@ async def _quiesce_provider_work(ref: ProviderRef) -> None:
     for key, tracked in stopped:
         if _tracked_machines.get(key) is tracked:
             _tracked_machines.pop(key)
+
+
+async def _quiesce_computer(ref: ProviderRef, machine_id: str) -> None:
+    """Stop the provider's work on one computer: its sign-in, tasks, processes and Codex app-server there.
+
+    Called with the provider lock held. Work on the plan's other computers
+    keeps running. A stop that can't be confirmed stays on that computer's
+    handle, which keeps refusing new work there until it is.
+    """
+    invalidate_computer(ref.owner_id, machine_id)
+    tasks = _running_tasks(ref, machine_id)
+    for task in tasks:
+        task.cancel()
+    provider = await get_provider(ref)
+    if _login_computers.get(ref) == machine_id:
+        await provider.cancel_login()
+        _login_computers.pop(ref, None)
+    key = ref.on(machine_id)
+    tracked = _tracked_machines.get(key)
+    cleanup_error = None
+    if tracked is not None:
+        try:
+            await tracked.revoke()
+        except SubscriptionError as error:
+            cleanup_error = error
+    if tasks:
+        _, pending = await asyncio.wait(tasks, timeout=10)
+        if pending:
+            cleanup_error = SubscriptionError('An old provider operation could not confirm that it stopped.')
+    if isinstance(provider, CodexProvider):
+        provider.stop_machine(machine_id)
+    if cleanup_error is not None:
+        raise cleanup_error
+    if tracked is not None and _tracked_machines.get(key) is tracked:
+        _tracked_machines.pop(key)
+
+
+def _has_work_on(ref: ProviderRef, machine_id: str) -> bool:
+    return (
+        ref.on(machine_id) in _tracked_machines
+        or _login_computers.get(ref) == machine_id
+        or bool(_running_tasks(ref, machine_id))
+    )
+
+
+async def _stop_other_work_on(owner_id: str, machine_id: str, plan_refs: list[ProviderRef]) -> None:
+    """Before a computer is removed or replaced, stop the work other plans run there.
+
+    Plans whose own computer it is are stopped whole by the caller. This
+    runs while the computer is still connected, so stops can be confirmed.
+    """
+    for ref in _owner_refs(owner_id):
+        if ref in plan_refs or not _has_work_on(ref, machine_id):
+            continue
+        try:
+            await _quiesce_computer(ref, machine_id)
+        except SubscriptionError as error:
+            log.warning('Could not confirm that %s stopped on %s: %s', PROVIDER_LABELS[ref.provider_id], machine_id, error)
 
 
 async def _quiesce_providers(refs: list[ProviderRef]) -> None:
@@ -1147,6 +1225,8 @@ async def _save_machine(
                 affected.append(ref)
     await Config.upsert(updates)
     try:
+        if host_changed:
+            await _stop_other_work_on(owner_id, saved['id'], affected)
         await _quiesce_providers(affected)
     finally:
         if host_changed:
@@ -1186,6 +1266,7 @@ async def _delete_machine(owner_id: str, machine_id: str) -> None:
             affected.append(ref)
     await Config.upsert(updates)
     try:
+        await _stop_other_work_on(owner_id, machine_id, affected)
         await _quiesce_providers(affected)
     finally:
         cached = _remote_machines.pop(machine_id, None)
@@ -2245,7 +2326,7 @@ async def _tracked_turn(ref: ProviderRef, provider, turn: TurnRequest, generatio
             except SubscriptionError as failure:
                 error = str(failure)
             if error is None:
-                _active_provider_tasks.setdefault(ref, set()).add(task)
+                _track_task(ref, turn.settings.machine_id, task)
     if error is not None:
         async for event in failure_events(error):
             yield event
@@ -2254,7 +2335,7 @@ async def _tracked_turn(ref: ProviderRef, provider, turn: TurnRequest, generatio
         async for event in provider.run_turn(turn):
             yield event
     finally:
-        _active_provider_tasks.get(ref, set()).discard(task)
+        _untrack_task(ref, task)
 
 
 async def forget_user(user_id: str) -> None:
@@ -2534,7 +2615,7 @@ async def _load_status(machine_ref: MachineRef) -> dict:
             await _require_verified_machine(ref, settings)
             _require_computer_cleanup(ref, machine_ref.machine_id)
             machine = await _tracked(ref, settings)
-            _active_provider_tasks.setdefault(ref, set()).add(task)
+            _track_task(ref, machine_ref.machine_id, task)
         return await (await get_provider(ref)).status(settings, machine)
     except (SubscriptionError, OSError) as error:
         return {'installed': True, 'signed_in': False, 'message': str(error)}
@@ -2544,7 +2625,7 @@ async def _load_status(machine_ref: MachineRef) -> dict:
         log.warning('Could not check the %s sign-in: %r', PROVIDER_LABELS[ref.provider_id], error)
         return {'installed': True, 'signed_in': False, 'message': f'Could not check the sign-in: {error}'}
     finally:
-        _active_provider_tasks.get(ref, set()).discard(task)
+        _untrack_task(ref, task)
 
 
 async def _load_models(machine_ref: MachineRef) -> list[ProviderModel]:
@@ -2557,14 +2638,14 @@ async def _load_models(machine_ref: MachineRef) -> list[ProviderModel]:
             await _require_verified_machine(ref, settings)
             _require_computer_cleanup(ref, machine_ref.machine_id)
             machine = await _tracked(ref, settings)
-            _active_provider_tasks.setdefault(ref, set()).add(task)
+            _track_task(ref, machine_ref.machine_id, task)
         return await (await get_provider(ref)).list_models(settings, machine)
     except Exception as error:
         # Includes a runner connection that closed during the request.
         log.warning('Could not list %s models: %s', PROVIDER_LABELS[ref.provider_id], error)
         return []
     finally:
-        _active_provider_tasks.get(ref, set()).discard(task)
+        _untrack_task(ref, task)
 
 
 status_cache = CachedLoader(STATUS_TTL_SECONDS, _load_status)
