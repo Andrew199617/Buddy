@@ -350,7 +350,14 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	}
 
 	// --- Chat folders' project folders and the chat's Project tab -------------
-	const projectModes = new Set(['project-tab', 'folder-chip', 'folder-edit', 'folder-browse']);
+	const runTargetModes = new Set(['run-target-new', 'run-target-bound']);
+	const projectModes = new Set([
+		'project-tab',
+		'folder-chip',
+		'folder-edit',
+		'folder-browse',
+		...runTargetModes
+	]);
 	const projectRelayBase = '/api/v1/runners/machines/pc-1/workspace';
 	const workPc = {
 		machine_id: 'pc-1',
@@ -571,8 +578,86 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		return true;
 	}
 
+	// --- Where chats run: the composer's bar -----------------------------------
+	const runTargetComputer = {
+		machine_id: 'pc-1',
+		name: 'Work PC',
+		kind: 'app',
+		online: true,
+		platform: 'win32',
+		can_browse: true,
+		folders: 'on',
+		recent_paths: [],
+		revision: 'rev-pc-1',
+		providers: { codex: { state: 'unknown', message: null } }
+	};
+
+	function runTargetOptions() {
+		// Other cases keep the bar hidden, as for someone the policy doesn't allow.
+		if (!runTargetModes.has(mode)) return { allowed: false, has_plans: false };
+		return {
+			allowed: true,
+			has_plans: true,
+			plan_access: { codex: 'full' },
+			computers: [runTargetComputer],
+			recent: [{ machine_id: 'pc-1', path: 'C:\\code\\site', last_used: 1760000000 }],
+			chat_folder: null,
+			default: {
+				kind: 'detached',
+				machine_id: null,
+				folder: null,
+				access: 'chat',
+				from: 'none',
+				access_locked: false
+			}
+		};
+	}
+
+	async function routeRunTarget(route, request, url, path) {
+		if (path === '/api/v1/subscriptions/run-target/options') {
+			requests.push({ method: request.method(), path });
+			await route.fulfill({ status: 200, json: runTargetOptions() });
+			return true;
+		}
+		if (path === '/api/v1/subscriptions/run-target/readiness') {
+			requests.push({
+				method: request.method(),
+				path,
+				provider: url.searchParams.get('provider'),
+				machineId: url.searchParams.get('machine_id')
+			});
+			await route.fulfill({ status: 200, json: { state: 'ready', message: null } });
+			return true;
+		}
+		if (/^\/api\/v1\/subscriptions\/chats\/[^/]+\/run-target$/.test(path)) {
+			requests.push({ method: request.method(), path });
+			if (mode !== 'run-target-bound') {
+				await route.fulfill({ status: 404, json: { detail: 'That chat no longer exists.' } });
+				return true;
+			}
+			await route.fulfill({
+				status: 200,
+				json: {
+					bound: true,
+					kind: 'computer',
+					machine_id: 'pc-1',
+					computer: { name: 'Work PC', kind: 'app', online: true },
+					folder_mode: 'path',
+					path: 'C:\\code\\site',
+					access: 'full',
+					source: 'bar',
+					note: null,
+					problem: null
+				}
+			});
+			return true;
+		}
+		return false;
+	}
+
 	let sessionOptions = {};
 	if (mode === 'project-tab') sessionOptions = { folderId: 'website' };
+	if (mode === 'run-target-new') sessionOptions = { path: '/' };
 	if (mode === 'folder-chip' || mode === 'folder-edit' || mode === 'folder-browse') {
 		sessionOptions = { path: '/folders/website' };
 	}
@@ -612,6 +697,9 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			return;
 		}
 		if (projectModes.has(mode) && (await routeProjectFolders(route, request, url, path))) {
+			return;
+		}
+		if (await routeRunTarget(route, request, url, path)) {
 			return;
 		}
 		if (!path.startsWith('/api/v1/subscriptions')) {
@@ -2902,6 +2990,71 @@ async function folderEditCase(browser, profile) {
 	});
 }
 
+function runTargetBar(page) {
+	return page.locator('[role="group"][aria-label="Where this chat runs"]');
+}
+
+// Dropdowns wrap their trigger in a role="button" span, so chips are found by their own class.
+function runTargetChip(bar, text) {
+	return bar.locator('button.buddy-run-target-chip').filter({ hasText: text });
+}
+
+async function runTargetNewCase(browser, profile) {
+	await runCase(browser, profile, 'run-target-new', 'run-target-new', async ({ page }, fixtures) => {
+		const bar = runTargetBar(page);
+		await bar.waitFor();
+		const readiness = () =>
+			fixtures.requests.filter((request) => request.path === '/api/v1/subscriptions/run-target/readiness');
+		if (profile.mobile) {
+			// One summary chip opens a sheet with every choice.
+			const summary = bar.locator('.buddy-run-target-summary');
+			assert.match(await summary.innerText(), /Detached/);
+			const box = await summary.boundingBox();
+			assert.ok(box && box.height >= 44, 'The summary chip is a full touch target');
+			await summary.click();
+			const sheet = page.getByRole('dialog', { name: 'Where this chat runs' });
+			await sheet.waitFor();
+			await sheet.getByRole('menuitemradio', { name: /Work PC/ }).click();
+			await waitUntil(() => readiness().length === 1, 'Picking a computer checks it again');
+			await sheet.getByRole('option', { name: /site C:\\code\\site/ }).click();
+			await sheet.waitFor({ state: 'hidden' });
+			await waitUntil(
+				async () => /Work PC · site · Full/.test(await summary.innerText()),
+				'The summary shows the computer, folder and access'
+			);
+		} else {
+			await runTargetChip(bar, 'Detached').click();
+			await page.getByRole('menuitemradio', { name: /Work PC/ }).click();
+			await waitUntil(() => readiness().length === 1, 'Picking a computer checks it again');
+			assert.equal(readiness()[0].provider, 'codex');
+			await runTargetChip(bar, 'Remote · Work PC').waitFor();
+			await runTargetChip(bar, 'Full access').waitFor();
+			await runTargetChip(bar, 'AI chooses').click();
+			// A folder ChatGPT worked in, checked on the computer before it is used.
+			await page.getByRole('option', { name: /^api C:\\code\\api/ }).click();
+			await runTargetChip(bar, /^\s*api\s*$/).waitFor();
+			const checks = fixtures.requests.filter((request) => request.path.endsWith('/folders/check'));
+			assert.deepEqual(checks.map((request) => request.body), [{ path: 'C:\\code\\api' }]);
+		}
+		await captureScreenshot(page, `run-target-new-${profile.name}`);
+	});
+}
+
+async function runTargetBoundCase(browser, profile) {
+	await runCase(browser, profile, 'run-target-bound', 'run-target-bound', async ({ page }) => {
+		const bar = runTargetBar(page);
+		await bar.waitFor();
+		if (profile.mobile) {
+			await bar.locator('.buddy-run-target-summary').filter({ hasText: 'Work PC · site · Full' }).click();
+		} else {
+			await runTargetChip(bar, 'Work PC · site · Full').click();
+		}
+		await page.getByText('This chat runs on Work PC, in site, with Full access.').waitFor();
+		await page.getByRole('button', { name: 'New chat here' }).waitFor();
+		await captureScreenshot(page, `run-target-bound-${profile.name}`);
+	});
+}
+
 async function folderBrowseCase(browser, profile) {
 	await runCase(browser, profile, 'folder-browse', 'folder-browse', async ({ page }, fixtures) => {
 		await page.locator('button[aria-label="Folder options"]').click();
@@ -2948,6 +3101,8 @@ try {
 		await folderChipCase(browser, profile);
 		await folderEditCase(browser, profile);
 		await folderBrowseCase(browser, profile);
+		await runTargetNewCase(browser, profile);
+		await runTargetBoundCase(browser, profile);
 		await cancellationCase(browser, profile, 'x');
 		await cancellationCase(browser, profile, 'escape');
 		await cancellationCase(browser, profile, 'backdrop');
