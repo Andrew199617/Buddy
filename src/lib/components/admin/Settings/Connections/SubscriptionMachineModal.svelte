@@ -1,10 +1,8 @@
 <script context="module" lang="ts">
 	import { writable } from 'svelte/store';
-	import type { SubscriptionMachine as MachineRegistryEntry } from '$lib/apis/subscriptions';
 
 	// Dismissing a dialog does not undo an accepted registry write.
 	const pendingMutations = writable(0);
-	const machineChanges = writable<MachineRegistryEntry[] | null>(null);
 </script>
 
 <script lang="ts">
@@ -19,6 +17,8 @@
 		type SubscriptionMachineInfo,
 		type SubscriptionProvider
 	} from '$lib/apis/subscriptions';
+
+	import { machineRegistryChanges } from './machine-registry';
 
 	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
@@ -118,7 +118,7 @@
 
 	onMount(() => {
 		let initial = true;
-		return machineChanges.subscribe((machines) => {
+		return machineRegistryChanges.subscribe((machines) => {
 			if (initial) {
 				initial = false;
 				return;
@@ -181,7 +181,7 @@
 				browser_url: browserUrl.trim() || null,
 				key: key.trim() || undefined
 			});
-			machineChanges.set(result.machines);
+			machineRegistryChanges.set(result.machines);
 			if (isCurrent()) {
 				toast.success($i18n.t('Saved {{name}}', { name: result.machine.name }));
 				show = false;
@@ -204,7 +204,7 @@
 			}
 			const machineName = machine.name;
 			const result = await deleteSubscriptionMachine(localStorage.token, machine.id);
-			machineChanges.set(result.machines);
+			machineRegistryChanges.set(result.machines);
 			if (isCurrent()) {
 				toast.success($i18n.t('Removed {{name}}', { name: machineName }));
 				show = false;

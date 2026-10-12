@@ -13,6 +13,7 @@
 	import { createRunnerEnrollment } from '$lib/apis/runners';
 	import { getDesktop, type DesktopStatus } from '$lib/desktop/bridge';
 	import { refreshModelList } from '$lib/utils/model-list';
+	import { machineRegistryChanges } from '$lib/components/admin/Settings/Connections/machine-registry';
 
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import SubscriptionConnection from '$lib/components/admin/Settings/Connections/SubscriptionConnection.svelte';
@@ -80,9 +81,23 @@
 		});
 	};
 
+	// A machine an administrator just added, edited or removed in AI plans can
+	// change which computer a plan runs on, so the cards and model list reload.
+	const watchMachineRegistry = () => {
+		let initial = true;
+		return machineRegistryChanges.subscribe((changed) => {
+			if (initial) {
+				initial = false;
+				return;
+			}
+			if (!disposed && changed) reloadAfterChange();
+		});
+	};
+
 	onMount(() => {
 		load();
 		watchDesktop();
+		return watchMachineRegistry();
 	});
 
 	onDestroy(() => {
