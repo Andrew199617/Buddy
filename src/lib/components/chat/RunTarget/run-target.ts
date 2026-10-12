@@ -269,3 +269,41 @@ export function folderLabel(draft: RunTargetDraft): FolderLabel {
 	const name = parts[parts.length - 1] ?? draft.folder.path;
 	return { kind: 'path', name, path: draft.folder.path };
 }
+
+/** The draft as a started chat's target, shown read-only until the server's own answer arrives. */
+export function detailsFromDraft(
+	draft: RunTargetDraft,
+	options: RunTargetOptions
+): ChatRunTargetDetails {
+	const computer = computerById(options, draft.machineId);
+	if (draft.kind === 'detached' || !computer) {
+		return {
+			kind: 'detached',
+			machine_id: null,
+			computer: null,
+			folder_mode: 'none',
+			path: null,
+			access: 'chat',
+			source: 'bar',
+			note: null,
+			problem: null
+		};
+	}
+	let path: string | null = null;
+	let folderMode: 'path' | 'auto' = 'auto';
+	if (draft.folder?.mode === 'path') {
+		folderMode = 'path';
+		path = draft.folder.path;
+	}
+	return {
+		kind: 'computer',
+		machine_id: computer.machine_id,
+		computer: { name: computer.name, kind: computer.kind, online: computer.online },
+		folder_mode: folderMode,
+		path,
+		access: draft.access,
+		source: 'bar',
+		note: null,
+		problem: null
+	};
+}
