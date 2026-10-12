@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('$lib/utils', () => ({ getTimeRange: vi.fn() }));
 vi.mock('$lib/constants', () => ({ WEBUI_API_BASE_URL: '/api/v1' }));
 
-import { getChatUnreadSummary } from './index';
+import { createNewChat, getChatUnreadSummary } from './index';
 
 const fetchMock = vi.fn();
 
@@ -14,6 +14,21 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.unstubAllGlobals();
+});
+
+describe('creating a chat', () => {
+	it('sends where the chat runs only when the bar chose', async () => {
+		fetchMock.mockResolvedValue({ ok: true, json: async () => ({ id: 'chat-1' }) });
+		const runTarget = { kind: 'detached', access: 'chat' };
+		await createNewChat('token', { title: 'New Chat' }, null, null, runTarget);
+		await createNewChat('token', { title: 'New Chat' }, 'folder-1');
+		const [withTarget, without] = fetchMock.mock.calls.map(([, options]) =>
+			JSON.parse(options.body)
+		);
+		expect(withTarget.run_target).toEqual(runTarget);
+		expect('run_target' in without).toBe(false);
+		expect(without.folder_id).toBe('folder-1');
+	});
 });
 
 describe('chat unread summary API', () => {

@@ -222,3 +222,25 @@ export function sameDraft(first: ProjectDraft, second: ProjectDraft): boolean {
 	if (firstKeys.join('\n') !== secondKeys.join('\n')) return false;
 	return firstKeys.every((key) => first.paths[key] === second.paths[key]);
 }
+
+export type SuggestionTools = 'claude' | 'codex' | 'both';
+
+/** Which CLIs worked in a suggested folder. */
+export function suggestionTools(sources: string[]): SuggestionTools {
+	const claude = sources.includes('claude');
+	const codex = sources.includes('codex');
+	if (claude && codex) return 'both';
+	if (codex) return 'codex';
+	return 'claude';
+}
+
+export type LastUsed = { unit: 'today' | 'yesterday' | 'days' | 'months'; count: number };
+
+/** How long ago a folder was used, from day-rounded seconds. */
+export function lastUsedAgo(lastUsed: number, nowSeconds: number): LastUsed {
+	const days = Math.max(0, Math.floor((nowSeconds - lastUsed) / 86400));
+	if (days === 0) return { unit: 'today', count: 0 };
+	if (days === 1) return { unit: 'yesterday', count: 1 };
+	if (days < 60) return { unit: 'days', count: days };
+	return { unit: 'months', count: Math.floor(days / 30) };
+}

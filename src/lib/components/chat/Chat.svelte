@@ -111,7 +111,26 @@
 	import { createOpenAITextStream } from '$lib/apis/streaming';
 	import { getFunctions } from '$lib/apis/functions';
 	import { consumeOAuthCancellation, initiateOAuthRedirect } from '$lib/apis/configs';
-	import { updateFolderById } from '$lib/apis/folders';
+	import { getFolderById, updateFolderById } from '$lib/apis/folders';
+	import {
+		getChatRunTarget,
+		getRunTargetOptions,
+		type ChatRunTarget,
+		type ChatRunTargetDetails,
+		type RunTargetOptions
+	} from '$lib/apis/subscriptions';
+	import { thisPcMachineId } from '$lib/desktop/this-pc';
+	import { pendingRunTarget } from './RunTarget/pending';
+	import { chatProjectTarget } from './ProjectPanel/project-session';
+	import {
+		detailsFromDraft,
+		draftFromDefault,
+		draftFromTarget,
+		planProvidersFor,
+		refreshUntouched,
+		requestFromDraft,
+		type RunTargetDraft
+	} from './RunTarget/run-target';
 
 	import Banner from '../common/Banner.svelte';
 	import MessageInput from '$lib/components/chat/MessageInput.svelte';
@@ -441,6 +460,19 @@
 	let params = {};
 	let chatVariables = {};
 	let showChatVariablesModal = false;
+
+	// Where the chat runs: the bar's options and draft before the first message,
+	// and the chat's own target after it. See chat/RunTarget/.
+	let runTargetOptions: RunTargetOptions | null = null;
+	let runTargetDraft: RunTargetDraft | null = null;
+	let chatRunTarget: ChatRunTarget | null = null;
+	// Each load bumps its counter, so an older answer never replaces a newer one.
+	let runTargetOptionsLoad = 0;
+	let chatRunTargetLoad = 0;
+	// True until the newest load answers, so the side panel waits for the chat's own folder.
+	let runTargetOptionsLoading = false;
+	let chatRunTargetLoading = false;
+	let runTargetProvidersKey = '';
 	let loadedChatIdProp = '';
 	let currentDraftKey = '';
 
@@ -751,6 +783,148 @@
 	let oldSelectedModelIds = [''];
 	$: if (!equal(selectedModelIds, oldSelectedModelIds)) {
 		onSelectedModelIdsChange();
+	}
+
+	$: refreshRunTargetForModels(planProvidersFor(selectedModelIds, $models));
+
+	/** A model change before the first message can change the plans' default access. */
+	function refreshRunTargetForModels(providers: ReturnType<typeof planProvidersFor>) {
+		const key = providers.join(',');
+		if (key === runTargetProvidersKey) return;
+		runTargetProvidersKey = key;
+		if (!runTargetOptions || !runTargetDraft || history?.currentId) return;
+		runTargetDraft = refreshUntouched(runTargetDraft, runTargetOptions, providers);
+	}
+
+	// The Buddy app says which computer it runs on a moment after the page loads. A new
+	// chat's untouched choices then follow it, since its chat folder may prefer this PC.
+	let runTargetThisPc: string | null = null;
+
+	$: refreshRunTargetForThisPc($thisPcMachineId);
+
+	function refreshRunTargetForThisPc(machineId: string | null) {
+		if (machineId === runTargetThisPc) return;
+		runTargetThisPc = machineId;
+		if (embedded || history?.currentId || chatIdProp) return;
+		void loadRunTargetOptions(false);
+	}
+
+	/** What the bar offers here, and the draft a new chat starts with. */
+	async function loadRunTargetOptions(startNewDraft: boolean) {
+		const load = ++runTargetOptionsLoad;
+		runTargetOptionsLoading = true;
+		const options = await getRunTargetOptions(localStorage.token, {
+			folderId: $selectedFolder?.id ?? null,
+			thisMachineId: $thisPcMachineId
+		}).catch(() => null);
+		if (load !== runTargetOptionsLoad) return;
+		runTargetOptionsLoading = false;
+		runTargetOptions = options;
+		if (!options?.allowed || !options.default || history?.currentId) {
+			runTargetDraft = null;
+			return;
+		}
+		const providers = planProvidersFor(selectedModelIds, $models);
+		const pending = get(pendingRunTarget);
+		if (pending) {
+			// "New chat here" is used by the first load of the new chat, whichever that is.
+			pendingRunTarget.set(null);
+			runTargetDraft = draftFromTarget(pending, options);
+		} else if (runTargetDraft && !startNewDraft) {
+			runTargetDraft = refreshUntouched(runTargetDraft, options, providers);
+		} else {
+			runTargetDraft = draftFromDefault(options, providers);
+		}
+	}
+
+	/** Whether the bar shows for a saved chat, and its computers: the options in its own chat folder. */
+	async function loadSavedChatRunTargetOptions(folderId: string | null) {
+		const load = ++runTargetOptionsLoad;
+		runTargetOptionsLoading = true;
+		const options = await getRunTargetOptions(localStorage.token, { folderId }).catch(() => null);
+		if (load !== runTargetOptionsLoad) return;
+		runTargetOptionsLoading = false;
+		runTargetOptions = options;
+	}
+
+	async function loadChatRunTarget(id: string) {
+		const load = ++chatRunTargetLoad;
+		chatRunTargetLoading = true;
+		const target = await getChatRunTarget(localStorage.token, id).catch(() => null);
+		if (load !== chatRunTargetLoad) return;
+		chatRunTargetLoading = false;
+		chatRunTarget = target;
+	}
+
+	/** The Project tab's "Check again" for the chat's own folder: is its computer online now? */
+	function recheckChatTargetComputer() {
+		void loadSavedChatRunTargetOptions(sidePanelFolderId);
+	}
+
+	/** Drops the open chat's target and any answer still on its way for it. */
+	function forgetChatRunTarget() {
+		chatRunTargetLoad += 1;
+		chatRunTargetLoading = false;
+		chatRunTarget = null;
+	}
+
+	/** The first send of a new or temporary chat carries where it runs; a saved chat's is fixed. */
+	function runTargetBody(chatIdForTurn: string) {
+		if (!runTargetDraft || !runTargetOptions?.allowed) return {};
+		const temporary = $temporaryChatEnabled || isTemporaryChatId(chatIdForTurn);
+		if (chatIdForTurn && !temporary) return {};
+		return { run_target: requestFromDraft(runTargetDraft) };
+	}
+
+	function runTargetForNewChat() {
+		if (!runTargetDraft || !runTargetOptions?.allowed) return null;
+		return requestFromDraft(runTargetDraft);
+	}
+
+	/** "New chat here": a new chat in the same chat folder, starting where this one runs. */
+	async function newChatHere(details: ChatRunTargetDetails | null) {
+		if (details) pendingRunTarget.set(details);
+		// The open chat's folder; `chat` can still be an earlier chat after one started in place.
+		const folderId = sidePanelFolderId;
+		if (!folderId) {
+			selectedFolder.set(null);
+			await goto('/');
+			return;
+		}
+		const folder = await getFolderById(localStorage.token, folderId).catch(() => null);
+		if (folder) await selectedFolder.set(folder);
+		await goto(`/folders/${folderId}`);
+	}
+
+	$: runTargetVisible =
+		!embedded &&
+		!readOnly &&
+		runTargetOptions?.allowed === true &&
+		runTargetOptions?.has_plans === true;
+	// Until the server answers, a chat that just started shows the draft it was sent with.
+	$: shownRunTarget = shownTarget(chatRunTarget, runTargetDraft, runTargetOptions, history);
+
+	function shownTarget(
+		target: ChatRunTarget | null,
+		draft: RunTargetDraft | null,
+		options: RunTargetOptions | null,
+		currentHistory
+	): ChatRunTarget | null {
+		if (target) return target;
+		if (!draft || !options || !currentHistory?.currentId) return null;
+		return { bound: true, ...detailsFromDraft(draft, options) };
+	}
+
+	// A chat that runs in an exact folder opens that folder in its Project tab.
+	$: projectChatTargetLoading = chatRunTargetLoading || runTargetOptionsLoading;
+	$: projectChatTarget = chatProjectTarget(
+		boundDetails(shownRunTarget),
+		runTargetOptions?.computers ?? []
+	);
+
+	function boundDetails(target: ChatRunTarget | null): ChatRunTargetDetails | null {
+		if (!target || !target.bound) return null;
+		return target;
 	}
 
 	const onSelectedModelIdsChange = () => {
@@ -1630,6 +1804,10 @@
 
 				console.log('Set selectedModels from folder data:', selectedModels);
 			}
+			// A new chat's defaults come from its chat folder.
+			if (!history?.currentId && !chatIdProp && !embedded) {
+				void loadRunTargetOptions(false);
+			}
 		});
 
 		const storageChatInput = sessionStorage.getItem(
@@ -2193,6 +2371,9 @@
 		chatVariables = {};
 		taskIds = null;
 		chatTasks = [];
+		forgetChatRunTarget();
+		runTargetDraft = null;
+		if (!embedded) void loadRunTargetOptions(true);
 
 		if ($page.url.searchParams.get('youtube')) {
 			await uploadWeb(`https://www.youtube.com/watch?v=${$page.url.searchParams.get('youtube')}`);
@@ -2327,6 +2508,14 @@
 
 			const chatContent = chat.chat;
 			chatVariables = chat?.variables ?? {};
+			runTargetDraft = null;
+			forgetChatRunTarget();
+			// readOnly updates after this function; only the chat's owner sees where it runs.
+			if (!embedded && chat.user_id === $user?.id) {
+				// Options say whether the bar shows; the chat's target is what it shows.
+				void loadSavedChatRunTargetOptions(chat.folder_id ?? null);
+				void loadChatRunTarget($chatId);
+			}
 
 			if (chatContent) {
 				noteChatDebug('chat payload found', {
@@ -3634,6 +3823,7 @@
 					)
 				},
 				...(useChatVariablesFallback ? { chat_variables: chatVariables } : {}),
+				...runTargetBody(_chatId),
 				model_item: $models.find((m) => m.id === model.id),
 
 				session_id: $socket?.id,
@@ -3712,6 +3902,8 @@
 					});
 					await chatId.set(res.chat_id);
 					if (!$temporaryChatEnabled && !embedded) {
+						// Confirm where the new chat runs, and show it if the server refused the choice.
+						void loadChatRunTarget(res.chat_id);
 						window.history.replaceState(window.history.state, '', `/c/${res.chat_id}`);
 						await refreshChatList(localStorage.token);
 
@@ -3991,7 +4183,8 @@
 					timestamp: Date.now()
 				},
 				$selectedFolder?.id,
-				chatVariables
+				chatVariables,
+				runTargetForNewChat()
 			);
 
 			_chatId = chat.id;
@@ -4388,7 +4581,8 @@
 											timestamp: Date.now()
 										},
 										null,
-										chatVariables
+										chatVariables,
+										runTargetForNewChat()
 									);
 
 									if (savedChat) {
@@ -4505,6 +4699,10 @@
 										onQueueSendNow={sendQueuedMessageNow}
 										onQueueEdit={editQueuedMessage}
 										onQueueDelete={deleteQueuedMessage}
+										showRunTarget={runTargetVisible && shownRunTarget !== null}
+										{runTargetOptions}
+										runTarget={shownRunTarget}
+										onRunTargetNewChat={newChatHere}
 										onChange={(data: any) => {
 											if (!$temporaryChatEnabled) {
 												saveDraft(data, getDraftChatId());
@@ -4650,6 +4848,12 @@
 									onQueueEdit={editQueuedMessage}
 									onQueueDelete={deleteQueuedMessage}
 									onWebSearchToggle={handleWebSearchToggle}
+									showRunTarget={runTargetVisible && runTargetDraft !== null}
+									{runTargetOptions}
+									{runTargetDraft}
+									onRunTargetChange={(draft) => {
+										runTargetDraft = draft;
+									}}
 									on:chatVariables={() => {
 										showChatVariablesModal = true;
 									}}
@@ -4693,6 +4897,9 @@
 						{eventTarget}
 						{codeInterpreterEnabled}
 						folderId={sidePanelFolderId}
+						chatTarget={projectChatTarget}
+						chatTargetLoading={projectChatTargetLoading}
+						onChatTargetCheck={recheckChatTargetComputer}
 					/>
 				{/if}
 			</div>

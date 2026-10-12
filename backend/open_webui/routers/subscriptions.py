@@ -16,16 +16,23 @@ Routes:
   GET    /admin/policy             — who may use machines, and which sign-ins are allowed
   POST   /admin/policy             — save that policy
   POST   /machines/{machine}/folders/check — check that a folder exists on one of the user's computers
+  GET    /machines/{machine}/folders   — folder names in one folder there (?path=, hidden, prefix); drives for no path
+  GET    /machines/{machine}/folders/suggested — folders Claude Code and Codex worked in there
+  GET    /run-target/options       — what the composer's bar offers for a new chat (?folder_id=, this_machine_id=)
+  GET    /run-target/readiness     — check one plan on one computer again (?provider=, machine_id=)
+  GET    /chats/{chat}/run-target  — where the person's chat runs; only its owner sees it
+  GET    /machines/{machine}/settings — where plans start there, and which CLIs they run
+  PUT    /machines/{machine}/settings — save those, checked on that computer
   GET    /folders/{folder}/project — the user's project folder for a chat folder, and their computers
   PUT    /folders/{folder}/project — choose it: let the AI choose, an exact folder per computer, or no files
   DELETE /folders/{folder}/project — forget it, so the chat folder follows its parent again
   GET    /{provider}               — one provider (?refresh=true checks again)
   POST   /{provider}/config        — save enable, access, workspace, CLI path, machine
-  POST   /{provider}/login         — start signing in (browser or device code)
-  GET    /{provider}/login         — sign-in progress
+  POST   /{provider}/login         — start signing in (browser or device code) on a computer, or the plan's own
+  GET    /{provider}/login         — sign-in progress (?machine_id= for one computer)
   POST   /{provider}/login/code    — paste the code shown after approving (Claude)
   DELETE /{provider}/login         — cancel signing in
-  POST   /{provider}/logout        — sign the CLI out, or forget the stored token or key it uses
+  POST   /{provider}/logout        — sign the CLI out on a computer, or forget the stored token or key it uses
   PUT    /{provider}/credentials/api_key    — keep the user's own API key and use it everywhere
   PUT    /claude/credentials/plan_token     — keep a one-year Claude token and use it everywhere
   DELETE /{provider}/credentials/{kind}     — forget a stored token or key
@@ -65,12 +72,15 @@ class LoginForm(BaseModel):
     method: Literal['browser', 'device'] = 'browser'
     expected_machine_id: Optional[str] = None
     expected_machine_revision: Optional[str] = None
+    # The computer to sign in on; without it, the plan's own computer.
+    machine_id: Optional[str] = None
 
 
 class LoginCodeForm(BaseModel):
     code: str
     expected_machine_id: Optional[str] = None
     expected_machine_revision: Optional[str] = None
+    machine_id: Optional[str] = None
 
 
 class MachineForm(BaseModel):
@@ -252,11 +262,24 @@ class FolderCheckForm(BaseModel):
     path: str
 
 
+class ComputerSettingsForm(BaseModel):
+    model_config = {'extra': 'forbid'}
+    # The computer's revision the page showed, so a computer set up again is not changed.
+    expected_revision: str
+    start_folder: str = ''
+    cli_paths: dict[str, str] = {}
+
+
 class FolderProjectForm(BaseModel):
     model_config = {'extra': 'forbid'}
     mode: Literal['auto', 'folder', 'chat']
     # Machine ID to folder path; only for mode 'folder'.
     paths: dict[str, str] = {}
+    # What new chats in the folder start with: a computer and access, '' for the usual default.
+    machine_id: str = ''
+    access: Literal['', 'chat', 'read', 'full'] = ''
+    # More folders new chats here can pick from, per machine ID.
+    offered: dict[str, list[str]] = {}
 
 
 @router.post('/machines/{machine_id}/folders/check')
@@ -264,6 +287,68 @@ async def check_folder_on_machine(machine_id: str, form_data: FolderCheckForm, u
     try:
         return {'path': await service.check_machine_folder(user, machine_id, form_data.path)}
     except SubscriptionError as error:
+        raise _bad_request(error)
+
+
+@router.get('/machines/{machine_id}/folders')
+async def list_folders_on_machine(
+    machine_id: str,
+    path: str = '',
+    hidden: bool = False,
+    prefix: str = '',
+    user=Depends(get_machine_session_user),
+):
+    try:
+        return await service.list_machine_folders(user, machine_id, path, hidden, prefix)
+    except SubscriptionError as error:
+        raise _bad_request(error)
+
+
+@router.get('/machines/{machine_id}/folders/suggested')
+async def suggested_folders_on_machine(machine_id: str, user=Depends(get_machine_session_user)):
+    try:
+        return await service.suggested_machine_folders(user, machine_id)
+    except SubscriptionError as error:
+        raise _bad_request(error)
+
+
+@router.get('/run-target/options')
+async def get_run_target_options(
+    folder_id: Optional[str] = None, this_machine_id: Optional[str] = None, user=Depends(get_verified_user)
+):
+    return await service.run_target_options(user, folder_id, this_machine_id)
+
+
+@router.get('/run-target/readiness')
+async def get_run_target_readiness(provider: str, machine_id: str, user=Depends(get_machine_user)):
+    try:
+        return await service.run_target_readiness(user, provider, machine_id)
+    except SubscriptionError as error:
+        raise _bad_request(error)
+
+
+@router.get('/chats/{chat_id}/run-target')
+async def get_chat_run_target(chat_id: str, user=Depends(get_verified_user)):
+    return await service.describe_chat_run_target(user, chat_id)
+
+
+@router.get('/machines/{machine_id}/settings')
+async def get_computer_settings(machine_id: str, user=Depends(get_machine_user)):
+    try:
+        return await service.describe_computer_settings(user.id, machine_id)
+    except SubscriptionError as error:
+        raise _bad_request(error)
+
+
+@router.put('/machines/{machine_id}/settings')
+async def save_computer_settings(
+    machine_id: str, form_data: ComputerSettingsForm, user=Depends(get_machine_session_user)
+):
+    try:
+        return await service.save_computer_settings(
+            user.id, machine_id, form_data.expected_revision, form_data.start_folder, form_data.cli_paths
+        )
+    except (SubscriptionError, OSError) as error:
         raise _bad_request(error)
 
 
@@ -275,7 +360,10 @@ async def get_folder_project(folder_id: str, user=Depends(get_machine_user)):
 @router.put('/folders/{folder_id}/project')
 async def save_folder_project(folder_id: str, form_data: FolderProjectForm, user=Depends(get_machine_session_user)):
     try:
-        return await service.save_folder_project(user, folder_id, form_data.mode, form_data.paths)
+        return await service.save_folder_project(
+            user, folder_id, form_data.mode, form_data.paths, machine_id=form_data.machine_id,
+            access=form_data.access, offered=form_data.offered
+        )
     except SubscriptionError as error:
         raise _bad_request(error)
 
@@ -295,7 +383,7 @@ async def get_subscription(
 ):
     return await service.describe_provider(
         user.id, provider_id, fresh=refresh, expected_machine_id=expected_machine_id,
-        expected_machine_revision=expected_machine_revision
+        expected_machine_revision=expected_machine_revision, check_computers=refresh
     )
 
 
@@ -316,7 +404,8 @@ async def update_subscription_config(
 async def start_subscription_login(provider_id: str, form_data: LoginForm, user=Depends(get_machine_session_user)):
     try:
         return await service.start_login(
-            user.id, provider_id, form_data.method, form_data.expected_machine_id, form_data.expected_machine_revision
+            user.id, provider_id, form_data.method, form_data.expected_machine_id,
+            form_data.expected_machine_revision, machine_id=form_data.machine_id
         )
     except (SubscriptionError, OSError) as error:
         raise _bad_request(error)
@@ -325,9 +414,15 @@ async def start_subscription_login(provider_id: str, form_data: LoginForm, user=
 @router.get('/{provider_id}/login')
 async def get_subscription_login(
     provider_id: str, expected_machine_id: Optional[str] = None,
-    expected_machine_revision: Optional[str] = None, user=Depends(get_machine_user)
+    expected_machine_revision: Optional[str] = None, machine_id: Optional[str] = None,
+    user=Depends(get_machine_user)
 ):
-    return await service.login_state(user.id, provider_id, expected_machine_id, expected_machine_revision)
+    try:
+        return await service.login_state(
+            user.id, provider_id, expected_machine_id, expected_machine_revision, machine_id=machine_id
+        )
+    except SubscriptionError as error:
+        raise _bad_request(error)
 
 
 @router.post('/{provider_id}/login/code')
@@ -338,7 +433,8 @@ async def submit_subscription_login_code(
 ):
     try:
         return await service.submit_login_code(
-            user.id, provider_id, form_data.code, form_data.expected_machine_id, form_data.expected_machine_revision
+            user.id, provider_id, form_data.code, form_data.expected_machine_id,
+            form_data.expected_machine_revision, machine_id=form_data.machine_id
         )
     except (SubscriptionError, OSError) as error:
         raise _bad_request(error)
@@ -347,10 +443,13 @@ async def submit_subscription_login_code(
 @router.delete('/{provider_id}/login')
 async def cancel_subscription_login(
     provider_id: str, expected_machine_id: Optional[str] = None,
-    expected_machine_revision: Optional[str] = None, user=Depends(get_machine_session_user)
+    expected_machine_revision: Optional[str] = None, machine_id: Optional[str] = None,
+    user=Depends(get_machine_session_user)
 ):
     try:
-        return await service.cancel_login(user.id, provider_id, expected_machine_id, expected_machine_revision)
+        return await service.cancel_login(
+            user.id, provider_id, expected_machine_id, expected_machine_revision, machine_id=machine_id
+        )
     except (SubscriptionError, OSError) as error:
         raise _bad_request(error)
 
@@ -358,12 +457,17 @@ async def cancel_subscription_login(
 @router.post('/{provider_id}/logout')
 async def logout_subscription(
     provider_id: str, expected_machine_id: Optional[str] = None,
-    expected_machine_revision: Optional[str] = None, user=Depends(get_machine_session_user)
+    expected_machine_revision: Optional[str] = None, machine_id: Optional[str] = None,
+    user=Depends(get_machine_session_user)
 ):
     try:
-        await service.logout(user.id, provider_id, expected_machine_id, expected_machine_revision)
+        await service.logout(
+            user.id, provider_id, expected_machine_id, expected_machine_revision, machine_id=machine_id
+        )
     except (SubscriptionError, OSError) as error:
         raise _bad_request(error)
+    if machine_id is not None:
+        return await service.describe_provider(user.id, provider_id, fresh=True)
     return await service.describe_provider(
         user.id, provider_id, fresh=True, expected_machine_id=expected_machine_id,
         expected_machine_revision=expected_machine_revision

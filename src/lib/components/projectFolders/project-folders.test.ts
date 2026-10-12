@@ -10,11 +10,13 @@ import {
 	grantContaining,
 	joinSharedPath,
 	lastSegment,
+	lastUsedAgo,
 	needsAttention,
 	parentWithinRoot,
 	plansToAllow,
 	plansWithoutComputer,
 	sameDraft,
+	suggestionTools,
 	waitsForOwnChoice
 } from './project-folders';
 
@@ -25,6 +27,7 @@ const workPc: ProjectFolderComputer = {
 	online: true,
 	platform: 'win32',
 	can_browse: true,
+	folders: 'on',
 	providers: [{ id: 'claude', name: 'Claude', access: 'full' }],
 	recent_paths: []
 };
@@ -60,7 +63,15 @@ function project(overrides: Partial<FolderProject> = {}): FolderProject {
 }
 
 function choice(mode: 'auto' | 'folder' | 'chat', paths = {}, folderName = 'Website') {
-	return { folder_id: 'f', folder_name: folderName, mode, paths };
+	return {
+		folder_id: 'f',
+		folder_name: folderName,
+		mode,
+		paths,
+		machine_id: '',
+		access: '' as const,
+		offered: {}
+	};
 }
 
 describe('the effective choice', () => {
@@ -252,5 +263,23 @@ describe('drafts', () => {
 		expect(
 			sameDraft({ mode: 'folder', paths: { a: 'x' } }, { mode: 'folder', paths: { a: 'y' } })
 		).toBe(false);
+	});
+});
+
+describe('suggested folders', () => {
+	it('name the CLIs that worked there', () => {
+		expect(suggestionTools(['claude'])).toBe('claude');
+		expect(suggestionTools(['codex'])).toBe('codex');
+		expect(suggestionTools(['codex', 'claude'])).toBe('both');
+	});
+
+	it('say how long ago, in days then months', () => {
+		const day = 86400;
+		const now = 100 * day + 500;
+		expect(lastUsedAgo(100 * day, now)).toEqual({ unit: 'today', count: 0 });
+		expect(lastUsedAgo(99 * day, now)).toEqual({ unit: 'yesterday', count: 1 });
+		expect(lastUsedAgo(90 * day, now)).toEqual({ unit: 'days', count: 10 });
+		expect(lastUsedAgo(10 * day, now)).toEqual({ unit: 'months', count: 3 });
+		expect(lastUsedAgo(200 * day, now)).toEqual({ unit: 'today', count: 0 });
 	});
 });

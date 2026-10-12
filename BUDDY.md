@@ -128,46 +128,99 @@ and saved tokens stay intact; Buddy registers a separate dynamic client when a
 new callback address is needed. For static OAuth credentials, the provider must
 also allow that exact callback URI.
 
+## Where a chat runs
+
+With Claude or ChatGPT plans set up (see
+[Claude and ChatGPT subscriptions](#claude-and-chatgpt-subscriptions)), a bar
+above the message box says where a new chat runs:
+
+- **Run on**: **Local** is the computer you are using, when the Buddy app runs
+  on it. **Remote** lists your other computers. **Detached** uses no computer
+  at all. Each computer shows whether its plans are ready, offline, or need
+  signing in there.
+- **Folder**: on a computer, an exact folder, or **Let the AI choose**, which
+  starts in that computer's start folder. The list offers the chat folder's
+  project folder, your recent folders, and the folders Claude Code and Codex
+  worked in on that computer. **Choose folder…** opens the Windows folder
+  dialog in the app, **Browse** browses the computer from any browser or
+  phone, and you can paste a full path. Buddy checks that the folder exists
+  first. Suggestions and browsing list folder names only, and need **Let
+  Buddy suggest and browse folders** allowed once in the Buddy app on that
+  computer; without it, type the path.
+- **Access**: **Chat only**, **Read files** or **Full access** for this chat.
+  It starts at the plan's default (see
+  [What the models may do](#what-the-models-may-do)).
+
+On a phone the bar is one chip that opens a sheet with the same choices.
+
+A new chat runs **Detached** unless you choose otherwise or its chat folder
+says otherwise (see [Project folders](#project-folders)). A Detached chat is
+Chat only, with no folder or files. Buddy runs it on one of your computers
+where the plan is signed in, or on This server when the administrator allows
+it. Chats Buddy starts for you, such as automations, get the same default as a
+new chat. Replies in channels always run Detached.
+
+Where a chat runs is set when it starts. Afterwards the bar shows it read-only;
+tap it for the details and **New chat here**, which starts a new chat in the
+same chat folder with the same choices. If that computer is offline, was set
+up again or removed, or the folder no longer exists, Buddy refuses with a
+reason instead of working somewhere else. A clone or branch of your own chat
+runs where the original runs; a copy of a chat someone else shared starts like
+a new chat. Chats from before this keep running where they did: as their chat
+folder says, or else on their plan's computer, letting the AI choose the
+folder.
+
+### The main chat
+
+The **Main chat** button next to **New chat** opens your main chat: one
+always-on Detached chat, the same on every device. Once its context grows past
+60,000 tokens, Buddy summarizes its older messages, so it can run as long as
+you like. That needs **Context Compaction** turned on in Admin Settings →
+Interface; until then the main chat keeps its whole history like any other
+chat. If you delete it, the button starts a new one.
+
 ## Project folders
 
-A chat folder can say where Claude and ChatGPT work for the chats in it. Open
-the folder's settings (**Edit**, or the chip under the folder's title) and
-choose its **Project folder**:
+A chat folder sets the defaults for new chats in it: where they run, which
+folder they use and with what access. The **+** next to a chat folder in the
+sidebar starts a new chat with them. Open the folder's settings (**Edit**, or
+the chip under the folder's title) and choose its **Project folder**:
 
-- **Let the AI choose** (the default): plans start in their start folder (see
+- **Let the AI choose** (the default): new chats run on a computer with the
+  plan and start in its start folder (see
   [What the models may do](#what-the-models-may-do)). With Full access, Buddy
   tells them to find the project you mention and to use absolute paths.
 - **A specific folder**: an exact folder on each computer. Pick it in the
   Buddy app's Windows folder dialog, from the folders shared in the app, from
   recent folders, or by typing its full path. Buddy checks that it exists on
   that computer first. Network paths and whole drives are refused.
-- **No files, just chat**: plans run Chat only for chats in this folder.
+- **No files, just chat**: new chats in this folder run Detached.
 
 Subfolders follow the nearest parent folder that has a choice. The choice is
 yours alone: people you share a folder with choose their own, and Buddy never
 stores your path in the shared folder. If someone else can change a chat
 folder's system prompt or knowledge (its owner, or anyone allowed to edit it),
-its chats stay Chat only until you choose a project folder for it yourself,
+its chats stay Chat only until you choose a project folder for it yourself, or
+tick **Use files in this chat anyway** in the bar's access menu for one chat,
 just as presets written by someone else run Chat only.
 
-When a chat can't start where its folder says, Buddy refuses with a reason
-instead of working somewhere else: the folder is on another computer, that
-computer was set up again or removed, or the folder no longer exists. Chats
-outside chat folders work as before, in the plan's start folder.
+The bar starts from the folder's choice, and you can still change it before
+the first message. Changing the folder's choice later changes only new chats;
+started chats keep where they run.
 
 A project folder is where the models start, not a fence. With Full access they
 can still reach other folders, and the folder's own `CLAUDE.md`, `AGENTS.md`,
-settings and hooks run as you, so choose only folders you trust. Changing the
-choice starts a fresh CLI session for the folder's chats; their history comes
-along. Cloud computers, once built, have no exact folder: their models work in
-their own workspace.
+settings and hooks run as you, so choose only folders you trust. Cloud
+computers, once built, have no exact folder: their models work in their own
+workspace.
 
 ### The chat's Project tab
 
-In a chat inside a chat folder with a specific project folder, the side
-panel's **Project** tab opens that folder on the computer that has it. Buddy
-relays the requests over that computer's own connection, so it works from a
-phone or another browser too. It needs the Buddy app on that computer, and the
+In a chat that runs in an exact folder, the side panel's **Project** tab
+opens that folder on its computer. Other chats in a chat folder with a
+specific project folder open the folder's choice. Buddy relays the requests
+over that computer's own connection, so it works from a phone or another
+browser too. It needs the Buddy app on that computer, and the
 project folder must be inside a folder shared in the app:
 
 - **Files**: browse inside the project folder and read text files. With
@@ -239,7 +292,9 @@ Under **Settings → Machines → AI plans**:
    already includes Claude Code, which Buddy finds automatically. Install Codex
    with `npm install -g @openai/codex`.
 2. Turn on **Claude** or **ChatGPT**, open the gear button, and choose the
-   computer it **Runs on**.
+   computer it **Runs on**. That is where sign-in starts and where chats from
+   before [chat targets](#where-a-chat-runs) run; each new chat chooses its
+   own computer in the bar.
 3. Choose how it signs in:
    - **Your computer's sign-in** uses the CLI's own sign-in on that computer.
      **Sign in** starts it from Buddy. Claude shows a page to approve and a
@@ -256,6 +311,11 @@ Under **Settings → Machines → AI plans**:
      session without saving it on the computer.
 4. The models appear in your model picker, tagged **Claude plan** or
    **ChatGPT plan**. ChatGPT shows how much of its usage limit you have used.
+
+**Your computers** lists the plans on each computer. With **Your computer's
+sign-in**, each computer has its own: **Sign in here** and **Sign out** act on
+that computer only. A computer's **Advanced** settings choose its own start
+folder and CLI paths; until you save them, it uses what each plan saved.
 
 In **Your computer's sign-in**, an account that bills the API (an Anthropic
 Console login or a Codex API key login) is flagged and its models are hidden,
@@ -291,7 +351,8 @@ Runner container per person, are designed but not built yet; see
 
 ### What the models may do
 
-The gear button sets what the models may do:
+Each chat chooses its access in the bar above the message box. The gear
+button's **Default access for new chats** is where the bar starts:
 
 | Setting     | Claude Code                                        | Codex                              |
 | ----------- | -------------------------------------------------- | ---------------------------------- |
@@ -300,7 +361,7 @@ The gear button sets what the models may do:
 | Full access | All tools, including the terminal, without prompts | No sandbox, no approval prompts    |
 
 In **Read files**, Claude Code's file tools stay inside the folder it starts
-in: the chat folder's [project folder](#project-folders), or the start folder.
+in: the chat's folder, or the start folder.
 It ignores the folder's settings, hooks, MCP servers, and skills. Codex's
 read-only sandbox blocks writes but cannot limit reads to one folder (custom
 read rules need Codex's elevated Windows sandbox), so a Codex model can read
@@ -309,15 +370,15 @@ Codex MCP servers outside Full access. Instruction files in the folder
 (`CLAUDE.md`, `AGENTS.md`) can still steer the model.
 
 **Full access** lets the model edit files and run terminal commands on the
-computer as you. It starts in the chat folder's project folder, or else in the
-**Start folder** you choose (by default `workspace` in the Runner's data
-folder: `%APPDATA%\Buddy\runner\workspace` for the app,
-`~/.buddy-runner/workspace` for a Runner started on its own, or
+computer as you. It starts in the chat's folder, or else in the start folder:
+the computer's own in **Advanced**, or the plan's **Start folder** (by default
+`workspace` in the Runner's data folder: `%APPDATA%\Buddy\runner\workspace`
+for the app, `~/.buddy-runner/workspace` for a Runner started on its own, or
 `subscriptions/workspace` in Buddy's data folder on This server). Status lines
 show each command while it runs, and the reasoning block keeps a log of them.
 
 A model someone else shared with you, for example in a preset, runs on your
-own plan and computer in **Chat only**.
+own plan and computer in **Chat only**, and so does a Detached chat.
 
 Notes:
 

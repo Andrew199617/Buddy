@@ -222,6 +222,111 @@ describe('per-user machines and sign-ins', () => {
 		expect(JSON.parse(options.body)).toEqual({ path: 'C:\\code\\site' });
 	});
 
+	it('lists a computer’s folders with the path in the query, never the URL path', async () => {
+		const { listMachineFolders, getSuggestedFolders } = await import('./index');
+		await listMachineFolders('fixture-token', 'pc / 1', {
+			path: 'C:\\code',
+			hidden: true,
+			prefix: 'si'
+		});
+		const { url, options } = request();
+		expect(options.method).toBe('GET');
+		expect(url.pathname).toBe('/api/v1/subscriptions/machines/pc%20%2F%201/folders');
+		expect(url.searchParams.get('path')).toBe('C:\\code');
+		expect(url.searchParams.get('hidden')).toBe('true');
+		expect(url.searchParams.get('prefix')).toBe('si');
+		fetchMock.mockClear();
+		await listMachineFolders('fixture-token', 'pc-1');
+		expect(request().url.searchParams.get('path')).toBe('');
+		expect(request().url.searchParams.get('hidden')).toBe('false');
+		fetchMock.mockClear();
+		await getSuggestedFolders('fixture-token', 'pc / 1');
+		expect(request().url.pathname).toBe(
+			'/api/v1/subscriptions/machines/pc%20%2F%201/folders/suggested'
+		);
+	});
+
+	it('asks for the bar’s options with the folder and this computer in the query', async () => {
+		const { getRunTargetOptions } = await import('./index');
+		await getRunTargetOptions('fixture-token', { folderId: 'folder / 1', thisMachineId: 'pc 1' });
+		const { url, options } = request();
+		expect(options.method).toBe('GET');
+		expect(url.pathname).toBe('/api/v1/subscriptions/run-target/options');
+		expect(url.searchParams.get('folder_id')).toBe('folder / 1');
+		expect(url.searchParams.get('this_machine_id')).toBe('pc 1');
+		fetchMock.mockClear();
+		await getRunTargetOptions('fixture-token');
+		expect(request().url.search).toBe('');
+	});
+
+	it('checks one plan on one computer by query', async () => {
+		const { getRunTargetReadiness } = await import('./index');
+		await getRunTargetReadiness('fixture-token', 'codex', 'pc / 1');
+		const { url } = request();
+		expect(url.pathname).toBe('/api/v1/subscriptions/run-target/readiness');
+		expect(url.searchParams.get('provider')).toBe('codex');
+		expect(url.searchParams.get('machine_id')).toBe('pc / 1');
+	});
+
+	it('tells a chat that isn’t the person’s apart from a failed lookup', async () => {
+		const { getChatRunTarget } = await import('./index');
+		fetchMock.mockResolvedValueOnce({
+			ok: false,
+			status: 404,
+			json: async () => ({ detail: 'No' })
+		});
+		await expect(getChatRunTarget('fixture-token', 'chat / 1')).resolves.toBeNull();
+		expect(request().url.pathname).toBe('/api/v1/subscriptions/chats/chat%20%2F%201/run-target');
+		fetchMock.mockResolvedValueOnce({
+			ok: false,
+			status: 500,
+			json: async () => ({ detail: 'Down' })
+		});
+		await expect(getChatRunTarget('fixture-token', 'chat-1')).rejects.toBe('Down');
+	});
+
+	it('signs in and out on a chosen computer, separate from the plan’s own', async () => {
+		await startSubscriptionLogin(
+			'fixture-token',
+			'claude',
+			'device',
+			undefined,
+			revision,
+			machineId
+		);
+		expect(JSON.parse(request().options.body)).toEqual({
+			method: 'device',
+			expected_machine_revision: revision,
+			machine_id: machineId
+		});
+		fetchMock.mockClear();
+		await getSubscriptionLogin('fixture-token', 'claude', undefined, revision, machineId);
+		let url = request().url;
+		expect(url.searchParams.get('machine_id')).toBe(machineId);
+		expect(url.searchParams.get('expected_machine_id')).toBeNull();
+		fetchMock.mockClear();
+		await logoutSubscription('fixture-token', 'claude', undefined, revision, machineId);
+		url = request().url;
+		expect(url.pathname).toBe('/api/v1/subscriptions/claude/logout');
+		expect(url.searchParams.get('machine_id')).toBe(machineId);
+	});
+
+	it('reads and saves a computer’s own settings by its encoded ID', async () => {
+		const { getComputerSettings, saveComputerSettings } = await import('./index');
+		await getComputerSettings('fixture-token', 'pc / 1');
+		expect(request().url.pathname).toBe('/api/v1/subscriptions/machines/pc%20%2F%201/settings');
+		fetchMock.mockClear();
+		const settings = {
+			expected_revision: 'rev-1',
+			start_folder: 'C:\\code',
+			cli_paths: { claude: '' }
+		};
+		await saveComputerSettings('fixture-token', 'pc / 1', settings);
+		const { options } = request();
+		expect(options.method).toBe('PUT');
+		expect(JSON.parse(options.body)).toEqual(settings);
+	});
+
 	it('lets an administrator remove anyone’s machine by its encoded ID', async () => {
 		const { deleteAnySubscriptionMachine } = await import('./index');
 		await deleteAnySubscriptionMachine('fixture-token', 'machine / A');
