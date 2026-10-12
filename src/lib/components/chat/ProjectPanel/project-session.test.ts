@@ -26,6 +26,7 @@ function computer(overrides: Partial<ProjectFolderComputer> = {}): ProjectFolder
 		online: true,
 		platform: 'win32',
 		can_browse: true,
+		folders: 'on',
 		providers: [{ id: 'claude', name: 'Claude', access: 'full' }],
 		recent_paths: [],
 		...overrides

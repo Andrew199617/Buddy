@@ -420,6 +420,8 @@ export type ProjectFolderComputer = {
 	online: boolean | null;
 	platform: string | null;
 	can_browse: boolean;
+	// Whether its folders can be browsed and suggested: only with the Buddy app, when allowed there.
+	folders: 'on' | 'off' | 'offline' | 'unsupported';
 	providers: { id: SubscriptionProviderId; name: string; access: SubscriptionAccess }[];
 	recent_paths: string[];
 };
