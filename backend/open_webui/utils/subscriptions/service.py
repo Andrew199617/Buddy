@@ -1884,6 +1884,8 @@ async def _require_login_on(ref: ProviderRef, machine_id: str) -> None:
 # and saved in chat_run_target; run_targets.py holds the rules.
 
 API_KEY_TARGET_MESSAGE = "Sign in to Buddy to choose where a chat runs; API keys can't."
+# A temporary chat has no saved target; its turns carry the bar's choice under this metadata key.
+REQUESTED_RUN_TARGET_KEY = 'requested_run_target'
 
 
 @dataclass(frozen=True)
