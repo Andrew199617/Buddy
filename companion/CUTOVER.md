@@ -28,7 +28,7 @@ set, so keep `WEBUI_SECRET_KEY` unchanged.
 
 ## 3. Check the old setup still works
 
-- Admin Connections lists the PC under **Your Runner addresses (older
+- Admin Settings → AI plans lists the PC under **Your Runner addresses (older
   setup)**, and Claude and ChatGPT still run on it.
 - The first administrator is now the instance owner and keeps the existing
   provider settings. Other accounts start with none.
@@ -62,7 +62,7 @@ Once both providers run on the app's connection:
 
 1. Stop the Runner on 8765, and remove whatever starts
    `local\start-buddy-runner.ps1` at sign-in.
-2. In admin Connections, remove the PC from **Your Runner addresses (older
+2. In Admin Settings → AI plans, remove the PC from **Your Runner addresses (older
    setup)**. Removing it earlier would turn off any provider still using it.
 
 The Projects page now opens the PC through Buddy, including from a phone, so
