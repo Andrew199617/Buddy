@@ -1700,6 +1700,20 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         local = ProcessMachine({'id': 'local', 'name': 'This server', 'url': 'https://local.example.invalid', 'key': 'unused'})
         await self.assert_policy_stops_turn(local, {'server_machine': False})
 
+    async def test_a_policy_check_that_fails_still_stops_the_turn(self):
+        async def unavailable(user_id):
+            raise RuntimeError('fixture database unavailable')
+
+        self.service.Users.get_user_by_id = unavailable
+        await self.assert_policy_stops_turn(self.machines['runner-a'], {'plan_sign_in': False})
+
+    async def test_policy_saves_do_not_bring_back_deleted_users(self):
+        deleted = self.service.ProviderRef('deleted-user', 'claude')
+        # Left behind by tasks that ran before the user was deleted.
+        self.service._active_provider_tasks[deleted] = set()
+        await asyncio.wait_for(self.service.save_policy({'desktop_download_url': ''}), 1)
+        self.assertNotIn(deleted, self.service._providers)
+
     async def test_turning_off_another_sign_in_leaves_a_plan_turn_running(self):
         active, turn_finished = await self.start_blocked_claude_turn(self.machines['runner-a'])
         await asyncio.wait_for(self.service.save_policy({'api_keys': False, 'server_machine': False}), 1)
