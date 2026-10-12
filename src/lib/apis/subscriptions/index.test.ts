@@ -138,3 +138,44 @@ describe('subscription selected-computer proof', () => {
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 });
+
+describe('per-user machines and sign-ins', () => {
+	it('renames a machine with its own encoded ID', async () => {
+		const { renameSubscriptionMachine } = await import('./index');
+		await renameSubscriptionMachine('fixture-token', 'machine / A', 'Studio PC');
+		const { url, options } = request();
+		expect(options.method).toBe('PATCH');
+		expect(url.pathname).toBe('/api/v1/subscriptions/machines/machine%20%2F%20A');
+		expect(JSON.parse(options.body)).toEqual({ name: 'Studio PC' });
+	});
+
+	it('sends an API key only in the request body', async () => {
+		const { saveSubscriptionApiKey } = await import('./index');
+		await saveSubscriptionApiKey('fixture-token', 'codex', 'sk-fixture');
+		const { url, options } = request();
+		expect(options.method).toBe('PUT');
+		expect(url.pathname).toBe('/api/v1/subscriptions/codex/credentials/api_key');
+		expect(url.search).toBe('');
+		expect(JSON.parse(options.body)).toEqual({ key: 'sk-fixture' });
+	});
+
+	it('stores the Claude token under Claude only', async () => {
+		const { saveClaudePlanToken } = await import('./index');
+		await saveClaudePlanToken('fixture-token', 'sk-ant-oat01-fixture');
+		const { url, options } = request();
+		expect(options.method).toBe('PUT');
+		expect(url.pathname).toBe('/api/v1/subscriptions/claude/credentials/plan_token');
+		expect(JSON.parse(options.body)).toEqual({ token: 'sk-ant-oat01-fixture' });
+	});
+
+	it('forgets a stored sign-in and switches back to the computer', async () => {
+		const { deleteSubscriptionCredential, useMachineSignIn } = await import('./index');
+		await deleteSubscriptionCredential('fixture-token', 'claude', 'plan_token');
+		expect(request().options.method).toBe('DELETE');
+		expect(request().url.pathname).toBe('/api/v1/subscriptions/claude/credentials/plan_token');
+		fetchMock.mockClear();
+		await useMachineSignIn('fixture-token', 'codex');
+		expect(request().options.method).toBe('POST');
+		expect(request().url.pathname).toBe('/api/v1/subscriptions/codex/credentials/machine');
+	});
+});
