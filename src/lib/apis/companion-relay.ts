@@ -18,7 +18,6 @@ export function newRelayClientId(): string {
  * shared folders and its edit and command approvals.
  */
 export class RelayCompanionClient extends WorkspaceClient {
-	readonly description = 'Through Buddy';
 	readonly machineId: string;
 	private readonly buddyToken: string;
 	private readonly clientId = newRelayClientId();

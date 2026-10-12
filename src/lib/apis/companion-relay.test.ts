@@ -5,14 +5,6 @@ vi.mock('$lib/constants', () => ({ WEBUI_API_BASE_URL: '/api/v1' }));
 import { CompanionError } from './companion';
 import { RelayCompanionClient, newRelayClientId } from './companion-relay';
 
-const host = { id: 'host-1', name: 'Studio PC', platform: 'win32', version: '0.1.0' };
-const capabilities = {
-	protocol: 'buddy-workspaces',
-	version: 1,
-	host,
-	capabilities: { directories: true, files: true, workspaces: true, terminals: true, pty: false },
-	permissions: { requiresPairing: true, grants: 'host-approved', commands: 'opt-in-os-account' }
-};
 const fetchMock = vi.fn();
 const relayBase = '/api/v1/runners/machines/machine%20%2F%20A/workspace';
 
@@ -30,8 +22,7 @@ beforeEach(() => {
 	fetchMock.mockReset();
 	fetchMock.mockImplementation(async (url: string) => {
 		const path = new URL(url, 'http://buddy.invalid').pathname;
-		if (path.endsWith('/v1/capabilities')) return reply(capabilities);
-		if (path.endsWith('/v1/host')) return reply({ host });
+		if (path.endsWith('/v1/grants')) return reply({ grants: [] });
 		if (path.endsWith('/v1/directories')) return reply({ path: 'src', entries: [] });
 		return reply({ revoked: true });
 	});
@@ -50,9 +41,9 @@ describe('projects relayed through Buddy', () => {
 
 	it('reaches the computer through Buddy with the Buddy sign-in and no pairing', async () => {
 		const client = new RelayCompanionClient('machine / A', 'buddy-token');
-		await client.getHost();
+		await client.getGrants();
 		await client.getDirectory('grant-1', 'src');
-		const { url, options } = call(2);
+		const { url, options } = call(1);
 		expect(url.pathname).toBe(`${relayBase}/v1/directories`);
 		expect(url.searchParams.get('grantId')).toBe('grant-1');
 		expect(url.searchParams.get('path')).toBe('src');
@@ -61,7 +52,8 @@ describe('projects relayed through Buddy', () => {
 
 	it('keeps one page ID for every request of a connection', async () => {
 		const client = new RelayCompanionClient('machine / A', 'buddy-token');
-		await client.getHost();
+		await client.getGrants();
+		await client.getDirectory('grant-1', 'src');
 		const ids = fetchMock.mock.calls.map(([, options]) => options.headers['X-Buddy-Relay-Client']);
 		expect(new Set(ids).size).toBe(1);
 		expect(ids[0]).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
@@ -89,7 +81,7 @@ describe('projects relayed through Buddy', () => {
 
 	it('ends the page’s session with a keepalive request when disconnecting', async () => {
 		const client = new RelayCompanionClient('machine / A', 'buddy-token');
-		await client.getHost();
+		await client.getGrants();
 		await client.disconnect();
 		const { url, options } = call(fetchMock.mock.calls.length - 1);
 		expect(url.pathname).toBe(`${relayBase}/v1/session`);
