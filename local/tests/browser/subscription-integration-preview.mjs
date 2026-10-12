@@ -72,8 +72,29 @@ function providerFixture(id, signedIn = id === 'codex') {
 		},
 		login: { state: 'idle' },
 		models: signedIn ? [{ id: subscriptionModel.id, name: subscriptionModel.name }] : [],
-		default_workspace: 'Synthetic workspace; no directory access'
+		default_workspace: 'Synthetic workspace; no directory access',
+		// Signs in with the computer's own CLI sign-in; no token or key is stored.
+		credential: { mode: 'machine', stored: {} }
 	};
+}
+
+// What administrators set in Admin Settings → AI plans.
+function policyFixture() {
+	return {
+		user_machines: 'all',
+		machine_group_ids: [],
+		plan_sign_in: true,
+		api_keys: true,
+		server_machine: true,
+		desktop_download_url: '',
+		owner_id: 'buddy-design-user'
+	};
+}
+
+// The part of the policy every user's Settings → Machines reads.
+function publicPolicyFixture() {
+	const { plan_sign_in, api_keys, desktop_download_url } = policyFixture();
+	return { plan_sign_in, api_keys, desktop_download_url };
 }
 
 function createFixtures(mode = 'normal', role = 'admin') {
@@ -378,8 +399,19 @@ function createFixtures(mode = 'normal', role = 'admin') {
 				body?.expected_machine_revision ?? url.searchParams.get('expected_machine_revision')
 		};
 		requests.push(recordedRequest);
+		// The non-administrator case only checks that nothing asks; a member's own
+		// per-user view is not modelled here.
 		if (role !== 'admin') {
 			await route.fulfill({ status: 403, json: { detail: 'Synthetic administrator guard.' } });
+			return;
+		}
+		if (path === '/api/v1/subscriptions/admin/policy' && request.method() === 'GET') {
+			await route.fulfill({ status: 200, json: policyFixture() });
+			return;
+		}
+		if (path === '/api/v1/subscriptions/admin/machines' && request.method() === 'GET') {
+			// No computer is connected through the Buddy app in these cases.
+			await route.fulfill({ status: 200, json: { machines: [] } });
 			return;
 		}
 		const providerId = path.split('/')[4];
@@ -408,7 +440,12 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		if (path === '/api/v1/subscriptions') {
 			await route.fulfill({
 				status: 200,
-				json: { providers: [describeClaude(), describeProvider('codex')], machines }
+				json: {
+					allowed: true,
+					providers: [describeClaude(), describeProvider('codex')],
+					machines,
+					policy: publicPolicyFixture()
+				}
 			});
 			return;
 		}
@@ -733,6 +770,11 @@ async function captureScreenshot(page, name) {
 	await page.screenshot({ path: resolve(outputDirectory, name + '.png'), animations: 'disabled' });
 }
 
+// Each person's Claude and ChatGPT cards are in Settings → Machines; the older
+// address-registered machines are in the administrators' AI plans tab.
+const PROVIDERS_TAB = 'machines';
+const ADMIN_PLANS_TAB = 'admin:plans';
+
 async function setSettings(page, value) {
 	await page.evaluate(
 		async ({ stores, value }) => {
@@ -756,7 +798,7 @@ function providerCard(page, name) {
 }
 
 async function openLogin(page) {
-	await setSettings(page, 'admin:connections');
+	await setSettings(page, PROVIDERS_TAB);
 	await providerCard(page, 'Claude').getByRole('button', { name: 'Sign in', exact: true }).click();
 	await loginDialog(page).waitFor();
 }
@@ -797,7 +839,7 @@ function machineDialog(page) {
 }
 
 async function openProviderSettings(page, name = 'Claude') {
-	await setSettings(page, 'admin:connections');
+	await setSettings(page, PROVIDERS_TAB);
 	await page
 		.getByRole('button', { name: 'Configure ' + name + ' subscription', exact: true })
 		.click();
@@ -805,7 +847,7 @@ async function openProviderSettings(page, name = 'Claude') {
 }
 
 async function openMachine(page, name = null) {
-	await setSettings(page, 'admin:connections');
+	await setSettings(page, ADMIN_PLANS_TAB);
 	await page
 		.getByRole('button', { name: name ? 'Configure ' + name : 'Add machine', exact: true })
 		.click();
@@ -1066,7 +1108,7 @@ async function codexSignInTextCase(browser, profile) {
 		'codex-sign-in-text',
 		'codex-signed-out',
 		async ({ page }, fixtures) => {
-			await setSettings(page, 'admin:connections');
+			await setSettings(page, PROVIDERS_TAB);
 			await providerCard(page, 'ChatGPT')
 				.getByRole('button', { name: 'Sign in', exact: true })
 				.click();
@@ -1168,7 +1210,7 @@ async function checkingTransitionCase(browser, profile) {
 		'checking-transition',
 		'checking-transition',
 		async ({ page }, fixtures) => {
-			await setSettings(page, 'admin:connections');
+			await setSettings(page, PROVIDERS_TAB);
 			await providerCard(page, 'Claude')
 				.getByText('Checking Claude Code…', { exact: true })
 				.waitFor();
@@ -1199,7 +1241,7 @@ async function checkingTransitionCase(browser, profile) {
 async function lateCheckCase(browser, profile, errorResponse) {
 	const mode = errorResponse ? 'checking-late-error' : 'checking-late';
 	await runCase(browser, profile, mode, mode, async ({ page }, fixtures) => {
-		await setSettings(page, 'admin:connections');
+		await setSettings(page, PROVIDERS_TAB);
 		await providerCard(page, 'Claude')
 			.getByText('Checking Claude Code…', { exact: true })
 			.waitFor();
@@ -1215,7 +1257,7 @@ async function lateCheckCase(browser, profile, errorResponse) {
 		await setSettings(page, false);
 		await providerCard(page, 'Claude').waitFor({ state: 'hidden' });
 		fixtures.markCheckingReady();
-		await setSettings(page, 'admin:connections');
+		await setSettings(page, PROVIDERS_TAB);
 		await providerCard(page, 'Claude')
 			.getByRole('button', { name: 'Sign in', exact: true })
 			.waitFor();
@@ -1247,7 +1289,7 @@ async function failedCheckCase(browser, profile) {
 		'checking-error',
 		'checking-error',
 		async ({ page }, fixtures) => {
-			await setSettings(page, 'admin:connections');
+			await setSettings(page, PROVIDERS_TAB);
 			const card = providerCard(page, 'Claude');
 			await card.getByText('Checking Claude Code…', { exact: true }).waitFor();
 			await card
@@ -1308,7 +1350,7 @@ async function pendingCheckUnmountCase(browser, profile) {
 		'checking-timer-unmount',
 		'checking-transition',
 		async ({ page }, fixtures) => {
-			await setSettings(page, 'admin:connections');
+			await setSettings(page, PROVIDERS_TAB);
 			await providerCard(page, 'Claude')
 				.getByText('Checking Claude Code…', { exact: true })
 				.waitFor();
@@ -1326,7 +1368,7 @@ async function pendingCheckUnmountCase(browser, profile) {
 
 async function apiBillingCase(browser, profile) {
 	await runCase(browser, profile, 'api-billing', 'api-billing', async ({ page }, fixtures) => {
-		await setSettings(page, 'admin:connections');
+		await setSettings(page, PROVIDERS_TAB);
 		const card = providerCard(page, 'Claude');
 		await card
 			.getByText('Synthetic API billing account; sign in with a Claude plan instead.', {
@@ -1352,7 +1394,7 @@ async function usageNavigationCase(browser, profile) {
 	await runCase(browser, profile, 'usage-navigation', 'normal', async ({ page }, fixtures) => {
 		const draft = 'Synthetic unsent subscription draft';
 		await page.locator('#chat-input').fill(draft);
-		await setSettings(page, 'admin:connections');
+		await setSettings(page, PROVIDERS_TAB);
 		const card = providerCard(page, 'ChatGPT');
 		await card.getByText('Usage unavailable', { exact: true }).waitFor();
 		const unknown = card.getByText('Unknown limit', { exact: true }).locator('xpath=../..');
@@ -1425,7 +1467,7 @@ async function permissionCase(browser, profile) {
 		'non-admin',
 		'normal',
 		async ({ page }, fixtures) => {
-			await page.goto(origin + '/c/buddy-design-chat?settings=admin%3Aconnections', {
+			await page.goto(origin + '/c/buddy-design-chat?settings=admin%3Aplans', {
 				waitUntil: 'domcontentloaded'
 			});
 			await page.locator('#chat-input').waitFor();
@@ -1698,9 +1740,6 @@ async function delayedMachineCase(browser, profile, action, method, errorRespons
 		}
 		if (action === 'remove' && !errorResponse) {
 			assert.equal(fixtures.count('DELETE', machinesPath + '/runner-a'), 1);
-			await providerCard(page, 'Claude')
-				.getByText('Selected machine is unavailable.', { exact: true })
-				.waitFor({ state: 'attached' });
 		}
 		await reopened.locator('#machine-name').fill('Synthetic preserved new draft');
 		await page.waitForTimeout(150);
@@ -1709,13 +1748,19 @@ async function delayedMachineCase(browser, profile, action, method, errorRespons
 			'Synthetic preserved new draft'
 		);
 		await dismissDialog(page, reopened, 'x');
+		if (action === 'remove' && !errorResponse) {
+			await setSettings(page, PROVIDERS_TAB);
+			await providerCard(page, 'Claude')
+				.getByText('Selected machine is unavailable.', { exact: true })
+				.waitFor({ state: 'attached' });
+		}
 	});
 }
 
 async function staleStatusSettingsCase(browser, profile, variant) {
 	const name = 'settings-status-' + variant;
 	await runCase(browser, profile, name, name, async ({ page }, fixtures) => {
-		await setSettings(page, 'admin:connections');
+		await setSettings(page, PROVIDERS_TAB);
 		await waitUntil(fixtures.hasHeldCheck, 'Old machine status must be in flight');
 		await openProviderSettings(page);
 		const dialog = settingsDialog(page);
@@ -1814,7 +1859,7 @@ async function staleStatusRegistryCase(browser, profile) {
 		'checking-registry',
 		'checking-registry',
 		async ({ page }, fixtures) => {
-			await setSettings(page, 'admin:connections');
+			await setSettings(page, PROVIDERS_TAB);
 			await waitUntil(fixtures.hasHeldCheck, 'Old registry status must be pending');
 			await openMachine(page, 'Synthetic computer A');
 			await machineDialog(page).locator('#machine-name').fill('Synthetic updated computer A');
@@ -1824,6 +1869,7 @@ async function staleStatusRegistryCase(browser, profile) {
 			await machineDialog(page).locator('#machine-key').fill('synthetic-new-runner-a-key');
 			await machineDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
 			await machineDialog(page).waitFor({ state: 'hidden' });
+			await setSettings(page, PROVIDERS_TAB);
 			await providerCard(page, 'Claude')
 				.getByText(/via Claude Code on Synthetic updated computer A/)
 				.waitFor();
@@ -1905,7 +1951,7 @@ async function delayedSettingsCase(browser, profile, method, errorResponse = fal
 async function delayedEnableCase(browser, profile, outcome = 'success') {
 	const name = 'enable-delayed-' + outcome;
 	await runCase(browser, profile, name, name, async ({ page }, fixtures) => {
-		await setSettings(page, 'admin:connections');
+		await setSettings(page, PROVIDERS_TAB);
 		const toggle = providerCard(page, 'Claude').getByRole('switch');
 		assert.equal(await toggle.getAttribute('aria-checked'), 'false');
 		await toggle.click();
@@ -1914,7 +1960,7 @@ async function delayedEnableCase(browser, profile, outcome = 'success') {
 		if (outcome === 'remount') {
 			await setSettings(page, false);
 			await providerCard(page, 'Claude').waitFor({ state: 'hidden' });
-			await setSettings(page, 'admin:connections');
+			await setSettings(page, PROVIDERS_TAB);
 			await toggle.waitFor();
 			expectedDraft = 'false';
 		}
@@ -1973,7 +2019,7 @@ async function delayedEnableCase(browser, profile, outcome = 'success') {
 async function enableDuringOtherReloadCase(browser, profile) {
 	const name = 'enable-delayed-other-reload';
 	await runCase(browser, profile, name, name, async ({ page }, fixtures) => {
-		await setSettings(page, 'admin:connections');
+		await setSettings(page, PROVIDERS_TAB);
 		const claudeToggle = providerCard(page, 'Claude').getByRole('switch');
 		const codexToggle = providerCard(page, 'ChatGPT').getByRole('switch');
 		await claudeToggle.click();
@@ -2017,6 +2063,7 @@ async function removedMachineCase(browser, profile, replacement = 'runner-b') {
 			}
 			await confirmMachineRemoval(confirmation);
 			await machineDialog(page).waitFor({ state: 'hidden' });
+			await setSettings(page, PROVIDERS_TAB);
 			await providerCard(page, 'Claude')
 				.getByText('Selected machine is unavailable.', { exact: true })
 				.waitFor();
@@ -2082,7 +2129,7 @@ async function removedMachineCase(browser, profile, replacement = 'runner-b') {
 async function delayedLogoutCase(browser, profile, method) {
 	const name = 'logout-' + method;
 	await runCase(browser, profile, name, name, async ({ page }, fixtures) => {
-		await setSettings(page, 'admin:connections');
+		await setSettings(page, PROVIDERS_TAB);
 		await providerCard(page, 'Claude')
 			.getByRole('button', { name: 'Sign out', exact: true })
 			.click();
@@ -2092,7 +2139,7 @@ async function delayedLogoutCase(browser, profile, method) {
 			await providerCard(page, 'Claude').waitFor({ state: 'hidden' });
 		}
 		if (method === 'unmount-same') {
-			await setSettings(page, 'admin:connections');
+			await setSettings(page, PROVIDERS_TAB);
 			await providerCard(page, 'Claude')
 				.getByRole('button', { name: 'Sign out', exact: true })
 				.waitFor();
@@ -2160,6 +2207,7 @@ async function staleConfigGuardCase(browser, profile) {
 			await openMachine(page, 'Synthetic computer B');
 			await machineDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
 			await machineDialog(page).waitFor({ state: 'hidden' });
+			await setSettings(page, PROVIDERS_TAB);
 			await providerCard(page, 'Claude')
 				.getByText(/via Claude Code on Synthetic computer B/)
 				.waitFor();
@@ -2327,7 +2375,7 @@ async function revisionReplacementCase(browser, profile, action) {
 			await waitUntil(fixtures.hasHeldConfig, 'Old instance config must be pending');
 			await dismissDialog(page, settingsDialog(page), 'x');
 		} else {
-			await setSettings(page, 'admin:connections');
+			await setSettings(page, PROVIDERS_TAB);
 			await providerCard(page, 'Claude')
 				.getByRole('button', { name: 'Sign out', exact: true })
 				.click();
@@ -2340,6 +2388,7 @@ async function revisionReplacementCase(browser, profile, action) {
 		await machineDialog(page).locator('#machine-name').fill('Synthetic replacement computer A');
 		await machineDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
 		await machineDialog(page).waitFor({ state: 'hidden' });
+		await setSettings(page, PROVIDERS_TAB);
 		await providerCard(page, 'Claude')
 			.getByText(/via Claude Code on Synthetic replacement computer A/)
 			.waitFor();
