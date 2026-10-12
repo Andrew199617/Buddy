@@ -28,7 +28,8 @@ type TouchClick = MouseEvent & {
 	sourceCapabilities?: { firesTouchEvents: boolean };
 };
 
-const COMPOSER_REGION = '.buddy-composer';
+// The composer box, and the run target bar above it, which taps treat as part of it.
+const COMPOSER_REGION = '.buddy-composer, .buddy-run-target-bar';
 const COMPOSER_MENUS = '[data-composer-menu], .model-selector-child-menu';
 const COMPOSER_POPUP_TRIGGERS =
 	'#input-menu-button, #integration-menu-button, #owui-reasoning-chip, button[id^="model-selector-"][id$="-button"], [aria-haspopup="true"], [aria-haspopup="menu"], [aria-haspopup="listbox"], [aria-haspopup="dialog"]';

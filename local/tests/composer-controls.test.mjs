@@ -188,6 +188,11 @@ function createPage({ mobile = true, install = true } = {}) {
 	terminalPopup.setAttribute('aria-haspopup', 'true');
 	const terminal = terminalPopup.appendChild(new Element('button'));
 	const other = form.appendChild(new Element('button'));
+	// The run target bar sits above the composer box and counts as part of it.
+	const runTargetBar = form.appendChild(new Element('div'));
+	runTargetBar.className = 'buddy-run-target-bar';
+	const runTarget = runTargetBar.appendChild(new Element('button'));
+	runTarget.setAttribute('aria-haspopup', 'listbox');
 	const menu = document.body.appendChild(new Element('div'));
 	menu.setAttribute('data-composer-menu', 'model-picker');
 	const option = menu.appendChild(new Element('button'));
@@ -246,6 +251,7 @@ function createPage({ mobile = true, install = true } = {}) {
 		thinking,
 		plus,
 		tools,
+		runTarget,
 		option,
 		childOption,
 		other,
@@ -379,6 +385,7 @@ function createPage({ mobile = true, install = true } = {}) {
 		other,
 		plus,
 		tools,
+		runTarget,
 		blank,
 		disabled,
 		disabledIcon,
@@ -440,7 +447,7 @@ test('fixture reproduces Safari blank-composer collapse and lost native click wi
 	assert.equal(page.count(page.model), 0);
 });
 
-for (const name of ['model', 'thinking', 'plus', 'tools']) {
+for (const name of ['model', 'thinking', 'plus', 'tools', 'runTarget']) {
 	test(`Safari ${name} touchstart prevents blur and suppressed native click is activated exactly once`, () => {
 		const page = createPage();
 		const control = page[name];
