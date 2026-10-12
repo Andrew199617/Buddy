@@ -7,6 +7,7 @@
 	import { updateSubscriptionConfig, type FolderPlan } from '$lib/apis/subscriptions';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import {
+		accessGrantedMessage,
 		fullAccessDescription,
 		fullAccessWarning,
 		readFilesDescription
@@ -57,19 +58,6 @@
 		document.getElementById(`plan-access-${access}-${planId}`)?.focus();
 	}
 
-	function allowedMessage(plan: FolderPlan, access: FileAccess, computerName: string): string {
-		if (access === 'full') {
-			return $i18n.t('{{name}} now has full access on {{computer}}.', {
-				name: plan.name,
-				computer: computerName
-			});
-		}
-		return $i18n.t('{{name}} can now read files on {{computer}}.', {
-			name: plan.name,
-			computer: computerName
-		});
-	}
-
 	async function allow() {
 		if (!confirming || saving) return;
 		const { planId, access } = confirming;
@@ -95,7 +83,7 @@
 		await reload();
 		confirming = null;
 		saving = false;
-		toast.success(allowedMessage(plan, access, machine.name));
+		toast.success(accessGrantedMessage($i18n, plan.name, access, machine.name));
 		onAllowed();
 	}
 

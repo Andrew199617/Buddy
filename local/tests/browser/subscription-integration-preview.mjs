@@ -445,6 +445,8 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	let holdPlanConfig = false;
 	let heldPlanConfig = null;
 	let refusePlanConfig = '';
+	// The next save goes through but its answer is lost on the way back.
+	let losePlanConfigAnswer = '';
 	// Set when an administrator stops this person using computers.
 	let machinesRevoked = false;
 	let turnOffAfterPlanConfig = '';
@@ -559,6 +561,11 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			};
 		}
 		plan.access = body.access;
+		if (losePlanConfigAnswer) {
+			const detail = losePlanConfigAnswer;
+			losePlanConfigAnswer = '';
+			return { status: 502, json: { detail } };
+		}
 		if (turnOffAfterPlanConfig) {
 			// Like the server when a running reply cannot be confirmed stopped.
 			const detail = turnOffAfterPlanConfig;
@@ -1040,6 +1047,9 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		},
 		revokeMachines() {
 			machinesRevoked = true;
+		},
+		loseNextPlanConfigAnswer(detail) {
+			losePlanConfigAnswer = detail;
 		},
 		refuseNextPlanConfig(detail) {
 			refusePlanConfig = detail;
@@ -3619,6 +3629,33 @@ async function folderAllowRevokedCase(browser, profile) {
 	);
 }
 
+async function folderAllowLostAnswerCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'folder-allow-lost-answer',
+		'folder-allow',
+		async ({ page }, fixtures) => {
+			const dialog = await openFolderSettings(page);
+			const request = dialog.getByRole('group', {
+				name: 'Let a plan work with files',
+				exact: true
+			});
+			await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
+			fixtures.loseNextPlanConfigAnswer('Synthetic gateway timeout');
+			await request.getByRole('button', { name: 'Allow', exact: true }).click();
+			// The access was saved, so the reload shows it: a success, not a refusal.
+			await page.getByText('Claude can now read files on Work PC.', { exact: true }).waitFor();
+			await dialog.getByText('Let the AI choose', { exact: true }).waitFor();
+			assert.equal(
+				await dialog.getByText(/was not given access/).count(),
+				0,
+				'No refusal is shown'
+			);
+		}
+	);
+}
+
 async function folderAllowHomelessCase(browser, profile) {
 	await runCase(
 		browser,
@@ -3726,6 +3763,7 @@ try {
 		await folderAllowTurnedOffCase(browser, profile);
 		await folderAllowClosedCase(browser, profile);
 		await folderAllowRevokedCase(browser, profile);
+		await folderAllowLostAnswerCase(browser, profile);
 		await folderAllowHomelessCase(browser, profile);
 		await folderNoPlansCase(browser, profile);
 		await cancellationCase(browser, profile, 'x');
