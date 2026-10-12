@@ -506,9 +506,7 @@ async def get_arena_model_ids(models, arena_model, user, bypass_filter=False):
                     base_model_id = candidate.get('info', {}).get('base_model_id')
                     if base_model_id:
                         candidate_reference = SimpleNamespace(id=candidate['id'], base_model_id=base_model_id)
-                        if not await has_base_model_access(
-                            user.id, candidate_reference, user_role=user.role, user_group_ids=user_group_ids
-                        ):
+                        if not await _has_usable_base_models(user, candidate_reference, user_group_ids):
                             continue
                     usable_candidates.append(candidate)
                 candidates = usable_candidates
@@ -516,6 +514,21 @@ async def get_arena_model_ids(models, arena_model, user, bypass_filter=False):
     if not candidates:
         raise HTTPException(status_code=403, detail='No accessible models available for arena')
     return [model['id'] for model in candidates]
+
+
+async def _has_usable_base_models(user, model_reference, user_group_ids, db=None) -> bool:
+    """The base-model chain check, where a plan model base counts as usable exactly
+    when the user's own providers offer it.
+
+    Plan models have no model rows, so the ordinary chain check would treat them
+    as admin-only; a preset on one runs on the user's own plan.
+    """
+    base_model_id = getattr(model_reference, 'base_model_id', None)
+    if base_model_id and await user_offers_model(user, base_model_id):
+        return True
+    return await has_base_model_access(
+        user.id, model_reference, user_role=user.role, user_group_ids=user_group_ids, db=db
+    )
 
 
 async def check_model_access(user, model, model_info=None, db=None):
@@ -582,9 +595,7 @@ async def check_model_access(user, model, model_info=None, db=None):
             raise Exception('Model not found')
 
         # Enforce access on chained base models
-        if not await has_base_model_access(
-            user.id, model_info, user_role=user.role, user_group_ids=user_group_ids, db=db
-        ):
+        if not await _has_usable_base_models(user, model_info, user_group_ids, db=db):
             raise Exception('Model not found')
 
 
