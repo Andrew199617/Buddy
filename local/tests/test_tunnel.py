@@ -163,6 +163,19 @@ class TunnelEndToEndTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(SubscriptionError, 'took too long'):
                 await self.machine.path_exists('Z:\\asleep', 'dir')
 
+    async def test_path_checks_stuck_on_a_drive_are_refused_instead_of_piling_up(self):
+        stuck = threading.Event()
+        self.addCleanup(stuck.set)
+        self.runner.path_exists = lambda path, kind: stuck.wait(5)
+        with patch.object(runner_module, 'PATH_CHECK_SECONDS', 0.2):
+            for _ in range(runner_module.PATH_CHECK_SLOTS):
+                with self.assertRaisesRegex(SubscriptionError, 'took too long'):
+                    await self.machine.path_exists('Z:\\asleep', 'dir')
+            # Both checks still wait on the drive, so the next one is refused at once.
+            with self.assertRaisesRegex(SubscriptionError, 'still waiting on a slow drive'):
+                await asyncio.wait_for(self.machine.path_exists('Z:\\asleep', 'dir'), 1)
+        stuck.set()
+
     async def test_folder_browsing_waits_for_the_app_switch(self):
         connection = await self.hub.wait_connection('machine-1', 1)
         self.assertTrue(self.runner.describe()['capabilities']['folderBrowsing'])
