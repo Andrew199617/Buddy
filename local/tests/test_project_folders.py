@@ -207,6 +207,60 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(SubscriptionError, 'up to 2'):
                 await self.module.save_choice('owner-1', 'old', 'auto', {}, set())
 
+    async def test_new_chat_defaults_round_trip(self):
+        paths = {'pc-1': self.SavedPath('C:\\code\\site', 'rev-1')}
+        offered = {'pc-1': [self.SavedPath('C:\\code\\docs', 'rev-1'), self.SavedPath('C:\\code\\docs', 'rev-1')]}
+        await self.module.save_choice(
+            'owner-1', 'website', 'folder', paths, {'pc-1'}, machine_id='pc-1', access='read', offered=offered
+        )
+        stored = self.config.values[self.module.choices_key('owner-1')]
+        self.assertEqual(stored['version'], 2)
+        # Older Buddy versions read mode and paths as before.
+        self.assertEqual(stored['folders']['website']['paths'], {'pc-1': {'path': 'C:\\code\\site', 'revision': 'rev-1'}})
+        choice = (await self.module.load_choices('owner-1'))['website']
+        self.assertEqual((choice.machine_id, choice.access), ('pc-1', 'read'))
+        self.assertEqual([saved.path for saved in choice.offered['pc-1']], ['C:\\code\\docs'])
+
+    async def test_version_1_choices_follow_the_usual_defaults(self):
+        self.config.values[self.module.choices_key('owner-1')] = {'version': 1, 'folders': {
+            'website': {'mode': 'auto', 'paths': {}, 'updated_at': 5},
+        }}
+        choice = (await self.module.load_choices('owner-1'))['website']
+        self.assertEqual((choice.machine_id, choice.access, choice.offered), ('', '', {}))
+
+    async def test_no_files_means_detached_with_nothing_else_to_choose(self):
+        offered = {'pc-1': [self.SavedPath('C:\\code\\docs', 'rev-1')]}
+        await self.module.save_choice(
+            'owner-1', 'website', 'chat', {}, {'pc-1'}, machine_id='pc-1', access='full', offered=offered
+        )
+        choice = (await self.module.load_choices('owner-1'))['website']
+        self.assertEqual((choice.machine_id, choice.access, choice.offered), ('', '', {}))
+
+    async def test_new_chat_defaults_are_checked(self):
+        paths = {'pc-1': self.SavedPath('C:\\code\\site', 'rev-1')}
+        too_many = {'pc-1': [self.SavedPath(f'C:\\code\\{index}', 'rev-1') for index in range(6)]}
+        refusals = (
+            ({'machine_id': 'pc-gone'}, 'removed'),
+            ({'access': 'root'}, 'chat only'),
+            ({'offered': {'pc-gone': [self.SavedPath('C:\\x', 'rev-x')]}}, 'removed'),
+            ({'offered': too_many}, 'up to 5'),
+            ({'machine_id': 'pc-2'}, 'computer new chats here run on'),
+        )
+        for options, message in refusals:
+            with self.subTest(options=options):
+                with self.assertRaisesRegex(SubscriptionError, message):
+                    await self.module.save_choice('owner-1', 'website', 'folder', paths, {'pc-1', 'pc-2'}, **options)
+
+    async def test_a_removed_computer_is_forgotten_from_new_chat_defaults(self):
+        paths = {'pc-old': self.SavedPath('C:\\old', 'rev-old'), 'pc-1': self.SavedPath('C:\\site', 'rev-1')}
+        offered = {'pc-old': [self.SavedPath('C:\\docs', 'rev-old')]}
+        await self.module.save_choice(
+            'owner-1', 'old', 'folder', paths, {'pc-old', 'pc-1'}, machine_id='pc-old', offered=offered
+        )
+        await self.module.save_choice('owner-1', 'website', 'auto', {}, {'pc-1'})
+        choice = (await self.module.load_choices('owner-1'))['old']
+        self.assertEqual((choice.machine_id, choice.offered, list(choice.paths)), ('', {}, ['pc-1']))
+
     async def test_clearing_forgets_the_choice(self):
         await self.module.save_choice('owner-1', 'website', 'chat', {}, set())
         await self.module.clear_choice('owner-1', 'website', set())
