@@ -793,12 +793,25 @@
 		runTargetDraft = refreshUntouched(runTargetDraft, runTargetOptions, providers);
 	}
 
+	// The Buddy app says which computer it runs on a moment after the page loads. A new
+	// chat's untouched choices then follow it, since its chat folder may prefer this PC.
+	let runTargetThisPc: string | null = null;
+
+	$: refreshRunTargetForThisPc($thisPcMachineId);
+
+	function refreshRunTargetForThisPc(machineId: string | null) {
+		if (machineId === runTargetThisPc) return;
+		runTargetThisPc = machineId;
+		if (embedded || history?.currentId || chatIdProp) return;
+		void loadRunTargetOptions(false);
+	}
+
 	/** What the bar offers here, and the draft a new chat starts with. */
 	async function loadRunTargetOptions(startNewDraft: boolean) {
 		const load = ++runTargetOptionsLoad;
 		const options = await getRunTargetOptions(localStorage.token, {
 			folderId: $selectedFolder?.id ?? null,
-			thisMachineId: get(thisPcMachineId)
+			thisMachineId: $thisPcMachineId
 		}).catch(() => null);
 		if (load !== runTargetOptionsLoad) return;
 		runTargetOptions = options;
