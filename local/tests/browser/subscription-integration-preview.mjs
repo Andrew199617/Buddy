@@ -424,6 +424,10 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	// In the stale case the page first sees Work PC from before it was set up again.
 	let showsOldRevision = mode === 'folder-allow-stale';
 	const planConfigs = [];
+	// The next read of the folder's project can be held open, or fail once.
+	let holdProjectRead = false;
+	let heldProjectRead = null;
+	let failProjectRead = false;
 	const projectGrant = {
 		id: 'grant-code',
 		name: 'code',
@@ -589,6 +593,16 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			};
 		} else if (path === '/api/v1/subscriptions/folders/website/project') {
 			requests.push({ method, path, body: request.postDataJSON() });
+			if (method === 'GET' && failProjectRead) {
+				failProjectRead = false;
+				await route.fulfill({ status: 503, json: { detail: 'Synthetic project read failure' } });
+				return true;
+			}
+			if (method === 'GET' && holdProjectRead) {
+				holdProjectRead = false;
+				heldProjectRead = route;
+				return true;
+			}
 			if (method === 'PUT') {
 				const body = request.postDataJSON();
 				const paths = {};
@@ -887,6 +901,18 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		projectSaves,
 		projectRelayClients,
 		planConfigs,
+		holdNextProjectRead() {
+			holdProjectRead = true;
+		},
+		hasHeldProjectRead: () => Boolean(heldProjectRead),
+		async releaseProjectRead() {
+			const held = heldProjectRead;
+			heldProjectRead = null;
+			await held.fulfill({ status: 200, json: folderProject() });
+		},
+		failNextProjectRead() {
+			failProjectRead = true;
+		},
 		// A plan turned on elsewhere, such as in Settings → Machines.
 		turnOnPlan(id, access) {
 			const plan = folderPlans.find((candidate) => candidate.id === id);
@@ -3089,6 +3115,66 @@ async function folderAllowBesideCase(browser, profile) {
 	);
 }
 
+async function folderAllowRaceCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'folder-allow-race',
+		'folder-allow-beside',
+		async ({ page }, fixtures) => {
+			const dialog = await openFolderSettings(page);
+			const request = dialog.getByRole('group', { name: 'Plans that only chat', exact: true });
+			await request.getByRole('button', { name: 'Allow full access', exact: true }).click();
+			fixtures.holdNextProjectRead();
+			await request.getByRole('button', { name: 'Allow', exact: true }).click();
+			await waitUntil(() => fixtures.hasHeldProjectRead(), 'The plans are loading again');
+
+			// A choice made while the plans load is kept, and so is focus.
+			const justChat = dialog.getByRole('radio', { name: /^No files, just chat/ });
+			await justChat.check();
+			await fixtures.releaseProjectRead();
+			await page.getByText('ChatGPT now has full access on Work PC.', { exact: true }).waitFor();
+			assert.equal(await justChat.isChecked(), true, 'The choice made meanwhile is kept');
+			assert.equal(
+				await justChat.evaluate((radio) => radio === document.activeElement),
+				true,
+				'Focus stays where the person put it'
+			);
+			assert.equal(fixtures.requests.filter((entry) => entry.method === 'PUT').length, 0);
+		}
+	);
+}
+
+async function folderAllowReloadErrorCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'folder-allow-reload-error',
+		'folder-allow',
+		async ({ page }, fixtures) => {
+			const dialog = await openFolderSettings(page);
+			const request = dialog.getByRole('group', {
+				name: 'Let a plan work with files',
+				exact: true
+			});
+			const failure = dialog.getByText(
+				'The project folder could not be loaded: Synthetic project read failure',
+				{ exact: true }
+			);
+			await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
+			fixtures.failNextProjectRead();
+			await request.getByRole('button', { name: 'Allow', exact: true }).click();
+			await failure.waitFor();
+
+			// Asking again loads the plans, and the old failure goes away.
+			await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
+			await request.getByRole('button', { name: 'Allow', exact: true }).click();
+			await dialog.getByText('Let the AI choose', { exact: true }).waitFor();
+			assert.equal(await failure.count(), 0, 'The reload failure is cleared');
+		}
+	);
+}
+
 async function folderAllowHomelessCase(browser, profile) {
 	await runCase(
 		browser,
@@ -3183,6 +3269,8 @@ try {
 		await folderAllowCase(browser, profile);
 		await folderAllowStaleCase(browser, profile);
 		await folderAllowBesideCase(browser, profile);
+		await folderAllowRaceCase(browser, profile);
+		await folderAllowReloadErrorCase(browser, profile);
 		await folderAllowHomelessCase(browser, profile);
 		await folderNoPlansCase(browser, profile);
 		await cancellationCase(browser, profile, 'x');

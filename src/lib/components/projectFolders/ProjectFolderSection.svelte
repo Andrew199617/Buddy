@@ -45,28 +45,32 @@
 	let draft: ProjectDraft = { mode: 'auto', paths: {} };
 	let saved: ProjectDraft = { mode: 'auto', paths: {} };
 	let pickingFor: ProjectFolderComputer | null = null;
+	// Why loading again after a plan change failed; what was loaded before still saves.
+	let refreshError = '';
 
 	$: dirty = !sameDraft(draft, saved);
 	$: need = project ? fileAccessNeed(project) : 'ready';
 	$: allowablePlans = project ? plansToAllow(project) : [];
 	$: homelessPlans = project ? plansWithoutComputer(project) : [];
 
-	async function fetchProject() {
-		const loaded = await getFolderProject(localStorage.token, folderId);
+	/** Shows a loaded project; the caller decides what happens to the draft. */
+	function showProject(loaded: FolderProject | null) {
 		// Null: not allowed to use computers, or the folder is gone; nothing to choose here.
 		hidden = loaded === null;
 		project = loaded;
-		if (loaded) {
-			saved = draftFromProject(loaded);
-			draft = { mode: saved.mode, paths: { ...saved.paths } };
-		}
+		if (loaded) saved = draftFromProject(loaded);
+	}
+
+	function startFromSaved() {
+		draft = { mode: saved.mode, paths: { ...saved.paths } };
 	}
 
 	async function load() {
 		loading = true;
 		loadError = '';
 		try {
-			await fetchProject();
+			showProject(await getFolderProject(localStorage.token, folderId));
+			startFromSaved();
 		} catch (cause) {
 			project = null;
 			loadError = `${cause}`;
@@ -79,16 +83,20 @@
 
 	/** Loads again after a plan changed, keeping a choice the person has not saved yet. */
 	async function refresh() {
-		let unsaved: ProjectDraft | null = null;
-		if (dirty) unsaved = draft;
+		let loaded: FolderProject | null;
 		try {
-			await fetchProject();
+			loaded = await getFolderProject(localStorage.token, folderId);
 		} catch (cause) {
-			// What was loaded before still saves; only the plans may be out of date.
-			error = $i18n.t('The project folder could not be loaded: {{reason}}', { reason: `${cause}` });
+			refreshError = $i18n.t('The project folder could not be loaded: {{reason}}', {
+				reason: `${cause}`
+			});
 			return;
 		}
-		if (unsaved) draft = unsaved;
+		refreshError = '';
+		// Checked once the plans are back: the person may have chosen something meanwhile.
+		const unsaved = !sameDraft(draft, saved);
+		showProject(loaded);
+		if (!unsaved) startFromSaved();
 	}
 
 	// Set while Settings → Machines is open from here; plans may change there.
@@ -430,6 +438,9 @@
 			{/if}
 		{/if}
 
+		{#if refreshError}
+			<p role="alert" class="text-xs text-red-600 dark:text-red-400">{refreshError}</p>
+		{/if}
 		{#if error}
 			<p role="alert" class="text-xs text-red-600 dark:text-red-400">{error}</p>
 		{/if}
