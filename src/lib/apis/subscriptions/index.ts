@@ -383,3 +383,87 @@ export const saveSubscriptionPolicy = async (
 ): Promise<SubscriptionPolicy> => {
 	return subscriptionRequest(token, '/admin/policy', 'POST', policy);
 };
+
+// --- Project folders for chat folders ---------------------------------------
+//
+// Each person chooses, per chat folder, where Claude and ChatGPT start on their
+// computers. The choice is theirs alone, even in a shared folder.
+
+export type ProjectFolderMode = 'auto' | 'folder' | 'chat';
+
+export type ProjectFolderPath = {
+	path: string;
+	// Set when the computer was set up again after the path was chosen.
+	problem: 'computer_changed' | null;
+};
+
+export type ProjectFolderChoice = {
+	folder_id: string;
+	folder_name: string;
+	mode: ProjectFolderMode;
+	// Machine ID to path; only for mode 'folder'.
+	paths: Record<string, ProjectFolderPath>;
+};
+
+export type ProjectFolderComputer = {
+	machine_id: string;
+	name: string;
+	// 'app': connected through the Buddy app; 'address': an older Runner added by address; 'server': This server.
+	kind: 'app' | 'address' | 'server' | 'cloud';
+	online: boolean | null;
+	platform: string | null;
+	can_browse: boolean;
+	providers: { id: SubscriptionProviderId; name: string; access: SubscriptionAccess }[];
+	recent_paths: string[];
+};
+
+export type FolderProject = {
+	folder_id: string;
+	folder_name: string;
+	// The person's own choice for this folder, if any.
+	own: ProjectFolderChoice | null;
+	// The nearest parent folder's choice that applies otherwise.
+	inherited: ProjectFolderChoice | null;
+	has_plans: boolean;
+	computers: ProjectFolderComputer[];
+};
+
+export const getFolderProject = async (token: string, folderId: string): Promise<FolderProject> => {
+	return subscriptionRequest(token, `/folders/${encodeURIComponent(folderId)}/project`);
+};
+
+export const saveFolderProject = async (
+	token: string,
+	folderId: string,
+	choice: { mode: ProjectFolderMode; paths: Record<string, string> }
+): Promise<FolderProject> => {
+	return subscriptionRequest(
+		token,
+		`/folders/${encodeURIComponent(folderId)}/project`,
+		'PUT',
+		choice
+	);
+};
+
+export const clearFolderProject = async (
+	token: string,
+	folderId: string
+): Promise<FolderProject> => {
+	return subscriptionRequest(token, `/folders/${encodeURIComponent(folderId)}/project`, 'DELETE');
+};
+
+// Checks the folder exists on that computer; returns its tidy form.
+export const checkMachineFolder = async (
+	token: string,
+	machineId: string,
+	path: string
+): Promise<{ path: string }> => {
+	return subscriptionRequest(
+		token,
+		`/machines/${encodeURIComponent(machineId)}/folders/check`,
+		'POST',
+		{
+			path
+		}
+	);
+};

@@ -179,6 +179,35 @@ describe('per-user machines and sign-ins', () => {
 		expect(request().url.pathname).toBe('/api/v1/subscriptions/codex/credentials/machine');
 	});
 
+	it('reads, saves and clears a chat folder’s project folder by its encoded ID', async () => {
+		const { getFolderProject, saveFolderProject, clearFolderProject } = await import('./index');
+		await getFolderProject('fixture-token', 'folder / A');
+		expect(request().url.pathname).toBe('/api/v1/subscriptions/folders/folder%20%2F%20A/project');
+		fetchMock.mockClear();
+		await saveFolderProject('fixture-token', 'folder / A', {
+			mode: 'folder',
+			paths: { 'pc-1': 'C:\\code\\site' }
+		});
+		expect(request().options.method).toBe('PUT');
+		expect(JSON.parse(request().options.body)).toEqual({
+			mode: 'folder',
+			paths: { 'pc-1': 'C:\\code\\site' }
+		});
+		fetchMock.mockClear();
+		await clearFolderProject('fixture-token', 'folder / A');
+		expect(request().options.method).toBe('DELETE');
+	});
+
+	it('checks a folder on a computer with the path only in the body', async () => {
+		const { checkMachineFolder } = await import('./index');
+		await checkMachineFolder('fixture-token', 'pc / 1', 'C:\\code\\site');
+		const { url, options } = request();
+		expect(options.method).toBe('POST');
+		expect(url.pathname).toBe('/api/v1/subscriptions/machines/pc%20%2F%201/folders/check');
+		expect(url.search).toBe('');
+		expect(JSON.parse(options.body)).toEqual({ path: 'C:\\code\\site' });
+	});
+
 	it('lets an administrator remove anyone’s machine by its encoded ID', async () => {
 		const { deleteAnySubscriptionMachine } = await import('./index');
 		await deleteAnySubscriptionMachine('fixture-token', 'machine / A');
