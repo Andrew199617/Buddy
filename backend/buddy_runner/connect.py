@@ -126,6 +126,7 @@ async def serve(connection: dict, runner: Runner, *, watch_stdin: bool) -> int:
     """Stay connected until stopped or refused; returns the process exit code."""
     stop = asyncio.Event()
     watcher = None
+    await runner.workspaces.start()
     if watch_stdin:
         watcher = asyncio.create_task(_watch_stdin(stop))
     tunnel = asyncio.create_task(run_tunnel(

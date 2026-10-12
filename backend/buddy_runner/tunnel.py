@@ -110,6 +110,7 @@ class Tunnel:
         self._register('tools.find', self._find_tool)
         self._register('paths.check', self._check_path)
         self._register('process.stop', self._stop_process)
+        self._register('workspace.request', self._workspace_request)
 
     def _register(self, method: str, handler) -> None:
         self._methods[method] = handler
@@ -145,6 +146,8 @@ class Tunnel:
                 channel.remote_closed()
             if self._tasks:
                 await asyncio.gather(*list(self._tasks), return_exceptions=True)
+            # Pages relayed through this connection cannot reach their sessions any more.
+            await self._runner.workspaces.end_relay_sessions()
 
     def _dispatch(self, frame) -> None:
         kind = protocol.frame_type(frame)
@@ -204,6 +207,12 @@ class Tunnel:
 
     async def _check_path(self, params: dict) -> dict:
         return {'exists': self._runner.path_exists(str(params.get('path') or ''), params.get('kind'))}
+
+    async def _workspace_request(self, params: dict) -> dict:
+        status, body = await self._runner.workspaces.relay(
+            params.get('client_id'), params.get('method'), params.get('path'), params.get('query'), params.get('body'),
+        )
+        return {'status': status, 'body': body}
 
     async def _stop_process(self, params: dict) -> dict:
         process_id = params.get('process_id')
