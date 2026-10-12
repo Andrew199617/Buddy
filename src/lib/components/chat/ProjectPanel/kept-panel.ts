@@ -7,9 +7,11 @@ import type { Component } from 'svelte';
 import { createClassComponent } from 'svelte/legacy';
 
 import type { FolderProject } from '$lib/apis/subscriptions';
+import type { ProjectTarget } from './project-session';
 
 export type ProjectPanelProps = {
-	project: FolderProject;
+	project: FolderProject | null;
+	chatTarget: ProjectTarget | null;
 	onChanged: () => void;
 };
 
