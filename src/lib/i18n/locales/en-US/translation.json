@@ -2639,6 +2639,8 @@
 	"settings.admin.pipelines.title": "Pipelines",
 	"settings.admin.pipelines.uploadPipeline.description": "Upload a local Python pipeline file to the selected server.",
 	"settings.admin.pipelines.uploadPipeline.label": "Upload Pipeline",
+	"settings.admin.plans.title": "AI plans",
+	"settings.admin.plans.description": "Who can connect their computers and chat with their own Claude or ChatGPT plan or API key, and the computers they connected. Your own plans are in Settings → Machines.",
 	"settings.admin.subagents.enableBackgroundSubAgents.description": "Allow delegated sub-agents to keep running while the parent chat continues.",
 	"settings.admin.subagents.enableBackgroundSubAgents.label": "Enable background sub-agents",
 	"settings.admin.subagents.enableSubAgents.label": "Enable sub-agents",
