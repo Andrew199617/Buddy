@@ -187,3 +187,9 @@ class SessionStore:
     def clear(self) -> None:
         self._entries.clear()
         self._save()
+
+    def forget_prefix(self, prefix: str) -> None:
+        """Forget the sessions whose keys start with prefix, such as one computer's."""
+        for key in [key for key in self._entries if key.startswith(prefix)]:
+            del self._entries[key]
+        self._save()
