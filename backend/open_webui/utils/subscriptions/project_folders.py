@@ -7,10 +7,8 @@ folder. Subfolders follow their nearest parent that has a choice.
 """
 
 import asyncio
-import re
 import time
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath, PureWindowsPath
 
 from open_webui.models.access_grants import AccessGrants
 from open_webui.models.chats import Chats
@@ -20,6 +18,7 @@ from open_webui.utils.access_control.folders import has_folder_access
 from open_webui.utils.chat_id import is_saved_chat_id
 from open_webui.utils.subscriptions.common import FOLDER_INSTRUCTIONS_KEY, folder_adds_instructions
 from open_webui.utils.subscriptions.events import SubscriptionError
+from open_webui.utils.subscriptions.project_paths import MAX_PATH_CHARS, clean_project_path  # noqa: F401
 
 # "Let the AI choose": start in the plan's start folder; the agent finds the project.
 MODE_AUTO = 'auto'
@@ -30,7 +29,6 @@ MODE_CHAT = 'chat'
 MODES = (MODE_AUTO, MODE_FOLDER, MODE_CHAT)
 
 MAX_FOLDER_CHOICES = 500
-MAX_PATH_CHARS = 1024
 MAX_PARENT_DEPTH = 32
 MAX_RECENT_PATHS = 5
 
@@ -41,9 +39,6 @@ START_FOLDER_NOTE = (
     'Create new projects as subfolders of {cwd}. When you change files, say which folder you worked in.'
 )
 
-WINDOWS_EXAMPLE = 'C:\\Users\\you\\code\\project'
-POSIX_EXAMPLE = '/home/you/code/project'
-DRIVE_PREFIX = re.compile(r'^[A-Za-z]:')
 
 
 @dataclass
@@ -61,72 +56,6 @@ class FolderChoice:
     updated_at: int = 0
     # Filled in when resolved, for messages.
     folder_name: str = ''
-
-
-# --- Path rules ----------------------------------------------------------------
-
-
-def _not_absolute_message(platform: str | None) -> str:
-    if platform == 'win32':
-        return f'Enter a full path, like {WINDOWS_EXAMPLE}.'
-    if platform:
-        return f'Enter a full path, like {POSIX_EXAMPLE}.'
-    return f'Enter a full path, like {WINDOWS_EXAMPLE} or {POSIX_EXAMPLE}.'
-
-
-def _has_dot_parts(path: str) -> bool:
-    return any(part in ('.', '..') for part in re.split(r'[\\/]', path))
-
-
-def _clean_windows_path(path: str, platform: str | None) -> str:
-    # Windows reads / as \, so '/\server' is a network path too.
-    path = path.replace('/', '\\')
-    if path.startswith('\\\\'):
-        raise SubscriptionError("Network paths aren't supported. Choose a folder on one of this computer's drives.")
-    if _has_dot_parts(path):
-        raise SubscriptionError('Use the folder\'s full path without . or .. parts.')
-    # Windows drops a trailing dot or space, so 'C:\ .' would mean the whole drive.
-    if any(part != part.rstrip('. ') for part in path.split('\\')):
-        raise SubscriptionError("Folder names can't end with a dot or a space.")
-    windows_path = PureWindowsPath(path)
-    if not windows_path.drive or not windows_path.root:
-        raise SubscriptionError(_not_absolute_message(platform))
-    if windows_path == PureWindowsPath(windows_path.anchor):
-        raise SubscriptionError('Choose a folder, not a whole drive.')
-    return str(windows_path)
-
-
-def _clean_posix_path(path: str, platform: str | None) -> str:
-    if not path.startswith('/'):
-        raise SubscriptionError(_not_absolute_message(platform))
-    if _has_dot_parts(path):
-        raise SubscriptionError('Use the folder\'s full path without . or .. parts.')
-    posix_path = PurePosixPath(path)
-    if str(posix_path) in ('/', '//'):
-        raise SubscriptionError('Choose a folder, not a whole drive.')
-    return str(posix_path)
-
-
-def clean_project_path(path: str, platform: str | None) -> str:
-    """The path in its tidy form for the computer's platform, or a plain reason it can't be used.
-
-    platform is the computer's sys.platform, or None when Buddy doesn't know it yet.
-    """
-    text = (path or '').strip()
-    if not text:
-        raise SubscriptionError("Enter the folder's full path.")
-    if any(ord(character) < 32 for character in text):
-        raise SubscriptionError("That path has characters Buddy can't use.")
-    if len(text) > MAX_PATH_CHARS:
-        raise SubscriptionError('That path is too long.')
-    if platform == 'win32':
-        return _clean_windows_path(text, platform)
-    if platform:
-        return _clean_posix_path(text, platform)
-    # Unknown platform: a drive letter or a backslash at the start means Windows.
-    if DRIVE_PREFIX.match(text) or '\\' in text[:2] or text.startswith('//'):
-        return _clean_windows_path(text, platform)
-    return _clean_posix_path(text, platform)
 
 
 # --- Storage ---------------------------------------------------------------------
