@@ -80,7 +80,7 @@
 					{ folder: sharedFolder.name, name: computerName }
 				)}
 			</p>
-			<label class="mt-1.5 flex min-h-8 items-center gap-2">
+			<label class="mt-1.5 flex min-h-11 items-center gap-2 md:min-h-8">
 				<input
 					type="checkbox"
 					checked={draft.acknowledgedFolderId !== null}
@@ -121,7 +121,7 @@
 	{#if firstPlan}
 		<button
 			type="button"
-			class="mt-0.5 min-h-9 rounded-lg px-2 text-start text-[0.6875rem] text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-gray-800/60"
+			class="mt-0.5 min-h-11 rounded-lg px-2 text-start text-xs text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-gray-800/60 md:min-h-9 md:text-[0.6875rem]"
 			on:click={changeDefault}
 		>
 			{$i18n.t('Default for {{plan}}: {{access}} · Change default', {

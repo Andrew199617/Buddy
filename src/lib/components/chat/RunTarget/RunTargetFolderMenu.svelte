@@ -186,7 +186,7 @@
 	<div class="flex flex-col gap-1 p-1">
 		<button
 			type="button"
-			class="min-h-9 self-start rounded-lg px-2 text-[0.8125rem] hover:bg-gray-50 dark:hover:bg-gray-800/60"
+			class="min-h-11 self-start rounded-lg px-2 text-[0.8125rem] hover:bg-gray-50 dark:hover:bg-gray-800/60 md:min-h-9"
 			on:click={() => (browsing = false)}
 		>
 			← {$i18n.t('Back')} · <bdi>{computerName(computer)}</bdi>
