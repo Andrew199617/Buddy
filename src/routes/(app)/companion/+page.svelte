@@ -7,6 +7,7 @@
 		CompanionClient,
 		CompanionError,
 		DEFAULT_COMPANION_ENDPOINT,
+		WorkspaceClient,
 		detectLineEnding,
 		toEditorText,
 		toFileText,
@@ -17,15 +18,19 @@
 		type CompanionWorkspace,
 		type CompanionTerminal
 	} from '$lib/apis/companion';
+	import { RelayCompanionClient } from '$lib/apis/companion-relay';
 
 	let endpointInput = DEFAULT_COMPANION_ENDPOINT;
 	let machines: SubscriptionMachine[] = [];
 	let selectedMachineId = '';
+	let selectedRunnerId = '';
+	// True while the connection goes through Buddy's relay rather than a paired address.
+	let throughBuddy = false;
 	let machinesBusy = false;
 	let machinesError = '';
 	let hostEndpoint = '';
 	let pairCode = '';
-	let client: CompanionClient | null = null;
+	let client: WorkspaceClient | null = null;
 	let host: CompanionHost | null = null;
 	let expiresAt: number | null = null;
 	let grants: CompanionGrant[] = [];
@@ -65,18 +70,26 @@
 	let expiryTimer: ReturnType<typeof setTimeout> | null = null;
 	let pollFailures = 0;
 	let pollErrorMessage = '';
-	const pendingClients = new Set<CompanionClient>();
+	const pendingClients = new Set<WorkspaceClient>();
 
 	$: activeGrant = grants.find((grant) => grant.id === activeGrantId) ?? null;
+	// Computers connected through the Buddy app; the others are saved Runner addresses.
+	$: runnerMachines = machines.filter(isBuddyAppComputer);
+	$: addressMachines = machines.filter((machine) => !isBuddyAppComputer(machine));
 	$: fileDirty = filePath !== null && fileContent !== savedFileContent;
+	$: connectionStatusText = describeConnectionStatus(client, throughBuddy);
+	$: sessionText = describeSession(throughBuddy, expiresAt);
+	$: openThroughBuddy = client !== null && throughBuddy;
+	// Direct pairing is for computers without the Buddy app, so it starts folded away.
+	let advancedOpen = false;
 	$: terminalOutput = terminal?.output.slice(-262144) ?? '';
 
-	function isCurrent(candidate: CompanionClient, generation: number): boolean {
+	function isCurrent(candidate: WorkspaceClient, generation: number): boolean {
 		return !disposed && generation === connectionGeneration && client === candidate;
 	}
 
 	function isCurrentTerminal(
-		candidate: CompanionClient,
+		candidate: WorkspaceClient,
 		generation: number,
 		requestGeneration: number,
 		terminalId: string
@@ -103,6 +116,19 @@
 		) {
 			throw new CompanionError('The Runner did not confirm this command session status.', 502);
 		}
+	}
+
+	function describeConnectionStatus(current: WorkspaceClient | null, relayed: boolean): string {
+		if (!current) return 'Disconnected';
+		if (relayed) return 'Open';
+		return 'Paired';
+	}
+
+	function describeSession(relayed: boolean, expires: number | null): string {
+		if (relayed)
+			return 'Open through Buddy. Closing this page or disconnecting stops its commands.';
+		if (expires) return `Session expires ${new Date(expires).toLocaleString()}.`;
+		return 'Session expires when revoked.';
 	}
 
 	function stopPolling() {
@@ -135,7 +161,7 @@
 		executionRiskAccepted = false;
 	}
 
-	function resetConnection(): CompanionClient | null {
+	function resetConnection(): WorkspaceClient | null {
 		const previous = client;
 		connectionGeneration += 1;
 		browseGeneration += 1;
@@ -159,12 +185,13 @@
 		browseBusy = false;
 		workspaceBusy = false;
 		pairCode = '';
+		throughBuddy = false;
 		clearFile();
 		clearTerminal();
 		return previous;
 	}
 
-	function scheduleSessionExpiry(candidate: CompanionClient, generation: number, expires: number) {
+	function scheduleSessionExpiry(candidate: WorkspaceClient, generation: number, expires: number) {
 		if (expiryTimer !== null) clearTimeout(expiryTimer);
 		expiryTimer = setTimeout(
 			() => {
@@ -182,6 +209,9 @@
 		if (cause instanceof Error && cause.name === 'AbortError') {
 			return 'The computer request timed out or was cancelled.';
 		}
+		if (cause instanceof TypeError && throughBuddy) {
+			return 'Cannot reach Buddy. Check your connection and try again.';
+		}
 		if (cause instanceof TypeError) {
 			return 'Cannot reach this Runner. Check its browser address, that it is running, and its allowed Buddy origin.';
 		}
@@ -191,30 +221,92 @@
 
 	function reportError(cause: unknown, generation: number) {
 		if (disposed || generation !== connectionGeneration) return;
+		const wasThroughBuddy = throughBuddy;
 		error = describeError(cause);
 		if (cause instanceof CompanionError && (cause.status === 401 || cause.hostChanged)) {
 			const previous = resetConnection();
 			void previous?.disconnect().catch(() => {});
 			if (cause.status === 401) {
-				error =
-					'This project session is no longer authorized. Inspect the computer and pair with a fresh code.';
+				error = unauthorizedMessage(wasThroughBuddy);
 			}
 		}
 	}
 
+	function unauthorizedMessage(wasThroughBuddy: boolean): string {
+		if (wasThroughBuddy) {
+			return 'Your Buddy sign-in ended. Sign in again, then open the computer.';
+		}
+		return 'This project session is no longer authorized. Inspect the computer and pair with a fresh code.';
+	}
+
 	async function loadMachines() {
-		if ($user?.role !== 'admin') return;
 		machinesBusy = true;
+		machinesError = '';
 		try {
 			const response = await getSubscriptionMachines(localStorage.token);
-			if (disposed || $user?.role !== 'admin') return;
+			if (disposed) return;
 			machines = response.machines;
+			const connected = response.machines.filter(isBuddyAppComputer);
+			preselectOnlyOnlineComputer(connected);
+			// Without a Buddy-app computer, saved Runner addresses are the only way in.
+			if (connected.length === 0 && response.machines.length > 0) advancedOpen = true;
 		} catch {
 			if (!disposed)
 				machinesError =
-					'Saved computer addresses are unavailable. Enter a Runner browser address below.';
+					'Your computers could not be loaded. You can still connect by address under Advanced.';
 		} finally {
 			if (!disposed) machinesBusy = false;
+		}
+	}
+
+	function isBuddyAppComputer(machine: SubscriptionMachine): boolean {
+		return machine.kind === 'runner';
+	}
+
+	function preselectOnlyOnlineComputer(connected: SubscriptionMachine[]) {
+		const online = connected.filter((machine) => machine.online);
+		if (!selectedRunnerId && online.length === 1) selectedRunnerId = online[0].id;
+	}
+
+	function computerOptionLabel(machine: SubscriptionMachine): string {
+		if (machine.online) return machine.name;
+		return `${machine.name} (offline)`;
+	}
+
+	/** Opens one of your Buddy-app computers through Buddy; no pairing code is needed. */
+	async function openComputer() {
+		const machine = runnerMachines.find((candidate) => candidate.id === selectedRunnerId);
+		if (!machine) return;
+		error = '';
+		notice = '';
+		const previous = resetConnection();
+		void previous?.disconnect().catch(() => {});
+		const generation = connectionGeneration;
+		throughBuddy = true;
+		connectionBusy = true;
+		let candidate: RelayCompanionClient | null = null;
+		try {
+			candidate = new RelayCompanionClient(machine.id, localStorage.token);
+			pendingClients.add(candidate);
+			const identity = await candidate.getHost();
+			if (disposed || generation !== connectionGeneration) return;
+			client = candidate;
+			host = identity;
+			hostEndpoint = candidate.description;
+			// A failed folder listing keeps the computer open, so the listing can be retried.
+			if (!(await loadGrants(candidate, generation))) return;
+			notice = `Opened ${identity.name}. Closing this page or disconnecting stops its commands.`;
+		} catch (cause) {
+			reportError(cause, generation);
+			if (generation === connectionGeneration && candidate === client) resetConnection();
+			// The computer may have gone offline since the list was loaded.
+			if (generation === connectionGeneration) void loadMachines();
+		} finally {
+			if (candidate) {
+				pendingClients.delete(candidate);
+				if (candidate !== client) void candidate.disconnect().catch(() => {});
+			}
+			if (!disposed && generation === connectionGeneration) connectionBusy = false;
 		}
 	}
 
@@ -347,7 +439,7 @@
 	}
 
 	/** Returns false when the listing failed or the connection changed while loading. */
-	async function loadGrants(candidate: CompanionClient, generation: number): Promise<boolean> {
+	async function loadGrants(candidate: WorkspaceClient, generation: number): Promise<boolean> {
 		grantsBusy = true;
 		try {
 			const approvedGrants = await candidate.getGrants();
@@ -582,7 +674,7 @@
 	}
 
 	function schedulePoll(
-		candidate: CompanionClient,
+		candidate: WorkspaceClient,
 		generation: number,
 		requestGeneration: number,
 		terminalId: string,
@@ -603,7 +695,7 @@
 	}
 
 	async function pollTerminal(
-		candidate: CompanionClient,
+		candidate: WorkspaceClient,
 		generation: number,
 		requestGeneration: number,
 		terminalId: string
@@ -795,10 +887,16 @@
 	/** Closing, reloading or leaving the tab skips onDestroy, so the session is revoked here too. */
 	function revokeOnPageHide() {
 		if (!client) return;
+		const wasThroughBuddy = throughBuddy;
 		const previous = resetConnection();
 		// The revocation request uses keepalive, so it can finish after the page unloads.
 		void previous?.disconnect().catch(() => {});
-		notice = 'This page was left, so its Runner session was revoked. Pair again to continue.';
+		if (wasThroughBuddy) {
+			notice =
+				'This page was left, so its session on the computer ended. Open the computer again to continue.';
+		} else {
+			notice = 'This page was left, so its Runner session was revoked. Pair again to continue.';
+		}
 	}
 
 	onMount(() => {
@@ -837,11 +935,11 @@
 			</button>
 		{/if}
 		<div>
-			<p class="eyebrow">Buddy Runner</p>
+			<p class="eyebrow">Your computers</p>
 			<h1>Your projects, on your selected computer</h1>
 			<p class="muted">
-				Connect this browser to a computer that runs Buddy Runner. Select only folders approved on
-				that computer.
+				Open a computer you connected with the Buddy app. Only the folders shared on that computer
+				are available.
 			</p>
 		</div>
 	</header>
@@ -856,54 +954,41 @@
 	<section class="panel connection-panel" aria-labelledby="connection-heading">
 		<div class="section-heading">
 			<h2 id="connection-heading">Computer</h2>
-			<span class:connected={client !== null} class="status"
-				>{client ? 'Paired' : 'Disconnected'}</span
-			>
+			<span class:connected={client !== null} class="status">{connectionStatusText}</span>
 		</div>
-		{#if $user?.role === 'admin'}
-			<label for="runner-computer">Saved computer</label>
-			<select
-				id="runner-computer"
-				value={selectedMachineId}
-				on:change={selectComputer}
-				disabled={machinesBusy}
-			>
-				<option value="">Enter a browser address</option>
-				{#each machines as machine (machine.id)}
-					<option value={machine.id}
-						>{machine.name}{machine.browser_url ? '' : ' (address needed)'}</option
+		{#if !client}
+			<label for="your-computer">Your computer</label>
+			{#if runnerMachines.length > 0}
+				<div class="field-row">
+					<select
+						id="your-computer"
+						bind:value={selectedRunnerId}
+						disabled={machinesBusy || connectionBusy}
 					>
-				{/each}
-			</select>
-			{#if machinesBusy}<p class="muted hint">Loading saved computers…</p>{/if}
+						<option value="" disabled>Choose a computer</option>
+						{#each runnerMachines as machine (machine.id)}
+							<option value={machine.id} disabled={!machine.online}
+								>{computerOptionLabel(machine)}</option
+							>
+						{/each}
+					</select>
+					<button
+						class="primary"
+						on:click={openComputer}
+						disabled={!selectedRunnerId || connectionBusy}
+						>{connectionBusy && throughBuddy ? 'Opening…' : 'Open'}</button
+					>
+				</div>
+			{:else if machinesBusy}
+				<p class="muted hint">Loading your computers…</p>
+			{:else}
+				<p class="muted hint">
+					No computers are connected yet. Install the Buddy app on a computer, then choose Connect
+					this computer in Settings → Machines.
+				</p>
+			{/if}
 			{#if machinesError}<p class="muted hint">{machinesError}</p>{/if}
 		{/if}
-		<label for="companion-endpoint">Host address</label>
-		<div class="field-row">
-			<input
-				id="companion-endpoint"
-				type="url"
-				value={endpointInput}
-				on:input={changeEndpoint}
-				spellcheck="false"
-				autocapitalize="none"
-				placeholder={DEFAULT_COMPANION_ENDPOINT}
-			/>
-			<button on:click={inspectHost} disabled={connectionBusy || client !== null}
-				>Inspect host</button
-			>
-		</div>
-		<p class="muted hint">
-			Buddy Runner uses 8765 on the chosen computer. On a phone, loopback points to the phone. Enter
-			the computer’s explicitly configured HTTPS browser address; remote access must be configured
-			separately. A backend address such as host.docker.internal is not a browser address.
-		</p>
-		<p class="muted hint">
-			Claude and ChatGPT commands run on the machine selected in Subscriptions. Selecting a project
-			here does not change that setting, provider sign-in, or directory permissions. Codex Read
-			files can read files available to that machine’s OS account; these scoped file permissions are
-			separate.
-		</p>
 		{#if host}
 			<div class="host-identity">
 				<strong>{host.name}</strong>
@@ -914,44 +999,95 @@
 		{/if}
 		{#if client}
 			<div class="field-row session-row">
-				<p class="muted">
-					Session expires {expiresAt ? new Date(expiresAt).toLocaleString() : 'when revoked'}.
-				</p>
-				<button on:click={disconnectHost}>Disconnect and revoke</button>
+				<p class="muted">{sessionText}</p>
+				<button on:click={disconnectHost}>Disconnect</button>
 			</div>
-		{:else}
-			<form class="pair-form" on:submit|preventDefault={pairHost}>
-				<label for="companion-code">One-time pairing code from this host</label>
+		{/if}
+		<p class="muted hint">
+			Claude and ChatGPT run on the computer chosen for each plan in Settings → Machines. Selecting
+			a project here does not change that setting, provider sign-in, or directory permissions. Codex
+			Read files can read files available to that computer’s OS account; these scoped file
+			permissions are separate.
+		</p>
+		{#if !openThroughBuddy}
+			<details class="advanced" bind:open={advancedOpen}>
+				<summary>Advanced: connect by address with a pairing code</summary>
+				<p class="muted hint">
+					For a computer running Buddy Runner on its own, without the Buddy app.
+				</p>
+				{#if addressMachines.length > 0}
+					<label for="runner-computer">Saved computer</label>
+					<select
+						id="runner-computer"
+						value={selectedMachineId}
+						on:change={selectComputer}
+						disabled={machinesBusy}
+					>
+						<option value="">Enter a browser address</option>
+						{#each addressMachines as machine (machine.id)}
+							<option value={machine.id}
+								>{machine.name}{machine.browser_url ? '' : ' (address needed)'}</option
+							>
+						{/each}
+					</select>
+				{/if}
+				<label for="companion-endpoint">Host address</label>
 				<div class="field-row">
 					<input
-						id="companion-code"
-						class="pairing-code"
-						type="text"
-						bind:value={pairCode}
-						autocomplete="one-time-code"
-						autocapitalize="characters"
-						autocorrect="off"
+						id="companion-endpoint"
+						type="url"
+						value={endpointInput}
+						on:input={changeEndpoint}
 						spellcheck="false"
-						placeholder="XXXX-XXXX-XXXX-XXXX-XXXX"
-						aria-describedby="companion-code-hint"
+						autocapitalize="none"
+						placeholder={DEFAULT_COMPANION_ENDPOINT}
 					/>
-					<button
-						type="submit"
-						class="primary"
-						disabled={connectionBusy || !host || !pairCode.trim()}
-						>{connectionBusy ? 'Connecting…' : 'Pair host'}</button
+					<button on:click={inspectHost} disabled={connectionBusy || client !== null}
+						>Inspect host</button
 					>
 				</div>
-				<p id="companion-code-hint" class="muted hint">
-					Five groups of four letters and digits, shown by Buddy Runner on that computer. Case,
-					spaces and dashes do not matter. A wrong code keeps this computer selected, so you can
-					correct it and try again.
+				<p class="muted hint">
+					Buddy Runner uses 8765 on the chosen computer. On a phone, loopback points to the phone.
+					Enter the computer’s explicitly configured HTTPS browser address; remote access must be
+					configured separately. A backend address such as host.docker.internal is not a browser
+					address.
 				</p>
-			</form>
-			<p class="muted hint">
-				Pairing uses a short-lived project credential held in memory. Buddy account tokens and
-				provider credentials are never sent by this page. Model sign-in grants no project access.
-			</p>
+				{#if !client}
+					<form class="pair-form" on:submit|preventDefault={pairHost}>
+						<label for="companion-code">One-time pairing code from this host</label>
+						<div class="field-row">
+							<input
+								id="companion-code"
+								class="pairing-code"
+								type="text"
+								bind:value={pairCode}
+								autocomplete="one-time-code"
+								autocapitalize="characters"
+								autocorrect="off"
+								spellcheck="false"
+								placeholder="XXXX-XXXX-XXXX-XXXX-XXXX"
+								aria-describedby="companion-code-hint"
+							/>
+							<button
+								type="submit"
+								class="primary"
+								disabled={connectionBusy || !host || !pairCode.trim()}
+								>{connectionBusy ? 'Connecting…' : 'Pair host'}</button
+							>
+						</div>
+						<p id="companion-code-hint" class="muted hint">
+							Five groups of four letters and digits, shown by Buddy Runner on that computer. Case,
+							spaces and dashes do not matter. A wrong code keeps this computer selected, so you can
+							correct it and try again.
+						</p>
+					</form>
+					<p class="muted hint">
+						Pairing uses a short-lived project credential held in memory. Buddy account tokens and
+						provider credentials are never sent by this page. Model sign-in grants no project
+						access.
+					</p>
+				{/if}
+			</details>
 		{/if}
 	</section>
 
@@ -1390,8 +1526,25 @@
 		align-items: center;
 		gap: 10px;
 	}
-	.field-row input {
+	.field-row input,
+	.field-row select {
 		flex: 1;
+	}
+	.advanced {
+		margin-top: 20px;
+		border-top: 1px solid var(--buddy-edge, #dde6df);
+		padding-top: 8px;
+	}
+	.advanced summary {
+		display: flex;
+		align-items: center;
+		min-height: 44px;
+		font-size: 13px;
+		font-weight: 550;
+		cursor: pointer;
+	}
+	.advanced[open] summary {
+		margin-bottom: 8px;
 	}
 	.field-row button {
 		flex-shrink: 0;
@@ -1640,7 +1793,8 @@
 		.field-row {
 			flex-wrap: wrap;
 		}
-		.field-row input {
+		.field-row input,
+		.field-row select {
 			flex-basis: 100%;
 		}
 		.field-row button {
