@@ -2013,11 +2013,26 @@ async def get_subscription_catalog(user=None) -> list[dict]:
     return [dict(model) for model in _catalog.values()]
 
 
+def _preset_base_model_id(model: dict) -> str | None:
+    """The model a Workspace preset runs on, from its saved row."""
+    info = model.get('info') or {}
+    return info.get('base_model_id')
+
+
 async def personalize_models(models: list[dict], user) -> list[dict]:
-    """Keep only the subscription models this user's providers offer, with their own details."""
+    """Keep only the subscription models this user's providers offer, with their own details.
+
+    A Workspace preset based on a subscription model runs on the user's own
+    plan, so it is kept, unchanged, when their providers offer its base model.
+    Its own access grants still decide whether the user may see it.
+    """
     own = {model['id']: model for model in await get_user_subscription_models(user)}
     personalized = []
     for model in models:
+        if model.get('preset'):
+            if _preset_base_model_id(model) in own:
+                personalized.append(model)
+            continue
         entry = own.get(model.get('id'))
         if entry is None:
             continue

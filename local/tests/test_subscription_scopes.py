@@ -116,6 +116,19 @@ class SubscriptionScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.service.user_offers_model(MEMBER_USER, 'claude-code.fixture-model'))
         self.assertFalse(await self.service.user_offers_model(OTHER_USER, 'claude-code.fixture-model'))
 
+    async def test_a_preset_is_listed_for_users_whose_providers_offer_its_base_model(self):
+        self.enable_signed_in(MEMBER, 'subscriptions.users.member-1.claude', 'member-pc')
+        catalog = await self.service.get_subscription_catalog(MEMBER_USER)
+        preset = {
+            'id': 'fixture-preset', 'owned_by': 'subscription', 'preset': True,
+            'info': {'id': 'fixture-preset', 'base_model_id': 'claude-code.fixture-model'},
+        }
+        personalized = await self.service.personalize_models(catalog + [preset], MEMBER_USER)
+        self.assertEqual([model['id'] for model in personalized], ['claude-code.fixture-model', 'fixture-preset'])
+        # The preset keeps its own entry, so it is never mistaken for the subscription model itself.
+        self.assertNotIn('subscription', personalized[1])
+        self.assertEqual(await self.service.personalize_models(catalog + [preset], OTHER_USER), [])
+
     async def test_the_catalog_registers_every_known_model_but_each_user_sees_their_own(self):
         self.enable_signed_in(MEMBER, 'subscriptions.users.member-1.claude', 'member-pc')
         catalog = await self.service.get_subscription_catalog(MEMBER_USER)
