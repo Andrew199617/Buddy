@@ -469,6 +469,9 @@
 	// Each load bumps its counter, so an older answer never replaces a newer one.
 	let runTargetOptionsLoad = 0;
 	let chatRunTargetLoad = 0;
+	// True until the newest load answers, so the side panel waits for the chat's own folder.
+	let runTargetOptionsLoading = false;
+	let chatRunTargetLoading = false;
 	let runTargetProvidersKey = '';
 	let loadedChatIdProp = '';
 	let currentDraftKey = '';
@@ -809,11 +812,13 @@
 	/** What the bar offers here, and the draft a new chat starts with. */
 	async function loadRunTargetOptions(startNewDraft: boolean) {
 		const load = ++runTargetOptionsLoad;
+		runTargetOptionsLoading = true;
 		const options = await getRunTargetOptions(localStorage.token, {
 			folderId: $selectedFolder?.id ?? null,
 			thisMachineId: $thisPcMachineId
 		}).catch(() => null);
 		if (load !== runTargetOptionsLoad) return;
+		runTargetOptionsLoading = false;
 		runTargetOptions = options;
 		if (!options?.allowed || !options.default || history?.currentId) {
 			runTargetDraft = null;
@@ -835,15 +840,19 @@
 	/** Whether the bar shows for a saved chat, and its computers: the options in its own chat folder. */
 	async function loadSavedChatRunTargetOptions(folderId: string | null) {
 		const load = ++runTargetOptionsLoad;
+		runTargetOptionsLoading = true;
 		const options = await getRunTargetOptions(localStorage.token, { folderId }).catch(() => null);
 		if (load !== runTargetOptionsLoad) return;
+		runTargetOptionsLoading = false;
 		runTargetOptions = options;
 	}
 
 	async function loadChatRunTarget(id: string) {
 		const load = ++chatRunTargetLoad;
+		chatRunTargetLoading = true;
 		const target = await getChatRunTarget(localStorage.token, id).catch(() => null);
 		if (load !== chatRunTargetLoad) return;
+		chatRunTargetLoading = false;
 		chatRunTarget = target;
 	}
 
@@ -855,6 +864,7 @@
 	/** Drops the open chat's target and any answer still on its way for it. */
 	function forgetChatRunTarget() {
 		chatRunTargetLoad += 1;
+		chatRunTargetLoading = false;
 		chatRunTarget = null;
 	}
 
@@ -906,6 +916,7 @@
 	}
 
 	// A chat that runs in an exact folder opens that folder in its Project tab.
+	$: projectChatTargetLoading = chatRunTargetLoading || runTargetOptionsLoading;
 	$: projectChatTarget = chatProjectTarget(
 		boundDetails(shownRunTarget),
 		runTargetOptions?.computers ?? []
@@ -4887,6 +4898,7 @@
 						{codeInterpreterEnabled}
 						folderId={sidePanelFolderId}
 						chatTarget={projectChatTarget}
+						chatTargetLoading={projectChatTargetLoading}
 						onChatTargetCheck={recheckChatTargetComputer}
 					/>
 				{/if}

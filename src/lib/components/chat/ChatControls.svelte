@@ -84,6 +84,8 @@
 	export let folderId: string | null = null;
 	// The exact folder the open chat runs in, which its Project tab opens instead of the folder's.
 	export let chatTarget: ProjectTarget | null = null;
+	// True while where the chat runs is still loading; the Project tab waits for it.
+	export let chatTargetLoading = false;
 	// Checks again whether the chat's own computer is online.
 	export let onChatTargetCheck: () => void = () => {};
 
@@ -171,6 +173,7 @@
 		reloadFolderProject();
 	}
 	$: showProjectTab = folderProject !== null || chatTarget !== null;
+	$: projectTabLoading = folderProjectLoading || chatTargetLoading;
 	$: projectTabAvailable.set(showProjectTab);
 	$: projectKey = panelKey(folderId, chatTarget);
 
@@ -222,7 +225,7 @@
 		keptProject.update({ project: folderProject, chatTarget });
 	}
 	$: if (keptProject && keptProjectKey !== projectKey) dropProjectPanel();
-	$: if (keptProject && !showProjectTab && !folderProjectLoading) dropProjectPanel();
+	$: if (keptProject && !showProjectTab && !projectTabLoading) dropProjectPanel();
 
 	function leaveProjectTab() {
 		dropProjectPanel();
@@ -234,7 +237,7 @@
 	// Tab fallback: if active tab becomes hidden, switch to next available
 	$: if (!showOverviewTab && activeTab === 'overview') activeTab = 'controls';
 	$: if (!showFilesTab && activeTab === 'files') activeTab = 'controls';
-	$: if (!showProjectTab && !folderProjectLoading && activeTab === 'project') {
+	$: if (!showProjectTab && !projectTabLoading && activeTab === 'project') {
 		activeTab = 'controls';
 	}
 	$: if (!showControlsTab && activeTab === 'controls') {
@@ -249,7 +252,7 @@
 		!showFilesTab &&
 		!showOverviewTab &&
 		!showProjectTab &&
-		!folderProjectLoading
+		!projectTabLoading
 	) {
 		showControls.set(false);
 	}
