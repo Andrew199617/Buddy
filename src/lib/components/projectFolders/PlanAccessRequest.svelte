@@ -79,15 +79,16 @@
 			);
 		} catch (cause) {
 			error = `${cause}`;
-			saving = false;
 			// The plan may have changed elsewhere; the next try confirms what it is now.
 			await reload();
+			saving = false;
 			return;
 		}
+		// The question stays, busy, until the plans show the change.
+		await reload();
 		confirming = null;
 		saving = false;
 		toast.success(allowedMessage(plan, access, machine.name));
-		await reload();
 		onAllowed();
 	}
 
