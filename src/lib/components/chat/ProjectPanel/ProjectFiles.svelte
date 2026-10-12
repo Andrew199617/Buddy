@@ -2,6 +2,7 @@
 	// The project folder's files in the chat side panel: browse inside the
 	// project folder, read text files and, when the computer allows it, edit them.
 	import { getContext, onDestroy } from 'svelte';
+	import { beforeNavigate } from '$app/navigation';
 
 	import {
 		CompanionError,
@@ -173,6 +174,19 @@
 	}
 
 	void browse(root);
+
+	// Leaving the chat ends this panel, so ask before dropping unsaved edits.
+	beforeNavigate((navigation) => {
+		if (!dirty) return;
+		if (navigation.type === 'leave') {
+			// Closing or reloading the page: the browser asks.
+			navigation.cancel();
+			return;
+		}
+		if (!confirm($i18n.t('Discard your changes to {{name}}?', { name: fileName }))) {
+			navigation.cancel();
+		}
+	});
 
 	onDestroy(() => {
 		disposed = true;
