@@ -141,7 +141,7 @@
 	<hr class="mx-1 my-0.5 border-gray-100 dark:border-gray-800" />
 	<button
 		type="button"
-		class="min-h-9 rounded-lg px-2 text-start text-[0.8125rem] text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800/60"
+		class="min-h-11 rounded-lg px-2 text-start text-[0.8125rem] text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800/60 md:min-h-9"
 		on:click={connect}
 	>
 		{connectLabel}
