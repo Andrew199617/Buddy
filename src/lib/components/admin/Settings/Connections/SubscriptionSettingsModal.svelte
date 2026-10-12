@@ -160,7 +160,9 @@
 					disabled={saving}
 					on:change={changeMachine}
 				>
-					{#if !machines.some((machine) => machine.id === machineId)}
+					{#if !machineId}
+						<option value="" disabled>{$i18n.t('Choose a computer')}</option>
+					{:else if !machines.some((machine) => machine.id === machineId)}
 						<option value={machineId} disabled>{$i18n.t('Unavailable machine')}</option>
 					{/if}
 					{#each machines as machine (machine.id)}
@@ -169,7 +171,7 @@
 				</select>
 				<p class="text-xs text-gray-400 dark:text-gray-600">
 					{$i18n.t(
-						'The machine where the CLI runs, signs in, and works on files. Add machines under Machines.'
+						'The computer where the CLI runs, signs in, and works on files. Connect computers from the Buddy app, under Settings → Machines.'
 					)}
 				</p>
 				{#if machineId !== initialMachineId}
@@ -207,7 +209,7 @@
 				{#if access === 'full'}
 					<p class="text-xs text-amber-700 dark:text-amber-400">
 						{$i18n.t(
-							'Anyone who can sign in to Buddy as an administrator can then run commands on that machine.'
+							'Buddy can then run commands on that computer as your account there, and so can anyone who controls this Buddy server.'
 						)}
 					</p>
 				{/if}
