@@ -287,8 +287,48 @@ async def save_policy(updates: dict) -> SubscriptionPolicy:
     await Config.upsert({POLICY_CONFIG_KEY: asdict(policy)})
     for ref in list(_provider_generations) + list(_tracked_machines) + list(_providers):
         invalidate(ref)
+    # Before disconnecting computers, so their processes can still be stopped.
+    await _stop_disallowed_providers()
     await _disconnect_disallowed_runners()
     return policy
+
+
+async def _policy_allows_provider(ref: ProviderRef) -> bool:
+    """Whether the saved policy still allows this provider's owner, sign-in and, on this server, machine."""
+    owner = await Users.get_user_by_id(ref.owner_id)
+    if not await may_use_machines(owner):
+        return False
+    try:
+        await _require_allowed_credential(ref, await _load_credential_mode(ref))
+    except SubscriptionError:
+        return False
+    settings = await _load_settings(ref)
+    if settings.machine_id == LOCAL_MACHINE_ID:
+        return await _may_use_server_machine(ref.owner_id)
+    return True
+
+
+async def _stop_provider_if_disallowed(ref: ProviderRef) -> None:
+    if await _policy_allows_provider(ref):
+        return
+    async with _provider_lock(ref):
+        await _quiesce_provider(ref)
+
+
+async def _stop_disallowed_providers() -> None:
+    """Stop turns, sign-ins and app-servers that the policy no longer allows.
+
+    New work is refused by the policy checks when it starts. Settings are
+    kept, so turning a switch back on needs nothing else.
+    """
+    refs = list(set(_providers) | set(_tracked_machines) | set(_active_provider_tasks))
+    results = await asyncio.gather(*(_stop_provider_if_disallowed(ref) for ref in refs), return_exceptions=True)
+    for ref, result in zip(refs, results):
+        if isinstance(result, Exception):
+            # The policy is already saved; a provider whose cleanup failed is turned off.
+            log.warning(
+                'Could not confirm that %s stopped for %s: %s', PROVIDER_LABELS[ref.provider_id], ref.owner_id, result
+            )
 
 
 async def _disconnect_disallowed_runners() -> None:
