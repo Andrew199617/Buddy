@@ -308,8 +308,23 @@ async def _policy_allows_provider(ref: ProviderRef) -> bool:
     return True
 
 
+def _has_work_to_stop(ref: ProviderRef) -> bool:
+    """Whether this provider has a live provider, a tracked machine or running tasks."""
+    return ref in _providers or ref in _tracked_machines or bool(_active_provider_tasks.get(ref))
+
+
 async def _stop_provider_if_disallowed(ref: ProviderRef) -> None:
-    if await _policy_allows_provider(ref):
+    # Nothing runs for it, as for a deleted user: checking would only bring its provider back.
+    if not _has_work_to_stop(ref):
+        return
+    try:
+        allowed = await _policy_allows_provider(ref)
+    except Exception as error:
+        # Fail closed: work the policy may forbid is stopped when it cannot be checked.
+        log.warning('Could not check the policy for %s of %s, so it is stopped: %s',
+                    PROVIDER_LABELS[ref.provider_id], ref.owner_id, error)
+        allowed = False
+    if allowed:
         return
     async with _provider_lock(ref):
         await _quiesce_provider(ref)
@@ -325,7 +340,8 @@ async def _stop_disallowed_providers() -> None:
     results = await asyncio.gather(*(_stop_provider_if_disallowed(ref) for ref in refs), return_exceptions=True)
     for ref, result in zip(refs, results):
         if isinstance(result, Exception):
-            # The policy is already saved; a provider whose cleanup failed is turned off.
+            # The policy is already saved. A provider whose cleanup could not be
+            # confirmed is turned off by _quiesce_provider.
             log.warning(
                 'Could not confirm that %s stopped for %s: %s', PROVIDER_LABELS[ref.provider_id], ref.owner_id, result
             )
