@@ -390,7 +390,6 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		platform: 'win32',
 		can_browse: true,
 		folders: 'on',
-		providers: [{ id: 'claude', name: 'Claude', access: 'full' }],
 		recent_paths: ['C:\\code\\site']
 	};
 	// Folders on Work PC, for browsing its whole disk.
