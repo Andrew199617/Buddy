@@ -222,6 +222,14 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			};
 			provider.models = [];
 		}
+		if (mode === 'computer-sign-in') {
+			// Claude is on and signed in on this server, but not yet on computer A.
+			provider.settings.enable = true;
+			provider.computers = [
+				{ machine_id: 'local', name: 'This server', online: true, state: 'ready' },
+				{ machine_id: 'runner-a', name: 'Synthetic computer A', online: true, state: 'signed_out' }
+			];
+		}
 		return provider;
 	}
 
@@ -350,6 +358,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	}
 
 	// --- Chat folders' project folders and the chat's Project tab -------------
+	const runTargetModes = new Set(['run-target-new', 'run-target-bound']);
 	const projectModes = new Set([
 		'project-tab',
 		'project-agents',
@@ -360,7 +369,9 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		'folder-allow-stale',
 		'folder-allow-beside',
 		'folder-allow-homeless',
-		'folder-no-plans'
+		'folder-no-plans',
+		'folder-browse',
+		...runTargetModes
 	]);
 	// Modes where the folder settings ask for something before the choices show.
 	const askingModes = new Set([
@@ -380,7 +391,16 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		online: true,
 		platform: 'win32',
 		can_browse: true,
+		folders: 'on',
 		recent_paths: ['C:\\code\\site']
+	};
+	// Folders on Work PC, for browsing its whole disk.
+	const workPcFolders = {
+		'C:\\': [{ name: 'code', path: 'C:\\code', hidden: false, link: false, selectable: true }],
+		'C:\\code': [
+			{ name: 'docs', path: 'C:\\code\\docs', hidden: false, link: false, selectable: true },
+			{ name: 'site', path: 'C:\\code\\site', hidden: false, link: false, selectable: true }
+		]
 	};
 	let projectChoice = {
 		folder_id: 'website',
@@ -449,6 +469,8 @@ function createFixtures(mode = 'normal', role = 'admin') {
 	let losePlanConfigAnswer = '';
 	// Set when an administrator stops this person using computers.
 	let machinesRevoked = false;
+	// Set when Work PC is removed elsewhere.
+	let workPcRemoved = false;
 	let turnOffAfterPlanConfig = '';
 	const projectGrant = {
 		id: 'grant-code',
@@ -496,18 +518,14 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			}
 			return plan;
 		});
+		// Like the server: every computer the person has, each with every plan that is on,
+		// whatever its access. A plan's access is only where new chats start.
 		const providers = folderPlans
-			.filter((plan) => plan.enable && plan.access !== 'chat' && plan.machine?.id === 'pc-1')
+			.filter((plan) => plan.enable)
 			.map((plan) => ({ id: plan.id, name: plan.name, access: plan.access }));
-		// Like the server: computers running a plan with files, and those the choice names.
 		const computers = [];
-		if (providers.length > 0 || projectChoice.paths['pc-1']) {
-			computers.push({ ...workPc, providers });
-		}
+		if (!workPcRemoved) computers.push({ ...workPc, providers });
 		if (mode === 'project-agents-server') {
-			const serverProviders = folderPlans
-				.filter((plan) => plan.enable && plan.access !== 'chat' && plan.machine?.id === 'local')
-				.map((plan) => ({ id: plan.id, name: plan.name, access: plan.access }));
 			computers.push({
 				machine_id: 'local',
 				name: 'This server',
@@ -515,7 +533,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 				online: true,
 				platform: 'win32',
 				can_browse: false,
-				providers: serverProviders,
+				providers,
 				recent_paths: []
 			});
 		}
@@ -744,6 +762,49 @@ function createFixtures(mode = 'normal', role = 'admin') {
 				return true;
 			}
 			reply = savePlanConfig(path.split('/')[4], body);
+		} else if (
+			path === '/api/v1/subscriptions/machines/pc-1/folders/suggested' &&
+			method === 'GET'
+		) {
+			requests.push({ method, path });
+			if (mode === 'run-target-new') {
+				// Slow enough that the bar's folder menu opens before the suggestions arrive.
+				await new Promise((resolve) => setTimeout(resolve, 600));
+			}
+			const day = 86400;
+			reply = {
+				state: 'ok',
+				folders: [
+					{
+						path: 'C:\\code\\api',
+						sources: ['claude', 'codex'],
+						last_used: Math.floor(Date.now() / 1000 / day) * day - 2 * day
+					}
+				]
+			};
+		} else if (path === '/api/v1/subscriptions/machines/pc-1/folders' && method === 'GET') {
+			const listed = url.searchParams.get('path') || '';
+			requests.push({ method, path, listed });
+			if (!listed) {
+				reply = {
+					path: '',
+					parent: null,
+					roots: [{ name: 'C:', path: 'C:\\', kind: 'drive' }],
+					entries: [],
+					truncated: false
+				};
+			} else {
+				assert.ok(workPcFolders[listed], 'Browsing asks only for folders it was shown');
+				let parent = null;
+				if (listed === 'C:\\code') parent = 'C:\\';
+				reply = {
+					path: listed,
+					parent,
+					roots: [],
+					entries: workPcFolders[listed],
+					truncated: false
+				};
+			}
 		} else if (path === '/api/v1/subscriptions/machines/pc-1/folders/check' && method === 'POST') {
 			const body = request.postDataJSON();
 			requests.push({ method, path, body });
@@ -762,11 +823,97 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		return true;
 	}
 
+	// --- Where chats run: the composer's bar -----------------------------------
+	// A bound chat opens with Work PC offline, until the case brings it online.
+	let workPcOnline = mode !== 'run-target-bound';
+	const runTargetComputer = {
+		machine_id: 'pc-1',
+		name: 'Work PC',
+		kind: 'app',
+		online: true,
+		platform: 'win32',
+		can_browse: true,
+		folders: 'on',
+		recent_paths: [],
+		revision: 'rev-pc-1',
+		providers: { codex: { state: 'unknown', message: null } }
+	};
+
+	function runTargetOptions() {
+		// Other cases keep the bar hidden, as for someone the policy doesn't allow.
+		if (!runTargetModes.has(mode)) return { allowed: false, has_plans: false };
+		return {
+			allowed: true,
+			has_plans: true,
+			plan_access: { codex: 'full' },
+			computers: [{ ...runTargetComputer, online: workPcOnline }],
+			recent: [{ machine_id: 'pc-1', path: 'C:\\code\\site', last_used: 1760000000 }],
+			chat_folder: null,
+			default: {
+				kind: 'detached',
+				machine_id: null,
+				folder: null,
+				access: 'chat',
+				from: 'none',
+				access_locked: false
+			}
+		};
+	}
+
+	async function routeRunTarget(route, request, url, path) {
+		if (path === '/api/v1/subscriptions/run-target/options') {
+			requests.push({ method: request.method(), path });
+			await route.fulfill({ status: 200, json: runTargetOptions() });
+			return true;
+		}
+		if (path === '/api/v1/subscriptions/run-target/readiness') {
+			requests.push({
+				method: request.method(),
+				path,
+				provider: url.searchParams.get('provider'),
+				machineId: url.searchParams.get('machine_id')
+			});
+			await route.fulfill({ status: 200, json: { state: 'ready', message: null } });
+			return true;
+		}
+		if (/^\/api\/v1\/subscriptions\/chats\/[^/]+\/run-target$/.test(path)) {
+			requests.push({ method: request.method(), path });
+			if (mode !== 'run-target-bound') {
+				await route.fulfill({ status: 404, json: { detail: 'That chat no longer exists.' } });
+				return true;
+			}
+			await route.fulfill({
+				status: 200,
+				json: {
+					bound: true,
+					kind: 'computer',
+					machine_id: 'pc-1',
+					computer: { name: 'Work PC', kind: 'app', online: true },
+					folder_mode: 'path',
+					path: 'C:\\code\\site',
+					access: 'full',
+					source: 'bar',
+					note: null,
+					problem: null
+				}
+			});
+			return true;
+		}
+		return false;
+	}
+
 	let sessionOptions = {};
 	if (mode === 'project-tab' || mode === 'project-agents' || mode === 'project-agents-server')
 		sessionOptions = { folderId: 'website' };
-	if (mode === 'folder-chip' || mode === 'folder-edit' || askingModes.has(mode))
+	if (mode === 'run-target-new') sessionOptions = { path: '/' };
+	if (
+		mode === 'folder-chip' ||
+		mode === 'folder-edit' ||
+		mode === 'folder-browse' ||
+		askingModes.has(mode)
+	) {
 		sessionOptions = { path: '/folders/website' };
+	}
 
 	async function routeRequest(route) {
 		const request = route.request();
@@ -805,6 +952,9 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		if (projectModes.has(mode) && (await routeProjectFolders(route, request, url, path))) {
 			return;
 		}
+		if (await routeRunTarget(route, request, url, path)) {
+			return;
+		}
 		if (!path.startsWith('/api/v1/subscriptions')) {
 			await route.fallback();
 			return;
@@ -836,7 +986,26 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			return;
 		}
 		const providerId = path.split('/')[4];
-		if (providerId === 'claude' || providerId === 'codex') {
+		let chosenMachineId = null;
+		// A plan's settings name the computer it runs on; only sign-in actions name a chosen computer.
+		if (!path.endsWith('/config')) {
+			chosenMachineId = body?.machine_id ?? url.searchParams.get('machine_id');
+		}
+		if ((providerId === 'claude' || providerId === 'codex') && chosenMachineId) {
+			// A sign-in action on a chosen computer names it, with the revision the page showed.
+			const chosen = machines.find((machine) => machine.id === chosenMachineId);
+			assert.ok(chosen, 'A chosen computer is one of the person’s');
+			assert.equal(
+				recordedRequest.expectedMachineId,
+				null,
+				'A chosen computer is not the plan’s guard'
+			);
+			assert.equal(
+				recordedRequest.expectedMachineRevision,
+				chosen.revision ?? 'local',
+				'A chosen computer carries its revision'
+			);
+		} else if (providerId === 'claude' || providerId === 'codex') {
 			const recovering = recoversMissingMachine(recordedRequest, providerId);
 			assert.equal(
 				typeof recordedRequest.expectedMachineId,
@@ -1064,6 +1233,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		},
 		// Work PC removed elsewhere: like the server, its plans turn off and only chat.
 		removeWorkPc() {
+			workPcRemoved = true;
 			for (const plan of folderPlans) {
 				if (plan.machine?.id !== 'pc-1') continue;
 				plan.enable = false;
@@ -1076,6 +1246,9 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			const plan = folderPlans.find((candidate) => candidate.id === id);
 			plan.enable = true;
 			plan.access = access;
+		},
+		bringWorkPcOnline: () => {
+			workPcOnline = true;
 		},
 		beforeNavigation: async (context) => {
 			await context.routeWebSocket('**/*', (socket) => {
@@ -1946,11 +2119,14 @@ async function permissionCase(browser, profile) {
 					.count(),
 				0
 			);
-			assert.equal(
-				fixtures.requests.filter((request) => request.path.startsWith('/api/v1/subscriptions'))
-					.length,
-				0
+			// The chat page asks where its chat runs; nothing else about plans is asked.
+			const planRequests = fixtures.requests.filter(
+				(request) =>
+					request.path.startsWith('/api/v1/subscriptions') &&
+					!request.path.startsWith('/api/v1/subscriptions/run-target/') &&
+					!request.path.endsWith('/run-target')
 			);
+			assert.equal(planRequests.length, 0);
 			await setSettings(page, false);
 			await page.locator('#chat-input').click();
 			await waitUntil(
@@ -2792,7 +2968,7 @@ async function permissionDisclosureCase(browser, profile) {
 			.waitFor();
 		await dialog
 			.getByText(
-				'CLI permissions apply on the selected computer. Model sign-in does not create project or file API grants.',
+				'New chats start with this, and each chat can choose its own above the message box. Model sign-in does not create project or file API grants.',
 				{ exact: true }
 			)
 			.waitFor();
@@ -3288,16 +3464,17 @@ async function activeElementId(page) {
 async function folderAllowCase(browser, profile) {
 	await runCase(browser, profile, 'folder-allow', 'folder-allow', async ({ page }, fixtures) => {
 		const dialog = await openFolderSettings(page);
-		const request = dialog.getByRole('group', { name: 'Let a plan work with files', exact: true });
+		// Claude only chats, but it still runs on Work PC, so the choices show beside the request.
+		const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 		await request.waitFor();
-		assert.equal(await dialog.getByText('Let the AI choose', { exact: true }).count(), 0);
+		await dialog.getByText('Let the AI choose', { exact: true }).waitFor();
 
 		// Each button says which plan it changes, and the question carries its warning.
 		const allowFull = request.getByRole('button', { name: 'Allow full access', exact: true });
 		assert.equal(await allowFull.getAttribute('aria-describedby'), 'plan-access-plan-claude');
 		await allowFull.click();
 		const question = request.getByRole('group', {
-			name: 'Give Claude full access on Work PC?',
+			name: 'Start new Claude chats with full access?',
 			exact: true
 		});
 		await question.waitFor();
@@ -3308,7 +3485,7 @@ async function folderAllowCase(browser, profile) {
 		]);
 		await request
 			.getByText(
-				'Buddy can then run commands on that computer as your account there, and so can anyone who controls this Buddy server.',
+				'Buddy can then run commands as your account on the computer each of those chats runs on, and so can anyone who controls this Buddy server.',
 				{ exact: true }
 			)
 			.waitFor();
@@ -3321,9 +3498,11 @@ async function folderAllowCase(browser, profile) {
 		assert.equal(fixtures.planConfigs.length, 0, 'Cancelling changes nothing');
 
 		await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
-		await request.getByText('Let Claude read files on Work PC?', { exact: true }).waitFor();
+		await request
+			.getByText('Start new Claude chats able to read files?', { exact: true })
+			.waitFor();
 		await request.getByRole('button', { name: 'Allow', exact: true }).click();
-		await dialog.getByText('Let the AI choose', { exact: true }).waitFor();
+		await request.waitFor({ state: 'detached' });
 		assert.deepEqual(fixtures.planConfigs, [
 			{ access: 'read', expected_machine_id: 'pc-1', expected_machine_revision: 'rev-pc-1' }
 		]);
@@ -3345,10 +3524,7 @@ async function folderAllowStaleCase(browser, profile) {
 		'folder-allow-stale',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', {
-				name: 'Let a plan work with files',
-				exact: true
-			});
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			await request.getByRole('button', { name: 'Allow full access', exact: true }).click();
 			await request.getByRole('button', { name: 'Allow', exact: true }).click();
 			await request
@@ -3357,7 +3533,7 @@ async function folderAllowStaleCase(browser, profile) {
 			assert.equal(await activeElementId(page), 'plan-access-allow-claude', 'Focus is on Allow');
 			// The question stays open, and asking again confirms the computer as it is now.
 			await request.getByRole('button', { name: 'Allow', exact: true }).click();
-			await dialog.getByText('Let the AI choose', { exact: true }).waitFor();
+			await request.waitFor({ state: 'detached' });
 			assert.deepEqual(
 				fixtures.planConfigs.map((body) => body.expected_machine_revision),
 				['rev-pc-1-old', 'rev-pc-1']
@@ -3374,10 +3550,10 @@ async function folderAllowBesideCase(browser, profile) {
 		'folder-allow-beside',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', { name: 'Plans that only chat', exact: true });
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			await request.waitFor();
 			const offered = await request.innerText();
-			assert.match(offered, /ChatGPT\s*·\s*Work PC\s*·\s*Chat only/);
+			assert.match(offered, /ChatGPT\s*·\s*Chat only/);
 			assert.doesNotMatch(offered, /Claude/, 'Claude already opens folders');
 
 			// A folder that is just chat has no use for files.
@@ -3389,7 +3565,9 @@ async function folderAllowBesideCase(browser, profile) {
 			await captureScreenshot(page, profile.name + '-folder-allow-beside');
 
 			await request.getByRole('button', { name: 'Allow full access', exact: true }).click();
-			await request.getByText('Give ChatGPT full access on Work PC?', { exact: true }).waitFor();
+			await request
+				.getByText('Start new ChatGPT chats with full access?', { exact: true })
+				.waitFor();
 			await request.getByRole('button', { name: 'Allow', exact: true }).click();
 			await request.waitFor({ state: 'hidden' });
 			assert.deepEqual(fixtures.planConfigs, [
@@ -3397,7 +3575,6 @@ async function folderAllowBesideCase(browser, profile) {
 			]);
 			const specificFolder = dialog.getByRole('radio', { name: /^A specific folder/ });
 			assert.equal(await specificFolder.isChecked(), true, 'The unsaved choice is kept');
-			await dialog.getByText('Claude, ChatGPT', { exact: false }).waitFor();
 			assert.equal(fixtures.requests.filter((entry) => entry.method === 'PUT').length, 0);
 		}
 	);
@@ -3411,7 +3588,7 @@ async function folderAllowRaceCase(browser, profile) {
 		'folder-allow-beside',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', { name: 'Plans that only chat', exact: true });
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			await request.getByRole('button', { name: 'Allow full access', exact: true }).click();
 			fixtures.holdNextProjectRead();
 			await request.getByRole('button', { name: 'Allow', exact: true }).click();
@@ -3419,12 +3596,14 @@ async function folderAllowRaceCase(browser, profile) {
 
 			// The question stays, busy, until the plans show the change.
 			const question = dialog.getByRole('group', {
-				name: 'Give ChatGPT full access on Work PC?',
+				name: 'Start new ChatGPT chats with full access?',
 				exact: true
 			});
 			const allow = question.getByRole('button', { name: 'Allow', exact: true });
 			assert.equal(await allow.isDisabled(), true, 'Allow is busy');
-			const toast = page.getByText('ChatGPT now has full access on Work PC.', { exact: true });
+			const toast = page.getByText('New ChatGPT chats now start with full access.', {
+				exact: true
+			});
 			assert.equal(await toast.count(), 0, 'No success before the plans show it');
 
 			// Choices made meanwhile are kept, and the busy question survives being hidden.
@@ -3459,10 +3638,7 @@ async function folderAllowReloadErrorCase(browser, profile) {
 		'folder-allow',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', {
-				name: 'Let a plan work with files',
-				exact: true
-			});
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			const failure = dialog.getByText(
 				'The project folder could not be loaded: Synthetic project read failure',
 				{ exact: true }
@@ -3475,7 +3651,7 @@ async function folderAllowReloadErrorCase(browser, profile) {
 			// Asking again loads the plans, and the old failure goes away.
 			await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
 			await request.getByRole('button', { name: 'Allow', exact: true }).click();
-			await dialog.getByText('Let the AI choose', { exact: true }).waitFor();
+			await request.waitFor({ state: 'detached' });
 			assert.equal(await failure.count(), 0, 'The reload failure is cleared');
 		}
 	);
@@ -3489,10 +3665,7 @@ async function folderAllowGoneCase(browser, profile) {
 		'folder-allow',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', {
-				name: 'Let a plan work with files',
-				exact: true
-			});
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
 			fixtures.removeWorkPc();
 			await request.getByRole('button', { name: 'Allow', exact: true }).click();
@@ -3527,7 +3700,7 @@ async function folderAllowHiddenRefusalCase(browser, profile) {
 		'folder-allow-beside',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', { name: 'Plans that only chat', exact: true });
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			await request.getByRole('button', { name: 'Allow full access', exact: true }).click();
 			fixtures.refuseNextPlanConfig('The start folder does not exist on Work PC: C:\\old');
 			fixtures.holdNextProjectRead();
@@ -3558,10 +3731,7 @@ async function folderAllowTurnedOffCase(browser, profile) {
 		'folder-allow',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', {
-				name: 'Let a plan work with files',
-				exact: true
-			});
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
 			fixtures.turnOffAfterNextPlanConfig(
 				'An old provider process could not confirm that it stopped.'
@@ -3586,10 +3756,7 @@ async function folderAllowClosedCase(browser, profile) {
 		'folder-allow',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', {
-				name: 'Let a plan work with files',
-				exact: true
-			});
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
 			fixtures.holdNextPlanConfig();
 			await request.getByRole('button', { name: 'Allow', exact: true }).click();
@@ -3617,10 +3784,7 @@ async function folderAllowRevokedCase(browser, profile) {
 		'folder-allow',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', {
-				name: 'Let a plan work with files',
-				exact: true
-			});
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
 			// An administrator stops this person using computers meanwhile.
 			fixtures.revokeMachines();
@@ -3642,16 +3806,15 @@ async function folderAllowLostAnswerCase(browser, profile) {
 		'folder-allow',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', {
-				name: 'Let a plan work with files',
-				exact: true
-			});
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
 			fixtures.loseNextPlanConfigAnswer('Synthetic gateway timeout');
 			await request.getByRole('button', { name: 'Allow', exact: true }).click();
 			// The access was saved, so the reload shows it: a success, not a refusal.
-			await page.getByText('Claude can now read files on Work PC.', { exact: true }).waitFor();
-			await dialog.getByText('Let the AI choose', { exact: true }).waitFor();
+			await page
+				.getByText('New Claude chats now start able to read files.', { exact: true })
+				.waitFor();
+			await request.waitFor({ state: 'detached' });
 			assert.equal(
 				await dialog.getByText(/was not given access/).count(),
 				0,
@@ -3669,24 +3832,17 @@ async function folderAllowHomelessCase(browser, profile) {
 		'folder-allow-homeless',
 		async ({ page }) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', {
-				name: 'Let a plan work with files',
-				exact: true
-			});
-			// Only ChatGPT is called Chat only; Claude's missing computer is named too.
-			await request
-				.getByText(
-					'ChatGPT is set to Chat only, so it can’t open a project folder. Allowing files changes it for all your chats, not just this folder.',
-					{ exact: true }
-				)
-				.waitFor();
-			await dialog
-				.getByText('Claude has no computer it can use. Choose one in Settings → Machines.', {
-					exact: true
-				})
-				.waitFor();
-			await dialog.getByRole('button', { name: 'Open Settings → Machines', exact: true }).waitFor();
-			assert.equal(await request.getByText('Claude', { exact: true }).count(), 0);
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
+			// Claude's own computer is gone, but every plan that is on runs on each computer:
+			// Work PC lists both, and only ChatGPT, which is Chat only, is offered more access.
+			await request.waitFor();
+			const offered = await request.innerText();
+			assert.match(offered, /ChatGPT\s*·\s*Chat only/);
+			assert.doesNotMatch(offered, /Claude/, 'Claude already has full access');
+			assert.equal(await dialog.getByText(/has no computer it can use/).count(), 0);
+			// Choosing a folder lists the computer with the plans it runs.
+			await dialog.getByText('A specific folder', { exact: true }).click();
+			await dialog.getByText('Claude, ChatGPT', { exact: false }).waitFor();
 		}
 	);
 }
@@ -3745,6 +3901,219 @@ async function folderNoPlansCase(browser, profile) {
 	);
 }
 
+async function computerSignInCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'computer-sign-in',
+		'computer-sign-in',
+		async ({ page }, fixtures) => {
+			await setSettings(page, PROVIDERS_TAB);
+			const row = page
+				.getByRole('list', { name: 'Plans on Synthetic computer A' })
+				.getByRole('listitem')
+				.filter({ hasText: 'Claude' });
+			assert.match(await row.innerText(), /Not signed in/);
+			await row.getByRole('button', { name: 'Sign in here', exact: true }).click();
+			await loginDialog(page).waitFor();
+			await startLogin(page);
+			await waitUntil(() => fixtures.count('POST') === 1, 'One sign-in starts');
+			const start = fixtures.requests.find(
+				(request) =>
+					request.method === 'POST' && request.path === '/api/v1/subscriptions/claude/login'
+			);
+			// The chosen computer is named apart from the plan's own computer.
+			assert.equal(start.body.machine_id, 'runner-a');
+			assert.equal(start.body.expected_machine_revision, 'fixture-revision-a-1');
+			assert.equal(start.body.expected_machine_id, undefined);
+			await captureScreenshot(page, `computer-sign-in-${profile.name}`);
+		}
+	);
+}
+
+function runTargetBar(page) {
+	return page.locator('[role="group"][aria-label="Where this chat runs"]');
+}
+
+// Dropdowns wrap their trigger in a role="button" span, so chips are found by their own class.
+function runTargetChip(bar, text) {
+	return bar.locator('button.buddy-run-target-chip').filter({ hasText: text });
+}
+
+async function runTargetNewCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'run-target-new',
+		'run-target-new',
+		async ({ page }, fixtures) => {
+			const bar = runTargetBar(page);
+			await bar.waitFor();
+			const readiness = () =>
+				fixtures.requests.filter(
+					(request) => request.path === '/api/v1/subscriptions/run-target/readiness'
+				);
+			if (profile.mobile) {
+				// One summary chip opens a sheet with every choice.
+				const summary = bar.locator('.buddy-run-target-summary');
+				assert.match(await summary.innerText(), /Detached/);
+				const box = await summary.boundingBox();
+				assert.ok(box && box.height >= 44, 'The summary chip is a full touch target');
+				await summary.click();
+				const sheet = page.getByRole('dialog', { name: 'Where this chat runs' });
+				await sheet.waitFor();
+				await sheet.getByRole('menuitemradio', { name: /Work PC/ }).click();
+				await waitUntil(() => readiness().length === 1, 'Picking a computer checks it again');
+				await sheet.getByRole('option', { name: /site C:\\code\\site/ }).click();
+				await sheet.waitFor({ state: 'hidden' });
+				await waitUntil(
+					async () => /Work PC · site · Full/.test(await summary.innerText()),
+					'The summary shows the computer, folder and access'
+				);
+				// The sheet keeps focus inside while open and gives it back when it closes.
+				await summary.click();
+				await sheet.waitFor();
+				for (let press = 0; press < 30; press += 1) await page.keyboard.press('Tab');
+				assert.equal(
+					await sheet.evaluate((node) => node.contains(document.activeElement)),
+					true,
+					'Tab stays inside the sheet'
+				);
+				await sheet.getByRole('button', { name: 'Done', exact: true }).click();
+				await sheet.waitFor({ state: 'hidden' });
+				await waitUntil(
+					() => summary.evaluate((node) => node === document.activeElement),
+					'Focus returns to the summary chip'
+				);
+			} else {
+				await runTargetChip(bar, 'Detached').click();
+				await page.getByRole('menuitemradio', { name: /Work PC/ }).click();
+				await waitUntil(() => readiness().length === 1, 'Picking a computer checks it again');
+				assert.equal(readiness()[0].provider, 'codex');
+				await runTargetChip(bar, 'Remote · Work PC').waitFor();
+				await runTargetChip(bar, 'Full access').waitFor();
+				await runTargetChip(bar, 'AI chooses').click();
+				// A folder ChatGPT worked in, checked on the computer before it is used.
+				await page.getByRole('option', { name: /^api C:\\code\\api/ }).click();
+				await runTargetChip(bar, /^\s*api\s*$/).waitFor();
+				// Going from one open menu straight to another chip opens that one at once,
+				// since the composer stays put under the pointer.
+				await runTargetChip(bar, /^\s*api\s*$/).click();
+				await page.getByRole('option', { name: /^api C:\\code\\api/ }).waitFor();
+				const folderPopup = page.getByRole('dialog', { name: 'Folder', exact: true });
+				assert.equal(
+					await folderPopup
+						.locator('[role="listbox"] :is(button, input):not([role="option"])')
+						.count(),
+					0,
+					'The folder list holds only folder options'
+				);
+				await runTargetChip(bar, 'Full access').click();
+				await page.getByRole('menuitemradio', { name: /Read files/ }).waitFor();
+				await page.keyboard.press('Escape');
+				const checks = fixtures.requests.filter((request) =>
+					request.path.endsWith('/folders/check')
+				);
+				assert.deepEqual(
+					checks.map((request) => request.body),
+					[{ path: 'C:\\code\\api' }]
+				);
+			}
+			await captureScreenshot(page, `run-target-new-${profile.name}`);
+			if (profile.mobile) {
+				// A phone turned sideways is wider than the phone breakpoint, but still a touch screen.
+				await page.setViewportSize({ width: 844, height: 390 });
+				await waitUntil(
+					async () => (await page.evaluate(() => window.innerWidth)) === 844,
+					'The page sees the wider screen'
+				);
+				assert.equal(await bar.locator('.buddy-run-target-summary').count(), 1);
+				assert.equal(await bar.locator('button.buddy-run-target-chip').count(), 0);
+			}
+		}
+	);
+}
+
+async function runTargetBoundCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'run-target-bound',
+		'run-target-bound',
+		async ({ page }, fixtures) => {
+			const bar = runTargetBar(page);
+			await bar.waitFor();
+
+			// The chat runs in an exact folder, so its Project tab opens that folder, with no Change.
+			await page
+				.locator('.buddy-chat-header')
+				.getByRole('button', { name: 'Controls', exact: true })
+				.click();
+			const panel = chatPanel(page, profile);
+			await panel.getByRole('button', { name: 'Project', exact: true }).click();
+			await panel.getByText('C:\\code\\site', { exact: true }).waitFor();
+			await panel.getByText('Work PC', { exact: true }).first().waitFor();
+			// Check again asks about the chat's own computer, which is offline at first.
+			await panel.getByText(/Work PC is offline/).waitFor();
+			fixtures.bringWorkPcOnline();
+			await panel.getByRole('button', { name: 'Check again', exact: true }).click();
+			await panel.getByRole('button', { name: 'README.md', exact: true }).waitFor();
+			assert.equal(
+				await panel.getByRole('button', { name: 'Change', exact: true }).count(),
+				0,
+				'A started chat’s folder is not changed from its Project tab'
+			);
+			await panel.getByRole('button', { name: 'Close', exact: true }).first().click();
+
+			if (profile.mobile) {
+				await bar
+					.locator('.buddy-run-target-summary')
+					.filter({ hasText: 'Work PC · site · Full' })
+					.click();
+			} else {
+				await runTargetChip(bar, 'Work PC · site · Full').click();
+			}
+			await page.getByText('This chat runs on Work PC, in site, with Full access.').waitFor();
+			await page.getByRole('button', { name: 'New chat here' }).waitFor();
+			await captureScreenshot(page, `run-target-bound-${profile.name}`);
+		}
+	);
+}
+
+async function folderBrowseCase(browser, profile) {
+	await runCase(browser, profile, 'folder-browse', 'folder-browse', async ({ page }, fixtures) => {
+		await page.locator('button[aria-label="Folder options"]').click();
+		await page.getByRole('button', { name: 'Edit', exact: true }).click();
+		const dialog = page.locator('.modal').filter({ hasText: 'Project folder' });
+
+		// A folder Claude Code and Codex worked in, suggested by the computer.
+		await dialog.getByRole('button', { name: 'Change', exact: true }).click();
+		const suggestion = dialog.getByRole('button', { name: /^api C:\\code\\api/ });
+		await suggestion.waitFor();
+		assert.match(await suggestion.innerText(), /Claude Code and Codex · 2 days ago/);
+		await suggestion.click();
+		await dialog.getByText('C:\\code\\api', { exact: true }).waitFor();
+
+		// Any folder on the computer, not only shared ones.
+		await dialog.getByRole('button', { name: 'Change', exact: true }).click();
+		await dialog.getByRole('button', { name: 'Browse Work PC…', exact: true }).click();
+		await dialog.getByRole('button', { name: 'C:', exact: true }).click();
+		await dialog.getByText('Choose a folder, not a whole drive.', { exact: true }).waitFor();
+		await dialog.getByRole('button', { name: 'code', exact: true }).click();
+		await dialog.getByRole('button', { name: 'Use “code”', exact: true }).click();
+		await dialog.getByText('C:\\code', { exact: true }).waitFor();
+		await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+		await dialog.waitFor({ state: 'hidden' });
+		const saved = fixtures.requests.filter((request) => request.method === 'PUT');
+		assert.deepEqual(saved[0].body, { mode: 'folder', paths: { 'pc-1': 'C:\\code' } });
+		const listed = fixtures.requests.filter((request) => request.listed !== undefined);
+		assert.deepEqual(
+			listed.map((request) => request.listed),
+			['', 'C:\\', 'C:\\code']
+		);
+	});
+}
+
 const { chromium } = await import(process.env.BUDDY_PLAYWRIGHT_MODULE || 'playwright');
 mkdirSync(outputDirectory, { recursive: true });
 const browser = await chromium.launch({ headless: true });
@@ -3771,6 +4140,10 @@ try {
 		await folderAllowLostAnswerCase(browser, profile);
 		await folderAllowHomelessCase(browser, profile);
 		await folderNoPlansCase(browser, profile);
+		await folderBrowseCase(browser, profile);
+		await runTargetNewCase(browser, profile);
+		await runTargetBoundCase(browser, profile);
+		await computerSignInCase(browser, profile);
 		await cancellationCase(browser, profile, 'x');
 		await cancellationCase(browser, profile, 'escape');
 		await cancellationCase(browser, profile, 'backdrop');

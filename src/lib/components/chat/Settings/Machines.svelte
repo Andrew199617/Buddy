@@ -4,7 +4,9 @@
 
 	import {
 		deleteSubscriptionMachine,
+		getSubscription,
 		getSubscriptions,
+		logoutSubscription,
 		renameSubscriptionMachine,
 		type SubscriptionMachine,
 		type SubscriptionProvider,
@@ -17,6 +19,7 @@
 
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import SubscriptionConnection from '$lib/components/admin/Settings/Connections/SubscriptionConnection.svelte';
+	import SubscriptionLoginModal from '$lib/components/admin/Settings/Connections/SubscriptionLoginModal.svelte';
 	import MachineRow from './Machines/MachineRow.svelte';
 	import ProviderSignIn from './Machines/ProviderSignIn.svelte';
 	import ThisComputer from './Machines/ThisComputer.svelte';
@@ -38,8 +41,68 @@
 	let stopWatchingDesktop: (() => void) | null = null;
 	let disposed = false;
 
-	// Computers connected through the Buddy app; "This server" only appears in the provider settings.
-	$: computers = machines.filter((machine) => machine.kind === 'runner');
+	// Every computer plans can run on: Buddy server, computers connected through the Buddy app,
+	// and older Runners added by address.
+	$: computers = machines.map((machine) => {
+		if (machine.id === 'local') return { ...machine, name: $i18n.t('Buddy server') };
+		return machine;
+	});
+	$: enabledProviders = providers.filter((provider) => provider.settings.enable);
+
+	let showLogin = false;
+	let loginProvider: SubscriptionProvider | null = null;
+	let loginComputer: { machine_id: string; name: string; revision: string | null } | null = null;
+	let checking = false;
+
+	function plansOn(machine: SubscriptionMachine) {
+		return enabledProviders.map((provider) => ({
+			provider,
+			computer: provider.computers?.find((computer) => computer.machine_id === machine.id) ?? null
+		}));
+	}
+
+	function revisionOf(machine: SubscriptionMachine): string | null {
+		if (machine.id === 'local') return 'local';
+		return machine.revision ?? null;
+	}
+
+	function signInOn(machine: SubscriptionMachine, provider: SubscriptionProvider) {
+		loginProvider = provider;
+		loginComputer = { machine_id: machine.id, name: machine.name, revision: revisionOf(machine) };
+		showLogin = true;
+	}
+
+	async function signOutOn(machine: SubscriptionMachine, provider: SubscriptionProvider) {
+		try {
+			await logoutSubscription(
+				localStorage.token,
+				provider.id,
+				undefined,
+				revisionOf(machine) ?? undefined,
+				machine.id
+			);
+			await reloadAfterChange();
+		} catch (error) {
+			toast.error(`${error}`);
+		}
+	}
+
+	/** Ask every reachable computer again where each plan is signed in. */
+	async function checkAgain() {
+		checking = true;
+		try {
+			const checked = await Promise.all(
+				enabledProviders.map((provider) => getSubscription(localStorage.token, provider.id, true))
+			);
+			providers = providers.map(
+				(provider) => checked.find((fresh) => fresh.id === provider.id) ?? provider
+			);
+		} catch (error) {
+			toast.error(`${error}`);
+		} finally {
+			checking = false;
+		}
+	}
 
 	const load = async () => {
 		try {
@@ -203,9 +266,21 @@
 			{/if}
 
 			<section aria-labelledby="computers-heading">
-				<h3 id="computers-heading" class="text-xs text-gray-600 dark:text-gray-400">
-					{$i18n.t('settings.personal.machines.computers.title')}
-				</h3>
+				<div class="flex items-center justify-between gap-2">
+					<h3 id="computers-heading" class="text-xs text-gray-600 dark:text-gray-400">
+						{$i18n.t('settings.personal.machines.computers.title')}
+					</h3>
+					{#if enabledProviders.length > 0 && computers.length > 0}
+						<button
+							type="button"
+							class="min-h-11 rounded-lg px-2 text-xs text-gray-500 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-400 dark:hover:bg-gray-850 md:min-h-8"
+							disabled={checking}
+							on:click={checkAgain}
+						>
+							{checking ? $i18n.t('Checking…') : $i18n.t('Check again')}
+						</button>
+					{/if}
+				</div>
 				{#if computers.length === 0}
 					<p class="mt-1 text-[0.6875rem] text-gray-400 dark:text-gray-600">
 						{$i18n.t('No computers connected yet.')}
@@ -216,13 +291,26 @@
 							<MachineRow
 								{machine}
 								isThisComputer={machine.id === desktopStatus?.machineId}
+								removable={machine.id !== 'local'}
+								plans={plansOn(machine)}
 								onRename={(name) => renameMachine(machine, name)}
 								onRemove={() => removeMachine(machine)}
+								onSignIn={(provider) => signInOn(machine, provider)}
+								onSignOut={(provider) => signOutOn(machine, provider)}
 							/>
 						{/each}
 					</ul>
 				{/if}
 			</section>
+
+			{#if loginProvider}
+				<SubscriptionLoginModal
+					bind:show={showLogin}
+					provider={loginProvider}
+					computer={loginComputer}
+					onSignedIn={reloadAfterChange}
+				/>
+			{/if}
 
 			<section aria-labelledby="plans-heading">
 				<h3 id="plans-heading" class="mb-2 text-xs text-gray-600 dark:text-gray-400">

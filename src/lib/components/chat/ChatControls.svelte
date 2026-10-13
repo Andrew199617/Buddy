@@ -27,6 +27,7 @@
 	import { isSavedChatId } from '$lib/utils/chatId';
 	import { getFolderProject, type FolderProject } from '$lib/apis/subscriptions';
 	import { KeptProjectPanel, showKeptPanel } from './ProjectPanel/kept-panel';
+	import type { ProjectTarget } from './ProjectPanel/project-session';
 	import { projectTabAvailable } from './ProjectPanel/project-tab';
 	import { projectFolderChanges } from '$lib/components/projectFolders/project-folder-changes';
 
@@ -81,6 +82,12 @@
 	export let codeInterpreterEnabled = false;
 	// The chat folder this chat is in, for its Project tab.
 	export let folderId: string | null = null;
+	// The exact folder the open chat runs in, which its Project tab opens instead of the folder's.
+	export let chatTarget: ProjectTarget | null = null;
+	// True while where the chat runs is still loading; the Project tab waits for it.
+	export let chatTargetLoading = false;
+	// Checks again whether the chat's own computer is online.
+	export let onChatTargetCheck: () => void = () => {};
 
 	let largeScreen = false;
 	let dragged = false;
@@ -165,44 +172,60 @@
 	$: if ($projectFolderChanges.folderId === folderId && $projectFolderChanges.count > 0) {
 		reloadFolderProject();
 	}
-	$: showProjectTab = folderProject !== null;
+	$: showProjectTab = folderProject !== null || chatTarget !== null;
+	$: projectTabLoading = folderProjectLoading || chatTargetLoading;
 	$: projectTabAvailable.set(showProjectTab);
+	$: projectKey = panelKey(folderId, chatTarget);
+
+	/** What the kept panel shows: the chat's own folder, or else its chat folder. */
+	function panelKey(id: string | null, target: ProjectTarget | null): string | null {
+		if (target) return `target:${target.computer.machine_id}:${target.path}`;
+		if (id) return `folder:${id}`;
+		return null;
+	}
 
 	// The Project tab's panel starts the first time the tab shows, then lives as
-	// long as this chat stays in the same folder: switching tabs, an artifact
+	// long as this chat keeps the same folder: switching tabs, an artifact
 	// opening or closing the panel keeps its open file and running command.
 	let keptProject: KeptProjectPanel | null = null;
-	let keptProjectFolder: string | null = null;
+	let keptProjectKey: string | null = null;
 
-	function keepProjectPanel(project: FolderProject, component: any) {
-		if (keptProject && keptProjectFolder === project.folder_id) {
-			keptProject.update({ project });
+	/** The Project tab's "Check again": the chat's own computer, or else the chat folder's project. */
+	function recheckProjectPanel() {
+		if (chatTarget) {
+			onChatTargetCheck();
+			return;
+		}
+		reloadFolderProject();
+	}
+
+	function keepProjectPanel(component: any, key: string | null) {
+		const props = { project: folderProject, chatTarget, onChanged: recheckProjectPanel };
+		if (keptProject && keptProjectKey === key) {
+			keptProject.update(props);
 			return;
 		}
 		dropProjectPanel();
-		keptProject = new KeptProjectPanel(
-			component,
-			{ project, onChanged: reloadFolderProject },
-			i18n
-		);
-		keptProjectFolder = project.folder_id;
+		keptProject = new KeptProjectPanel(component, props, i18n);
+		keptProjectKey = key;
 	}
 
 	/** Ends the panel's session on the computer, which also stops its commands. */
 	function dropProjectPanel() {
 		keptProject?.destroy();
 		keptProject = null;
-		keptProjectFolder = null;
+		keptProjectKey = null;
 	}
 
-	$: if (activeTab === 'project' && $showControls && folderProject && $projectFeature.component) {
-		keepProjectPanel(folderProject, $projectFeature.component);
+	$: if (activeTab === 'project' && $showControls && showProjectTab && $projectFeature.component) {
+		// Runs again when the chat's folder changes, such as when where it runs finishes loading.
+		keepProjectPanel($projectFeature.component, projectKey);
 	}
-	$: if (keptProject && folderProject && keptProjectFolder === folderProject.folder_id) {
-		keptProject.update({ project: folderProject });
+	$: if (keptProject && keptProjectKey === projectKey) {
+		keptProject.update({ project: folderProject, chatTarget });
 	}
-	$: if (keptProject && keptProjectFolder !== folderId) dropProjectPanel();
-	$: if (keptProject && !folderProject && !folderProjectLoading) dropProjectPanel();
+	$: if (keptProject && keptProjectKey !== projectKey) dropProjectPanel();
+	$: if (keptProject && !showProjectTab && !projectTabLoading) dropProjectPanel();
 
 	function leaveProjectTab() {
 		dropProjectPanel();
@@ -214,7 +237,7 @@
 	// Tab fallback: if active tab becomes hidden, switch to next available
 	$: if (!showOverviewTab && activeTab === 'overview') activeTab = 'controls';
 	$: if (!showFilesTab && activeTab === 'files') activeTab = 'controls';
-	$: if (!showProjectTab && !folderProjectLoading && activeTab === 'project') {
+	$: if (!showProjectTab && !projectTabLoading && activeTab === 'project') {
 		activeTab = 'controls';
 	}
 	$: if (!showControlsTab && activeTab === 'controls') {
@@ -229,7 +252,7 @@
 		!showFilesTab &&
 		!showOverviewTab &&
 		!showProjectTab &&
-		!folderProjectLoading
+		!projectTabLoading
 	) {
 		showControls.set(false);
 	}
@@ -511,7 +534,7 @@
 										onClose={closeFeaturePanel}
 									/>
 								{/if}
-							{:else if activeTab === 'project' && folderProject}
+							{:else if activeTab === 'project' && showProjectTab}
 								{#if $projectFeature.component}
 									<div class="h-full" use:showKeptPanel={keptProject}></div>
 								{:else}
@@ -718,7 +741,7 @@
 										onClose={closeFeaturePanel}
 									/>
 								{/if}
-							{:else if activeTab === 'project' && folderProject}
+							{:else if activeTab === 'project' && showProjectTab}
 								{#if $projectFeature.component}
 									<div class="h-full" use:showKeptPanel={keptProject}></div>
 								{:else}

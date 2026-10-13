@@ -1,6 +1,7 @@
 <script lang="ts">
-	// The chat side panel's Project tab: the chat folder's project folder, its
-	// files and its commands. What it can open follows the folder's choice.
+	// The chat side panel's Project tab: the folder the chat works in, its files
+	// and its commands. A chat that runs in an exact folder opens that folder;
+	// otherwise the tab follows the chat folder's project folder choice.
 	import { getContext } from 'svelte';
 
 	import type { FolderProject } from '$lib/apis/subscriptions';
@@ -19,16 +20,30 @@
 
 	const i18n: any = getContext('i18n');
 
-	export let project: FolderProject;
+	export let project: FolderProject | null = null;
+	// Where the started chat itself runs; it replaces the chat folder's project folders.
+	export let chatTarget: ProjectTarget | null = null;
 	export let onChanged: () => void = () => {};
 
 	let showModal = false;
 	let selectedMachineId = '';
 
-	$: mode = effectiveChoice(project).mode;
-	$: targets = projectTargets(project);
+	$: mode = panelMode(project, chatTarget);
+	$: targets = panelTargets(project, chatTarget);
 	$: target = chooseTarget(targets, selectedMachineId);
 	$: problem = target ? targetProblem(target) : null;
+
+	function panelMode(folderProject: FolderProject | null, ownTarget: ProjectTarget | null) {
+		if (ownTarget) return 'folder';
+		if (!folderProject) return 'auto';
+		return effectiveChoice(folderProject).mode;
+	}
+
+	function panelTargets(folderProject: FolderProject | null, ownTarget: ProjectTarget | null) {
+		if (ownTarget) return [ownTarget];
+		if (!folderProject) return [];
+		return projectTargets(folderProject);
+	}
 
 	// Computers opened so far stay open, so switching back to one keeps its open
 	// file and running command. A folder that changed closes its old session.
@@ -55,16 +70,24 @@
 	}
 </script>
 
-<ProjectFolderModal
-	bind:show={showModal}
-	folderId={project.folder_id}
-	folderName={project.folder_name}
-/>
+{#if project}
+	<ProjectFolderModal
+		bind:show={showModal}
+		folderId={project.folder_id}
+		folderName={project.folder_name}
+	/>
+{/if}
 
 <div class="flex h-full min-h-0 flex-col">
 	<div class="flex shrink-0 items-center gap-2 px-3 pb-2">
 		<div class="min-w-0 flex-1">
-			<div class="truncate text-sm">{project.folder_name}</div>
+			<div class="truncate text-sm">
+				{#if chatTarget}
+					<bdi>{chatTarget.computer.name}</bdi>
+				{:else}
+					{project?.folder_name ?? ''}
+				{/if}
+			</div>
 			{#if target}
 				<div
 					class="truncate font-mono text-[0.6875rem] text-gray-500"
@@ -75,13 +98,15 @@
 				</div>
 			{/if}
 		</div>
-		<button
-			type="button"
-			class="min-h-11 shrink-0 rounded-lg px-3 text-xs font-medium hover:bg-gray-100 dark:hover:bg-gray-850 md:min-h-8"
-			on:click={() => (showModal = true)}
-		>
-			{$i18n.t('Change')}
-		</button>
+		{#if project && !chatTarget}
+			<button
+				type="button"
+				class="min-h-11 shrink-0 rounded-lg px-3 text-xs font-medium hover:bg-gray-100 dark:hover:bg-gray-850 md:min-h-8"
+				on:click={() => (showModal = true)}
+			>
+				{$i18n.t('Change')}
+			</button>
+		{/if}
 	</div>
 
 	{#if targets.length > 1 && target}
@@ -101,7 +126,7 @@
 	{/if}
 
 	<div class="min-h-0 flex-1">
-		{#if waitsForOwnChoice(project)}
+		{#if project && !chatTarget && waitsForOwnChoice(project)}
 			<div class="flex flex-col gap-2 px-3 text-xs text-gray-600 dark:text-gray-300">
 				<p>
 					{$i18n.t(
@@ -140,6 +165,13 @@
 		{:else if !target}
 			<p class="px-3 text-xs text-gray-600 dark:text-gray-300">
 				{$i18n.t('No project folder is set for your computers yet.')}
+			</p>
+		{:else if problem === 'choose_again' && chatTarget}
+			<p class="px-3 text-xs text-amber-700 dark:text-amber-400">
+				{$i18n.t(
+					"{{name}} was set up again, so this chat can't use its folder there. Start a new chat to choose the folder again.",
+					{ name: target.computer.name }
+				)}
 			</p>
 		{:else if problem === 'choose_again'}
 			<p class="px-3 text-xs text-amber-700 dark:text-amber-400">

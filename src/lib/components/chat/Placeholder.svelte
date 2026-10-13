@@ -21,6 +21,8 @@
 	import MessageInput from './MessageInput.svelte';
 	import type { ChatAgent } from './ProjectAgents/chat-agent';
 	import FolderPlaceholder from './Placeholder/FolderPlaceholder.svelte';
+	import type { RunTargetOptions } from '$lib/apis/subscriptions';
+	import type { RunTargetDraft } from './RunTarget/run-target';
 	import FolderTitle from './Placeholder/FolderTitle.svelte';
 
 	const i18n: any = getContext('i18n');
@@ -76,6 +78,12 @@
 	};
 
 	export let dragged = false;
+
+	// Where the new chat runs, edited in the bar above the message box.
+	export let showRunTarget = false;
+	export let runTargetOptions: RunTargetOptions | null = null;
+	export let runTargetDraft: RunTargetDraft | null = null;
+	export let onRunTargetChange: (draft: RunTargetDraft) => void = () => {};
 
 	let models = [];
 	export let selectedModelIdx = 0;
@@ -191,6 +199,11 @@
 				{onQueueDelete}
 				{askUser}
 				{onWebSearchToggle}
+				{showRunTarget}
+				runTargetEditable={true}
+				{runTargetOptions}
+				{runTargetDraft}
+				{onRunTargetChange}
 				on:chatVariables
 				on:submit={(e) => {
 					dispatch('submit', e.detail);

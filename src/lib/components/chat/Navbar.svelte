@@ -4,12 +4,14 @@
 	import { getContext } from 'svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
+	import { toast } from 'svelte-sonner';
 	import {
 		WEBUI_NAME,
 		banners,
 		chatId,
 		config,
 		mobile,
+		models,
 		settings,
 		showControls,
 		showSidebar,
@@ -26,6 +28,8 @@
 	import ChatBubbleDottedChecked from '../icons/ChatBubbleDottedChecked.svelte';
 	import EllipsisHorizontal from '../icons/EllipsisHorizontal.svelte';
 	import ChatPlus from '../icons/ChatPlus.svelte';
+	import Home from '../icons/Home.svelte';
+	import { ensureMainChat } from '$lib/utils/main-chat';
 	import Knobs from '../icons/Knobs.svelte';
 	import { isTemporaryChatId } from '$lib/utils/chatId';
 	import { projectTabAvailable } from '$lib/components/chat/ProjectPanel/project-tab';
@@ -111,6 +115,35 @@
 
 	function startNewChat() {
 		initNewChat();
+	}
+
+	/** The models a new main chat starts with: the person's own default, or Buddy's. */
+	function defaultModelIds(): string[] {
+		let chosen: string[] = $settings?.models ?? [];
+		if (chosen.length === 0) chosen = $config?.default_models?.split(',') ?? [];
+		return chosen.filter((modelId) => $models.some((model) => model.id === modelId));
+	}
+
+	let openingMainChat = false;
+
+	/** The person's one always-on chat, with a rolling context window. */
+	async function openMainChat() {
+		if (openingMainChat) return;
+		openingMainChat = true;
+		try {
+			const mainChatId = await ensureMainChat({
+				token: localStorage.token,
+				mainChatId: $settings?.mainChatId,
+				modelIds: defaultModelIds(),
+				title: $i18n.t('Main chat'),
+				onSaved: (savedId) => settings.set({ ...$settings, mainChatId: savedId })
+			});
+			await goto(`/c/${mainChatId}`);
+		} catch (error) {
+			toast.error(`${error}`);
+		} finally {
+			openingMainChat = false;
+		}
 	}
 
 	function toggleControls() {
@@ -211,6 +244,20 @@
 				aria-label={$i18n.t('New Chat')}
 			>
 				<ChatPlus className="size-[18px]" strokeWidth="1.5" />
+			</button>
+		</Tooltip>
+		<Tooltip content={$i18n.t('Main chat')}>
+			<button
+				type="button"
+				class="buddy-quiet-button no-drag"
+				aria-label={$i18n.t('Main chat')}
+				aria-current={$settings?.mainChatId && $chatId === $settings.mainChatId
+					? 'page'
+					: undefined}
+				disabled={openingMainChat}
+				on:click={openMainChat}
+			>
+				<Home className="size-[18px]" strokeWidth="1.5" />
 			</button>
 		</Tooltip>
 	</div>

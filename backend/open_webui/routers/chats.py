@@ -42,6 +42,12 @@ from open_webui.utils.chat_fork import build_fork_history
 from open_webui.utils.context_compaction import compact_chat_branch, get_chat_context_usage
 from open_webui.utils.misc import get_message_list
 from open_webui.utils.models import get_all_models
+from open_webui.utils.subscriptions.service import (
+    API_KEY_TARGET_MESSAGE,
+    bind_chat_target,
+    bind_imported_chat,
+    copy_chat_target,
+)
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -806,10 +812,15 @@ async def get_user_chat_list_by_user_id(
 ############################
 
 
+class NewChatForm(ChatForm):
+    # Where the chat runs, from the composer's bar; see utils/subscriptions/run_targets.py.
+    run_target: dict | None = None
+
+
 @router.post('/new', response_model=ChatResponse | None)
 async def create_new_chat(
     request: Request,
-    form_data: ChatForm,
+    form_data: NewChatForm,
     user=Depends(get_verified_user),
     db: AsyncSession = Depends(get_async_session),
 ):
@@ -818,9 +829,13 @@ async def create_new_chat(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=ERROR_MESSAGES.NOT_FOUND,
         )
+    if form_data.run_target is not None and getattr(request.state, 'auth_type', None) == 'api_key':
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=API_KEY_TARGET_MESSAGE)
 
     try:
-        chat = await Chats.insert_new_chat(str(uuid4()), user.id, form_data, db=db)
+        chat_form = ChatForm(**form_data.model_dump(exclude={'run_target'}))
+        chat = await Chats.insert_new_chat(str(uuid4()), user.id, chat_form, db=db)
+        await bind_chat_target(user, chat.id, form_data.run_target)
         await publish_event(
             request,
             EVENTS.CHAT_CREATED,
@@ -855,6 +870,9 @@ async def import_chats(
 
     try:
         chats = await Chats.import_chats(user.id, imported, db=db)
+        # Imported chats keep their dates but start like new chats, not where chats from before targets ran.
+        for chat in chats:
+            await bind_imported_chat(user, chat.id)
         await publish_event(
             request,
             EVENTS.CHAT_IMPORTED,
@@ -1807,6 +1825,9 @@ async def fork_chat_by_id(
     if chat.pinned:
         fork = await Chats.toggle_chat_pinned_by_id(fork.id, db=db) or fork
 
+    # A fork runs where the chat it came from runs.
+    await copy_chat_target(user, chat.id, fork.id)
+
     await publish_event(
         request,
         EVENTS.CHAT_CLONED,
@@ -1854,6 +1875,8 @@ async def clone_chat_by_id(
 
         if chats:
             chat = chats[0]
+            # A clone of the person's own chat runs where that chat runs.
+            await copy_chat_target(user, id, chat.id)
             await publish_event(
                 request,
                 EVENTS.CHAT_CLONED,

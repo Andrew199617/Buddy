@@ -30,7 +30,8 @@ from open_webui.utils.subscriptions.machines import (  # noqa: E402
     StartupCleanupUnconfirmedError,
     TunnelMachine,
 )
-from open_webui.utils.subscriptions.tunnel_hub import RunnerConnection, RunnerHub, TunnelStream  # noqa: E402
+from open_webui.utils.subscriptions import machines as machines_module  # noqa: E402
+from open_webui.utils.subscriptions.tunnel_hub import RunnerCallError, RunnerConnection, RunnerHub, TunnelStream  # noqa: E402
 
 CLOSED = object()
 
@@ -162,6 +163,19 @@ class TunnelEndToEndTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(SubscriptionError, 'took too long'):
                 await self.machine.path_exists('Z:\\asleep', 'dir')
 
+    async def test_path_checks_stuck_on_a_drive_are_refused_instead_of_piling_up(self):
+        stuck = threading.Event()
+        self.addCleanup(stuck.set)
+        self.runner.path_exists = lambda path, kind: stuck.wait(5)
+        with patch.object(runner_module, 'PATH_CHECK_SECONDS', 0.2):
+            for _ in range(runner_module.PATH_CHECK_SLOTS):
+                with self.assertRaisesRegex(SubscriptionError, 'took too long'):
+                    await self.machine.path_exists('Z:\\asleep', 'dir')
+            # Both checks still wait on the drive, so the next one is refused at once.
+            with self.assertRaisesRegex(SubscriptionError, 'still waiting on a slow drive'):
+                await asyncio.wait_for(self.machine.path_exists('Z:\\asleep', 'dir'), 1)
+        stuck.set()
+
     async def test_folder_browsing_waits_for_the_app_switch(self):
         connection = await self.hub.wait_connection('machine-1', 1)
         self.assertTrue(self.runner.describe()['capabilities']['folderBrowsing'])
@@ -191,6 +205,34 @@ class TunnelEndToEndTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(runner_module.agent_history, 'default_exclusions', return_value=[]):
                 result = await connection.call('folders.suggest', {})
         self.assertEqual([folder['path'] for folder in result['folders']], [str(project)])
+
+    async def test_an_app_computer_lists_its_folders_through_buddy(self):
+        with self.assertRaises(RunnerCallError) as refused:
+            await self.machine.list_folders(str(self.state_dir), False, '')
+        self.assertEqual(refused.exception.status, 403)
+        self.runner.set_folder_browsing(True)
+        listing = await self.machine.list_folders(str(self.state_dir), False, 'w')
+        self.assertEqual([entry['name'] for entry in listing['entries']], ['workspace'])
+        suggestions = await self.machine.suggest_folders()
+        self.assertIn('folders', suggestions)
+
+    async def test_folder_calls_on_one_computer_are_limited(self):
+        self.runner.set_folder_browsing(True)
+        slots = machines_module._folder_call_slot('machine-1', 'Fixture PC')
+        async with slots:
+            async with slots:
+                with self.assertRaisesRegex(SubscriptionError, 'still listing folders on Fixture PC'):
+                    await self.machine.list_folders(str(self.state_dir), False, '')
+        listing = await self.machine.list_folders(str(self.state_dir), False, '')
+        self.assertTrue(listing['entries'])
+
+    async def test_computers_without_the_app_cannot_be_browsed(self):
+        remote = machines_module.RemoteMachine('runner-a', 'Old PC', 'https://old.example.invalid', 'key')
+        with self.assertRaisesRegex(SubscriptionError, 'needs the Buddy app'):
+            await remote.list_folders('C:\\', False, '')
+        local = machines_module.LocalMachine(self.state_dir)
+        with self.assertRaisesRegex(SubscriptionError, 'Buddy server'):
+            await local.suggest_folders()
 
     async def test_a_process_runs_and_its_exit_confirms_cleanup(self):
         process = await self.machine.start_process(

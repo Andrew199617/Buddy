@@ -6,6 +6,7 @@ Run from the repository root:
 
 import tempfile
 import types
+from unittest.mock import patch
 import unittest
 from pathlib import Path
 
@@ -27,12 +28,27 @@ OUTSIDER_USER = types.SimpleNamespace(id='outsider', role='user')
 
 
 class FolderMachine(FakeRemoteMachine):
-    """A computer added by address that has some folders, and can go offline."""
+    """A computer that has some folders, can go offline, and answers folder listings."""
 
     def __init__(self, config, existing):
         super().__init__(config['id'], config['name'], config['url'], config['key'])
         self.existing = set(existing)
         self.offline = False
+        self.browsing_reply = None
+        self.listed = []
+        self.suggest_calls = 0
+
+    async def list_folders(self, path, show_hidden, prefix):
+        self.listed.append((path, show_hidden, prefix))
+        if isinstance(self.browsing_reply, Exception):
+            raise self.browsing_reply
+        return self.browsing_reply
+
+    async def suggest_folders(self):
+        self.suggest_calls += 1
+        if isinstance(self.browsing_reply, Exception):
+            raise self.browsing_reply
+        return self.browsing_reply
 
     def matches(self, *args):
         return True
@@ -70,6 +86,9 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
     async def save(self, user, mode, paths=None, folder_id='website'):
         return await self.service.save_folder_project(user, folder_id, mode, paths or {})
 
+    def computer(self, project, machine_id='pc-1'):
+        return next(computer for computer in project['computers'] if computer['machine_id'] == machine_id)
+
     # --- Checking a folder on a computer ---------------------------------------
 
     async def test_a_typed_folder_is_checked_and_tidied(self):
@@ -102,8 +121,9 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_describing_lists_the_computers_and_asks_none_of_them(self):
         project = await self.service.describe_folder_project(OWNER_USER, 'website')
         self.assertEqual((project['own'], project['inherited'], project['has_plans']), (None, None, True))
-        [computer] = project['computers']
-        self.assertEqual(computer['machine_id'], 'pc-1')
+        # Every computer plans can run on: this server for its owner, and their own computers.
+        self.assertEqual([computer['machine_id'] for computer in project['computers']], ['local', 'pc-1'])
+        computer = self.computer(project)
         self.assertEqual((computer['kind'], computer['platform'], computer['can_browse']), ('address', 'win32', False))
         self.assertEqual(computer['providers'], [{'id': 'claude', 'name': 'Claude', 'access': 'full'}])
         self.assertEqual(self.machine.path_checks, [])
@@ -122,12 +142,12 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
         ])
         self.assertEqual(self.machine.path_checks, [])
 
-    async def test_a_chat_only_plan_is_listed_but_opens_no_computer(self):
+    async def test_a_chat_only_plan_is_listed_with_its_computer(self):
+        # Its access is where new chats start, so the folder settings can offer to raise it.
         self.config.values['subscriptions.claude'] = {**enabled_settings('pc-1'), 'access': 'chat'}
         project = await self.service.describe_folder_project(OWNER_USER, 'website')
         claude = project['plans'][0]
         self.assertEqual((claude['enable'], claude['access'], claude['machine']['id']), (True, 'chat', 'pc-1'))
-        self.assertEqual(project['computers'], [])
         self.assertTrue(project['has_plans'])
 
     async def test_a_plan_without_a_usable_computer_has_none(self):
@@ -167,10 +187,40 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
             'id': 'member-pc', 'name': 'Test member-pc', 'revision': 'fixture-revision-member-pc'
         })
 
+    async def test_chat_only_plans_still_list_every_computer(self):
+        # A plan's access is only where new chats start, so a folder can still be chosen.
+        self.config.values['subscriptions.claude']['access'] = 'chat'
+        project = await self.service.describe_folder_project(OWNER_USER, 'website')
+        self.assertEqual(self.computer(project)['providers'], [{'id': 'claude', 'name': 'Claude', 'access': 'chat'}])
+
     async def test_a_saved_folder_round_trips_with_recent_paths(self):
         project = await self.save(OWNER_USER, 'folder', {'pc-1': 'C:/code/site'})
         self.assertEqual(project['own']['paths'], {'pc-1': {'path': 'C:\\code\\site', 'problem': None}})
-        self.assertEqual(project['computers'][0]['recent_paths'], ['C:\\code\\site'])
+        self.assertEqual(self.computer(project)['recent_paths'], ['C:\\code\\site'])
+
+    async def test_new_chat_defaults_round_trip_and_offered_folders_are_checked(self):
+        project = await self.service.save_folder_project(
+            OWNER_USER, 'website', 'folder', {'pc-1': 'C:\\code\\site'}, machine_id='pc-1', access='read',
+            offered={'pc-1': ['C:/code/docs/']}
+        )
+        own = project['own']
+        self.assertEqual((own['machine_id'], own['access']), ('pc-1', 'read'))
+        self.assertEqual(own['offered'], {'pc-1': [{'path': 'C:\\code\\docs', 'problem': None}]})
+        self.assertIn(('C:\\code\\docs', 'dir'), self.machine.path_checks)
+        # Saving again with the same folders checks nothing on the computer.
+        self.machine.path_checks.clear()
+        await self.service.save_folder_project(
+            OWNER_USER, 'website', 'folder', {'pc-1': 'C:\\code\\site'}, offered={'pc-1': ['C:\\code\\docs']}
+        )
+        self.assertEqual(self.machine.path_checks, [])
+
+    async def test_offered_folders_are_limited_and_must_exist(self):
+        too_many = {'pc-1': [f'C:\\code\\{index}' for index in range(6)]}
+        with self.assertRaisesRegex(SubscriptionError, 'up to 5'):
+            await self.service.save_folder_project(OWNER_USER, 'website', 'auto', {}, offered=too_many)
+        with self.assertRaisesRegex(SubscriptionError, 'has no folder at that path'):
+            await self.service.save_folder_project(OWNER_USER, 'website', 'auto', {}, offered={'pc-1': ['C:\\nowhere']})
+        self.assertEqual(self.machine.path_checks, [('C:\\nowhere', 'dir')])
 
     async def test_folder_mode_needs_a_path(self):
         with self.assertRaisesRegex(SubscriptionError, 'at least one computer'):
@@ -247,6 +297,77 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
         choice = (await folders.load_choices(OWNER))['website']
         self.assertEqual(choice.paths['local'].path, '/srv/site')
         self.assertEqual(choice.paths['pc-1'].path, 'C:\\code\\docs')
+
+    # --- Browsing a computer's folders ------------------------------------------
+
+    async def test_folder_listings_are_checked_before_anyone_sees_them(self):
+        self.machine.browsing_reply = {'entries': [{'name': 'site', 'path': 'D:\\elsewhere'}, {'name': '..'}]}
+        listing = await self.service.list_machine_folders(OWNER_USER, 'pc-1', 'C:/code', False, 'si')
+        self.assertEqual(self.machine.listed, [('C:\\code', False, 'si')])
+        self.assertEqual([entry['path'] for entry in listing['entries']], ['C:\\code\\site'])
+        self.machine.browsing_reply = {'roots': [{'name': 'C:', 'path': 'C:\\', 'kind': 'drive'}]}
+        roots = await self.service.list_machine_folders(OWNER_USER, 'pc-1', '', False, '')
+        self.assertEqual(roots['roots'], [{'name': 'C:', 'path': 'C:\\', 'kind': 'drive'}])
+
+    async def test_folder_browsing_turned_off_or_missing_says_what_to_do(self):
+        self.machine.browsing_reply = self.service.RunnerCallError(403, 'off')
+        with self.assertRaisesRegex(SubscriptionError, 'Turn on Folder suggestions in the Buddy app on Test pc-1'):
+            await self.service.list_machine_folders(OWNER_USER, 'pc-1', 'C:\\code', False, '')
+        self.machine.browsing_reply = self.service.RunnerCallError(404, 'unknown')
+        with self.assertRaisesRegex(SubscriptionError, 'Update the Buddy app on Test pc-1'):
+            await self.service.list_machine_folders(OWNER_USER, 'pc-1', 'C:\\code', False, '')
+
+    async def test_only_your_own_computers_can_be_browsed(self):
+        with self.assertRaisesRegex(SubscriptionError, 'no longer exists'):
+            await self.service.list_machine_folders(OWNER_USER, 'member-pc', 'D:\\', False, '')
+        self.assertEqual(self.member_machine.listed, [])
+
+    async def test_network_paths_are_never_listed(self):
+        with self.assertRaisesRegex(SubscriptionError, 'Network paths'):
+            await self.service.list_machine_folders(OWNER_USER, 'pc-1', '\\\\server\\share', False, '')
+        self.assertEqual(self.machine.listed, [])
+
+    async def test_suggestions_need_an_online_app_computer_and_are_kept_a_minute(self):
+        self.assertEqual(
+            await self.service.suggested_machine_folders(OWNER_USER, 'pc-1'), {'state': 'unsupported', 'folders': []}
+        )
+        self.config.values['subscriptions.machines'][0]['kind'] = 'runner'
+        self.service._tunnel_machines['pc-1'] = self.machine
+        hub = types.SimpleNamespace(is_online=lambda machine_id: False)
+        with patch.object(self.service, 'HUB', hub):
+            offline = await self.service.suggested_machine_folders(OWNER_USER, 'pc-1')
+        self.assertEqual(offline['state'], 'offline')
+        hub = types.SimpleNamespace(is_online=lambda machine_id: True)
+        self.machine.browsing_reply = {'folders': [
+            {'path': 'C:\\code\\site', 'sources': ['claude'], 'last_used': 1760300000},
+            {'path': '\\\\server\\x', 'sources': ['codex'], 'last_used': 1},
+        ]}
+        with patch.object(self.service, 'HUB', hub):
+            first = await self.service.suggested_machine_folders(OWNER_USER, 'pc-1')
+            second = await self.service.suggested_machine_folders(OWNER_USER, 'pc-1')
+        self.assertEqual(first['folders'], [{'path': 'C:\\code\\site', 'sources': ['claude'], 'last_used': 1760300000}])
+        self.assertEqual(second, first)
+        self.assertEqual(self.machine.suggest_calls, 1)
+
+    async def test_each_computer_says_whether_its_folders_can_be_browsed(self):
+        await self.save(OWNER_USER, 'folder', {'pc-1': 'C:\\code\\site'})
+        project = await self.service.describe_folder_project(OWNER_USER, 'website')
+        self.assertEqual(self.computer(project)['folders'], 'unsupported')
+        config = self.config.values['subscriptions.machines'][0]
+        config['kind'] = 'runner'
+        config['capabilities'] = {'folderBrowsing': True}
+        online = types.SimpleNamespace(is_online=lambda machine_id: True)
+        with patch.object(self.service, 'HUB', online):
+            project = await self.service.describe_folder_project(OWNER_USER, 'website')
+            self.assertEqual(self.computer(project)['folders'], 'on')
+            # Learned from the app's answer that browsing is off there.
+            self.service._folder_browsing[(OWNER, 'pc-1')] = 'off'
+            project = await self.service.describe_folder_project(OWNER_USER, 'website')
+            self.assertEqual(self.computer(project)['folders'], 'off')
+        offline = types.SimpleNamespace(is_online=lambda machine_id: False)
+        with patch.object(self.service, 'HUB', offline):
+            project = await self.service.describe_folder_project(OWNER_USER, 'website')
+        self.assertEqual(self.computer(project)['folders'], 'offline')
 
     async def test_a_deleted_users_choices_are_forgotten(self):
         await self.save(MEMBER_USER, 'chat')

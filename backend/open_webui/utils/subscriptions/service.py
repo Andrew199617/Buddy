@@ -36,9 +36,17 @@ from open_webui.env import DATA_DIR, UVICORN_WORKERS
 from open_webui.models.config import Config
 from open_webui.models.groups import Groups
 from open_webui.models.models import Models
+from open_webui.models.chat_run_targets import (
+    SOURCE_BAR,
+    SOURCE_DEFAULT,
+    SOURCE_REFUSED,
+    ChatRunTargetModel,
+    ChatRunTargets,
+)
+from open_webui.models.chats import Chats
 from open_webui.models.subscription_credentials import KIND_API_KEY, KIND_PLAN_TOKEN, SubscriptionCredentials
 from open_webui.models.users import Users
-from open_webui.utils.chat_id import CHANNEL_CHAT_ID_PREFIX
+from open_webui.utils.chat_id import CHANNEL_CHAT_ID_PREFIX, is_saved_chat_id, is_temporary_chat_id
 from open_webui.utils.payload import apply_model_params_to_body_openai, apply_system_prompt_to_body
 from open_webui.utils.subscriptions.claude_code import ClaudeCodeProvider
 from open_webui.utils.subscriptions.codex import CodexProvider
@@ -57,12 +65,14 @@ from open_webui.utils.subscriptions.common import (
     requested_effort,
 )
 from open_webui.utils.subscriptions.conversation import parse_messages
-from open_webui.utils.subscriptions import project_agents, project_folders
+from open_webui.utils.subscriptions import (
+    computer_settings, folder_listing, project_agents, project_folders, run_targets,
+)
 from open_webui.utils.subscriptions.events import SubscriptionError
 from open_webui.utils.subscriptions.machines import (
     LOCAL_MACHINE_ID, LocalMachine, RemoteMachine, StartupCleanupUnconfirmedError, TunnelMachine,
 )
-from open_webui.utils.subscriptions.tunnel_hub import HUB
+from open_webui.utils.subscriptions.tunnel_hub import HUB, RunnerCallError
 from open_webui.utils.subscriptions.runner_transport import normalize_runner_url
 from open_webui.utils.subscriptions.streaming import collect_events, failure_events, stream_events
 
@@ -78,7 +88,7 @@ POLICY_CONFIG_KEY = 'subscriptions.policy'
 USER_SETTINGS_PREFIX = 'subscriptions.users'
 # Key-free metadata a runner reports in /health that is saved and shown.
 HOST_FIELDS = ('id', 'name', 'platform', 'version')
-CAPABILITY_FIELDS = ('directories', 'files', 'workspaces', 'terminals', 'pty', 'providerExecution')
+CAPABILITY_FIELDS = ('directories', 'files', 'workspaces', 'terminals', 'pty', 'providerExecution', 'folderBrowsing')
 REVERIFY_MACHINE_MESSAGE = 'Verify the selected machine again in subscription settings before using its provider.'
 NO_MACHINE_MESSAGE = 'Choose one of your computers for this provider in Settings → Machines.'
 SERVER_MACHINE_MESSAGE = 'This server is not available to your account. Choose one of your computers.'
@@ -100,6 +110,10 @@ MAX_PENDING_ENROLLMENTS = 500
 CLOSE_UNKNOWN_MACHINE = 4401
 CLOSE_NOT_ALLOWED = 4403
 REMOVED_MACHINE_MESSAGE = 'This computer was removed from Buddy. Connect it again from the Buddy app.'
+REMOVED_COMPUTER_MESSAGE = 'That computer was removed. Choose another.'
+OWN_COMPUTER_SETTINGS_MESSAGE = (
+    'This computer has its own start folder and CLI paths now. Change them in Settings → Machines.'
+)
 
 PROVIDER_IDS = ('claude', 'codex')
 PROVIDER_LABELS = {'claude': 'Claude', 'codex': 'ChatGPT'}
@@ -125,6 +139,22 @@ class ProviderRef:
 
     owner_id: str
     provider_id: str
+
+    def on(self, machine_id: str) -> 'MachineRef':
+        return MachineRef(self.owner_id, self.provider_id, machine_id)
+
+
+@dataclass(frozen=True)
+class MachineRef:
+    """One user's provider on one of their computers: what runs there, and its state there."""
+
+    owner_id: str
+    provider_id: str
+    machine_id: str
+
+    @property
+    def ref(self) -> ProviderRef:
+        return ProviderRef(self.owner_id, self.provider_id)
 
 
 @dataclass
@@ -155,9 +185,16 @@ _enrollments: dict[str, dict] = {}
 _providers: dict[ProviderRef, Any] = {}
 _provider_locks: dict[ProviderRef, asyncio.Lock] = {}
 _machine_lock = asyncio.Lock()
+_computer_settings_lock = asyncio.Lock()
 _provider_generations: dict[ProviderRef, int] = {}
-_active_provider_tasks: dict[ProviderRef, set[asyncio.Task]] = {}
-_tracked_machines: dict[ProviderRef, 'TrackingMachine'] = {}
+# Each running status check, model list or turn, with the computer it runs on.
+_active_provider_tasks: dict[ProviderRef, dict[asyncio.Task, str]] = {}
+# One handle per computer a provider runs on, so a turn on one computer
+# never drops the handle of a turn still running on another.
+_tracked_machines: dict[MachineRef, 'TrackingMachine'] = {}
+# The computer each provider's sign-in in progress runs on. A provider signs
+# in on one computer at a time.
+_login_computers: dict[ProviderRef, str] = {}
 _server_owner_id: str | None = None
 
 
@@ -288,7 +325,7 @@ async def save_policy(updates: dict) -> SubscriptionPolicy:
     if updates.get('desktop_download_url') is not None:
         policy.desktop_download_url = _validate_download_url(updates['desktop_download_url'])
     await Config.upsert({POLICY_CONFIG_KEY: asdict(policy)})
-    for ref in list(_provider_generations) + list(_tracked_machines) + list(_providers):
+    for ref in list(_provider_generations) + _tracked_refs() + list(_providers):
         invalidate(ref)
     # Before disconnecting computers, so their processes can still be stopped.
     await _stop_disallowed_providers()
@@ -313,7 +350,7 @@ async def _policy_allows_provider(ref: ProviderRef) -> bool:
 
 def _has_work_to_stop(ref: ProviderRef) -> bool:
     """Whether this provider has a live provider, a tracked machine or running tasks."""
-    return ref in _providers or ref in _tracked_machines or bool(_active_provider_tasks.get(ref))
+    return ref in _providers or bool(_tracked_handles(ref)) or bool(_active_provider_tasks.get(ref))
 
 
 async def _stop_provider_if_disallowed(ref: ProviderRef) -> None:
@@ -327,10 +364,12 @@ async def _stop_provider_if_disallowed(ref: ProviderRef) -> None:
         log.warning('Could not check the policy for %s of %s, so it is stopped: %s',
                     PROVIDER_LABELS[ref.provider_id], ref.owner_id, error)
         allowed = False
-    if allowed:
-        return
     async with _provider_lock(ref):
-        await _quiesce_provider(ref)
+        if not allowed:
+            await _quiesce_provider(ref)
+        elif _has_work_on(ref, LOCAL_MACHINE_ID) and not await _may_use_server_machine(ref.owner_id):
+            # The plan runs elsewhere, but a sign-in or turn on this server must stop too.
+            await _quiesce_computer(ref, LOCAL_MACHINE_ID)
 
 
 async def _stop_disallowed_providers() -> None:
@@ -339,7 +378,7 @@ async def _stop_disallowed_providers() -> None:
     New work is refused by the policy checks when it starts. Settings are
     kept, so turning a switch back on needs nothing else.
     """
-    refs = list(set(_providers) | set(_tracked_machines) | set(_active_provider_tasks))
+    refs = list(set(_providers) | set(_tracked_refs()) | set(_active_provider_tasks))
     results = await asyncio.gather(*(_stop_provider_if_disallowed(ref) for ref in refs), return_exceptions=True)
     for ref, result in zip(refs, results):
         if isinstance(result, Exception):
@@ -615,18 +654,64 @@ class TrackingMachine:
         self.cleanup_error = None
 
 
-def _require_provider_cleanup(ref: ProviderRef) -> None:
-    tracked = _tracked_machines.get(ref)
-    if tracked is not None:
-        tracked._check_cleanup()
+def _tracked_handles(ref: ProviderRef) -> list[TrackingMachine]:
+    """The provider's handles on every computer it has run on."""
+    return [tracked for key, tracked in _tracked_machines.items() if key.ref == ref]
+
+
+def _tracked_refs() -> list[ProviderRef]:
+    return list({key.ref for key in _tracked_machines})
+
+
+def _track_task(ref: ProviderRef, machine_id: str, task: asyncio.Task) -> None:
+    _active_provider_tasks.setdefault(ref, {})[task] = machine_id
+
+
+def _untrack_task(ref: ProviderRef, task: asyncio.Task) -> None:
+    _active_provider_tasks.get(ref, {}).pop(task, None)
+
+
+def _running_tasks(ref: ProviderRef, machine_id: str | None = None) -> set[asyncio.Task]:
+    """The provider's other unfinished tasks, on one computer or on all of them."""
+    current = asyncio.current_task()
+    tasks = set()
+    for task, task_machine_id in _active_provider_tasks.get(ref, {}).items():
+        if task is current or task.done():
+            continue
+        if machine_id is None or task_machine_id == machine_id:
+            tasks.add(task)
+    return tasks
+
+
+def _waits_for_its_computer(tracked: TrackingMachine) -> bool:
+    """A Buddy app computer that is offline: its stops are confirmed when it connects again."""
+    return isinstance(tracked.machine, TunnelMachine) and not HUB.is_online(tracked.id)
+
+
+def _require_computer_cleanup(ref: ProviderRef, machine_id: str) -> None:
+    """Old work whose stop is unconfirmed blocks the provider's new work.
+
+    Unconfirmed work on an offline Buddy app computer blocks only that
+    computer, so a laptop that sleeps doesn't stop the plan everywhere; it is
+    retried when the computer connects again. Anywhere else it blocks the
+    provider on every computer, as does a startup that may have left a
+    process Buddy has no handle to stop.
+    """
+    for key, tracked in _tracked_machines.items():
+        if key.ref != ref:
+            continue
+        tracked._check_startup_cleanup()
+        if key.machine_id == machine_id or not _waits_for_its_computer(tracked):
+            tracked._check_cleanup()
 
 
 def _tracking_machine(ref: ProviderRef, machine, credential_env: dict | None = None) -> TrackingMachine:
-    _require_provider_cleanup(ref)
-    tracked = _tracked_machines.get(ref)
+    _require_computer_cleanup(ref, machine.id)
+    key = ref.on(machine.id)
+    tracked = _tracked_machines.get(key)
     if tracked is None or tracked.machine is not machine or not tracked.valid:
         tracked = TrackingMachine(machine, credential_env)
-        _tracked_machines[ref] = tracked
+        _tracked_machines[key] = tracked
     return tracked
 
 
@@ -673,13 +758,59 @@ async def _quiesce_provider_safely(ref: ProviderRef) -> None:
 async def _quiesce_provider_work(ref: ProviderRef) -> None:
     _provider_generations[ref] = _provider_generations.get(ref, 0) + 1
     invalidate(ref)
-    current = asyncio.current_task()
-    tasks = {task for task in _active_provider_tasks.get(ref, set()) if task is not current and not task.done()}
+    tasks = _running_tasks(ref)
     for task in tasks:
         task.cancel()
-    tracked = _tracked_machines.get(ref)
+    handles = [(key, tracked) for key, tracked in _tracked_machines.items() if key.ref == ref]
     cleanup_error = None
-    if tracked:
+    revoked = await asyncio.gather(*(tracked.revoke() for _, tracked in handles), return_exceptions=True)
+    stopped = []
+    for (key, tracked), outcome in zip(handles, revoked):
+        if outcome is None:
+            stopped.append((key, tracked))
+        elif not isinstance(outcome, SubscriptionError):
+            raise outcome
+        elif _waits_for_its_computer(tracked):
+            # Kept with its error: new work there waits until the computer
+            # connects again and the stop is confirmed.
+            log.info('Cleanup on %s waits for it to connect again: %s', key.machine_id, outcome)
+        else:
+            cleanup_error = outcome
+    if tasks:
+        _, pending = await asyncio.wait(tasks, timeout=10)
+        if pending:
+            cleanup_error = SubscriptionError('An old provider operation could not confirm that it stopped.')
+    provider = await get_provider(ref)
+    await provider.cancel_login()
+    _login_computers.pop(ref, None)
+    if isinstance(provider, CodexProvider):
+        provider.stop()
+    if cleanup_error:
+        raise cleanup_error
+    for key, tracked in stopped:
+        if _tracked_machines.get(key) is tracked:
+            _tracked_machines.pop(key)
+
+
+async def _quiesce_computer(ref: ProviderRef, machine_id: str) -> None:
+    """Stop the provider's work on one computer: its sign-in, tasks, processes and Codex app-server there.
+
+    Called with the provider lock held. Work on the plan's other computers
+    keeps running. A stop that can't be confirmed stays on that computer's
+    handle, which keeps refusing new work there until it is.
+    """
+    invalidate_computer(ref.owner_id, machine_id)
+    tasks = _running_tasks(ref, machine_id)
+    for task in tasks:
+        task.cancel()
+    provider = await get_provider(ref)
+    if _login_computers.get(ref) == machine_id:
+        await provider.cancel_login()
+        _login_computers.pop(ref, None)
+    key = ref.on(machine_id)
+    tracked = _tracked_machines.get(key)
+    cleanup_error = None
+    if tracked is not None:
         try:
             await tracked.revoke()
         except SubscriptionError as error:
@@ -688,14 +819,35 @@ async def _quiesce_provider_work(ref: ProviderRef) -> None:
         _, pending = await asyncio.wait(tasks, timeout=10)
         if pending:
             cleanup_error = SubscriptionError('An old provider operation could not confirm that it stopped.')
-    provider = await get_provider(ref)
-    await provider.cancel_login()
     if isinstance(provider, CodexProvider):
-        provider.stop()
-    if cleanup_error:
+        provider.stop_machine(machine_id)
+    if cleanup_error is not None:
         raise cleanup_error
-    if tracked is not None and _tracked_machines.get(ref) is tracked:
-        _tracked_machines.pop(ref)
+    if tracked is not None and _tracked_machines.get(key) is tracked:
+        _tracked_machines.pop(key)
+
+
+def _has_work_on(ref: ProviderRef, machine_id: str) -> bool:
+    return (
+        ref.on(machine_id) in _tracked_machines
+        or _login_computers.get(ref) == machine_id
+        or bool(_running_tasks(ref, machine_id))
+    )
+
+
+async def _stop_other_work_on(owner_id: str, machine_id: str, plan_refs: list[ProviderRef]) -> None:
+    """Before a computer is removed or replaced, stop the work other plans run there.
+
+    Plans whose own computer it is are stopped whole by the caller. This
+    runs while the computer is still connected, so stops can be confirmed.
+    """
+    for ref in _owner_refs(owner_id):
+        if ref in plan_refs or not _has_work_on(ref, machine_id):
+            continue
+        try:
+            await _quiesce_computer(ref, machine_id)
+        except SubscriptionError as error:
+            log.warning('Could not confirm that %s stopped on %s: %s', PROVIDER_LABELS[ref.provider_id], machine_id, error)
 
 
 async def _quiesce_providers(refs: list[ProviderRef]) -> None:
@@ -972,7 +1124,7 @@ def _machine_id_from_name(name: str, taken: set[str]) -> str:
 async def _taken_machine_ids(configs: list[dict]) -> set[str]:
     """IDs a new machine must not reuse: every machine, selection, and cleanup owner."""
     taken = {config['id'] for config in configs}
-    for ref in set(_provider_generations) | set(_tracked_machines) | set(_providers):
+    for ref in set(_provider_generations) | set(_tracked_refs()) | set(_providers):
         taken.add((await _load_settings(ref)).machine_id)
     taken.update(tracked.id for tracked in _tracked_machines.values())
     return taken
@@ -1080,6 +1232,8 @@ async def _save_machine(
                 affected.append(ref)
     await Config.upsert(updates)
     try:
+        if host_changed:
+            await _stop_other_work_on(owner_id, saved['id'], affected)
         await _quiesce_providers(affected)
     finally:
         if host_changed:
@@ -1119,6 +1273,7 @@ async def _delete_machine(owner_id: str, machine_id: str) -> None:
             affected.append(ref)
     await Config.upsert(updates)
     try:
+        await _stop_other_work_on(owner_id, machine_id, affected)
         await _quiesce_providers(affected)
     finally:
         cached = _remote_machines.pop(machine_id, None)
@@ -1277,8 +1432,7 @@ async def record_runner_connected(machine_id: str, info: dict) -> None:
             config['capabilities'] = observed_capabilities
         config['last_seen_at'] = int(time.time())
         await Config.upsert({MACHINES_CONFIG_KEY: configs})
-    for ref in _owner_refs(_machine_owner(config, await server_owner_id())):
-        invalidate(ref)
+    invalidate_computer(_machine_owner(config, await server_owner_id()), machine_id)
 
 
 async def record_runner_disconnected(machine_id: str) -> None:
@@ -1320,6 +1474,97 @@ async def _load_settings(ref: ProviderRef) -> ProviderSettings:
 
 async def get_settings(owner_id: str, provider_id: str) -> ProviderSettings:
     return await _load_settings(_ref(owner_id, provider_id))
+
+
+async def _saved_computer_settings(owner_id: str) -> dict[str, 'computer_settings.ComputerSettings']:
+    return computer_settings.parse(await Config.get(computer_settings.settings_key(owner_id), {}))
+
+
+async def _settings_for(ref: ProviderRef, settings: ProviderSettings, machine_id: str) -> ProviderSettings:
+    """The plan's settings for work on one computer, with that computer's start folder and CLI path.
+
+    A computer without saved settings finds its CLI itself and has no start
+    folder, except the plan's own computer: it keeps the start folder and
+    CLI path saved with the plan before computers had their own.
+    """
+    saved = await _saved_computer_settings(ref.owner_id)
+    entry = computer_settings.current(saved, machine_id, await _machine_revision(ref.owner_id, machine_id))
+    if entry is not None:
+        return replace(
+            settings, machine_id=machine_id, workspace=entry.start_folder, cli_path=entry.cli_path(ref.provider_id)
+        )
+    if machine_id == settings.machine_id:
+        return settings
+    return replace(settings, machine_id=machine_id, workspace='', cli_path='')
+
+
+async def describe_computer_settings(owner_id: str, machine_id: str) -> dict:
+    """A computer's own start folder and CLI paths, and what plans saved for it before it had its own."""
+    revision = await _machine_revision(owner_id, machine_id)
+    if revision is None:
+        raise SubscriptionError(REMOVED_COMPUTER_MESSAGE)
+    saved = computer_settings.current(await _saved_computer_settings(owner_id), machine_id, revision)
+    start_folder = ''
+    cli_paths = {}
+    from_plans = {}
+    for provider_id in PROVIDER_IDS:
+        cli_paths[provider_id] = ''
+        if saved is not None:
+            cli_paths[provider_id] = saved.cli_path(provider_id)
+            continue
+        settings = await _load_settings(_ref(owner_id, provider_id))
+        if settings.machine_id == machine_id and (settings.workspace or settings.cli_path):
+            # Turns there still use these; each plan kept its own.
+            from_plans[provider_id] = {'start_folder': settings.workspace, 'cli_path': settings.cli_path}
+    if saved is not None:
+        start_folder = saved.start_folder
+    return {
+        'machine_id': machine_id,
+        'revision': revision,
+        'saved': saved is not None,
+        'start_folder': start_folder,
+        'cli_paths': cli_paths,
+        'from_plans': from_plans,
+    }
+
+
+async def save_computer_settings(
+    owner_id: str, machine_id: str, expected_revision: str, start_folder, cli_paths: dict
+) -> dict:
+    """Save where plans start on one computer and which CLIs they run, checked on that computer."""
+    _require_single_worker()
+    revision = await _machine_revision(owner_id, machine_id)
+    if revision is None:
+        raise SubscriptionError(REMOVED_COMPUTER_MESSAGE)
+    if expected_revision != revision:
+        raise HTTPException(status_code=409, detail='That computer was set up again. Refresh before trying again.')
+    # Also refuses This server while the policy has it off.
+    machine = await get_machine(owner_id, machine_id)
+    folder = ''
+    if isinstance(start_folder, str) and start_folder.strip():
+        folder = project_folders.clean_project_path(start_folder.strip(), await _machine_platform(owner_id, machine_id))
+        if not await machine.path_exists(folder, 'dir'):
+            raise SubscriptionError(f'The start folder does not exist on {machine.name}: {folder}')
+    paths = {}
+    for provider_id in PROVIDER_IDS:
+        path = computer_settings.clean_cli_path((cli_paths or {}).get(provider_id))
+        if path and not await machine.path_exists(path, 'file'):
+            raise SubscriptionError(f'The CLI path does not exist on {machine.name}: {path}')
+        if path:
+            paths[provider_id] = path
+
+    async with _computer_settings_lock:
+        # The paths were checked on the computer without the lock; it or its owner may be gone since.
+        if await _machine_revision(owner_id, machine_id) != revision or await Users.get_user_by_id(owner_id) is None:
+            raise SubscriptionError(REMOVED_COMPUTER_MESSAGE)
+        saved = await _saved_computer_settings(owner_id)
+        # Entries for removed computers are dropped here, the next time anything is saved.
+        kept = await _owned_machine_ids(owner_id)
+        saved = {kept_id: entry for kept_id, entry in saved.items() if kept_id in kept}
+        saved[machine_id] = computer_settings.ComputerSettings(revision, folder, paths)
+        await Config.upsert({computer_settings.settings_key(owner_id): computer_settings.serialize(saved)})
+    invalidate_computer(owner_id, machine_id)
+    return await describe_computer_settings(owner_id, machine_id)
 
 
 def _forget_machine_authority(settings: ProviderSettings) -> None:
@@ -1366,8 +1611,7 @@ async def _save_settings(
         # Nothing else can retry cleanup of a removed machine's old process.
         # The move saves the provider turned off and quiesces it below, which
         # retries that cleanup. An unknown startup process cannot be retried.
-        tracked = _tracked_machines.get(ref)
-        if tracked is not None:
+        for tracked in _tracked_handles(ref):
             tracked._check_startup_cleanup()
     else:
         await _check_expected_machine(
@@ -1387,6 +1631,13 @@ async def _save_settings(
     settings.cli_path = settings.cli_path.strip()
     if settings.access not in ACCESS_LEVELS:
         raise SubscriptionError('Choose chat only, read files, or full access.')
+    changes_paths = settings.workspace != previous.workspace or settings.cli_path != previous.cli_path
+    if settings.machine_id == previous.machine_id and changes_paths:
+        # Turns there use the computer's own settings, so changing the plan's would do nothing.
+        revision = await _machine_revision(ref.owner_id, settings.machine_id)
+        saved = await _saved_computer_settings(ref.owner_id)
+        if computer_settings.current(saved, settings.machine_id, revision) is not None:
+            raise SubscriptionError(OWN_COMPUTER_SETTINGS_MESSAGE)
 
     # Turning a provider off needs nothing from its machine, which may still be
     # waiting for its runner key after a config import.
@@ -1469,11 +1720,102 @@ async def check_machine_folder(user, machine_id: str, path: str) -> str:
     return cleaned
 
 
+# What each computer last said about folder browsing: 'on', 'off' or 'unsupported'.
+_folder_browsing: dict[tuple[str, str], str] = {}
+# Folders Claude Code and Codex worked in, per person, computer and revision, for a minute.
+FOLDER_SUGGESTIONS_CACHE_SECONDS = 60
+_folder_suggestions: dict[tuple[str, str, str], tuple[float, list]] = {}
+
+
+def _folder_browsing_refusal(error: RunnerCallError, key: tuple[str, str], machine_name: str) -> SubscriptionError:
+    """Turns the Runner's refusal into what the person can do about it, and remembers it."""
+    if error.status == 403:
+        _folder_browsing[key] = 'off'
+        return SubscriptionError(
+            f'Turn on Folder suggestions in the Buddy app on {machine_name}. You can still type a path.'
+        )
+    if error.status == 404:
+        _folder_browsing[key] = 'unsupported'
+        return SubscriptionError(f'Update the Buddy app on {machine_name} to browse its folders. You can still type a path.')
+    return error
+
+
+async def list_machine_folders(user, machine_id: str, path: str, show_hidden: bool, prefix: str) -> dict:
+    """Folder names in one folder of the person's computer, or its drives and places for an empty path."""
+    if not machine_id:
+        raise SubscriptionError('Choose a computer.')
+    machine = await get_machine(user.id, machine_id)
+    platform = await _machine_platform(user.id, machine_id)
+    listed = ''
+    if path:
+        listed = folder_listing.clean_browse_path(path, platform)
+    key = (user.id, machine_id)
+    try:
+        reply = await machine.list_folders(listed, show_hidden, (prefix or '')[:folder_listing.MAX_NAME_CHARS])
+    except RunnerCallError as error:
+        raise _folder_browsing_refusal(error, key, machine.name) from None
+    _folder_browsing[key] = 'on'
+    if not listed:
+        return folder_listing.checked_roots(reply, platform)
+    return folder_listing.checked_listing(reply, listed, platform)
+
+
+async def suggested_machine_folders(user, machine_id: str) -> dict:
+    """Folders Claude Code and Codex worked in on that computer: {state, folders}.
+
+    state is 'ok', 'off' (not allowed in the Buddy app there), 'offline', or
+    'unsupported' (no Buddy app, or an older one).
+    """
+    if not machine_id:
+        raise SubscriptionError('Choose a computer.')
+    machine = await get_machine(user.id, machine_id)
+    config = next((saved for saved in await _owned_machine_configs(user.id) if saved['id'] == machine_id), None)
+    if _folder_computer_kind(machine_id, config) != 'app':
+        return {'state': 'unsupported', 'folders': []}
+    if not HUB.is_online(machine_id):
+        return {'state': 'offline', 'folders': []}
+    revision = await _machine_revision(user.id, machine_id) or ''
+    cache_key = (user.id, machine_id, revision)
+    cached = _folder_suggestions.get(cache_key)
+    if cached is not None and time.monotonic() - cached[0] < FOLDER_SUGGESTIONS_CACHE_SECONDS:
+        return {'state': 'ok', 'folders': cached[1]}
+    key = (user.id, machine_id)
+    try:
+        reply = await machine.suggest_folders()
+    except RunnerCallError as error:
+        _folder_browsing_refusal(error, key, machine.name)
+        if error.status in (403, 404):
+            return {'state': _folder_browsing[key], 'folders': []}
+        raise
+    _folder_browsing[key] = 'on'
+    folders = folder_listing.checked_suggestions(reply, await _machine_platform(user.id, machine_id))
+    _folder_suggestions[cache_key] = (time.monotonic(), folders)
+    return {'state': 'ok', 'folders': folders}
+
+
 async def _readable_chat_folder(user, folder_id: str):
     folder = await project_folders.readable_folder(user.id, folder_id)
     if folder is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='That folder no longer exists.')
     return folder
+
+
+def _folder_browsing_state(owner_id: str, machine_id: str, kind: str, online: bool | None, config: dict | None) -> str:
+    """Whether that computer's folders can be browsed: 'on', 'off', 'offline' or 'unsupported'.
+
+    Only the Buddy app can list folders. Whether the person allowed it there is
+    learned from its answer, since the app can change it at any time.
+    """
+    if kind != 'app':
+        return 'unsupported'
+    capabilities = (config or {}).get('capabilities') or {}
+    if capabilities.get('folderBrowsing') is not True:
+        return 'unsupported'
+    if not online:
+        return 'offline'
+    if _folder_browsing.get((owner_id, machine_id)) == 'off':
+        return 'off'
+    return 'on'
 
 
 async def _describe_folder_computer(owner_id: str, machine_id: str, config: dict | None, choices: dict) -> dict | None:
@@ -1501,32 +1843,35 @@ async def _describe_folder_computer(owner_id: str, machine_id: str, config: dict
         'online': online,
         'platform': await _machine_platform(owner_id, machine_id),
         'can_browse': can_browse,
+        'folders': _folder_browsing_state(owner_id, machine_id, kind, online, config),
         'recent_paths': project_folders.recent_paths(choices, machine_id, revision),
     }
 
 
 async def _folder_computers(user, choices: dict, named_machine_ids: set[str]) -> list[dict]:
-    """The computers a project folder can be on: those running a plan that may use files,
-    and those already named in this folder's choice."""
-    providers_by_machine: dict[str, list[dict]] = {}
+    """Every computer the person's plans can run on, and those already named in this folder's choice.
+
+    Each lists the plans that are on, with the access new chats start with.
+    """
+    plans = []
     for provider_id in PROVIDER_IDS:
         settings = await _load_settings(ProviderRef(user.id, provider_id))
-        if not settings.enable or settings.access == ACCESS_CHAT or not settings.machine_id:
-            continue
-        providers_by_machine.setdefault(settings.machine_id, []).append(
-            {'id': provider_id, 'name': PROVIDER_LABELS[provider_id], 'access': settings.access}
-        )
-    machine_ids = list(providers_by_machine)
+        if settings.enable:
+            plans.append({'id': provider_id, 'name': PROVIDER_LABELS[provider_id], 'access': settings.access})
+    configs = {config['id']: config for config in await _owned_machine_configs(user.id)}
+    machine_ids = []
+    if await _may_use_server_machine(user.id):
+        machine_ids.append(LOCAL_MACHINE_ID)
+    machine_ids.extend(configs)
     for machine_id in sorted(named_machine_ids):
         if machine_id not in machine_ids:
             machine_ids.append(machine_id)
-    configs = {config['id']: config for config in await _owned_machine_configs(user.id)}
     computers = []
     for machine_id in machine_ids:
         computer = await _describe_folder_computer(user.id, machine_id, configs.get(machine_id), choices)
         if computer is None:
             continue
-        computer['providers'] = providers_by_machine.get(machine_id, [])
+        computer['providers'] = list(plans)
         computers.append(computer)
     return computers
 
@@ -1567,19 +1912,35 @@ async def _folder_plans(user) -> list[dict]:
     return plans
 
 
+def _describe_saved_path(saved, revision: str) -> dict:
+    problem = None
+    if saved.revision != revision:
+        problem = 'computer_changed'
+    return {'path': saved.path, 'problem': problem}
+
+
 def _describe_folder_choice(choice, revisions: dict[str, str]) -> dict | None:
     if choice is None:
         return None
     paths = {}
     for machine_id, saved in choice.paths.items():
-        if machine_id not in revisions:
-            # The computer was removed.
-            continue
-        problem = None
-        if saved.revision != revisions[machine_id]:
-            problem = 'computer_changed'
-        paths[machine_id] = {'path': saved.path, 'problem': problem}
-    return {'folder_id': choice.folder_id, 'folder_name': choice.folder_name, 'mode': choice.mode, 'paths': paths}
+        # A computer that was removed has no revision, and is left out.
+        if machine_id in revisions:
+            paths[machine_id] = _describe_saved_path(saved, revisions[machine_id])
+    offered = {}
+    for machine_id, entries in choice.offered.items():
+        if machine_id in revisions:
+            offered[machine_id] = [_describe_saved_path(saved, revisions[machine_id]) for saved in entries]
+    return {
+        'folder_id': choice.folder_id,
+        'folder_name': choice.folder_name,
+        'mode': choice.mode,
+        'paths': paths,
+        # What new chats in the folder start with; '' follows the usual default.
+        'machine_id': choice.machine_id,
+        'access': choice.access,
+        'offered': offered,
+    }
 
 
 async def describe_folder_project(user, folder_id: str) -> dict:
@@ -1591,6 +1952,7 @@ async def describe_folder_project(user, folder_id: str) -> dict:
     for choice in (own, inherited):
         if choice is not None:
             named_machine_ids.update(choice.paths)
+            named_machine_ids.update(choice.offered)
     revisions = {}
     for machine_id in named_machine_ids:
         revision = await _machine_revision(user.id, machine_id)
@@ -1615,11 +1977,38 @@ async def describe_folder_project(user, folder_id: str) -> dict:
 
 async def _checked_project_path(user, machine_id: str, path, current) -> 'project_folders.SavedPath':
     """A path to save, checked on its computer unless it is the same as the one already saved there."""
-    if not isinstance(path, str):
-        raise SubscriptionError("Enter the folder's full path.")
     previous = None
     if current is not None:
         previous = current.paths.get(machine_id)
+    return await _checked_saved_path(user, machine_id, path, previous)
+
+
+async def _checked_offered_paths(user, offered, current) -> dict[str, list['project_folders.SavedPath']]:
+    """More folders to offer new chats on each computer, each checked there unless already saved."""
+    if not isinstance(offered, dict):
+        raise SubscriptionError('Choose the folders to offer on each computer.')
+    checked = {}
+    for machine_id, paths in offered.items():
+        if not isinstance(paths, list):
+            raise SubscriptionError('Choose the folders to offer on each computer.')
+        if len(paths) > project_folders.MAX_OFFERED_PER_COMPUTER:
+            raise SubscriptionError(
+                f'Offer up to {project_folders.MAX_OFFERED_PER_COMPUTER} folders on each computer.'
+            )
+        already_saved = {}
+        if current is not None:
+            for saved in current.offered.get(machine_id, []):
+                already_saved[saved.path] = saved
+        entries = []
+        for path in paths:
+            entries.append(await _checked_saved_path(user, machine_id, path, already_saved.get(path)))
+        checked[machine_id] = entries
+    return checked
+
+
+async def _checked_saved_path(user, machine_id: str, path, previous) -> 'project_folders.SavedPath':
+    if not isinstance(path, str):
+        raise SubscriptionError("Enter the folder's full path.")
     revision = await _machine_revision(user.id, machine_id)
     if previous is not None and previous.path == path and previous.revision == revision:
         # Unchanged, so it is kept even while the policy has This server off for a
@@ -1628,7 +2017,7 @@ async def _checked_project_path(user, machine_id: str, path, current) -> 'projec
     # Confirms the computer is the user's and, for This server, that the policy allows it.
     await get_machine(user.id, machine_id)
     if revision is None:
-        raise SubscriptionError('That computer was removed. Choose another.')
+        raise SubscriptionError(REMOVED_COMPUTER_MESSAGE)
     cleaned = project_folders.clean_project_path(path, await _machine_platform(user.id, machine_id))
     if previous is not None and previous.path == cleaned and previous.revision == revision:
         # Checked when it was chosen, so it saves even while that computer is offline.
@@ -1637,18 +2026,33 @@ async def _checked_project_path(user, machine_id: str, path, current) -> 'projec
     return project_folders.SavedPath(cleaned, revision)
 
 
-async def save_folder_project(user, folder_id: str, mode: str, paths: dict) -> dict:
-    """Replace this person's project folder choice for a chat folder."""
+async def save_folder_project(
+    user, folder_id: str, mode: str, paths: dict, machine_id: str = project_folders.FOLLOW_DEFAULT,
+    access: str = project_folders.FOLLOW_DEFAULT, offered: dict | None = None
+) -> dict:
+    """Replace this person's project folder choice for a chat folder, with what new chats in it start with."""
     _require_single_worker()
     folder = await _readable_chat_folder(user, folder_id)
     if mode not in project_folders.MODES:
         raise SubscriptionError('Choose how chats in this folder work.')
+    current, _ = await project_folders.resolve_folder(user.id, folder)
     saved_paths = {}
     if mode == project_folders.MODE_FOLDER:
-        current, _ = await project_folders.resolve_folder(user.id, folder)
-        for machine_id, path in (paths or {}).items():
-            saved_paths[machine_id] = await _checked_project_path(user, machine_id, path, current)
-    await project_folders.save_choice(user.id, folder.id, mode, saved_paths, await _owned_machine_ids(user.id))
+        for path_machine_id, path in (paths or {}).items():
+            saved_paths[path_machine_id] = await _checked_project_path(user, path_machine_id, path, current)
+    saved_offered = {}
+    if mode != project_folders.MODE_CHAT:
+        saved_offered = await _checked_offered_paths(user, offered or {}, current)
+    await project_folders.save_choice(
+        user.id,
+        folder.id,
+        mode,
+        saved_paths,
+        await _owned_machine_ids(user.id),
+        machine_id=machine_id,
+        access=access,
+        offered=saved_offered,
+    )
     return await describe_folder_project(user, folder.id)
 
 
@@ -1658,6 +2062,595 @@ async def clear_folder_project(user, folder_id: str) -> dict:
     folder = await _readable_chat_folder(user, folder_id)
     await project_folders.clear_choice(user.id, folder.id, await _owned_machine_ids(user.id))
     return await describe_folder_project(user, folder.id)
+
+
+async def _sign_in_settings(
+    ref: ProviderRef, settings: ProviderSettings, machine_id: str | None, expected_machine_id: str | None,
+    expected_machine_revision: str | None, mutation: bool
+) -> ProviderSettings:
+    """The plan's settings on the computer a sign-in action is for.
+
+    Without a chosen computer it is the plan's own, as the page last showed
+    it. A chosen computer must be one of the user's, at the revision the page
+    showed; an unknown computer and someone else's get the same answer.
+    """
+    if machine_id is None:
+        await _check_expected_machine(ref.owner_id, settings, expected_machine_id, expected_machine_revision, mutation)
+        return await _settings_for(ref, settings, settings.machine_id)
+    if not machine_id:
+        raise SubscriptionError(NO_MACHINE_MESSAGE)
+    on_computer = await _settings_for(ref, settings, machine_id)
+    await _check_expected_machine(ref.owner_id, on_computer, machine_id, expected_machine_revision, mutation)
+    return on_computer
+
+
+async def _computer_name(owner_id: str, machine_id: str) -> str:
+    try:
+        return (await get_machine(owner_id, machine_id)).name
+    except SubscriptionError:
+        return 'another computer'
+
+
+async def _computer_still_usable(owner_id: str, machine_id: str) -> bool:
+    if machine_id == LOCAL_MACHINE_ID:
+        return await _may_use_server_machine(owner_id)
+    return await _machine_revision(owner_id, machine_id) is not None
+
+
+async def _require_login_on(ref: ProviderRef, machine_id: str) -> None:
+    """A code or cancel for one computer never reaches a sign-in still waiting on another."""
+    running_on = _login_computers.get(ref)
+    if running_on is None or running_on == machine_id:
+        return
+    provider = await get_provider(ref)
+    if provider.login_state().get('state') != 'waiting':
+        return
+    if not await _computer_still_usable(ref.owner_id, running_on):
+        # Its computer was removed or turned off, so nothing can finish it.
+        await provider.cancel_login()
+        _login_computers.pop(ref, None)
+        return
+    name = await _computer_name(ref.owner_id, running_on)
+    raise HTTPException(status_code=409, detail=f'Finish signing in on {name} first.')
+
+
+async def _stop_for_sign_in(ref: ProviderRef, settings: ProviderSettings, machine_id: str) -> None:
+    """Before signing in or out on a computer, stop the work the change affects.
+
+    On the plan's own computer that is the whole plan, as before. On another
+    computer it is only that computer's work. A sign-in still waiting
+    elsewhere is cancelled too: a provider signs in on one computer at a time.
+    """
+    if machine_id == settings.machine_id:
+        await _quiesce_provider(ref)
+        return
+    await _quiesce_computer(ref, machine_id)
+    if ref in _login_computers:
+        await (await get_provider(ref)).cancel_login()
+        _login_computers.pop(ref, None)
+
+
+# --- Where chats run -----------------------------------------------------------------
+#
+# Each chat runs on one of the person's computers, in an exact folder or where
+# the AI chooses, or Detached. The choice is made once, when the chat starts,
+# and saved in chat_run_target; run_targets.py holds the rules.
+
+API_KEY_TARGET_MESSAGE = "Sign in to Buddy to choose where a chat runs; API keys can't."
+# A temporary chat has no saved target; its turns carry the bar's choice under this metadata key.
+REQUESTED_RUN_TARGET_KEY = 'requested_run_target'
+# When Buddy first ran with chat targets. Chats created before it keep running where their plan ran.
+RUN_TARGETS_STARTED_CONFIG_KEY = 'subscriptions.run_targets_started_at'
+
+_run_targets_started_at: int | None = None
+
+
+async def mark_run_targets_started() -> int:
+    """When chats started having targets: saved the first time Buddy starts with them, then kept."""
+    global _run_targets_started_at
+    if _run_targets_started_at is not None:
+        return _run_targets_started_at
+    stored = await Config.get(RUN_TARGETS_STARTED_CONFIG_KEY)
+    if isinstance(stored, int) and not isinstance(stored, bool) and stored > 0:
+        _run_targets_started_at = stored
+        return stored
+    started_at = int(time.time())
+    await Config.upsert({RUN_TARGETS_STARTED_CONFIG_KEY: started_at})
+    _run_targets_started_at = started_at
+    return started_at
+
+
+async def _started_before_targets(user, chat_id: str) -> bool:
+    """Whether the person's chat is older than chat targets, so its first turn binds where its plan ran.
+
+    Chats Buddy creates without the bar, such as automations, are newer and get
+    the default like any new chat.
+    """
+    created_at = await Chats.get_chat_created_at(chat_id, user.id)
+    if created_at is None:
+        return False
+    return created_at < await mark_run_targets_started()
+
+
+@dataclass(frozen=True)
+class _ChatFolderDefaults:
+    choice: 'run_targets.DefaultFolderChoice | None'
+    folder: Any
+    # The folder's instructions can be changed by someone else, and the person has no choice of their own.
+    shared_instructions: bool
+    # More folders new chats here can pick from, per computer.
+    offered: dict = field(default_factory=dict)
+
+
+async def _current_paths(owner_id: str, saved_paths: dict) -> dict:
+    """Saved paths whose computer has not been set up again since they were chosen."""
+    current = {}
+    for machine_id, saved in saved_paths.items():
+        if saved.revision == await _machine_revision(owner_id, machine_id):
+            current[machine_id] = saved.path
+    return current
+
+
+async def _chat_folder_defaults(user, folder_id) -> _ChatFolderDefaults:
+    folder = await project_folders.readable_folder(user.id, folder_id)
+    if folder is None:
+        return _ChatFolderDefaults(None, None, False)
+    own, inherited = await project_folders.resolve_folder(user.id, folder)
+    shared_instructions = own is None and await project_folders.has_shared_instructions(user.id, folder)
+    choice = own or inherited
+    if choice is None:
+        return _ChatFolderDefaults(None, folder, shared_instructions)
+    paths = await _current_paths(user.id, choice.paths)
+    offered = {}
+    for machine_id, entries in choice.offered.items():
+        revision = await _machine_revision(user.id, machine_id)
+        current = [saved.path for saved in entries if saved.revision == revision]
+        if current:
+            offered[machine_id] = current
+    defaults = run_targets.DefaultFolderChoice(choice.mode, choice.machine_id, choice.access, paths)
+    return _ChatFolderDefaults(defaults, folder, shared_instructions, offered)
+
+
+async def _ready_on(owner_id: str, machine_id: str) -> bool:
+    """A plan last reported being signed in on the computer."""
+    for provider_id in PROVIDER_IDS:
+        if uses_plan(status_cache.cached(_ref(owner_id, provider_id).on(machine_id)) or {}):
+            return True
+    return False
+
+
+async def _default_computers(owner_id: str) -> tuple['run_targets.DefaultComputer', ...]:
+    computers = []
+    if await _may_use_server_machine(owner_id):
+        computers.append(run_targets.DefaultComputer(LOCAL_MACHINE_ID, await _ready_on(owner_id, LOCAL_MACHINE_ID)))
+    for config in await _owned_machine_configs(owner_id):
+        ready = await _ready_on(owner_id, config['id'])
+        if config.get('kind') == MACHINE_KIND_RUNNER and not HUB.is_online(config['id']):
+            ready = False
+        computers.append(run_targets.DefaultComputer(config['id'], ready))
+    return tuple(computers)
+
+
+async def _plan_machine_id(owner_id: str, provider_id: str | None) -> str | None:
+    """The computer a plan ran on before chats chose their own: the given plan's, or an enabled one's."""
+    provider_ids = PROVIDER_IDS
+    if provider_id is not None:
+        provider_ids = (provider_id,)
+    for candidate in provider_ids:
+        settings = await _load_settings(_ref(owner_id, candidate))
+        if settings.machine_id and (settings.enable or provider_id is not None):
+            return settings.machine_id
+    return None
+
+
+async def _plan_access(owner_id: str, provider_id: str | None) -> str:
+    """The access new chats start with: the given plan's, or the lowest of the enabled plans'."""
+    if provider_id is not None:
+        return (await _load_settings(_ref(owner_id, provider_id))).access
+    access = None
+    for candidate in PROVIDER_IDS:
+        settings = await _load_settings(_ref(owner_id, candidate))
+        if not settings.enable:
+            continue
+        if access is None:
+            access = settings.access
+        else:
+            access = run_targets.lowest_access(access, settings.access)
+    return access or ACCESS_CHAT
+
+
+async def default_run_target(
+    user, folder_id, this_machine_id: str | None = None, provider_id: str | None = None,
+    started_before_targets: bool = False
+) -> 'run_targets.RunTargetDefault':
+    """Where a chat in this chat folder runs when nobody chose. Contacts no computer."""
+    folder_defaults = await _chat_folder_defaults(user, folder_id)
+    last_used = await ChatRunTargets.last_for_user(user.id)
+    last_used_machine_id = None
+    if last_used is not None:
+        last_used_machine_id = last_used.machine_id
+    inputs = run_targets.DefaultInputs(
+        folder_choice=folder_defaults.choice,
+        shared_instructions=folder_defaults.shared_instructions,
+        computers=await _default_computers(user.id),
+        this_machine_id=this_machine_id,
+        last_used_machine_id=last_used_machine_id,
+        plan_machine_id=await _plan_machine_id(user.id, provider_id),
+    )
+    return run_targets.choose_default(inputs, started_before_targets)
+
+
+def _detached_row(user, chat_id: str, source: str, note: str | None = None) -> ChatRunTargetModel:
+    return ChatRunTargetModel(
+        chat_id=chat_id,
+        user_id=user.id,
+        kind=run_targets.KIND_DETACHED,
+        folder_mode='none',
+        access=ACCESS_CHAT,
+        source=source,
+        note=note,
+        created_at=int(time.time()),
+    )
+
+
+async def _row_from_default(user, chat_id: str, default, provider_id: str | None) -> ChatRunTargetModel:
+    if default.kind == run_targets.KIND_DETACHED:
+        return _detached_row(user, chat_id, SOURCE_DEFAULT)
+    access = default.access
+    if access is None:
+        access = await _plan_access(user.id, provider_id)
+    return ChatRunTargetModel(
+        chat_id=chat_id,
+        user_id=user.id,
+        kind=run_targets.KIND_COMPUTER,
+        machine_id=default.machine_id,
+        machine_revision=await _machine_revision(user.id, default.machine_id),
+        folder_mode=default.folder_mode,
+        path=default.path,
+        access=access,
+        source=SOURCE_DEFAULT,
+        # Where the default came from, such as the chat folder or the plan's own computer.
+        note=default.came_from,
+        created_at=int(time.time()),
+    )
+
+
+class _RefusedTarget(Exception):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+async def _checked_computer(user, machine_id: str, expected_revision: str | None) -> str:
+    """The computer's current revision. Unknown computers and other people's are refused alike."""
+    if machine_id == LOCAL_MACHINE_ID:
+        if not await _may_use_server_machine(user.id):
+            raise _RefusedTarget(run_targets.REFUSED_SERVER_OFF)
+    elif machine_id not in {config['id'] for config in await _owned_machine_configs(user.id)}:
+        raise _RefusedTarget(run_targets.REFUSED_COMPUTER_REMOVED)
+    revision = await _machine_revision(user.id, machine_id)
+    if revision is None:
+        raise _RefusedTarget(run_targets.REFUSED_COMPUTER_REMOVED)
+    if expected_revision is not None and expected_revision != revision:
+        raise _RefusedTarget(run_targets.REFUSED_COMPUTER_RESET)
+    return revision
+
+
+async def _row_from_request(user, chat_id: str, raw, folder_id) -> ChatRunTargetModel:
+    """The bar's choice, checked without contacting any computer, so it works while one is offline."""
+    request = run_targets.parse_request(raw)
+    if request.kind == run_targets.KIND_DETACHED:
+        return _detached_row(user, chat_id, SOURCE_BAR)
+    revision = await _checked_computer(user, request.machine_id, request.expected_revision)
+    path = None
+    if request.folder.mode == run_targets.FOLDER_PATH:
+        platform = await _machine_platform(user.id, request.machine_id)
+        try:
+            path = project_folders.clean_project_path(request.folder.path, platform)
+        except SubscriptionError:
+            raise _RefusedTarget(run_targets.REFUSED_BAD_PATH)
+    acknowledged = None
+    if request.access != ACCESS_CHAT:
+        folder_defaults = await _chat_folder_defaults(user, folder_id)
+        if folder_defaults.shared_instructions:
+            if request.acknowledged_instructions_folder_id != folder_defaults.folder.id:
+                raise _RefusedTarget(run_targets.REFUSED_NEEDS_ACKNOWLEDGEMENT)
+            acknowledged = folder_defaults.folder.id
+    return ChatRunTargetModel(
+        chat_id=chat_id,
+        user_id=user.id,
+        kind=run_targets.KIND_COMPUTER,
+        machine_id=request.machine_id,
+        machine_revision=revision,
+        folder_mode=request.folder.mode,
+        path=path,
+        access=request.access,
+        acknowledged_instructions_folder_id=acknowledged,
+        source=SOURCE_BAR,
+        created_at=int(time.time()),
+    )
+
+
+async def _target_row(
+    user, chat_id: str, raw, folder_id, provider_id: str | None, started_before_targets: bool = False
+) -> ChatRunTargetModel:
+    """The target a chat starts with: the bar's choice, checked, or the default when nobody chose."""
+    if raw is None:
+        default = await default_run_target(
+            user, folder_id, provider_id=provider_id, started_before_targets=started_before_targets
+        )
+        return await _row_from_default(user, chat_id, default, provider_id)
+    try:
+        return await _row_from_request(user, chat_id, raw, folder_id)
+    except _RefusedTarget as refused:
+        return _detached_row(user, chat_id, SOURCE_REFUSED, refused.code)
+    except SubscriptionError:
+        return _detached_row(user, chat_id, SOURCE_REFUSED, run_targets.REFUSED_BAD_REQUEST)
+
+
+async def bind_chat_target(
+    user, chat_id: str, raw=None, provider_id: str | None = None, started_before_targets: bool = False
+):
+    """Save where a new chat runs: the bar's choice, checked, or the default when nobody chose.
+
+    A chat that already has a target keeps it. A choice that can't be used
+    makes the chat Detached and chat only, never anything more than asked.
+    Callers refuse a choice sent with an API key before creating the chat.
+    """
+    if not is_saved_chat_id(chat_id) or not await may_use_machines(user):
+        return None
+    if not await Chats.is_chat_owner(chat_id, user.id):
+        return None
+    existing = await ChatRunTargets.get(chat_id)
+    if existing is not None:
+        return existing
+    folder_id = await Chats.get_chat_folder_id(chat_id, user.id)
+    row = await _target_row(user, chat_id, raw, folder_id, provider_id, started_before_targets)
+    return await ChatRunTargets.insert_if_absent(row)
+
+
+async def copy_chat_target(user, source_chat_id: str, new_chat_id: str):
+    """A fork or clone of the person's own chat runs where that chat runs, or where its next turn would bind it.
+
+    A copy of a chat from before targets is newer than targets itself, so it is
+    bound now, the way its source would be. Otherwise an unbound copy gets the
+    default on its first turn, like its source.
+    """
+    copied = await ChatRunTargets.copy_for_owner(source_chat_id, new_chat_id, user.id)
+    if copied is not None:
+        return copied
+    if not await Chats.is_chat_owner(source_chat_id, user.id):
+        return None
+    if not await _started_before_targets(user, source_chat_id):
+        return None
+    provider_id = await _chat_provider(user, source_chat_id)
+    return await bind_chat_target(user, new_chat_id, None, provider_id, started_before_targets=True)
+
+
+async def bind_imported_chat(user, chat_id: str):
+    """An imported chat keeps its old date but starts like a new chat.
+
+    Its row is saved even while its owner may not use computers, so its date
+    never makes it look like a chat from before targets later.
+    """
+    row = await bind_chat_target(user, chat_id)
+    if row is not None:
+        return row
+    if not is_saved_chat_id(chat_id) or not await Chats.is_chat_owner(chat_id, user.id):
+        return None
+    return await ChatRunTargets.insert_if_absent(_detached_row(user, chat_id, SOURCE_DEFAULT))
+
+
+def _provider_for_model_id(model_id) -> str | None:
+    """The plan behind one of Buddy's own plan model ids, such as 'claude-code.opus'."""
+    if not isinstance(model_id, str):
+        return None
+    for provider_id, prefix in MODEL_ID_PREFIXES.items():
+        if model_id.startswith(f'{prefix}.'):
+            return provider_id
+    return None
+
+
+async def _chat_provider(user, chat_id: str) -> str | None:
+    """The plan of the chat's first model, when it is one of Buddy's own plan models."""
+    chat = await Chats.get_chat_by_id_and_user_id(chat_id, user.id)
+    if chat is None or not isinstance(chat.chat, dict):
+        return None
+    models = chat.chat.get('models')
+    if not isinstance(models, list) or not models:
+        return None
+    return _provider_for_model_id(models[0])
+
+
+def _bar_plan_state(provider_status: dict | None, online: bool | None) -> str:
+    """A plan's state on one computer for the composer's bar, from what it last reported."""
+    if online is False:
+        return 'offline'
+    state = _sign_in_state(provider_status)
+    if state == 'not_checked':
+        return 'unknown'
+    if state == 'signed_out':
+        return 'sign_in'
+    return state
+
+
+def _describe_default(default) -> dict:
+    folder = None
+    if default.folder_mode == run_targets.FOLDER_PATH:
+        folder = {'mode': run_targets.FOLDER_PATH, 'path': default.path}
+    elif default.folder_mode == run_targets.FOLDER_AUTO:
+        folder = {'mode': run_targets.FOLDER_AUTO}
+    return {
+        'kind': default.kind,
+        'machine_id': default.machine_id,
+        'folder': folder,
+        # None means each plan's own access.
+        'access': default.access,
+        'from': default.came_from,
+        'access_locked': default.access_locked,
+    }
+
+
+async def run_target_options(user, folder_id=None, this_machine_id: str | None = None) -> dict:
+    """What the composer's bar offers for a new chat. Contacts no computer.
+
+    The person's computers with each plan's last known state there, recent
+    folders, the chat folder's defaults, and where the chat runs if nothing
+    is changed.
+    """
+    if not await may_use_machines(user):
+        return {'allowed': False, 'has_plans': False}
+    plan_access = {}
+    for provider_id in PROVIDER_IDS:
+        settings = await _load_settings(_ref(user.id, provider_id))
+        if settings.enable:
+            plan_access[provider_id] = settings.access
+    configs = {config['id']: config for config in await _owned_machine_configs(user.id)}
+    machine_ids = []
+    if await _may_use_server_machine(user.id):
+        machine_ids.append(LOCAL_MACHINE_ID)
+    machine_ids.extend(configs)
+    choices = await project_folders.load_choices(user.id)
+    computers = []
+    revisions = {}
+    for machine_id in machine_ids:
+        computer = await _describe_folder_computer(user.id, machine_id, configs.get(machine_id), choices)
+        if computer is None:
+            continue
+        revisions[machine_id] = await _machine_revision(user.id, machine_id)
+        computer['revision'] = revisions[machine_id]
+        providers = {}
+        for provider_id in plan_access:
+            provider_status = status_cache.cached(_ref(user.id, provider_id).on(machine_id))
+            providers[provider_id] = {
+                'state': _bar_plan_state(provider_status, computer['online']),
+                'message': (provider_status or {}).get('message'),
+            }
+        computer['providers'] = providers
+        computers.append(computer)
+
+    recent = []
+    for row in await ChatRunTargets.recent_paths(user.id):
+        # Only folders on computers still the person's, chosen since they were last set up.
+        if row.machine_id in revisions and row.machine_revision == revisions[row.machine_id]:
+            recent.append({'machine_id': row.machine_id, 'path': row.path, 'last_used': row.created_at})
+
+    folder_defaults = await _chat_folder_defaults(user, folder_id)
+    chat_folder = None
+    if folder_defaults.folder is not None:
+        chat_folder = {
+            'id': folder_defaults.folder.id,
+            'name': folder_defaults.folder.name,
+            'mode': None,
+            'paths': {},
+            'offered': folder_defaults.offered,
+            'shared_instructions': folder_defaults.shared_instructions,
+        }
+        if folder_defaults.choice is not None:
+            chat_folder['mode'] = folder_defaults.choice.mode
+            chat_folder['paths'] = folder_defaults.choice.paths
+
+    if this_machine_id not in revisions:
+        this_machine_id = None
+    default = await default_run_target(user, folder_id, this_machine_id=this_machine_id)
+    return {
+        'allowed': True,
+        'has_plans': bool(plan_access),
+        'plan_access': plan_access,
+        'computers': computers,
+        'recent': recent,
+        'chat_folder': chat_folder,
+        'default': _describe_default(default),
+    }
+
+
+async def run_target_readiness(user, provider_id: str, machine_id: str) -> dict:
+    """A fresh check of one plan on one of the person's computers, for the bar's choice: {state, message}.
+
+    It starts the CLI there, as the chat would.
+    """
+    check_provider_id(provider_id)
+    if not await may_use_machines(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=NOT_ALLOWED_MESSAGE)
+    ref = _ref(user.id, provider_id)
+    settings = await _settings_for(ref, await _load_settings(ref), machine_id)
+    try:
+        await _require_verified_machine(ref, settings)
+    except SubscriptionError as error:
+        # An unknown computer and someone else's get the same answer.
+        return {'state': 'not_allowed', 'message': str(error)}
+    config = next((saved for saved in await _owned_machine_configs(user.id) if saved['id'] == machine_id), None)
+    if _folder_computer_kind(machine_id, config) == 'app' and not HUB.is_online(machine_id):
+        return {'state': 'offline', 'message': f'{config["name"]} is offline. Open the Buddy app on it.'}
+    provider_status = await status_cache.get(ref.on(machine_id), fresh=True)
+    if provider_status is None:
+        # Still answering; the bar asks again.
+        return {'state': 'checking', 'message': None}
+    return {'state': _bar_plan_state(provider_status, True), 'message': provider_status.get('message')}
+
+
+async def _target_problem(user, row, kind: str, online: bool | None) -> str | None:
+    """Why a chat's computer can't run its turns now, if it can't."""
+    if row.machine_id == LOCAL_MACHINE_ID and not await _may_use_server_machine(user.id):
+        return 'server_off'
+    revision = await _machine_revision(user.id, row.machine_id)
+    if revision is None:
+        return 'removed'
+    if row.machine_revision and revision != row.machine_revision:
+        return 'reset'
+    if kind == 'app' and not online:
+        return 'offline'
+    return None
+
+
+async def _describe_target_row(user, row) -> dict:
+    described = {
+        'kind': row.kind,
+        'machine_id': row.machine_id,
+        'computer': None,
+        'folder_mode': row.folder_mode,
+        'path': row.path,
+        'access': row.access,
+        'source': row.source,
+        'note': row.note,
+        'problem': None,
+    }
+    if row.source == SOURCE_REFUSED:
+        described['note_message'] = run_targets.REFUSAL_MESSAGES.get(row.note)
+    if row.kind != run_targets.KIND_COMPUTER:
+        return described
+    config = next((saved for saved in await _owned_machine_configs(user.id) if saved['id'] == row.machine_id), None)
+    kind = _folder_computer_kind(row.machine_id, config)
+    online = None
+    name = 'Removed computer'
+    if kind == 'server':
+        name = 'This server'
+        online = True
+    elif config is not None:
+        name = config['name']
+    if kind == 'app' and config is not None:
+        online = HUB.is_online(row.machine_id)
+    described['computer'] = {'name': name, 'kind': kind, 'online': online}
+    described['problem'] = await _target_problem(user, row, kind, online)
+    return described
+
+
+async def describe_chat_run_target(user, chat_id: str) -> dict:
+    """Where the person's chat runs, or where it will when its next turn binds it. Only its owner sees it."""
+    if not is_saved_chat_id(chat_id) or not await Chats.is_chat_owner(chat_id, user.id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='That chat no longer exists.')
+    row = await ChatRunTargets.get(chat_id)
+    if row is not None:
+        return {'bound': True, **await _describe_target_row(user, row)}
+    # Not bound yet: its next turn binds where its plan ran if it is older than targets, else the default.
+    folder_id = await Chats.get_chat_folder_id(chat_id, user.id)
+    started_before_targets = await _started_before_targets(user, chat_id)
+    provider_id = await _chat_provider(user, chat_id)
+    default = await default_run_target(
+        user, folder_id, provider_id=provider_id, started_before_targets=started_before_targets
+    )
+    would_bind = await _row_from_default(user, chat_id, default, provider_id)
+    return {'bound': False, 'would_bind': await _describe_target_row(user, would_bind)}
 
 
 # Reading agent files never waits longer than this on a slow disk.
@@ -1693,33 +2686,42 @@ async def server_agent_files(user, machine_id: str, path) -> dict:
 
 async def start_login(
     owner_id: str, provider_id: str, method: str, expected_machine_id: str | None = None,
-    expected_machine_revision: str | None = None
+    expected_machine_revision: str | None = None, machine_id: str | None = None
 ) -> dict:
     ref = _ref(owner_id, provider_id)
     _require_single_worker()
     async with _provider_lock(ref):
         settings = await _load_settings(ref)
-        await _check_expected_machine(owner_id, settings, expected_machine_id, expected_machine_revision, mutation=True)
-        await _quiesce_provider(ref)
-        machine = await _tracked(ref, settings)
-        return await (await get_provider(ref)).start_login(settings, machine, method)
+        on_computer = await _sign_in_settings(
+            ref, settings, machine_id, expected_machine_id, expected_machine_revision, mutation=True
+        )
+        await _stop_for_sign_in(ref, settings, on_computer.machine_id)
+        machine = await _tracked(ref, on_computer)
+        login = await (await get_provider(ref)).start_login(on_computer, machine, method)
+        _login_computers[ref] = on_computer.machine_id
+        return login
 
 
 async def login_state(
     owner_id: str, provider_id: str, expected_machine_id: str | None = None,
-    expected_machine_revision: str | None = None
+    expected_machine_revision: str | None = None, machine_id: str | None = None
 ) -> dict:
     ref = _ref(owner_id, provider_id)
     async with _provider_lock(ref):
         settings = await _load_settings(ref)
-        await _check_expected_machine(owner_id, settings, expected_machine_id, expected_machine_revision)
+        on_computer = await _sign_in_settings(
+            ref, settings, machine_id, expected_machine_id, expected_machine_revision, mutation=False
+        )
         if UVICORN_WORKERS != 1:
             return {'state': 'idle', 'message': SINGLE_WORKER_MESSAGE}
         try:
-            await _require_verified_machine(ref, settings)
-            _require_provider_cleanup(ref)
+            await _require_verified_machine(ref, on_computer)
+            _require_computer_cleanup(ref, on_computer.machine_id)
         except SubscriptionError as error:
             return {'state': 'idle', 'message': str(error)}
+        running_on = _login_computers.get(ref)
+        if running_on is not None and running_on != on_computer.machine_id:
+            return {'state': 'idle'}
         login = (await get_provider(ref)).login_state()
         if login.get('state') == 'success':
             invalidate(ref)
@@ -1728,14 +2730,19 @@ async def login_state(
 
 async def submit_login_code(
     owner_id: str, provider_id: str, code: str, expected_machine_id: str | None = None,
-    expected_machine_revision: str | None = None
+    expected_machine_revision: str | None = None, machine_id: str | None = None
 ) -> dict:
     ref = _ref(owner_id, provider_id)
     _require_single_worker()
     async with _provider_lock(ref):
         settings = await _load_settings(ref)
-        await _check_expected_machine(owner_id, settings, expected_machine_id, expected_machine_revision, mutation=True)
-        _require_provider_cleanup(ref)
+        on_computer = await _sign_in_settings(
+            ref, settings, machine_id, expected_machine_id, expected_machine_revision, mutation=True
+        )
+        await _require_login_on(ref, on_computer.machine_id)
+        # A code never finishes a sign-in on a computer the person may no longer use.
+        await _require_verified_machine(ref, on_computer)
+        _require_computer_cleanup(ref, on_computer.machine_id)
         login = await (await get_provider(ref)).submit_login_code(code)
         if login.get('state') == 'success':
             invalidate(ref)
@@ -1744,38 +2751,50 @@ async def submit_login_code(
 
 async def cancel_login(
     owner_id: str, provider_id: str, expected_machine_id: str | None = None,
-    expected_machine_revision: str | None = None
+    expected_machine_revision: str | None = None, machine_id: str | None = None
 ) -> dict:
     ref = _ref(owner_id, provider_id)
     _require_single_worker()
     async with _provider_lock(ref):
         settings = await _load_settings(ref)
-        await _check_expected_machine(owner_id, settings, expected_machine_id, expected_machine_revision, mutation=True)
-        await _quiesce_provider(ref)
+        on_computer = await _sign_in_settings(
+            ref, settings, machine_id, expected_machine_id, expected_machine_revision, mutation=True
+        )
+        await _require_login_on(ref, on_computer.machine_id)
+        if on_computer.machine_id == settings.machine_id:
+            await _quiesce_provider(ref)
+        else:
+            # Only the sign-in stops; chats on that computer keep running.
+            await (await get_provider(ref)).cancel_login()
+            _login_computers.pop(ref, None)
         return {'state': 'idle'}
 
 
 async def logout(
     owner_id: str, provider_id: str, expected_machine_id: str | None = None,
-    expected_machine_revision: str | None = None
+    expected_machine_revision: str | None = None, machine_id: str | None = None
 ) -> None:
     ref = _ref(owner_id, provider_id)
     _require_single_worker()
     async with _provider_lock(ref):
         settings = await _load_settings(ref)
-        await _check_expected_machine(owner_id, settings, expected_machine_id, expected_machine_revision, mutation=True)
-        await _quiesce_provider(ref)
+        on_computer = await _sign_in_settings(
+            ref, settings, machine_id, expected_machine_id, expected_machine_revision, mutation=True
+        )
         credential_mode = await _load_credential_mode(ref)
         if credential_mode != CREDENTIAL_MACHINE:
-            # The token or key is Buddy's to forget. The computer's own CLI
-            # sign-in is not touched.
+            # The token or key is Buddy's to forget, and every computer uses
+            # it, so the whole plan stops. The computer's own CLI sign-in is
+            # not touched.
+            await _quiesce_provider(ref)
             await SubscriptionCredentials.delete(owner_id, provider_id, credential_mode)
             await Config.upsert({await _credential_mode_key(ref): CREDENTIAL_MACHINE})
             invalidate(ref)
             return
-        machine = await _tracked(ref, settings)
+        await _stop_for_sign_in(ref, settings, on_computer.machine_id)
+        machine = await _tracked(ref, on_computer)
         try:
-            await (await get_provider(ref)).logout(settings, machine)
+            await (await get_provider(ref)).logout(on_computer, machine)
         finally:
             invalidate(ref)
 
@@ -1792,11 +2811,11 @@ async def _tracked_turn(ref: ProviderRef, provider, turn: TurnRequest, generatio
             try:
                 _require_single_worker()
                 await _require_verified_machine(ref, turn.settings)
-                _require_provider_cleanup(ref)
+                _require_computer_cleanup(ref, turn.settings.machine_id)
             except SubscriptionError as failure:
                 error = str(failure)
             if error is None:
-                _active_provider_tasks.setdefault(ref, set()).add(task)
+                _track_task(ref, turn.settings.machine_id, task)
     if error is not None:
         async for event in failure_events(error):
             yield event
@@ -1805,7 +2824,7 @@ async def _tracked_turn(ref: ProviderRef, provider, turn: TurnRequest, generatio
         async for event in provider.run_turn(turn):
             yield event
     finally:
-        _active_provider_tasks.get(ref, set()).discard(task)
+        _untrack_task(ref, task)
 
 
 async def forget_user(user_id: str) -> None:
@@ -1830,7 +2849,10 @@ async def forget_user(user_id: str) -> None:
         for ref in refs:
             updates[await _credential_mode_key(ref)] = CREDENTIAL_MACHINE
         updates[project_folders.choices_key(user_id)] = {}
-        await Config.upsert(updates)
+        updates[computer_settings.settings_key(user_id)] = {}
+        # Taken last, after the machine and provider locks, as everywhere else.
+        async with _computer_settings_lock:
+            await Config.upsert(updates)
         await SubscriptionCredentials.delete_user(user_id)
         for ref in refs:
             _providers.pop(ref, None)
@@ -1992,7 +3014,7 @@ class _CacheEntry:
 
 
 class CachedLoader:
-    """Caches one value per user's provider and serves the old value while refreshing.
+    """Caches one value per user's provider on each computer and serves the old value while refreshing.
 
     Model lists are requested on most page loads, and the CLIs take a few
     seconds to answer, so only the first load waits for them. A caller that
@@ -2013,6 +3035,12 @@ class CachedLoader:
         self._generations[key] = self._generations.get(key, 0) + 1
         if refresh is not None and not refresh.done():
             refresh.cancel()
+
+    def invalidate_where(self, matches: Callable[[Any], bool]) -> None:
+        keys = set(self._entries) | set(self._refreshes) | set(self._generations)
+        for key in keys:
+            if matches(key):
+                self.invalidate(key)
 
     def cached(self, key) -> Any:
         """The last loaded value, even if expired, without loading; None when there is none."""
@@ -2068,16 +3096,17 @@ def _log_refresh_failure(task: asyncio.Task) -> None:
         log.warning('Could not refresh subscription details: %s', error)
 
 
-async def _load_status(ref: ProviderRef) -> dict:
+async def _load_status(machine_ref: MachineRef) -> dict:
+    ref = machine_ref.ref
     task = asyncio.current_task()
     try:
         _require_single_worker()
         async with _provider_lock(ref):
-            settings = await _load_settings(ref)
+            settings = await _settings_for(ref, await _load_settings(ref), machine_ref.machine_id)
             await _require_verified_machine(ref, settings)
-            _require_provider_cleanup(ref)
+            _require_computer_cleanup(ref, machine_ref.machine_id)
             machine = await _tracked(ref, settings)
-            _active_provider_tasks.setdefault(ref, set()).add(task)
+            _track_task(ref, machine_ref.machine_id, task)
         return await (await get_provider(ref)).status(settings, machine)
     except (SubscriptionError, OSError) as error:
         return {'installed': True, 'signed_in': False, 'message': str(error)}
@@ -2087,26 +3116,27 @@ async def _load_status(ref: ProviderRef) -> dict:
         log.warning('Could not check the %s sign-in: %r', PROVIDER_LABELS[ref.provider_id], error)
         return {'installed': True, 'signed_in': False, 'message': f'Could not check the sign-in: {error}'}
     finally:
-        _active_provider_tasks.get(ref, set()).discard(task)
+        _untrack_task(ref, task)
 
 
-async def _load_models(ref: ProviderRef) -> list[ProviderModel]:
+async def _load_models(machine_ref: MachineRef) -> list[ProviderModel]:
+    ref = machine_ref.ref
     task = asyncio.current_task()
     try:
         _require_single_worker()
         async with _provider_lock(ref):
-            settings = await _load_settings(ref)
+            settings = await _settings_for(ref, await _load_settings(ref), machine_ref.machine_id)
             await _require_verified_machine(ref, settings)
-            _require_provider_cleanup(ref)
+            _require_computer_cleanup(ref, machine_ref.machine_id)
             machine = await _tracked(ref, settings)
-            _active_provider_tasks.setdefault(ref, set()).add(task)
+            _track_task(ref, machine_ref.machine_id, task)
         return await (await get_provider(ref)).list_models(settings, machine)
     except Exception as error:
         # Includes a runner connection that closed during the request.
         log.warning('Could not list %s models: %s', PROVIDER_LABELS[ref.provider_id], error)
         return []
     finally:
-        _active_provider_tasks.get(ref, set()).discard(task)
+        _untrack_task(ref, task)
 
 
 status_cache = CachedLoader(STATUS_TTL_SECONDS, _load_status)
@@ -2123,25 +3153,47 @@ def uses_plan(provider_status: dict) -> bool:
 
 
 def invalidate(ref: ProviderRef) -> None:
-    status_cache.invalidate(ref)
-    models_cache.invalidate(ref)
+    """Forget the provider's status and models on every computer."""
+
+    def of_provider(key: MachineRef) -> bool:
+        return key.ref == ref
+
+    status_cache.invalidate_where(of_provider)
+    models_cache.invalidate_where(of_provider)
+
+
+def invalidate_computer(owner_id: str, machine_id: str) -> None:
+    """Forget what the user's providers reported on one computer, which may have changed while it was away."""
+
+    def on_that_computer(key: MachineRef) -> bool:
+        return key.owner_id == owner_id and key.machine_id == machine_id
+
+    status_cache.invalidate_where(on_that_computer)
+    models_cache.invalidate_where(on_that_computer)
 
 
 async def describe_provider(
     owner_id: str, provider_id: str, fresh: bool = False, expected_machine_id: str | None = None,
-    expected_machine_revision: str | None = None
+    expected_machine_revision: str | None = None, check_computers: bool = False
 ) -> dict:
-    """Everything the settings page shows for one of the user's providers."""
+    """Everything the settings page shows for one of the user's providers.
+
+    fresh checks the plan's own computer again. check_computers, for the
+    person's own Check again, asks every other reachable computer too.
+    """
     ref = _ref(owner_id, provider_id)
     for _ in range(2):
-        result = await _describe_provider_snapshot(ref, fresh, expected_machine_id, expected_machine_revision)
+        result = await _describe_provider_snapshot(
+            ref, fresh, expected_machine_id, expected_machine_revision, check_computers
+        )
         if result is not None:
             return result
     raise HTTPException(status_code=409, detail='The selected machine changed. Refresh before trying again.')
 
 
 async def _describe_provider_snapshot(
-    ref: ProviderRef, fresh: bool, expected_machine_id: str | None, expected_machine_revision: str | None
+    ref: ProviderRef, fresh: bool, expected_machine_id: str | None, expected_machine_revision: str | None,
+    check_computers: bool
 ) -> dict | None:
     provider = await get_provider(ref)
     async with _provider_lock(ref):
@@ -2160,14 +3212,15 @@ async def _describe_provider_snapshot(
                 readiness_message = str(error)
         if execution_ready:
             try:
-                _require_provider_cleanup(ref)
+                _require_computer_cleanup(ref, settings.machine_id)
                 machine = await _tracked(ref, settings)
             except SubscriptionError as error:
                 execution_ready = False
                 readiness_message = str(error)
                 log.info('Could not describe the machine for %s: %s', ref.provider_id, error)
+    on_plan_computer = ref.on(settings.machine_id)
     if execution_ready:
-        provider_status = await status_cache.get(ref, fresh=fresh)
+        provider_status = await status_cache.get(on_plan_computer, fresh=fresh)
     else:
         provider_status = {'installed': True, 'signed_in': False, 'message': readiness_message}
     if provider_status is None:
@@ -2175,7 +3228,7 @@ async def _describe_provider_snapshot(
         provider_status = {'checking': True}
     models = []
     if settings.enable and uses_plan(provider_status):
-        for model in await models_cache.get(ref, fresh=fresh) or []:
+        for model in await models_cache.get(on_plan_computer, fresh=fresh) or []:
             models.append({'id': _model_id(ref.provider_id, model), 'name': model.name})
 
     machine_name = 'Unavailable machine'
@@ -2189,6 +3242,7 @@ async def _describe_provider_snapshot(
     except SubscriptionError as error:
         log.info('Could not describe the machine for %s: %s', ref.provider_id, error)
 
+    computers = await _describe_plan_computers(ref, settings, check=check_computers and execution_ready)
     if generation != _provider_generations.get(ref, 0):
         return None
     public_machine = {'id': settings.machine_id, 'name': machine_name}
@@ -2201,6 +3255,9 @@ async def _describe_provider_snapshot(
         'settings': asdict(settings),
         'status': provider_status,
         'login': provider.login_state() if execution_ready else {'state': 'idle'},
+        # The computer the sign-in in progress runs on, when there is one.
+        'login_machine_id': _login_computers.get(ref),
+        'computers': computers,
         'models': models,
         'machine': public_machine,
         'default_workspace': default_workspace,
@@ -2236,7 +3293,110 @@ def _model_entry(provider_id: str, model: ProviderModel, credential_mode: str = 
     }
 
 
+@dataclass(frozen=True)
+class _PlanComputer:
+    machine_id: str
+    name: str
+    # False for a Buddy app computer that is offline. Buddy never asks it
+    # anything then, and it keeps what it last reported.
+    reachable: bool
+    is_plan_computer: bool
+
+    @property
+    def may_load_models(self) -> bool:
+        """Listing models starts the CLI, and Codex keeps its app-server running afterwards.
+
+        So a model list asks only the plan's own computer. The others offer
+        the models they last reported, for example during a turn there.
+        """
+        return self.is_plan_computer and self.reachable
+
+
+async def _plan_computers(ref: ProviderRef, settings: ProviderSettings) -> list[_PlanComputer]:
+    """Every computer the user's plan can run on, the plan's own computer first."""
+    names = {}
+    app_machine_ids = set()
+    if await _may_use_server_machine(ref.owner_id):
+        names[LOCAL_MACHINE_ID] = LOCAL_MACHINE.name
+    for config in await _owned_machine_configs(ref.owner_id):
+        names[config['id']] = config['name']
+        if config.get('kind') == MACHINE_KIND_RUNNER:
+            app_machine_ids.add(config['id'])
+    machine_ids = list(names)
+    if settings.machine_id in names:
+        machine_ids.remove(settings.machine_id)
+        machine_ids.insert(0, settings.machine_id)
+
+    computers = []
+    for machine_id in machine_ids:
+        try:
+            await _require_verified_machine(ref, replace(settings, machine_id=machine_id))
+        except SubscriptionError:
+            continue
+        reachable = True
+        if machine_id in app_machine_ids:
+            reachable = HUB.is_online(machine_id)
+        is_plan_computer = machine_id == settings.machine_id
+        computers.append(_PlanComputer(machine_id, names[machine_id], reachable, is_plan_computer))
+    return computers
+
+
+async def _computer_models(ref: ProviderRef, computer: _PlanComputer) -> list[ProviderModel]:
+    try:
+        _require_computer_cleanup(ref, computer.machine_id)
+    except SubscriptionError:
+        return []
+    on_computer = ref.on(computer.machine_id)
+    may_load = computer.may_load_models
+    provider_status = await _cached_for_model_list(status_cache, on_computer, may_load) or {}
+    if not uses_plan(provider_status):
+        return []
+    return await _cached_for_model_list(models_cache, on_computer, may_load) or []
+
+
+def _sign_in_state(provider_status: dict | None) -> str:
+    if provider_status is None:
+        return 'not_checked'
+    if not provider_status.get('installed', True):
+        return 'not_installed'
+    if uses_plan(provider_status):
+        return 'ready'
+    if provider_status.get('signed_in'):
+        return 'api_billing'
+    return 'signed_out'
+
+
+async def _describe_plan_computers(ref: ProviderRef, settings: ProviderSettings, check: bool) -> list[dict]:
+    """Whether the plan is signed in on each of the user's computers, for the Machines page.
+
+    The plan's own computer was just checked by the description. The others
+    show what they last reported, and are asked again only when the person
+    asks for a check and they are reachable.
+    """
+
+    async def describe(computer: _PlanComputer) -> dict:
+        on_computer = ref.on(computer.machine_id)
+        if check and computer.reachable and not computer.is_plan_computer:
+            provider_status = await status_cache.get(on_computer, fresh=True)
+        else:
+            provider_status = status_cache.cached(on_computer)
+        entry = {
+            'machine_id': computer.machine_id,
+            'name': computer.name,
+            'online': computer.reachable,
+            'state': _sign_in_state(provider_status),
+        }
+        message = (provider_status or {}).get('message')
+        if isinstance(message, str) and message:
+            entry['message'] = message
+        return entry
+
+    computers = await _plan_computers(ref, settings)
+    return list(await asyncio.gather(*(describe(computer) for computer in computers)))
+
+
 async def _provider_models(ref: ProviderRef) -> list[dict]:
+    """The models the user's plan offers on any of their computers where it is signed in."""
     # Every model list runs this, so it does not take the provider lock.
     # Changes save settings before bumping the generation, so reading the
     # generation first means a change made meanwhile empties this result.
@@ -2244,8 +3404,6 @@ async def _provider_models(ref: ProviderRef) -> list[dict]:
     settings = await _load_settings(ref)
     try:
         _require_single_worker()
-        await _require_verified_machine(ref, settings)
-        _require_provider_cleanup(ref)
     except SubscriptionError:
         return []
     if not settings.enable:
@@ -2255,24 +3413,27 @@ async def _provider_models(ref: ProviderRef) -> list[dict]:
         await _require_allowed_credential(ref, credential_mode)
     except SubscriptionError:
         return []
-    provider_status = await _cached_for_model_list(status_cache, ref) or {}
-    if not uses_plan(provider_status):
-        return []
-    models = await _cached_for_model_list(models_cache, ref) or []
+    computers = await _plan_computers(ref, settings)
+    found = await asyncio.gather(*(_computer_models(ref, computer) for computer in computers))
     if generation != _provider_generations.get(ref, 0):
         return []
-    return [_model_entry(ref.provider_id, model, credential_mode) for model in models]
+    # The same model on several computers is listed once, as the plan's own computer offers it.
+    entries = {}
+    for models in found:
+        for model in models:
+            entries.setdefault(_model_id(ref.provider_id, model), _model_entry(ref.provider_id, model, credential_mode))
+    return list(entries.values())
 
 
-async def _cached_for_model_list(cache: CachedLoader, ref: ProviderRef) -> Any:
+async def _cached_for_model_list(cache: CachedLoader, machine_ref: MachineRef, may_load: bool = True) -> Any:
     """Serve only what is cached while the user's own action holds the provider lock.
 
     Sign-in, sign-out and runner checks can hold it for up to a minute, and a
     refresh started now would wait behind them.
     """
-    if _provider_lock(ref).locked():
-        return cache.cached(ref)
-    return await cache.get(ref)
+    if not may_load or _provider_lock(machine_ref.ref).locked():
+        return cache.cached(machine_ref)
+    return await cache.get(machine_ref)
 
 
 async def _listed_models(ref: ProviderRef) -> list[dict]:
@@ -2341,21 +3502,6 @@ async def user_offers_model(user, model_id: str) -> bool:
     return any(model['id'] == model_id for model in await get_user_subscription_models(user))
 
 
-def _turn_access(settings: ProviderSettings, metadata: dict) -> str:
-    """Tasks and channel replies run chat-only, whatever access the provider allows.
-
-    A channel reply's prompt holds every member's messages and its answer is
-    posted for every member to read, so it must not run tools or read files
-    on the user's machine.
-    """
-    if metadata.get('task'):
-        return ACCESS_CHAT
-    chat_id = metadata.get('chat_id')
-    if isinstance(chat_id, str) and chat_id.startswith(CHANNEL_CHAT_ID_PREFIX):
-        return ACCESS_CHAT
-    return settings.access
-
-
 def _require_plan(provider_id: str, provider_status: dict | None) -> None:
     """Start a turn only when the CLI is known to use a plan, so it never bills the API."""
     label = PROVIDER_LABELS[provider_id]
@@ -2412,21 +3558,22 @@ async def _apply_preset(request, payload: dict, metadata: dict, user, models: di
     return model_id, payload, written_by_someone_else
 
 
-def _turn_model(ref: ProviderRef, model_id: str, subscription: dict) -> tuple[str, list[str]]:
+def _turn_model(machine_ref: MachineRef, model_id: str, subscription: dict) -> tuple[str, list[str]]:
     """The CLI model and reasoning levels a turn uses.
 
-    Once the user's own model list is loaded, it decides: a model it does not
-    offer is refused. Until then, for example right after a restart, the
-    registry entry is used; providers still check the reasoning levels
-    against the CLI that runs the turn.
+    Once the model list of the computer running the turn is loaded, it
+    decides: a model it does not offer is refused. Until then, for example
+    right after a restart, the registry entry is used; providers still check
+    the reasoning levels against the CLI that runs the turn.
     """
-    own_models = models_cache.cached(ref)
+    provider_id = machine_ref.provider_id
+    own_models = models_cache.cached(machine_ref)
     if own_models is not None:
         for model in own_models:
-            if _model_id(ref.provider_id, model) == model_id:
+            if _model_id(provider_id, model) == model_id:
                 return model.value, [effort for effort in model.efforts if isinstance(effort, str) and effort]
         raise SubscriptionError(
-            f'{PROVIDER_LABELS[ref.provider_id]} on your computer does not offer this model. Choose another model.'
+            f'{PROVIDER_LABELS[provider_id]} on your computer does not offer this model. Choose another model.'
         )
     efforts = subscription.get('efforts')
     if not isinstance(efforts, list):
@@ -2434,31 +3581,133 @@ def _turn_model(ref: ProviderRef, model_id: str, subscription: dict) -> tuple[st
     return subscription['model'], [effort for effort in efforts if isinstance(effort, str) and effort]
 
 
-async def _turn_folder_choice(user, settings: ProviderSettings, metadata: dict, foreign_preset: bool):
-    """The chat folder's project folder choice, looked up only for turns that may use files.
+@dataclass(frozen=True)
+class _TurnTarget:
+    machine_id: str
+    access: str
+    folder_mode: str
+    path: str = ''
+    # Detached turns run chat only, on whichever computer is available.
+    detached: bool = False
+    # The chat's target it came from; turns outside chats have none.
+    row: ChatRunTargetModel | None = None
 
-    Tasks, channel replies and presets written by someone else stay chat-only,
-    so they never depend on a folder.
+
+DETACHED_NO_COMPUTER_MESSAGE = (
+    '{label} has no computer to run this chat on. Open the Buddy app on one of your computers, '
+    'or connect one in Settings → Machines.'
+)
+REMOVED_TARGET_MESSAGE = 'The computer this chat ran on was removed. Start a new chat to choose another.'
+SERVER_TARGET_MESSAGE = 'Buddy server is no longer available to your account. Start a new chat to run elsewhere.'
+RESET_TARGET_MESSAGE = '{name} was set up again after this chat started. Start a new chat to work there.'
+MISSING_FOLDER_MESSAGE = 'The folder this chat works in no longer exists on {name}. Start a new chat to choose another.'
+
+
+async def _detached_host(user, ref: ProviderRef, preferred: str | None = None) -> str:
+    """A computer for a Detached turn, which runs chat only.
+
+    The first reachable one where the plan last reported being signed in,
+    trying the preferred computer, the last one a chat used and the plan's
+    own computer first; otherwise the first reachable one.
     """
-    if foreign_preset or _turn_access(settings, metadata) == ACCESS_CHAT:
-        return None
-    return await project_folders.choice_for_turn(user.id, metadata)
+    settings = await _load_settings(ref)
+    computers = {computer.machine_id: computer for computer in await _plan_computers(ref, settings)}
+    candidates = []
+    if preferred:
+        candidates.append(preferred)
+    last_used = await ChatRunTargets.last_for_user(user.id)
+    if last_used is not None and last_used.machine_id:
+        candidates.append(last_used.machine_id)
+    candidates.extend(computers)
+    reachable = []
+    for machine_id in dict.fromkeys(candidates):
+        computer = computers.get(machine_id)
+        if computer is None or not computer.reachable:
+            continue
+        try:
+            _require_computer_cleanup(ref, machine_id)
+        except SubscriptionError:
+            continue
+        reachable.append(machine_id)
+    for machine_id in reachable:
+        if uses_plan(status_cache.cached(ref.on(machine_id)) or {}):
+            return machine_id
+    if reachable:
+        return reachable[0]
+    raise SubscriptionError(DETACHED_NO_COMPUTER_MESSAGE.format(label=PROVIDER_LABELS[ref.provider_id]))
 
 
-async def _turn_project_path(ref: ProviderRef, choice, access: str, machine) -> str:
-    """The exact folder this turn starts in, or '' when the chat folder lets the AI choose."""
-    if choice is None or access == ACCESS_CHAT or choice.mode != project_folders.MODE_FOLDER:
-        return ''
-    revision = await _machine_revision(ref.owner_id, machine.id)
-    return project_folders.turn_project_path(
-        choice, machine.id, machine.name, PROVIDER_LABELS[ref.provider_id], revision
-    )
+async def _row_turn_target(user, ref: ProviderRef, row: 'ChatRunTargetModel') -> _TurnTarget:
+    """Where a chat's turns run, as its target says, refused when its computer is gone or was set up again."""
+    if row.kind == run_targets.KIND_DETACHED:
+        return _TurnTarget(await _detached_host(user, ref), ACCESS_CHAT, 'none', detached=True, row=row)
+    if row.machine_id == LOCAL_MACHINE_ID and not await _may_use_server_machine(user.id):
+        raise SubscriptionError(SERVER_TARGET_MESSAGE)
+    revision = await _machine_revision(user.id, row.machine_id)
+    if revision is None:
+        raise SubscriptionError(REMOVED_TARGET_MESSAGE)
+    if row.machine_revision and revision != row.machine_revision:
+        raise SubscriptionError(RESET_TARGET_MESSAGE.format(name=await _computer_name(user.id, row.machine_id)))
+    return _TurnTarget(row.machine_id, row.access, row.folder_mode, row.path or '', row=row)
 
 
-async def _require_project_folder(machine, path: str, choice) -> None:
-    """Refuse rather than start somewhere else when the project folder is gone."""
+async def _detached_turn(user, ref: ProviderRef, preferred: str | None = None) -> _TurnTarget:
+    return _TurnTarget(await _detached_host(user, ref, preferred), ACCESS_CHAT, 'none', detached=True)
+
+
+async def _turn_target(user, ref: ProviderRef, metadata: dict) -> _TurnTarget:
+    """Where this turn runs. Contacts no computer."""
+    chat_id = metadata.get('chat_id')
+    if not chat_id:
+        # Outside chats, such as API calls without chat management: where the plan runs, as before.
+        settings = await _load_settings(ref)
+        return _TurnTarget(settings.machine_id, settings.access, run_targets.FOLDER_AUTO)
+    if not isinstance(chat_id, str) or chat_id.startswith(CHANNEL_CHAT_ID_PREFIX):
+        # Every member reads a channel reply's prompt and answer, so it runs chat only.
+        return await _detached_turn(user, ref)
+    if is_temporary_chat_id(chat_id):
+        # A temporary chat has no saved target; each turn carries the bar's choice.
+        raw = metadata.get(REQUESTED_RUN_TARGET_KEY)
+        row = await _target_row(user, chat_id, raw, metadata.get('folder_id'), ref.provider_id)
+        return await _row_turn_target(user, ref, row)
+    if not await Chats.is_chat_owner(chat_id, user.id):
+        # Someone else's chat, such as an admin answering in it: chat only, on the
+        # poster's own computers. The owner's target is never used.
+        return await _detached_turn(user, ref)
+    row = await ChatRunTargets.get(chat_id)
+    if metadata.get('task'):
+        # Titles, tags and follow-up suggestions run chat only, and never fix where a chat runs.
+        preferred = None
+        if row is not None:
+            preferred = row.machine_id
+        return await _detached_turn(user, ref, preferred)
+    if row is None:
+        started_before_targets = await _started_before_targets(user, chat_id)
+        row = await bind_chat_target(
+            user, chat_id, None, ref.provider_id, started_before_targets=started_before_targets
+        )
+    if row is None:
+        return await _detached_turn(user, ref)
+    return await _row_turn_target(user, ref, row)
+
+
+async def _turn_access(user, target: _TurnTarget, metadata: dict, foreign_preset: bool) -> str:
+    """The target's access, lowered for turns that must run chat only."""
+    if target.detached or foreign_preset:
+        # A preset someone else wrote can't steer tools on the person's computer.
+        return ACCESS_CHAT
+    held = await project_folders.instructions_hold(user.id, metadata)
+    if held is not None:
+        acknowledged = target.row is not None and target.row.acknowledged_instructions_folder_id == held.folder_id
+        if not acknowledged:
+            return ACCESS_CHAT
+    return target.access
+
+
+async def _require_chat_folder(machine, path: str) -> None:
+    """Refuse rather than start somewhere else when the chat's folder is gone. The message never names the path."""
     if not await machine.path_exists(path, 'dir'):
-        raise SubscriptionError(project_folders.missing_project_folder_message(choice, machine.name))
+        raise SubscriptionError(MISSING_FOLDER_MESSAGE.format(name=machine.name))
 
 
 def _with_start_note(conversation, cwd: str):
@@ -2487,11 +3736,12 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
     is_task = bool(metadata.get('task'))
 
     try:
+        _require_single_worker()
+        target = await _turn_target(user, ref, metadata)
         async with _provider_lock(ref):
-            _require_single_worker()
-            settings = await _load_settings(ref)
+            settings = await _settings_for(ref, await _load_settings(ref), target.machine_id)
             await _require_verified_machine(ref, settings)
-            _require_provider_cleanup(ref)
+            _require_computer_cleanup(ref, target.machine_id)
             generation = _provider_generations.get(ref, 0)
         if not settings.enable:
             raise SubscriptionError(
@@ -2499,23 +3749,25 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
             )
         # A status older than its TTL may predate a switch to API billing on
         # the machine, so a turn waits for a current one.
-        _require_plan(ref.provider_id, await status_cache.get(ref, serve_expired=False))
-        cli_model, model_efforts = _turn_model(ref, model_id, subscription)
-        folder_choice = await _turn_folder_choice(user, settings, metadata, foreign_preset)
+        on_computer = ref.on(target.machine_id)
+        _require_plan(ref.provider_id, await status_cache.get(on_computer, serve_expired=False))
+        cli_model, model_efforts = _turn_model(on_computer, model_id, subscription)
+        access = await _turn_access(user, target, metadata, foreign_preset)
         async with _provider_lock(ref):
             if generation != _provider_generations.get(ref, 0):
                 raise SubscriptionError('The provider machine changed; refresh before starting another turn.')
             machine = await _tracked(ref, settings)
-            access = _turn_access(settings, metadata)
-            if foreign_preset:
-                access = ACCESS_CHAT
-            if folder_choice is not None and folder_choice.mode == project_folders.MODE_CHAT:
-                # A chat folder can only lower access.
-                access = ACCESS_CHAT
-            project_path = await _turn_project_path(ref, folder_choice, access, machine)
+            project_path = ''
+            if access != ACCESS_CHAT and target.folder_mode == run_targets.FOLDER_PATH:
+                project_path = target.path
             cwd = await working_directory(settings, access, machine, project_path)
             conversation = parse_messages(payload.get('messages'))
-            lets_ai_choose = folder_choice is not None and folder_choice.mode == project_folders.MODE_AUTO
+            # Chats from before targets keep the prompt they started with.
+            lets_ai_choose = (
+                target.row is not None
+                and target.folder_mode == run_targets.FOLDER_AUTO
+                and target.row.note != run_targets.FROM_PLAN
+            )
             if access == ACCESS_FULL and lets_ai_choose:
                 conversation = _with_start_note(conversation, cwd)
             turn = TurnRequest(
@@ -2530,7 +3782,7 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
             )
         # Checked outside the provider lock, so a slow computer never holds it.
         if project_path:
-            await _require_project_folder(machine, project_path, folder_choice)
+            await _require_chat_folder(machine, project_path)
     except SubscriptionError as error:
         events = failure_events(str(error))
     else:

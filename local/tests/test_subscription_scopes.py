@@ -64,11 +64,13 @@ class SubscriptionScopeTests(unittest.IsolatedAsyncioTestCase):
 
     def enable_signed_in(self, user_id, settings_key, machine_id):
         self.config.values[settings_key] = {'enable': True, 'access': 'chat', 'machine_id': machine_id}
-        ref = self.ref(user_id)
-        self.service.status_cache._entries[ref] = self.service._CacheEntry(
+        on_computer = self.ref(user_id).on(machine_id)
+        self.service.status_cache._entries[on_computer] = self.service._CacheEntry(
             {'installed': True, 'signed_in': True, 'api_billing': False}, time.monotonic() + 60
         )
-        self.service.models_cache._entries[ref] = self.service._CacheEntry([signed_in_model()], time.monotonic() + 60)
+        self.service.models_cache._entries[on_computer] = self.service._CacheEntry(
+            [signed_in_model()], time.monotonic() + 60
+        )
 
     async def test_the_owner_keeps_the_original_keys_and_members_get_their_own(self):
         self.assertEqual(await self.service._settings_key(self.ref(OWNER)), 'subscriptions.claude')
@@ -143,10 +145,10 @@ class SubscriptionScopeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_turn_on_a_model_the_user_does_not_offer_is_refused(self):
         self.enable_signed_in(OTHER, 'subscriptions.users.member-2.claude', 'member-pc')
-        ref = self.ref(OTHER)
-        self.service.models_cache._entries[ref] = self.service._CacheEntry([], time.monotonic() + 60)
+        on_member_pc = self.ref(OTHER).on('member-pc')
+        self.service.models_cache._entries[on_member_pc] = self.service._CacheEntry([], time.monotonic() + 60)
         with self.assertRaisesRegex(self.service.SubscriptionError, 'does not offer this model'):
-            self.service._turn_model(ref, 'claude-code.fixture-model', {'model': 'fixture-model'})
+            self.service._turn_model(on_member_pc, 'claude-code.fixture-model', {'model': 'fixture-model'})
 
     async def test_removing_a_machine_affects_only_its_owner(self):
         self.config.values['subscriptions.users.member-1.claude'] = {

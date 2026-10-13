@@ -9,7 +9,7 @@
 	import {
 		accessGrantedMessage,
 		fullAccessDescription,
-		fullAccessWarning,
+		fullAccessDefaultWarning,
 		readFilesDescription
 	} from '$lib/components/admin/Settings/Connections/plan-access';
 	import { focusWasLost, type FileAccess } from './project-folders';
@@ -83,7 +83,7 @@
 		await reload();
 		confirming = null;
 		saving = false;
-		toast.success(accessGrantedMessage($i18n, plan.name, access, machine.name));
+		toast.success(accessGrantedMessage($i18n, plan.name, access));
 		onAllowed();
 	}
 
@@ -104,17 +104,12 @@
 		onRefused(plan, access, reason);
 	}
 
-	function question(plan: FolderPlan, access: FileAccess, computerName: string): string {
+	// A plan's access is where its new chats start, on whichever computer they run.
+	function question(plan: FolderPlan, access: FileAccess): string {
 		if (access === 'full') {
-			return $i18n.t('Give {{name}} full access on {{computer}}?', {
-				name: plan.name,
-				computer: computerName
-			});
+			return $i18n.t('Start new {{name}} chats with full access?', { name: plan.name });
 		}
-		return $i18n.t('Let {{name}} read files on {{computer}}?', {
-			name: plan.name,
-			computer: computerName
-		});
+		return $i18n.t('Start new {{name}} chats able to read files?', { name: plan.name });
 	}
 
 	function description(plan: FolderPlan, access: FileAccess): string {
@@ -152,11 +147,11 @@
 	<div>
 		{#if compact}
 			<p id="plan-access-heading" class="text-xs text-gray-500">
-				{$i18n.t('Plans that only chat')}
+				{$i18n.t('Plans set to Chat only')}
 			</p>
 			<p class="text-[0.6875rem] text-gray-500 dark:text-gray-400">
 				{$i18n.t(
-					'Their chats here don’t use files. Allowing files changes the plan for all your chats, not just this folder.'
+					'Their new chats start with Chat only, and each chat can choose its own above the message box. Allowing files changes that for all your new chats, not just in this folder.'
 				)}
 			</p>
 		{:else}
@@ -172,9 +167,7 @@
 			<li class="flex flex-col gap-1.5">
 				<div id="plan-access-plan-{plan.id}" class="text-sm">
 					{plan.name}
-					<span class="text-[0.6875rem] text-gray-500">
-						· {plan.machine?.name} · {$i18n.t('Chat only')}</span
-					>
+					<span class="text-[0.6875rem] text-gray-500"> · {$i18n.t('Chat only')}</span>
 				</div>
 
 				{#if confirming && confirming.planId === plan.id && plan.machine}
@@ -185,7 +178,7 @@
 						aria-describedby={questionDetailIds(plan.id, confirming.access)}
 					>
 						<p id="plan-access-question-{plan.id}" class="text-sm font-medium">
-							{question(plan, confirming.access, plan.machine.name)}
+							{question(plan, confirming.access)}
 						</p>
 						<p
 							id="plan-access-what-{plan.id}"
@@ -198,7 +191,7 @@
 								id="plan-access-warning-{plan.id}"
 								class="text-[0.6875rem] text-amber-700 dark:text-amber-400"
 							>
-								{fullAccessWarning($i18n)}
+								{fullAccessDefaultWarning($i18n)}
 							</p>
 						{/if}
 						<p
@@ -206,7 +199,7 @@
 							class="text-[0.6875rem] text-gray-500 dark:text-gray-400"
 						>
 							{$i18n.t(
-								'This applies to all your {{name}} chats, and its replies running now stop. You can change it later in Settings → Machines.',
+								'Chats you already started keep their access, and {{name}}’s replies running now stop. You can change it later in Settings → Machines.',
 								{ name: plan.name }
 							)}
 						</p>

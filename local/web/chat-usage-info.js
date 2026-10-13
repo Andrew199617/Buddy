@@ -138,6 +138,7 @@
  window.__owuiChatUsageInfo = true;
  const css = `
 .owui-context-rail { display:flex; justify-content:flex-end; padding:0 8px 5px; min-width:0; }
+.buddy-run-target-slot > .owui-context-rail { margin-left:auto; padding-bottom:0; flex-shrink:0; }
 .owui-context-badge { display:inline-flex; align-items:center; gap:6px; min-height:40px; max-width:100%; padding:4px 8px; border-radius:10px; color:#6b7280; font-size: calc(.8125rem + var(--buddy-font-size-offset, 0px)); line-height:1.4; background:transparent; cursor:pointer; }
 .owui-context-badge:hover, .owui-run-footer:hover { background:rgba(0,0,0,.035); color:#111827; }
 .owui-context-badge svg { width:16px; height:16px; flex-shrink:0; }
@@ -571,10 +572,23 @@ html.owui-usage-sheet-open, html.owui-usage-sheet-open body { overflow:hidden; }
    scheduleHoverClose();
   });
  }
+ // The run target bar's row above the composer, when Buddy renders one; the rail shares it.
+ function runTargetSlot(composer) {
+  const previous = composer.previousElementSibling;
+  if (previous?.classList.contains('buddy-run-target-slot')) return previous;
+  return null;
+ }
+ function railPlaced(composer, slot) {
+  const rail = contextBadge?.parentElement;
+  if (!contextBadge?.isConnected || !rail) return false;
+  if (slot) return rail.parentElement === slot;
+  return rail.nextElementSibling === composer;
+ }
  function updateContextBadge(chatId) {
   const composer = document.getElementById('message-input-container');
   if (!composer) { contextBadge = null; return; }
-  if (!contextBadge?.isConnected || contextBadge.parentElement?.nextElementSibling !== composer) {
+  const slot = runTargetSlot(composer);
+  if (!railPlaced(composer, slot)) {
    document.querySelector('.owui-context-rail')?.remove();
    const rail = document.createElement('div');
    rail.className = 'owui-context-rail';
@@ -586,7 +600,8 @@ html.owui-usage-sheet-open, html.owui-usage-sheet-open body { overflow:hidden; }
    contextBadge.innerHTML = `${INFO_ICON}<span></span>`;
    bindDetails(contextBadge, 'context', () => ({ chatId: currentChatId() }));
    rail.appendChild(contextBadge);
-   composer.before(rail);
+   if (slot) slot.appendChild(rail);
+   else composer.before(rail);
   }
   const chat = chats.get(chatId);
   const context = contextInfo(chat, modelForChat(chat));

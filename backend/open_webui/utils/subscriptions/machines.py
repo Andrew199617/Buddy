@@ -75,6 +75,26 @@ async def _finish_cancelled_cleanup(operation: asyncio.Task) -> None:
     operation.result()
 
 
+# Folder listing for the folder picker. At most two per computer at a time, so
+# picking folders never takes the call slots that chat turns need.
+FOLDER_CALL_SECONDS = 10
+MAX_FOLDER_CALLS_PER_COMPUTER = 2
+BROWSING_NEEDS_APP = "Browsing needs the Buddy app on that computer. Type the folder's full path."
+SERVER_BROWSING = "Folders on Buddy server can't be browsed. Type the folder's full path."
+_folder_call_slots: dict[str, asyncio.Semaphore] = {}
+
+
+def _folder_call_slot(machine_id: str, machine_name: str) -> asyncio.Semaphore:
+    """This computer's folder call slots; refuses at once rather than queueing when both are busy."""
+    slots = _folder_call_slots.get(machine_id)
+    if slots is None:
+        slots = asyncio.Semaphore(MAX_FOLDER_CALLS_PER_COMPUTER)
+        _folder_call_slots[machine_id] = slots
+    if slots.locked():
+        raise SubscriptionError(f'Buddy is still listing folders on {machine_name}. Try again in a moment.')
+    return slots
+
+
 class LocalMachine:
     """The computer running this Buddy server."""
 
@@ -111,6 +131,12 @@ class LocalMachine:
         if kind == 'dir':
             return Path(path).is_dir()
         return Path(path).is_file()
+
+    async def list_folders(self, path: str, show_hidden: bool, prefix: str) -> dict:
+        raise SubscriptionError(SERVER_BROWSING)
+
+    async def suggest_folders(self) -> dict:
+        raise SubscriptionError(SERVER_BROWSING)
 
     async def run(self, args: list[str], cwd: str, timeout: float, extra_env: dict | None = None):
         return await run_command(args, cwd, subscription_env(extra_env), timeout)
@@ -579,6 +605,12 @@ class RemoteMachine:
         result = await self._request('POST', '/paths/check', {'path': path, 'kind': kind})
         return bool(result.get('exists'))
 
+    async def list_folders(self, path: str, show_hidden: bool, prefix: str) -> dict:
+        raise SubscriptionError(BROWSING_NEEDS_APP)
+
+    async def suggest_folders(self) -> dict:
+        raise SubscriptionError(BROWSING_NEEDS_APP)
+
     async def run(self, args: list[str], cwd: str, timeout: float, extra_env: dict | None = None):
         payload = {'args': args, 'cwd': cwd, 'timeout': timeout, 'env': extra_env or {}}
         result = await self._request('POST', '/run', payload, timeout=timeout + 15)
@@ -705,6 +737,18 @@ class TunnelMachine:
         connection = await self._connection()
         result = await connection.call('paths.check', {'path': path, 'kind': kind})
         return bool((result or {}).get('exists'))
+
+    async def list_folders(self, path: str, show_hidden: bool, prefix: str) -> dict:
+        """The Runner's raw reply; folder_listing checks it before anyone sees it."""
+        connection = await self._connection()
+        async with _folder_call_slot(self.id, self.name):
+            params = {'path': path, 'hidden': show_hidden, 'prefix': prefix}
+            return await connection.call('folders.list', params, timeout=FOLDER_CALL_SECONDS)
+
+    async def suggest_folders(self) -> dict:
+        connection = await self._connection()
+        async with _folder_call_slot(self.id, self.name):
+            return await connection.call('folders.suggest', {}, timeout=FOLDER_CALL_SECONDS)
 
     async def start_process(
         self,
