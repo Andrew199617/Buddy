@@ -56,12 +56,8 @@
 	// Phones show the folder on one screen and each row's settings on their own.
 	type Screen = 'main' | 'knowledge' | 'project';
 	let screen: Screen = 'main';
-	// A new folder starts with just its name; each part shows once its tile is chosen.
-	type Part = 'instructions' | 'knowledge' | 'project';
-	let revealed: Record<Part, boolean> = { instructions: false, knowledge: false, project: false };
 	// Set once the project folder section knows this person may use computers.
 	let projectAvailable = false;
-	type Tile = { part: Part; name: string; description: string; icon: string[] };
 
 	$: canEditInstructions =
 		$user?.role === 'admin' || ($user?.permissions?.chat?.system_prompt ?? true);
@@ -71,12 +67,8 @@
 	$: projectKey = folderId ?? 'new';
 	// Edit Folder holds the section for its folder; Create Folder for the one it will make.
 	$: projectHosted = !edit || Boolean(folderId);
-	$: tiles = describeTiles(revealed, edit, canEditInstructions, projectAvailable);
 	$: if (!$mobile) screen = 'main';
-	$: layout = layoutFor(
-		$mobile,
-		shownOnMain($mobile, screen) && (edit || revealed.knowledge || revealed.project)
-	);
+	$: layout = layoutFor($mobile, shownOnMain($mobile, screen));
 
 	const submitHandler = async () => {
 		loading = true;
@@ -131,7 +123,6 @@
 		knowledgeOpen = false;
 		projectOpen = false;
 		screen = 'main';
-		revealed = { instructions: false, knowledge: false, project: false };
 		if (folderId) {
 			folder = await getFolderById(localStorage.token, folderId).catch((error) => {
 				toast.error(`${error}`);
@@ -209,74 +200,7 @@
 		);
 	}
 
-	const TILE_ICONS: Record<Part, string[]> = {
-		instructions: ['M4 6h16M4 12h10M4 18h7'],
-		knowledge: ['M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z', 'M4 21V5', 'M9 8h6'],
-		project: [
-			'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
-			'M9 12l2 2-2 2',
-			'M13 16h3'
-		]
-	};
-
-	function describeTiles(
-		shown: Record<Part, boolean>,
-		editing: boolean,
-		instructionsAllowed: boolean,
-		projectAllowed: boolean
-	): Tile[] {
-		if (editing) return [];
-		const result: Tile[] = [];
-		if (instructionsAllowed && !shown.instructions) {
-			result.push({
-				part: 'instructions',
-				name: $i18n.t('Instructions'),
-				description: $i18n.t('How chats behave'),
-				icon: TILE_ICONS.instructions
-			});
-		}
-		if (!shown.knowledge) {
-			result.push({
-				part: 'knowledge',
-				name: $i18n.t('Knowledge'),
-				description: $i18n.t('Files to draw on'),
-				icon: TILE_ICONS.knowledge
-			});
-		}
-		if (projectAllowed && !shown.project) {
-			result.push({
-				part: 'project',
-				name: $i18n.t('Project folder'),
-				description: $i18n.t('Where the AI works'),
-				icon: TILE_ICONS.project
-			});
-		}
-		return result;
-	}
-
-	function partShown(part: Part, editing: boolean, shown: Record<Part, boolean>): boolean {
-		return editing || shown[part];
-	}
-
-	async function revealPart(part: Part) {
-		revealed = { ...revealed, [part]: true };
-		if (part === 'instructions') {
-			await tick();
-			document.querySelector<HTMLElement>(`#${formId}-instructions textarea`)?.focus();
-			return;
-		}
-		if ($mobile) {
-			await openScreen(part);
-			return;
-		}
-		if (part === 'knowledge') knowledgeOpen = true;
-		else projectOpen = true;
-		await tick();
-		document.getElementById(`${formId}-row-${part}`)?.focus();
-	}
-
 	function openProjectSettings() {
-		revealed = { ...revealed, project: true };
 		projectOpen = true;
 		if ($mobile) screen = 'project';
 	}
@@ -335,7 +259,6 @@
 		modalContainer: string;
 		modalSurface: string;
 		root: string;
-		tiles: string;
 		form: string;
 		body: string;
 		rows: string;
@@ -353,7 +276,6 @@
 				modalContainer: '',
 				modalSurface: 'h-full bg-white dark:bg-gray-900',
 				root: 'h-full',
-				tiles: 'grid-cols-1',
 				form: 'min-h-0 flex-1 overflow-y-auto',
 				body: 'px-5 pt-5 pb-[max(env(safe-area-inset-bottom),2rem)]',
 				rows,
@@ -366,7 +288,6 @@
 			modalContainer: 'p-3',
 			modalSurface: 'bg-white dark:bg-gray-900 rounded-4xl',
 			root: '',
-			tiles: 'grid-cols-3',
 			form: '',
 			body: 'px-7 pt-3',
 			rows,
@@ -580,7 +501,7 @@
 					{/if}
 				</div>
 
-				{#if canEditInstructions && partShown('instructions', edit, revealed)}
+				{#if canEditInstructions}
 					<div
 						id="{formId}-instructions"
 						class="flex flex-col gap-2"
@@ -601,48 +522,12 @@
 					</div>
 				{/if}
 
-				{#if tiles.length > 0}
-					<div class="flex flex-col gap-1.5" hidden={!shownOnMain($mobile, screen)}>
-						<span class="pb-0.5 text-xs text-gray-600 dark:text-gray-400">
-							{$i18n.t('Optional — you can add these later')}
-						</span>
-						<div class="grid gap-2 {layout.tiles}">
-							{#each tiles as tile (tile.part)}
-								<button
-									type="button"
-									class="flex min-h-[92px] flex-col items-start gap-2.5 rounded-[14px] border border-gray-200 bg-gray-50 p-3.5 text-left transition hover:bg-gray-100 dark:border-gray-800 dark:bg-gray-850 dark:hover:bg-gray-800 max-md:min-h-16 max-md:flex-row max-md:items-center"
-									on:click={() => revealPart(tile.part)}
-								>
-									<svg
-										aria-hidden="true"
-										class="size-[18px] shrink-0 text-gray-700 dark:text-gray-300"
-										viewBox="0 0 24 24"
-										fill="none"
-										stroke="currentColor"
-										stroke-width="1.8"
-										stroke-linecap="round"
-										stroke-linejoin="round"
-									>
-										{#each tile.icon as path}<path d={path} />{/each}
-									</svg>
-									<span class="flex flex-col gap-0.5">
-										<span class="text-sm font-medium">{tile.name}</span>
-										<span class="text-xs text-gray-600 dark:text-gray-400">
-											{tile.description}
-										</span>
-									</span>
-								</button>
-							{/each}
-						</div>
-					</div>
-				{/if}
-
 				<div class="flex flex-col {layout.rows}">
 					<button
 						type="button"
 						id="{formId}-row-knowledge"
 						class="flex min-h-16 w-full items-center gap-3.5 border-b border-gray-100 py-3 text-left dark:border-gray-850 md:min-h-[60px] md:py-3.5"
-						hidden={!shownOnMain($mobile, screen) || !partShown('knowledge', edit, revealed)}
+						hidden={!shownOnMain($mobile, screen)}
 						aria-expanded={$mobile ? undefined : knowledgeOpen}
 						aria-controls="{formId}-knowledge-panel"
 						on:click={() => {
@@ -693,8 +578,7 @@
 					<div
 						id="{formId}-knowledge-panel"
 						class={layout.knowledgePanel}
-						hidden={!partShown('knowledge', edit, revealed) ||
-							!panelShown($mobile, screen, 'knowledge', knowledgeOpen)}
+						hidden={!panelShown($mobile, screen, 'knowledge', knowledgeOpen)}
 					>
 						<Knowledge bind:selectedItems={data.files} phoneTouchTargets>
 							<span slot="label" class="sr-only">{$i18n.t('Knowledge')}</span>
@@ -707,7 +591,6 @@
 							id="{formId}-row-project"
 							class="flex min-h-16 w-full items-center gap-3.5 border-b border-gray-100 py-3 text-left dark:border-gray-850 md:min-h-[60px] md:py-3.5"
 							hidden={!shownOnMain($mobile, screen) ||
-								!partShown('project', edit, revealed) ||
 								!projectRowShown(projectAvailable, projectLoadError)}
 							aria-expanded={$mobile ? undefined : projectOpen}
 							aria-controls="folder-project-panel-{projectKey}"
@@ -767,8 +650,7 @@
 						<div
 							id="folder-project-panel-{projectKey}"
 							class={layout.projectPanel}
-							hidden={!partShown('project', edit, revealed) ||
-								!panelShown($mobile, screen, 'project', projectOpen)}
+							hidden={!panelShown($mobile, screen, 'project', projectOpen)}
 						>
 							<ProjectFolderSection
 								bind:this={projectSection}

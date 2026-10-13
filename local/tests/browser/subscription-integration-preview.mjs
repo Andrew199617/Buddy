@@ -451,16 +451,18 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		};
 	}
 
-	/** A folder about to be made under Website: it follows Website's choice. */
-	function newFolderProject() {
+	/** A folder about to be made: under Website it follows Website's choice; at the top, nothing. */
+	function newFolderProject(parentId) {
+		let inherited = null;
+		if (parentId === 'website') inherited = { ...projectChoice, folder_name: 'Website' };
 		return {
 			...folderProject(),
 			folder_id: '',
 			folder_name: '',
 			own: null,
-			inherited: { ...projectChoice, folder_name: 'Website' },
+			inherited,
 			// Someone else may edit Website, and so a folder made in it.
-			others_can_edit: mode === 'folder-create-shared'
+			others_can_edit: parentId === 'website' && mode === 'folder-create-shared'
 		};
 	}
 
@@ -573,8 +575,9 @@ function createFixtures(mode = 'normal', role = 'admin') {
 				updated_at: 2
 			};
 		} else if (path === '/api/v1/subscriptions/new-folder/project' && method === 'GET') {
-			requests.push({ method, path, parentId: url.searchParams.get('parent_id') });
-			reply = newFolderProject();
+			const parentId = url.searchParams.get('parent_id');
+			requests.push({ method, path, parentId });
+			reply = newFolderProject(parentId);
 		} else if (path === '/api/v1/subscriptions/folders/new-folder/project' && method === 'PUT') {
 			requests.push({ method, path, body: request.postDataJSON() });
 			reply = newFolderProject();
@@ -3232,6 +3235,15 @@ async function folderCreateTopCase(browser, profile) {
 			await newFolder.click();
 			const dialog = page.locator('.modal').filter({ has: page.locator('#folder-form-new') });
 			await dialog.getByRole('heading', { name: 'New folder', exact: true }).waitFor();
+			// Everything Edit folder has is there from the start, with the rows collapsed.
+			const projectRow = dialog.locator('#folder-form-new-row-project');
+			await dialog.getByRole('textbox', { name: 'Instructions', exact: true }).waitFor();
+			await dialog.locator('#folder-form-new-row-knowledge').waitFor();
+			await projectRow.waitFor();
+			assert.match(await projectRow.textContent(), /Not set/);
+			assert.equal(await dialog.getByText('Run on', { exact: true }).isVisible(), false);
+			assert.equal(await dialog.getByText('Select Knowledge', { exact: true }).isVisible(), false);
+			await captureScreenshot(page, profile.name + '-folder-create-top');
 
 			// A folder that can't be made keeps the dialog, and what was typed, open.
 			await dialog.getByRole('button', { name: 'Create', exact: true }).click();
@@ -3239,10 +3251,9 @@ async function folderCreateTopCase(browser, profile) {
 			assert.equal(await dialog.isVisible(), true, 'The dialog stays open');
 
 			await dialog.locator('#folder-name').fill('Notes');
-			await dialog.getByRole('button', { name: /^Project folder\s*Where the AI works/ }).click();
+			await projectRow.click();
 			if (!profile.mobile) {
 				// A click lands with a list open, though closing the list re-centers the dialog.
-				const projectRow = dialog.locator('#folder-form-new-row-project');
 				await dialog.locator('#project-run-on-new-trigger').click();
 				await dialog.locator('#project-run-on-new-list').waitFor();
 				await projectRow.click();
@@ -3291,19 +3302,17 @@ async function folderCreateCase(browser, profile) {
 		await dialog.getByRole('heading', { name: 'New folder', exact: true }).waitFor();
 		await dialog.locator('#folder-name').fill('Docs');
 
-		// Only the name to start with; the rest waits behind optional tiles.
-		const projectTile = dialog.getByRole('button', {
-			name: /^Project folder\s*Where the AI works/
-		});
-		await projectTile.waitFor();
+		// The rows start collapsed; the new folder follows Website until this person chooses.
+		const projectRow = dialog.locator('#folder-form-new-row-project');
+		await projectRow.waitFor();
+		assert.match(await projectRow.textContent(), /Same as “Website”/);
 		assert.equal(await dialog.getByText('Run on', { exact: true }).isVisible(), false);
 		await captureScreenshot(page, profile.name + '-folder-create');
 
-		await dialog.getByRole('button', { name: /^Instructions\s*How chats behave/ }).click();
 		await dialog.getByRole('textbox', { name: 'Instructions', exact: true }).fill('Be brief.');
 
 		// The new folder starts from Website's choice; this person picks their own.
-		await projectTile.click();
+		await projectRow.click();
 		if (profile.mobile) {
 			const inherited = dialog.getByRole('radio', { name: /^Same as “Website”/ });
 			await inherited.waitFor();
@@ -3399,15 +3408,13 @@ async function folderCreateSharedCase(browser, profile) {
 			}
 
 			// With no instructions yet, the folder can follow Website.
-			await dialog.getByRole('button', { name: /^Project folder\s*Where the AI works/ }).click();
-			await dialog.getByText('Run on', { exact: true }).waitFor();
+			await openProjectSettings();
 			await openRunOnList();
 			assert.equal(await followOption.count(), 1);
 			assert.equal(await notice.count(), 0);
 			await leaveProjectSettings();
 
 			// Instructions someone else can change: this person chooses where chats run.
-			await dialog.getByRole('button', { name: /^Instructions\s*How chats behave/ }).click();
 			const instructions = dialog.getByRole('textbox', { name: 'Instructions', exact: true });
 			await instructions.fill('Be brief.');
 			await openProjectSettings();
