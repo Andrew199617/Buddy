@@ -546,9 +546,7 @@
 			/>
 		{:else}
 			<p class="text-[0.8125rem] leading-relaxed text-gray-600 dark:text-gray-400">
-				{$i18n.t(
-					'Where the AI works in new chats from this folder. People you share it with choose their own.'
-				)}
+				{$i18n.t('Where the AI works when you start a chat in this folder, just for you.')}
 			</p>
 
 			{#if draft.mode === 'unchosen'}
@@ -797,12 +795,6 @@
 					</p>
 				{/if}
 			{/if}
-
-			<p class="text-xs text-gray-600 dark:text-gray-400">
-				{$i18n.t(
-					'Just for you. Subfolders use these unless they set their own. Each chat can still change them before its first message; chats already started keep where they run.'
-				)}
-			</p>
 		{/if}
 
 		{#if refreshError}
