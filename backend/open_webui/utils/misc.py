@@ -337,7 +337,7 @@ def convert_output_to_messages(
 
     Args:
         output: List of OR-aligned output items (Responses API format).
-        raw: If True, include code interpreter blocks for LLM re-processing
+        raw: If True, keep provider reasoning details for LLM re-processing
              follow-ups.
         reasoning_format: How to include reasoning blocks in the output:
             - None: skip reasoning (default, safe for strict providers).
@@ -544,8 +544,8 @@ def convert_output_to_messages(
                 pending_reasoning_details.extend(reasoning_details)
 
         elif item_type == 'open_webui:code_interpreter':
-            # Always include code interpreter content so the LLM knows
-            # the code was already executed and doesn't retry.
+            # Chats saved before Code Interpreter was removed still hold these.
+            # Including them tells the LLM the code already ran.
             code = item.get('code', '')
             code_output = item.get('output', '')
 

@@ -51,14 +51,6 @@ CODE_EXECUTION_CONFIG_KEYS = {
     'CODE_EXECUTION_JUPYTER_AUTH_TOKEN': 'code_execution.jupyter.auth_token',
     'CODE_EXECUTION_JUPYTER_AUTH_PASSWORD': 'code_execution.jupyter.auth_password',
     'CODE_EXECUTION_JUPYTER_TIMEOUT': 'code_execution.jupyter.timeout',
-    'ENABLE_CODE_INTERPRETER': 'code_interpreter.enable',
-    'CODE_INTERPRETER_ENGINE': 'code_interpreter.engine',
-    'CODE_INTERPRETER_PROMPT_TEMPLATE': 'code_interpreter.prompt_template',
-    'CODE_INTERPRETER_JUPYTER_URL': 'code_interpreter.jupyter.url',
-    'CODE_INTERPRETER_JUPYTER_AUTH': 'code_interpreter.jupyter.auth',
-    'CODE_INTERPRETER_JUPYTER_AUTH_TOKEN': 'code_interpreter.jupyter.auth_token',
-    'CODE_INTERPRETER_JUPYTER_AUTH_PASSWORD': 'code_interpreter.jupyter.auth_password',
-    'CODE_INTERPRETER_JUPYTER_TIMEOUT': 'code_interpreter.jupyter.timeout',
 }
 MODELS_CONFIG_KEYS = {
     'DEFAULT_MODELS': 'ui.default_models',
@@ -684,9 +676,9 @@ async def verify_tool_servers_config(request: Request, form_data: ToolServerConn
 
 
 ############################
-# CodeInterpreterConfig
+# CodeExecutionConfig
 ############################
-class CodeInterpreterConfigForm(BaseModel):
+class CodeExecutionConfigForm(BaseModel):
     ENABLE_CODE_EXECUTION: bool
     CODE_EXECUTION_ENGINE: str
     CODE_EXECUTION_JUPYTER_URL: str | None
@@ -694,24 +686,16 @@ class CodeInterpreterConfigForm(BaseModel):
     CODE_EXECUTION_JUPYTER_AUTH_TOKEN: str | None
     CODE_EXECUTION_JUPYTER_AUTH_PASSWORD: str | None
     CODE_EXECUTION_JUPYTER_TIMEOUT: int | None
-    ENABLE_CODE_INTERPRETER: bool
-    CODE_INTERPRETER_ENGINE: str
-    CODE_INTERPRETER_PROMPT_TEMPLATE: str | None
-    CODE_INTERPRETER_JUPYTER_URL: str | None
-    CODE_INTERPRETER_JUPYTER_AUTH: str | None
-    CODE_INTERPRETER_JUPYTER_AUTH_TOKEN: str | None
-    CODE_INTERPRETER_JUPYTER_AUTH_PASSWORD: str | None
-    CODE_INTERPRETER_JUPYTER_TIMEOUT: int | None
 
 
-@router.get('/code_execution', response_model=CodeInterpreterConfigForm)
+@router.get('/code_execution', response_model=CodeExecutionConfigForm)
 async def get_code_execution_config(request: Request, user=Depends(get_admin_user)):
     return await get_config_values(CODE_EXECUTION_CONFIG_KEYS)
 
 
-@router.post('/code_execution', response_model=CodeInterpreterConfigForm)
+@router.post('/code_execution', response_model=CodeExecutionConfigForm)
 async def set_code_execution_config(
-    request: Request, form_data: CodeInterpreterConfigForm, user=Depends(get_admin_user)
+    request: Request, form_data: CodeExecutionConfigForm, user=Depends(get_admin_user)
 ):
     await Config.upsert(config_updates(form_data.model_dump(), CODE_EXECUTION_CONFIG_KEYS))
     values = await get_config_values(CODE_EXECUTION_CONFIG_KEYS)
@@ -724,8 +708,6 @@ async def set_code_execution_config(
         data={
             'code_execution_enabled': values.get('ENABLE_CODE_EXECUTION'),
             'code_execution_engine': values.get('CODE_EXECUTION_ENGINE'),
-            'code_interpreter_enabled': values.get('ENABLE_CODE_INTERPRETER'),
-            'code_interpreter_engine': values.get('CODE_INTERPRETER_ENGINE'),
         },
     )
     return values

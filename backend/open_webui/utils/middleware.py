@@ -11,7 +11,6 @@ import os
 import random
 import re
 import sys
-import textwrap
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
@@ -23,9 +22,6 @@ from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from open_webui.config import (
     CACHE_DIR,
-    CODE_INTERPRETER_BLOCKED_MODULES,
-    CODE_INTERPRETER_PYODIDE_PROMPT,
-    DEFAULT_CODE_INTERPRETER_PROMPT,
     DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE,
     DEFAULT_VOICE_MODE_PROMPT_TEMPLATE,
 )
@@ -87,7 +83,6 @@ from open_webui.utils.access_control.folders import has_folder_access
 from open_webui.utils.ask_user import stage_ask_user_tool_calls
 from open_webui.utils.chat import generate_chat_completion
 from open_webui.utils.chat_id import is_saved_chat_id
-from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.utils.context_compaction import compact_messages_for_request
 from open_webui.utils.files import (
     convert_markdown_base64_images,
@@ -130,7 +125,6 @@ from open_webui.utils.models import get_arena_model_ids
 from open_webui.utils.payload import apply_params_to_form_data, apply_system_prompt_to_body, resolve_system_prompt
 from open_webui.utils.plugin import load_function_module_by_id
 from open_webui.utils.response import merge_usage, normalize_usage
-from open_webui.utils.sanitize import sanitize_code
 from open_webui.utils.skills import (
     apply_skills_create_prompt,
     extract_skill_ids_from_messages,
@@ -257,7 +251,6 @@ DEFAULT_REASONING_TAGS = [
 ]
 
 DEFAULT_SOLUTION_TAGS = [('<|begin_of_solution|>', '<|end_of_solution|>')]
-DEFAULT_CODE_INTERPRETER_TAGS = [('<code_interpreter>', '</code_interpreter>')]
 
 
 def _start_tag_pattern(start_tag: str) -> str:
@@ -2400,8 +2393,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         metadata['chat_id'] = ''
 
     # Pipeline Inlet -> Filter Inlet -> Chat Memory -> Chat Web Search -> Chat Image Generation
-    # -> Chat Code Interpreter (Form Data Update) -> (Default) Chat Tools Function Calling
-    # -> Chat Files
+    # -> (Default) Chat Tools Function Calling -> Chat Files
 
     # Arena model resolution — pick the sub-model now so all downstream
     # processing (knowledge, capabilities, tools, params) uses its settings
@@ -2717,37 +2709,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 # Skip forced image generation when native FC is enabled - model can use generate_image tool
                 if metadata.get('params', {}).get('function_calling') == 'legacy':
                     form_data = await chat_image_generation_handler(request, form_data, extra_params, user)
-
-        if 'code_interpreter' in features and features['code_interpreter']:
-            engine = await Config.get('code_interpreter.engine', 'pyodide')
-
-            # Skip XML-tag prompt injection when native FC is enabled —
-            # execute_code will be injected as a builtin tool instead
-            if metadata.get('params', {}).get('function_calling') == 'legacy':
-                ci_prompt_template = await Config.get('code_interpreter.prompt_template')
-                prompt = ci_prompt_template if ci_prompt_template != '' else DEFAULT_CODE_INTERPRETER_PROMPT
-
-                # Append filesystem awareness only for pyodide engine
-                if engine != 'jupyter':
-                    prompt += CODE_INTERPRETER_PYODIDE_PROMPT
-
-                form_data['messages'] = add_or_update_user_message(
-                    prompt,
-                    form_data['messages'],
-                )
-            else:
-                # Native FC: tool docstring can't be dynamic, so inject
-                # filesystem context into the system message for pyodide
-                # engine.  Appending to the system prompt (instead of the
-                # user message) keeps it in the stable cached prefix so
-                # providers with prefix caching don't re-bill the full
-                # conversation on every turn.
-                if engine != 'jupyter':
-                    form_data['messages'] = add_or_update_system_message(
-                        CODE_INTERPRETER_PYODIDE_PROMPT,
-                        form_data['messages'],
-                        append=True,
-                    )
 
     tool_ids = form_data.pop('tool_ids', None)
     terminal_id = form_data.pop('terminal_id', None)
@@ -3286,7 +3247,7 @@ async def get_event_emitter_and_caller(metadata):
         event_emitter = await get_event_emitter(metadata)
 
     # event_caller needs session_id — it calls back to a specific
-    # websocket session (used by direct tools, pyodide code interpreter).
+    # websocket session (used by direct tools).
     if metadata.get('session_id') and metadata.get('chat_id') and metadata.get('message_id'):
         event_caller = await get_event_call(metadata)
 
@@ -4461,8 +4422,8 @@ async def streaming_chat_response_handler(response, ctx):
     )
 
     # Standard streaming response handler
-    # event_caller is optional — only needed for direct (client-side) tools
-    # and pyodide code interpreter. Server-side tools work without it.
+    # event_caller is optional — only needed for direct (client-side) tools.
+    # Server-side tools work without it.
     if event_emitter:
         task_id = str(uuid4())  # Create a unique task ID.
         model_id = form_data.get('model', '')
@@ -4476,7 +4437,7 @@ async def streaming_chat_response_handler(response, ctx):
 
             def tag_output_handler(content_type, tags, output):
                 """
-                Detect special tags (reasoning, solution, code_interpreter) in streaming
+                Detect special tags (reasoning, solution) in streaming
                 content and create corresponding OR-aligned output items directly.
                 Operates on output items instead of content_blocks.
 
@@ -4558,7 +4519,6 @@ async def streaming_chat_response_handler(response, ctx):
                 output_type_map = {
                     'reasoning': 'reasoning',
                     'solution': 'message',  # solution tags just produce text
-                    'code_interpreter': 'open_webui:code_interpreter',
                 }
                 output_item_type = output_type_map.get(content_type, content_type)
 
@@ -4616,21 +4576,6 @@ async def streaming_chat_response_handler(response, ctx):
                                         'started_at': time.time(),
                                     }
                                 )
-                            elif output_item_type == 'open_webui:code_interpreter':
-                                output.append(
-                                    {
-                                        'type': 'open_webui:code_interpreter',
-                                        'id': output_id('ci'),
-                                        'status': 'in_progress',
-                                        'start_tag': start_tag,
-                                        'end_tag': end_tag,
-                                        'attributes': attributes,
-                                        'lang': attributes.get('lang', 'python'),
-                                        'code': '',
-                                        'output': None,
-                                        'started_at': time.time(),
-                                    }
-                                )
                             else:
                                 # solution or other text-producing tag
                                 output.append(
@@ -4652,8 +4597,6 @@ async def streaming_chat_response_handler(response, ctx):
                                 # Set the after_tag content on the new item
                                 if output_item_type == 'reasoning':
                                     output[-1]['content'] = [{'type': 'output_text', 'text': after_tag}]
-                                elif output_item_type == 'open_webui:code_interpreter':
-                                    output[-1]['code'] = after_tag
                                 else:
                                     set_last_text(output, after_tag)
 
@@ -4667,7 +4610,6 @@ async def streaming_chat_response_handler(response, ctx):
 
                 elif (
                     (last_type == 'reasoning' and content_type == 'reasoning')
-                    or (last_type == 'open_webui:code_interpreter' and content_type == 'code_interpreter')
                     or (last_type == 'message' and output[-1].get('_tag_type') == content_type)
                 ):
                     item = output[-1]
@@ -4680,8 +4622,6 @@ async def streaming_chat_response_handler(response, ctx):
                         block_content = ''
                         if parts and parts[-1].get('type') == 'output_text':
                             block_content = parts[-1].get('text', '')
-                    elif last_type == 'open_webui:code_interpreter':
-                        block_content = item.get('code', '')
                     else:
                         block_content = get_last_text(output)
 
@@ -4710,10 +4650,6 @@ async def streaming_chat_response_handler(response, ctx):
                                 item['ended_at'] = time.time()
                                 item['duration'] = int(item['ended_at'] - item['started_at'])
                                 item['status'] = 'completed'
-                            elif last_type == 'open_webui:code_interpreter':
-                                item['code'] = block_content
-                                item['ended_at'] = time.time()
-                                item['duration'] = int(item['ended_at'] - item['started_at'])
                             else:
                                 set_last_text(output, block_content)
                                 item['ended_at'] = time.time()
@@ -4867,27 +4803,6 @@ async def streaming_chat_response_handler(response, ctx):
 
             reasoning_tags_param = metadata.get('params', {}).get('reasoning_tags')
             DETECT_REASONING_TAGS = reasoning_tags_param is not False
-
-            # Legacy tool-calling only: native FC gets execute_code as a builtin tool.
-            # Same five authz gates as utils/tools.py get_builtin_tools.
-            features = metadata.get('features', {}) or {}
-            model_capabilities = model.get('info', {}).get('meta', {}).get('capabilities') or {}
-            builtin_tools_meta = model.get('info', {}).get('meta', {}).get('builtinTools', {})
-            DETECT_CODE_INTERPRETER = (
-                metadata.get('params', {}).get('function_calling') == 'legacy'
-                and bool(features.get('code_interpreter'))
-                and builtin_tools_meta.get('code_interpreter', True)
-                and await Config.get('code_interpreter.enable')
-                and model_capabilities.get('code_interpreter', True)
-                and (
-                    getattr(user, 'role', None) == 'admin'
-                    or await has_permission(
-                        getattr(user, 'id', ''),
-                        'features.code_interpreter',
-                        await Config.get('user.permissions'),
-                    )
-                )
-            )
 
             reasoning_tags = []
             if DETECT_REASONING_TAGS:
@@ -5578,7 +5493,7 @@ async def streaming_chat_response_handler(response, ctx):
                                         content_parts.append(value)
 
                                         # Check if we're inside a tag-based block
-                                        # (reasoning, code_interpreter, or solution).
+                                        # (reasoning or solution).
                                         # If so, append to the existing in-progress
                                         # item instead of creating a new message —
                                         # otherwise tag_output_handler re-detects the
@@ -5592,7 +5507,6 @@ async def streaming_chat_response_handler(response, ctx):
                                             and last_item.get('attributes', {}).get('type') != 'reasoning_content'
                                             and (
                                                 last_item_type == 'reasoning'
-                                                or last_item_type == 'open_webui:code_interpreter'
                                                 or (
                                                     last_item_type == 'message'
                                                     and last_item.get('_tag_type') is not None
@@ -5602,9 +5516,7 @@ async def streaming_chat_response_handler(response, ctx):
 
                                         if inside_tag_block:
                                             # Append to the existing tag-based item
-                                            if last_item_type == 'open_webui:code_interpreter':
-                                                last_item['code'] = last_item.get('code', '') + value
-                                            elif last_item_type == 'reasoning':
+                                            if last_item_type == 'reasoning':
                                                 parts = last_item.get('content', [])
                                                 if parts and parts[-1].get('type') == 'output_text':
                                                     append_to_text_field(parts[-1], 'text', value)
@@ -5672,18 +5584,6 @@ async def streaming_chat_response_handler(response, ctx):
                                             )
                                             if solution_output is not None:
                                                 tag_output = solution_output
-
-                                        if DETECT_CODE_INTERPRETER:
-                                            code_output, end = tag_output_handler(
-                                                'code_interpreter',
-                                                DEFAULT_CODE_INTERPRETER_TAGS,
-                                                output,
-                                            )
-                                            if code_output is not None:
-                                                tag_output = code_output
-
-                                            if end:
-                                                break
 
                                         target_index = len(output) - 1
                                         target_item = output[target_index] if target_index >= 0 else {}
@@ -6343,196 +6243,6 @@ async def streaming_chat_response_handler(response, ctx):
                     log.warning('Tool-call iteration limit reached (%s)', max_tool_call_iterations)
                     error_content = f'Tool-call limit reached ({max_tool_call_iterations} iterations).'
                     await emit_message_error(error_content)
-
-                if DETECT_CODE_INTERPRETER:
-                    MAX_RETRIES = 5
-                    retries = 0
-
-                    while output and output[-1].get('type') == 'open_webui:code_interpreter' and retries < MAX_RETRIES:
-                        await event_emitter(
-                            {
-                                'type': 'chat:completion',
-                                'data': {
-                                    'output': full_output(),
-                                },
-                            }
-                        )
-
-                        retries += 1
-                        log.debug('Attempt count: %s', retries)
-
-                        ci_item = output[-1]
-                        ci_output = ''
-                        try:
-                            if ci_item.get('attributes', {}).get('type') == 'code':
-                                code = ci_item.get('code', '')
-                                # Sanitize code (strips ANSI codes and markdown fences)
-                                code = sanitize_code(code)
-
-                                if CODE_INTERPRETER_BLOCKED_MODULES:
-                                    blocking_code = textwrap.dedent(f"""
-                                        import builtins
-    
-                                        BLOCKED_MODULES = {CODE_INTERPRETER_BLOCKED_MODULES}
-    
-                                        _real_import = builtins.__import__
-                                        def restricted_import(name, globals=None, locals=None, fromlist=(), level=0):
-                                            if name.split('.')[0] in BLOCKED_MODULES:
-                                                importer_name = globals.get('__name__') if globals else None
-                                                if importer_name == '__main__':
-                                                    raise ImportError(
-                                                        f"Direct import of module {{name}} is restricted."
-                                                    )
-                                            return _real_import(name, globals, locals, fromlist, level)
-    
-                                        builtins.__import__ = restricted_import
-                                    """)
-                                    code = blocking_code + '\n' + code
-
-                                ci_engine = await Config.get('code_interpreter.engine')
-                                if ci_engine == 'pyodide':
-                                    ci_output = await event_caller(
-                                        {
-                                            'type': 'execute:python',
-                                            'data': {
-                                                'id': str(uuid4()),
-                                                'code': code,
-                                                'session_id': metadata.get('session_id', None),
-                                                'files': metadata.get('files', []),
-                                            },
-                                        }
-                                    )
-                                elif ci_engine == 'jupyter':
-                                    ci_output = await execute_code_jupyter(
-                                        await Config.get('code_interpreter.jupyter.url'),
-                                        code,
-                                        (
-                                            await Config.get('code_interpreter.jupyter.auth_token')
-                                            if await Config.get('code_interpreter.jupyter.auth') == 'token'
-                                            else None
-                                        ),
-                                        (
-                                            await Config.get('code_interpreter.jupyter.auth_password')
-                                            if await Config.get('code_interpreter.jupyter.auth') == 'password'
-                                            else None
-                                        ),
-                                        await Config.get('code_interpreter.jupyter.timeout'),
-                                    )
-                                else:
-                                    ci_output = {'stdout': 'Code interpreter engine not configured.'}
-
-                                log.debug('Code interpreter output: %s', ci_output)
-
-                                # Handle error responses from event_caller
-                                # (e.g. session disconnected, timeout)
-                                if isinstance(ci_output, dict) and ci_output.get('error'):
-                                    ci_output = {'stderr': ci_output['error']}
-
-                                if isinstance(ci_output, dict):
-                                    stdout = ci_output.get('stdout', '')
-
-                                    if isinstance(stdout, str):
-                                        stdoutLines = stdout.split('\n')
-                                        for idx, line in enumerate(stdoutLines):
-                                            if re.match(r'data:image/\w+;base64', line):
-                                                image_url = await get_image_url_from_base64(
-                                                    request,
-                                                    line,
-                                                    metadata,
-                                                    user,
-                                                )
-                                                if image_url:
-                                                    stdoutLines[idx] = f'![Output Image]({image_url})'
-
-                                        ci_output['stdout'] = '\n'.join(stdoutLines)
-
-                                    result = ci_output.get('result', '')
-
-                                    if isinstance(result, str):
-                                        resultLines = result.split('\n')
-                                        for idx, line in enumerate(resultLines):
-                                            if re.match(r'data:image/\w+;base64', line):
-                                                image_url = await get_image_url_from_base64(
-                                                    request,
-                                                    line,
-                                                    metadata,
-                                                    user,
-                                                )
-                                                resultLines[idx] = f'![Output Image]({image_url})'
-                                        ci_output['result'] = '\n'.join(resultLines)
-                        except Exception as e:
-                            ci_output = str(e)
-
-                        ci_item['output'] = ci_output
-                        ci_item['status'] = 'completed'
-
-                        output.append(
-                            {
-                                'type': 'message',
-                                'id': output_id('msg'),
-                                'status': 'in_progress',
-                                'role': 'assistant',
-                                'content': [{'type': 'output_text', 'text': ''}],
-                            }
-                        )
-
-                        await event_emitter(
-                            {
-                                'type': 'chat:completion',
-                                'data': {
-                                    'output': full_output(),
-                                },
-                            }
-                        )
-
-                        try:
-                            new_form_data = {
-                                **form_data,
-                                'model': model_id,
-                                'stream': True,
-                                'metadata': metadata,
-                                'messages': [
-                                    *form_data['messages'],
-                                    *convert_output_to_messages(
-                                        output,
-                                        raw=True,
-                                        reasoning_format=get_reasoning_format(model),
-                                        flatten_tool_images=True,
-                                    ),
-                                ],
-                            }
-
-                            if filter_functions:
-                                new_form_data, _ = await process_filter_functions(
-                                    request=request,
-                                    filter_context=filter_context,
-                                    filter_functions=filter_functions,
-                                    filter_type='request',
-                                    form_data=new_form_data,
-                                    extra_params=extra_params,
-                                )
-
-                            new_form_data = normalize_messages_for_model(new_form_data)
-
-                            res = await generate_chat_completion(
-                                request,
-                                new_form_data,
-                                user,
-                                bypass_system_prompt=True,
-                            )
-
-                            if isinstance(res, StreamingResponse):
-                                await stream_body_handler(res, new_form_data)
-                            elif getattr(res, 'status_code', 200) >= 400:
-                                await emit_message_error(get_message_error_content(get_response_error_detail(res)))
-                                break
-                            else:
-                                break
-                        except Exception as e:
-                            error_content = get_message_error_content(e)
-                            log.exception('Code interpreter continuation failed: %s', error_content)
-                            await emit_message_error(error_content)
-                            break
 
                 # Mark all in-progress items as completed
                 for item in output:

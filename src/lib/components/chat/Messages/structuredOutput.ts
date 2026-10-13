@@ -16,8 +16,6 @@ export type OutputItem = {
 	output?: OutputContentPart[];
 	files?: unknown;
 	embeds?: unknown;
-	code?: string;
-	lang?: string;
 	duration?: number | string | null;
 	action?: Record<string, unknown>;
 	actions?: Array<Record<string, unknown>>;
@@ -37,7 +35,6 @@ export type OutputDetailToken = {
 		arguments?: string;
 		files?: string;
 		embeds?: string;
-		output?: string;
 		status?: string;
 	};
 };
@@ -85,7 +82,6 @@ type ResponseStreamEvent = {
 const GROUPABLE_OUTPUT_TYPES = new Set([
 	'reasoning',
 	'function_call',
-	'open_webui:code_interpreter',
 	'web_search_call',
 	'file_search_call',
 	'computer_call'
@@ -254,24 +250,6 @@ function buildReasoningToken(item: OutputItem, isLastItem: boolean) {
 	};
 }
 
-function buildCodeInterpreterToken(item: OutputItem, isLastItem: boolean) {
-	const duration = item.duration ?? '';
-	const isDone = isDoneStatus(item.status) || item.duration !== undefined || !isLastItem;
-	const code = item.code ?? '';
-	const lang = item.lang ?? 'python';
-
-	return {
-		summary: isDone ? 'Analyzed' : 'Analyzing...',
-		text: code ? `\`\`\`${lang}\n${code}\n\`\`\`` : '',
-		attributes: {
-			type: 'code_interpreter',
-			done: isDone ? 'true' : 'false',
-			duration: String(duration),
-			output: stringifyAttribute(item.output)
-		}
-	};
-}
-
 function getOpenAIToolSummary(item: OutputItem): string {
 	if (item.type === 'web_search_call') {
 		const action = item.action ?? {};
@@ -331,9 +309,6 @@ function buildDetailToken(
 	}
 	if (item.type === 'reasoning') {
 		return buildReasoningToken(item, isLastItem);
-	}
-	if (item.type === 'open_webui:code_interpreter') {
-		return buildCodeInterpreterToken(item, isLastItem);
 	}
 	if (item.type && OPENAI_TOOL_NAMES[item.type]) {
 		return buildOpenAIToolToken(item, isLastItem);
@@ -623,11 +598,6 @@ export function applyResponseStreamEvent(
 			item.summary = [...(item.summary ?? [])];
 			const part = ensurePart(item.summary, summaryIndex, { type: 'summary_text', text: '' });
 			part.text = appendDelta(part.text ?? '', event.delta);
-			return nextOutput;
-		}
-
-		if (item.type === 'open_webui:code_interpreter') {
-			item.code = `${item.code ?? ''}${event.delta ?? ''}`;
 			return nextOutput;
 		}
 

@@ -1249,10 +1249,7 @@
 
 						{#if Object.keys(capabilities).filter((key) => capabilities[key]).length > 0}
 							{@const availableFeatures = Object.entries(capabilities)
-								.filter(
-									([key, value]) =>
-										value && ['web_search', 'code_interpreter', 'image_generation'].includes(key)
-								)
+								.filter(([key, value]) => value && ['web_search', 'image_generation'].includes(key))
 								.map(([key, value]) => key)}
 
 							{#if availableFeatures.length > 0}

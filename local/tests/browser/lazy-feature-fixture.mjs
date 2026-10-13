@@ -39,7 +39,7 @@ const user = {
 			call: true,
 			file_upload: true
 		},
-		features: { notes: true, automations: true, calendar: true, code_interpreter: true },
+		features: { notes: true, automations: true, calendar: true },
 		workspace: { models: true, knowledge: true, prompts: true, tools: true }
 	}
 };
@@ -177,7 +177,6 @@ function createConfig() {
 			enable_ldap: false,
 			enable_web_search: false,
 			enable_image_generation: false,
-			enable_code_interpreter: false,
 			enable_code_execution: false,
 			enable_channels: false,
 			enable_calendar: true,
@@ -197,7 +196,7 @@ function createConfig() {
 			},
 			{ title: ['Write something', 'clear and kind'], content: 'Help me write a friendly message.' }
 		],
-		code: { engine: 'pyodide', interpreter_engine: 'pyodide' },
+		code: { engine: 'pyodide' },
 		audio: { tts: { engine: '', voice: '', split_on: 'punctuation' }, stt: { engine: 'web' } },
 		file: { max_size: 25, max_count: 10, image_compression: { width: 1024, height: 1024 } },
 		permissions: user.permissions,

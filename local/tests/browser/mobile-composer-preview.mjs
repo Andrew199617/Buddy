@@ -371,7 +371,7 @@ async function enableComposerFixtures({ context, page }) {
 				features: {
 					...current.features,
 					enable_tool_permissions: true,
-					enable_code_interpreter: true,
+					enable_image_generation: true,
 					enable_web_search: true
 				}
 			};
@@ -386,7 +386,7 @@ async function enableComposerFixtures({ context, page }) {
 						...model.info?.meta,
 						capabilities: {
 							...model.info?.meta?.capabilities,
-							code_interpreter: true,
+							image_generation: true,
 							web_search: true
 						}
 					}
@@ -571,14 +571,14 @@ async function inlineComposerToggle(browser) {
 		await page.locator(toolsTrigger).tap();
 		const menu = page.locator(toolsMenu);
 		await menu.waitFor({ state: 'visible' });
-		const codeToggle = menu.getByRole('button', { name: 'Code Interpreter', exact: true });
-		await codeToggle.tap();
-		assert.equal(await codeToggle.getAttribute('aria-pressed'), 'true',
+		const imageToggle = menu.getByRole('button', { name: 'Image', exact: true });
+		await imageToggle.tap();
+		assert.equal(await imageToggle.getAttribute('aria-pressed'), 'true',
 			'A harmless composer flag can be selected in the menu');
 		await focused(page, draft, 'Selecting a composer flag preserves draft focus');
 		await closeActionMenu(page, toolsTrigger, toolsMenu);
 		const inline = page.locator('.buddy-composer').getByRole('button', {
-			name: 'Disable Code Interpreter', exact: true
+			name: 'Disable Image Generation', exact: true
 		});
 		await inline.tap();
 		await inline.waitFor({ state: 'detached' });
@@ -586,7 +586,7 @@ async function inlineComposerToggle(browser) {
 
 		await page.locator(toolsTrigger).tap();
 		await menu.waitFor({ state: 'visible' });
-		await codeToggle.tap();
+		await imageToggle.tap();
 		await closeActionMenu(page, toolsTrigger, toolsMenu);
 		await inline.waitFor({ state: 'visible' });
 		await focused(page, draft, 'Escape closes an owned menu without clearing the chosen control');
@@ -968,7 +968,7 @@ async function unfocusedToolsAnchor(browser) {
 }
 
 async function toolsLabelMetrics(page) {
-	return page.locator(toolsMenu).getByRole('button', { name: 'Code Interpreter', exact: true })
+	return page.locator(toolsMenu).getByRole('button', { name: 'Web Search', exact: true })
 		.evaluate((button) => {
 			const labels = button.querySelectorAll('.truncate');
 			const label = labels[labels.length - 1];
@@ -987,7 +987,7 @@ async function toolsLabelMetrics(page) {
 }
 
 function assertFullToolsLabel(label) {
-	assert.equal(label.text, 'Code Interpreter');
+	assert.equal(label.text, 'Web Search');
 	assert.ok(label.scrollWidth <= label.width + 1, 'The complete tool label fits its available width');
 	assert.ok(label.scrollHeight <= label.height + 1, 'The complete tool label fits its available height');
 }
@@ -1038,17 +1038,17 @@ async function frostedActionMenu(browser, trigger, menu, rowName, label, theme) 
 		const composer = await page.locator('.buddy-composer').boundingBox();
 		const button = await page.locator(trigger).boundingBox();
 		const metrics = await actionMenuMetrics(page, menu, rowName);
-		let codeLabel = null;
-		let largeCodeLabel = null;
+		let toolLabel = null;
+		let largeToolLabel = null;
 		if (label === 'tools') {
-			codeLabel = await toolsLabelMetrics(page);
-			assertFullToolsLabel(codeLabel);
+			toolLabel = await toolsLabelMetrics(page);
+			assertFullToolsLabel(toolLabel);
 			await page.screenshot({ path: resolve(outputDirectory,
 				engineName + '-frosted-tools-' + theme + '-normal.png') });
-			largeCodeLabel = await verifyToolsLargeText(page, theme, codeLabel);
+			largeToolLabel = await verifyToolsLargeText(page, theme, toolLabel);
 		}
 		writeFileSync(resolve(outputDirectory, engineName + '-frosted-' + label + '-' + theme + '-geometry.json'),
-			JSON.stringify({ composer, button, metrics, codeLabel, largeCodeLabel }, null, 2));
+			JSON.stringify({ composer, button, metrics, toolLabel, largeToolLabel }, null, 2));
 		assertFrostedMenu(metrics);
 		assertActionMenuAnchor(metrics.panel, button, true);
 		await focused(page, draft, 'The frosted action menu preserves draft keyboard focus');
@@ -1428,7 +1428,7 @@ async function iphoneNewChatAction(browser, trigger, menu, label, keyboardHeight
 		await noDraftBlur(page);
 		await verifyLastIphoneActionRow(session, menu, name);
 		if (label === 'tools') {
-			const option = page.locator(menu).getByRole('button', { name: 'Code Interpreter', exact: true });
+			const option = page.locator(menu).getByRole('button', { name: 'Image', exact: true });
 			await option.tap();
 			assert.equal(await option.getAttribute('aria-pressed'), 'true', 'A harmless Tools option can be selected');
 			await focused(page, '', 'Selecting an iPhone Tools option retains the empty draft keyboard');
@@ -1449,7 +1449,7 @@ async function iphoneScrollableToolsFocus(browser) {
 		const menu = page.locator(toolsMenu);
 		await menu.waitFor({ state: 'visible' });
 		await menu.getByRole('button', { name: 'Web Search', exact: true }).tap();
-		await menu.getByRole('button', { name: 'Code Interpreter', exact: true }).tap();
+		await menu.getByRole('button', { name: 'Image', exact: true }).tap();
 		await menu.getByRole('button', { name: /^Tools\s+1$/ }).tap();
 		await menu.getByRole('button', { name: 'Preview helper', exact: true }).tap();
 		await page.keyboard.press('Escape');

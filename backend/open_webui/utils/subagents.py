@@ -308,12 +308,6 @@ async def delegate(
         return 'Error: background sub-agents are disabled in settings.'
 
     features = copy.deepcopy(metadata.get('features') or {})
-    if (
-        background
-        and features.get('code_interpreter')
-        and await Config.get('code_interpreter.engine', 'pyodide') != 'jupyter'
-    ):
-        features.pop('code_interpreter')
     run = {
         'model_id': metadata.get('model_id') or (metadata.get('model') or {}).get('id'),
         'session_id': metadata.get('session_id'),

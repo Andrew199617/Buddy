@@ -4,7 +4,6 @@
 
 	import SensitiveInput from '$lib/components/common/SensitiveInput.svelte';
 
-	import Textarea from '$lib/components/common/Textarea.svelte';
 	import Switch from '$lib/components/common/Switch.svelte';
 	import AdminSettingField from './AdminSettingField.svelte';
 	import AdminSettingRow from './AdminSettingRow.svelte';
@@ -20,8 +19,6 @@
 	let engines = ['pyodide', 'jupyter'];
 	const inputClass =
 		'w-full h-7 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-xs text-gray-700 outline-hidden transition-colors placeholder:text-gray-300 focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300 dark:placeholder:text-gray-700 dark:focus:border-blue-500';
-	const textareaClass =
-		'w-full rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 py-1.5 text-xs text-gray-700 outline-hidden transition-colors placeholder:text-gray-300 focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300 dark:placeholder:text-gray-700 dark:focus:border-blue-500';
 
 	const submitHandler = async () => {
 		const res = await setCodeExecutionConfig(localStorage.token, config);
@@ -161,135 +158,6 @@
 							/>
 						</AdminSettingField>
 					{/if}
-				{/if}
-			</AdminSettingSection>
-
-			<AdminSettingSection
-				title={$i18n.t('settings.admin.codeExecution.sections.codeInterpreter.title')}
-			>
-				<AdminSettingRow
-					label={$i18n.t('settings.admin.codeExecution.enableCodeInterpreter.label')}
-					description={$i18n.t('settings.admin.codeExecution.enableCodeInterpreter.description')}
-					let:labelId
-				>
-					<Switch bind:state={config.ENABLE_CODE_INTERPRETER} ariaLabelledbyId={labelId} />
-				</AdminSettingRow>
-
-				{#if config.ENABLE_CODE_INTERPRETER}
-					<AdminSettingRow
-						label={$i18n.t('settings.admin.codeExecution.codeInterpreterEngine.label')}
-						description={config.CODE_INTERPRETER_ENGINE === 'jupyter'
-							? $i18n.t(
-									'Warning: Jupyter execution enables arbitrary code execution, posing severe security risks\u2014proceed with extreme caution.'
-								)
-							: $i18n.t('settings.admin.codeExecution.codeInterpreterEngine.description')}
-					>
-						<SettingsSelect
-							bind:value={config.CODE_INTERPRETER_ENGINE}
-							placeholder={$i18n.t('Select a engine')}
-							required
-						>
-							<option disabled selected value="">{$i18n.t('Select a engine')}</option>
-							{#each engines as engine}
-								<option value={engine}>{engine}{engine === 'jupyter' ? ' (Legacy)' : ''}</option>
-							{/each}
-						</SettingsSelect>
-					</AdminSettingRow>
-
-					{#if config.CODE_INTERPRETER_ENGINE === 'jupyter'}
-						<AdminSettingField
-							label={$i18n.t('settings.admin.codeExecution.codeInterpreterJupyterUrl.label')}
-							description={$i18n.t(
-								'settings.admin.codeExecution.codeInterpreterJupyterUrl.description'
-							)}
-						>
-							<input
-								class={inputClass}
-								type="text"
-								placeholder={$i18n.t('Enter Jupyter URL')}
-								bind:value={config.CODE_INTERPRETER_JUPYTER_URL}
-								autocomplete="off"
-							/>
-						</AdminSettingField>
-
-						<!-- LICENSE covers this Open WebUI wordmark.
-							Do not alter, remove, obscure, or replace it except as LICENSE permits:
-							https://docs.openwebui.com/license. -->
-						<AdminSettingRow
-							label={$i18n.t('settings.admin.codeExecution.codeInterpreterJupyterAuth.label')}
-							description={$i18n.t(
-								'settings.admin.codeExecution.codeInterpreterJupyterAuth.description'
-							)}
-						>
-							<SettingsSelect
-								bind:value={config.CODE_INTERPRETER_JUPYTER_AUTH}
-								placeholder={$i18n.t('Select an auth method')}
-							>
-								<option selected value="">{$i18n.t('None')}</option>
-								<option value="token">{$i18n.t('Token')}</option>
-								<option value="password">{$i18n.t('Password')}</option>
-							</SettingsSelect>
-						</AdminSettingRow>
-
-						{#if config.CODE_INTERPRETER_JUPYTER_AUTH}
-							<AdminSettingField
-								label={config.CODE_INTERPRETER_JUPYTER_AUTH === 'password'
-									? $i18n.t('settings.admin.codeExecution.codeInterpreterJupyterAuthPassword.label')
-									: $i18n.t('settings.admin.codeExecution.codeInterpreterJupyterAuthToken.label')}
-								description={$i18n.t(
-									'settings.admin.codeExecution.codeInterpreterJupyterAuthPassword.description'
-								)}
-							>
-								{#if config.CODE_INTERPRETER_JUPYTER_AUTH === 'password'}
-									<SensitiveInput
-										variant="settings"
-										type="text"
-										placeholder={$i18n.t('Enter Jupyter Password')}
-										bind:value={config.CODE_INTERPRETER_JUPYTER_AUTH_PASSWORD}
-										autocomplete="off"
-									/>
-								{:else}
-									<SensitiveInput
-										variant="settings"
-										type="text"
-										placeholder={$i18n.t('Enter Jupyter Token')}
-										bind:value={config.CODE_INTERPRETER_JUPYTER_AUTH_TOKEN}
-										autocomplete="off"
-									/>
-								{/if}
-							</AdminSettingField>
-						{/if}
-
-						<AdminSettingField
-							label={$i18n.t('settings.admin.codeExecution.codeInterpreterJupyterTimeout.label')}
-							description={$i18n.t(
-								'settings.admin.codeExecution.codeInterpreterJupyterTimeout.description'
-							)}
-						>
-							<input
-								class={inputClass}
-								type="number"
-								bind:value={config.CODE_INTERPRETER_JUPYTER_TIMEOUT}
-								placeholder={$i18n.t('e.g. 60')}
-								autocomplete="off"
-							/>
-						</AdminSettingField>
-					{/if}
-
-					<AdminSettingField
-						label={$i18n.t('settings.admin.codeExecution.codeInterpreterPromptTemplate.label')}
-						description={$i18n.t(
-							'settings.admin.codeExecution.codeInterpreterPromptTemplate.description'
-						)}
-					>
-						<Textarea
-							className={textareaClass}
-							bind:value={config.CODE_INTERPRETER_PROMPT_TEMPLATE}
-							placeholder={$i18n.t(
-								'Leave empty to use the default prompt, or enter a custom prompt'
-							)}
-						/>
-					</AdminSettingField>
 				{/if}
 			</AdminSettingSection>
 		{/if}
