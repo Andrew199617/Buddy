@@ -44,7 +44,7 @@
 	);
 	$: enabledCapabilities = Object.entries(defaultCapabilities ?? {}).filter(([_, value]) => value);
 	$: availableFeatures = enabledCapabilities
-		.filter(([key]) => ['web_search', 'code_interpreter', 'image_generation'].includes(key))
+		.filter(([key]) => ['web_search', 'image_generation'].includes(key))
 		.map(([key]) => key);
 	$: translatedPromptLocales = Object.entries(promptSuggestionsI18n ?? {})
 		.filter(([_, value]) => Array.isArray(value?.suggestion_prompts))

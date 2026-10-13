@@ -54,10 +54,6 @@
 			label: $i18n.t('settings.admin.models.builtinTools.imageGeneration.label'),
 			description: $i18n.t('settings.admin.models.builtinTools.imageGeneration.description')
 		},
-		code_interpreter: {
-			label: $i18n.t('settings.admin.models.builtinTools.codeInterpreter.label'),
-			description: $i18n.t('settings.admin.models.builtinTools.codeInterpreter.description')
-		},
 		tasks: {
 			label: $i18n.t('settings.admin.models.builtinTools.tasks.label'),
 			description: $i18n.t('settings.admin.models.builtinTools.tasks.description')
