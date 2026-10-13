@@ -267,6 +267,14 @@ async def check_folder_on_machine(machine_id: str, form_data: FolderCheckForm, u
         raise _bad_request(error)
 
 
+@router.get('/machines/{machine_id}/agents')
+async def get_machine_agents(machine_id: str, path: str, user=Depends(get_machine_user)):
+    try:
+        return await service.server_agent_files(user, machine_id, path)
+    except SubscriptionError as error:
+        raise _bad_request(error)
+
+
 @router.get('/folders/{folder_id}/project')
 async def get_folder_project(folder_id: str, user=Depends(get_machine_user)):
     return await service.describe_folder_project(user, folder_id)
@@ -276,14 +284,6 @@ async def get_folder_project(folder_id: str, user=Depends(get_machine_user)):
 async def save_folder_project(folder_id: str, form_data: FolderProjectForm, user=Depends(get_machine_session_user)):
     try:
         return await service.save_folder_project(user, folder_id, form_data.mode, form_data.paths)
-    except SubscriptionError as error:
-        raise _bad_request(error)
-
-
-@router.get('/folders/{folder_id}/agents')
-async def get_folder_agents(folder_id: str, user=Depends(get_machine_user)):
-    try:
-        return await service.folder_agent_files(user, folder_id)
     except SubscriptionError as error:
         raise _bad_request(error)
 

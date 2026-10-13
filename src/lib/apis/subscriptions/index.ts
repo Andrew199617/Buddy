@@ -504,13 +504,15 @@ export const checkMachineFolder = async (
 export type AgentFileText = { path: string; content: string };
 
 /**
- * The agent files in this person's project folder on This server for a chat
- * folder. Agents on Buddy app computers are read through the relay instead.
- * Throws the server's reason when there are none to read.
+ * The agent files in a folder on This server, the chat's own folder. Agents on
+ * Buddy app computers are read through the relay instead. Throws the server's
+ * reason when they can't be read.
  */
-export const getFolderAgentFiles = async (
+export const getServerAgentFiles = async (
 	token: string,
-	folderId: string
+	machineId: string,
+	path: string
 ): Promise<{ files: AgentFileText[]; left_out: number }> => {
-	return subscriptionRequest(token, `/folders/${encodeURIComponent(folderId)}/agents`);
+	const query = new URLSearchParams({ path });
+	return subscriptionRequest(token, `/machines/${encodeURIComponent(machineId)}/agents?${query}`);
 };

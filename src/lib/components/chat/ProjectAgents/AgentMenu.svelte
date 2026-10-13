@@ -8,7 +8,7 @@
 
 	import { CompanionError } from '$lib/apis/companion';
 	import { RelayCompanionClient } from '$lib/apis/companion-relay';
-	import { getFolderAgentFiles, getFolderProject } from '$lib/apis/subscriptions';
+	import { getFolderProject, getServerAgentFiles } from '$lib/apis/subscriptions';
 	import {
 		projectTargets,
 		type ProjectTarget
@@ -115,9 +115,10 @@
 	}
 
 	/** This server is read by Buddy itself; other computers through the relay. */
-	async function readAgents(opened: ProjectTarget, chatFolderId: string): Promise<AgentListing> {
+	async function readAgents(opened: ProjectTarget): Promise<AgentListing> {
 		if (opened.computer.kind === 'server') {
-			const reply = await getFolderAgentFiles(localStorage.token, chatFolderId);
+			const machineId = opened.computer.machine_id;
+			const reply = await getServerAgentFiles(localStorage.token, machineId, opened.path);
 			return { status: 'ready', agents: agentsFromFiles(reply.files), leftOut: reply.left_out };
 		}
 		const client = new RelayCompanionClient(opened.computer.machine_id, localStorage.token);
@@ -137,8 +138,7 @@
 		if (request !== listRequest) return;
 
 		const opened = target;
-		const chatFolderId = targetFor;
-		if (!opened || !chatFolderId) {
+		if (!opened) {
 			list = {
 				phase: 'blocked',
 				message: $i18n.t("This chat's folder has no project folder on your computers.")
@@ -152,7 +152,7 @@
 		}
 
 		try {
-			const listing = await readAgents(opened, chatFolderId);
+			const listing = await readAgents(opened);
 			if (request !== listRequest) return;
 			if (listing.status === 'not_shared') {
 				list = {

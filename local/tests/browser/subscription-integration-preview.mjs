@@ -686,7 +686,12 @@ function createFixtures(mode = 'normal', role = 'admin') {
 				created_at: 1,
 				updated_at: 1
 			};
-		} else if (path === '/api/v1/subscriptions/folders/website/agents' && method === 'GET') {
+		} else if (path === '/api/v1/subscriptions/machines/local/agents' && method === 'GET') {
+			assert.equal(
+				url.searchParams.get('path'),
+				'C:\\baseball\\src',
+				"The chat folder's project folder is read"
+			);
 			requests.push({ method, path });
 			reply = {
 				files: [
@@ -3195,7 +3200,7 @@ async function projectAgentsServerCase(browser, profile) {
 				'The button names the agent chosen from This server'
 			);
 			assert.ok(
-				fixtures.requests.some((entry) => entry.path.endsWith('/folders/website/agents')),
+				fixtures.requests.some((entry) => entry.path.endsWith('/machines/local/agents')),
 				'Buddy reads This server itself'
 			);
 			assert.equal(

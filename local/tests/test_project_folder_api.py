@@ -256,64 +256,48 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
 
     # --- Agent files on This server -------------------------------------------
 
-    async def use_this_server(self, user_id=OWNER, folder_id='website'):
-        """A project folder on This server with one agent, chosen for the folder."""
+    def agent_project(self):
+        """A folder on This server with one agent."""
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         project = Path(temporary.name)
         agents = project / '.github' / 'agents'
         agents.mkdir(parents=True)
         (agents / 'reviewer.agent.md').write_text('Review.', encoding='utf-8')
-        folders = self.service.project_folders
-        local = {'local': folders.SavedPath(str(project), 'local')}
-        await folders.save_choice(user_id, folder_id, 'folder', local, {'local'})
         return project
 
-    async def test_the_owner_reads_the_agents_in_their_project_folder_on_this_server(self):
-        await self.use_this_server()
-        files = await self.service.folder_agent_files(OWNER_USER, 'website')
+    async def test_the_owner_reads_the_agents_in_a_folder_on_this_server(self):
+        project = self.agent_project()
+        files = await self.service.server_agent_files(OWNER_USER, 'local', str(project))
         self.assertEqual(files, {
             'files': [{'path': '.github/agents/reviewer.agent.md', 'content': 'Review.'}],
             'left_out': 0,
         })
 
-    async def test_a_subfolder_reads_the_project_folder_it_inherits(self):
-        await self.use_this_server()
-        self.service.project_folders.Folders.add('pages', user_id=OWNER, name='Pages', parent_id='website')
-        files = await self.service.folder_agent_files(OWNER_USER, 'pages')
-        self.assertEqual([file['path'] for file in files['files']], ['.github/agents/reviewer.agent.md'])
-
     async def test_only_the_server_owner_reads_this_server(self):
-        await self.use_this_server(user_id=MEMBER)
+        project = self.agent_project()
         with self.assertRaisesRegex(SubscriptionError, 'not available to you'):
-            await self.service.folder_agent_files(MEMBER_USER, 'website')
+            await self.service.server_agent_files(MEMBER_USER, 'local', str(project))
 
     async def test_nothing_is_read_while_the_policy_has_this_server_off(self):
-        await self.use_this_server()
+        project = self.agent_project()
         await self.service.save_policy({'server_machine': False})
         with self.assertRaisesRegex(SubscriptionError, 'not available to you'):
-            await self.service.folder_agent_files(OWNER_USER, 'website')
+            await self.service.server_agent_files(OWNER_USER, 'local', str(project))
 
-    async def test_a_folder_without_a_project_folder_on_this_server_has_no_agents_here(self):
-        with self.assertRaisesRegex(SubscriptionError, 'no project folder on This server'):
-            await self.service.folder_agent_files(OWNER_USER, 'website')
-        await self.save(OWNER_USER, 'folder', {'pc-1': 'C:\\code\\site'})
-        with self.assertRaisesRegex(SubscriptionError, 'no project folder on This server'):
-            await self.service.folder_agent_files(OWNER_USER, 'website')
+    async def test_other_computers_are_read_through_the_buddy_app(self):
+        with self.assertRaisesRegex(SubscriptionError, 'through the Buddy app'):
+            await self.service.server_agent_files(OWNER_USER, 'pc-1', 'C:\\code\\site')
+        self.assertEqual(self.machine.path_checks, [])
 
-    async def test_a_missing_project_folder_is_reported(self):
-        project = await self.use_this_server()
-        (project / '.github' / 'agents' / 'reviewer.agent.md').unlink()
-        (project / '.github' / 'agents').rmdir()
-        (project / '.github').rmdir()
-        project.rmdir()
+    async def test_a_relative_folder_is_refused(self):
+        with self.assertRaisesRegex(SubscriptionError, 'full path'):
+            await self.service.server_agent_files(OWNER_USER, 'local', 'code/site')
+
+    async def test_a_missing_folder_is_reported(self):
+        project = self.agent_project()
         with self.assertRaisesRegex(SubscriptionError, 'no longer exists on This server'):
-            await self.service.folder_agent_files(OWNER_USER, 'website')
-
-    async def test_a_folder_you_cannot_read_has_no_agents(self):
-        with self.assertRaises(self.service.HTTPException) as refused:
-            await self.service.folder_agent_files(OUTSIDER_USER, 'website')
-        self.assertEqual(refused.exception.status_code, 404)
+            await self.service.server_agent_files(OWNER_USER, 'local', str(project / 'gone'))
 
 if __name__ == '__main__':
     unittest.main()
