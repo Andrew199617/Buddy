@@ -320,13 +320,25 @@ export function choiceFromDraft(
 	return { mode, paths, machine_id: machineId, access: draft.access, offered };
 }
 
-export type PlanAccess = { name: string; access: SubscriptionAccess };
+export type PlanAccess = { id: string; name: string; access: SubscriptionAccess };
 
 /** Each plan that is on, and the access its new chats start with when the folder follows the plans. */
 export function planAccesses(project: FolderProject): PlanAccess[] {
 	// Every computer lists the same plans, the ones that are on.
 	const providers = project.computers[0]?.providers ?? [];
-	return providers.map((provider) => ({ name: provider.name, access: provider.access }));
+	return providers.map((provider) => ({
+		id: provider.id,
+		name: provider.name,
+		access: provider.access
+	}));
+}
+
+/**
+ * Plans whose Read files can reach past the folder: Codex's read-only sandbox blocks
+ * writes, not reads. Claude Code's file tools stay in the folder it starts in.
+ */
+export function plansReadingAnywhere(plans: PlanAccess[]): PlanAccess[] {
+	return plans.filter((plan) => plan.id === 'codex');
 }
 
 /** The access every plan starts with, or null when they differ or none is on. */

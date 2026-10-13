@@ -20,6 +20,7 @@ import {
 	needsAttention,
 	parentWithinRoot,
 	planAccesses,
+	plansReadingAnywhere,
 	projectSummary,
 	runOnValue,
 	sameDraft,
@@ -336,10 +337,12 @@ describe('the plans’ default access', () => {
 		};
 		const differing = planAccesses(project({ computers: [both] }));
 		expect(differing).toEqual([
-			{ name: 'Claude', access: 'full' },
-			{ name: 'ChatGPT', access: 'read' }
+			{ id: 'claude', name: 'Claude', access: 'full' },
+			{ id: 'codex', name: 'ChatGPT', access: 'read' }
 		]);
 		expect(sharedPlanAccess(differing)).toBeNull();
+		// Codex's read-only sandbox reads anywhere; Claude Code's reads stay in the folder.
+		expect(plansReadingAnywhere(differing).map((plan) => plan.name)).toEqual(['ChatGPT']);
 		expect(sharedPlanAccess(planAccesses(project()))).toBe('full');
 		expect(sharedPlanAccess(planAccesses(project({ computers: [] })))).toBeNull();
 	});
