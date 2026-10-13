@@ -4,7 +4,7 @@
 	import { getContext, onMount, tick, onDestroy } from 'svelte';
 	import type { Writable } from 'svelte/store';
 	import type { i18n as i18nType } from 'i18next';
-	import { config, pyodideWorker as pyodideWorkerStore } from '$lib/stores';
+	import { config } from '$lib/stores';
 
 	import { createPyodideWorker } from '$lib/pyodide/createPyodideWorker';
 	import { executeCode } from '$lib/apis/utils';
@@ -240,16 +240,8 @@
 
 		console.log(packages);
 
-		// Reuse the shared Pyodide worker when code interpreter is active,
-		// so files written here are immediately visible in PyodideFileNav.
-		// Otherwise fall back to a throwaway worker.
-		const sharedWorker = $pyodideWorkerStore;
-		const isShared = !!sharedWorker;
-		const worker = sharedWorker ?? createPyodideWorker();
-
-		if (!isShared) {
-			localPyodideWorker = worker;
-		}
+		const worker = createPyodideWorker();
+		localPyodideWorker = worker;
 
 		worker.postMessage({
 			id: id,
@@ -261,15 +253,13 @@
 			if (executing) {
 				executing = false;
 				stderr = 'Execution Time Limit Exceeded';
-				if (!isShared) {
-					worker.terminate();
-					localPyodideWorker = null;
-				}
+				worker.terminate();
+				localPyodideWorker = null;
 			}
 		}, 60000);
 
 		const handler = (event) => {
-			// Ignore messages from other requests on the shared worker
+			// Ignore messages for any other request
 			if (event.data?.id !== id) return;
 
 			console.log('pyodideWorker.onmessage', event);
@@ -341,9 +331,6 @@
 			clearTimeout(timeoutId);
 			worker.removeEventListener('message', handler);
 			executing = false;
-
-			// Signal PyodideFileNav to auto-refresh after execution
-			window.dispatchEvent(new Event('pyodide:files'));
 		};
 
 		worker.addEventListener('message', handler);
