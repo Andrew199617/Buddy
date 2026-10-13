@@ -20,21 +20,6 @@ export function fullAccessDescription(i18n: Translator): string {
 	);
 }
 
-/** Said once new chats with a plan start with the access the person allowed. */
-export function accessGrantedMessage(i18n: Translator, planName: string, access: string): string {
-	if (access === 'full') {
-		return i18n.t('New {{name}} chats now start with full access.', { name: planName });
-	}
-	return i18n.t('New {{name}} chats now start able to read files.', { name: planName });
-}
-
-/** The same warning for a default that follows each new chat to whichever computer it runs on. */
-export function fullAccessDefaultWarning(i18n: Translator): string {
-	return i18n.t(
-		'Buddy can then run commands as your account on the computer each of those chats runs on, and so can anyone who controls this Buddy server.'
-	);
-}
-
 export function fullAccessWarning(i18n: Translator): string {
 	return i18n.t(
 		'Buddy can then run commands on that computer as your account there, and so can anyone who controls this Buddy server.'

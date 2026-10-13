@@ -48,8 +48,8 @@ function project(overrides: Partial<FolderProject> = {}): FolderProject {
 		own: null,
 		inherited: null,
 		shared_instructions: false,
+		others_can_edit: false,
 		has_plans: true,
-		plans: [],
 		computers: [laptop, computer()],
 		...overrides
 	};
@@ -80,6 +80,24 @@ describe('the project folders a chat can open', () => {
 		const targets = projectTargets(chosen);
 		expect(targets.map((target) => target.path)).toEqual(['/home/sam/site', 'C:\\code\\site']);
 		expect(preferredTarget(targets)?.computer.name).toBe('Work PC');
+	});
+
+	it('opens the folder on the folder’s chosen computer first', () => {
+		const pc = computer();
+		const runsPlans = { ...laptop, providers: pc.providers };
+		const chosen = project({
+			computers: [pc, runsPlans],
+			own: {
+				...folderChoice({
+					laptop: { path: '/home/sam/site', problem: null },
+					'pc-1': { path: 'C:\\code\\site', problem: null }
+				}),
+				machine_id: 'laptop'
+			}
+		});
+		const targets = projectTargets(chosen);
+		expect(targets.map((target) => target.computer.machine_id)).toEqual(['laptop', 'pc-1']);
+		expect(preferredTarget(targets)?.computer.name).toBe('Laptop');
 	});
 
 	it('uses a parent folder’s choice and has none when the AI chooses', () => {

@@ -39,7 +39,8 @@
 	function chipLabel(label: string): string {
 		if (label === 'Project folder needs attention')
 			return $i18n.t('Project folder needs attention');
-		if (label === 'Just chat, no files') return $i18n.t('Just chat, no files');
+		if (label === 'Project folder not set') return $i18n.t('Project folder not set');
+		if (label === 'Detached') return $i18n.t('Detached');
 		if (label === 'AI chooses where to work') return $i18n.t('AI chooses where to work');
 		return label;
 	}
