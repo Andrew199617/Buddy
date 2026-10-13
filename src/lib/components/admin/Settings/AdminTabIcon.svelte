@@ -12,6 +12,7 @@
 	import QueueList from '$lib/components/icons/QueueList.svelte';
 	import SettingsAlt from '$lib/components/icons/SettingsAlt.svelte';
 	import SoundHigh from '$lib/components/icons/SoundHigh.svelte';
+	import Sparkles from '$lib/components/icons/Sparkles.svelte';
 	import UserCircle from '$lib/components/icons/UserCircle.svelte';
 	import WrenchAlt from '$lib/components/icons/WrenchAlt.svelte';
 
@@ -52,6 +53,8 @@
 			d="M4 11.5v4C4 17.43 7.58 19 12 19s8-1.57 8-3.5v-4"
 		/>
 	</svg>
+{:else if id === 'plans'}
+	<Sparkles {className} {strokeWidth} />
 {:else if id === 'subagents'}
 	<UserCircle {className} {strokeWidth} />
 {:else if id === 'evaluations'}

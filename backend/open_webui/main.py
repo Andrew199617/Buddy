@@ -172,6 +172,7 @@ from open_webui.routers import (
     pipelines,
     prompts,
     retrieval,
+    runners,
     scim,
     skills,
     subscriptions,
@@ -273,7 +274,13 @@ from open_webui.utils.plugin import install_tool_and_function_dependencies
 from open_webui.utils.redis import get_redis_client
 from open_webui.utils.session_pool import cleanup_response, get_client_timeout, get_session, stream_wrapper
 from open_webui.utils.subscriptions.common import SUBSCRIPTION_OWNED_BY
-from open_webui.utils.subscriptions.service import is_conflicting_preset_row
+from open_webui.utils.subscriptions.service import (
+    API_KEY_TARGET_MESSAGE,
+    REQUESTED_RUN_TARGET_KEY,
+    bind_chat_target,
+    is_conflicting_preset_row,
+    mark_run_targets_started,
+)
 from open_webui.utils.tool_approval import (
     ResolveToolCallForm,
     build_tool_approval_resume_payload,
@@ -357,6 +364,8 @@ async def lifespan(app: FastAPI):
     await seed_registered_defaults()
     await initialize_runtime_config(app)
     await migrate_legacy_webhook_config()
+    # Chats created from now on start where the composer's bar or their chat folder says.
+    await mark_run_targets_started()
     await publish_event(app, EVENTS.SYSTEM_STARTUP_STARTED, source='system')
 
     license_task = None
@@ -870,6 +879,7 @@ if ENABLE_ADMIN_ANALYTICS:
 app.include_router(utils.router, prefix='/api/v1/utils', tags=['utils'])
 app.include_router(terminals.router, prefix='/api/v1/terminals', tags=['terminals'])
 app.include_router(subscriptions.router, prefix='/api/v1/subscriptions', tags=['subscriptions'])
+app.include_router(runners.router, prefix='/api/v1/runners', tags=['runners'])
 app.include_router(backups.router, prefix='/api/v1/backups', tags=['backups'])
 app.include_router(automations.router, prefix='/api/v1/automations', tags=['automations'])
 app.include_router(calendar.router, prefix='/api/v1/calendars', tags=['calendars'])
@@ -1300,6 +1310,15 @@ async def chat_completion(
         if is_new_chat:
             metadata['chat_id'] = str(uuid4())
 
+        # Where a new or temporary chat runs, from the composer's bar. A saved
+        # chat's target was fixed when it started, so the body can't change it.
+        run_target = form_data.pop('run_target', None)
+        if run_target is not None and (is_new_chat or is_temporary_chat_id(metadata['chat_id'])):
+            if getattr(request.state, 'auth_type', None) == 'api_key':
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=API_KEY_TARGET_MESSAGE)
+            if is_temporary_chat_id(metadata['chat_id']):
+                metadata[REQUESTED_RUN_TARGET_KEY] = run_target
+
         initial_title_generation = None
         if is_new_chat and tasks and TASKS.TITLE_GENERATION in tasks:
             initial_title_generation = tasks.pop(TASKS.TITLE_GENERATION)
@@ -1415,6 +1434,9 @@ async def chat_completion(
                             variables=chat_variables,
                             folder_id=metadata.get('folder_id'),
                         ),
+                    )
+                    await bind_chat_target(
+                        user, chat_id, run_target, provider_id=(model.get('subscription') or {}).get('provider')
                     )
                     await publish_event(
                         request,

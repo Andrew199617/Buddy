@@ -46,6 +46,7 @@ from open_webui.utils.auth import (
     validate_password,
 )
 from open_webui.utils.chat_variables import ChatVariablesError, normalize_user_variables, validate_user_variables
+from open_webui.utils.subscriptions import service as subscription_service
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1064,6 +1065,11 @@ async def delete_user_by_id(
         result = await Auths.delete_auth_by_id(user_id, db=db)
 
         if result:
+            try:
+                await subscription_service.forget_user(user_id)
+            except Exception as error:
+                # The account is already gone; its machines simply stop being usable.
+                log.warning('Could not clean up the machines of deleted user %s: %s', user_id, error)
             await publish_event(
                 request,
                 EVENTS.USER_DELETED,

@@ -18,8 +18,9 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'backend'))
-from open_webui.utils.subscriptions import machines, runner
-from open_webui.utils.subscriptions.process import (
+from buddy_runner import runner
+from open_webui.utils.subscriptions import machines
+from buddy_runner.process import (
     MAX_CAPTURE_BYTES, MAX_PENDING_CHUNKS, MAX_STDERR_BYTES,
     OutputLimitError, ProcessClosedError,
 )
@@ -114,7 +115,7 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
         await process.close()
         self.assertTrue(process._confirmed_stopped.is_set())
         self.assertTrue(process._receiver.done())
-        self.assertTrue(process._websocket.closed)
+        self.assertTrue(process._channel.closed)
         self.assertTrue(process.cleanup_confirmed)
         self.assertTrue(process.disposal_started)
         self.assertTrue(native.disposal_started)
@@ -192,12 +193,12 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(not close.done() for close in closes))
         self.assertTrue(process.disposal_started)
         self.assertIsNone(process.returncode)
-        self.assertFalse(process._websocket.closed)
+        self.assertFalse(process._channel.closed)
         allow_ack.set()
         await asyncio.gather(*closes)
         self.assertEqual(closed_before_ack, [False])
         self.assertTrue(process._receiver.done())
-        self.assertTrue(process._websocket.closed)
+        self.assertTrue(process._channel.closed)
 
     async def test_wrong_pid_ack_does_not_confirm_and_timeout_fails(self):
         async def exchange(socket):
@@ -211,7 +212,7 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(TimeoutError, 'confirm'):
             await process.close(0.1)
         self.assertFalse(process._confirmed_stopped.is_set())
-        self.assertTrue(process._websocket.closed)
+        self.assertTrue(process._channel.closed)
 
     async def test_output_byte_limit_stops_remote_and_keeps_queue_bounded(self):
         async def exchange(socket):
@@ -351,7 +352,7 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
         cleanup_started = asyncio.Event()
         release_cleanup = asyncio.Event()
         original_send = runner.web.WebSocketResponse.send_json
-        original_cleanup = remote._dispose_failed_start
+        original_cleanup = remote.dispose_failed_start
 
         async def delayed_send(socket, event, *args, **kwargs):
             if event.get('type') == 'started':
@@ -365,7 +366,7 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
             await original_cleanup(*args)
 
         with patch.object(runner.web.WebSocketResponse, 'send_json', delayed_send), patch.object(
-            remote, '_dispose_failed_start', delayed_cleanup
+            remote, 'dispose_failed_start', delayed_cleanup
         ):
             startup = asyncio.create_task(remote.start_process(
                 [sys.executable, '-c', 'import time; time.sleep(30)'], str(self.root)
@@ -631,7 +632,7 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
         native = next(iter(host.processes))
         self.assertTrue(process.process_id)
         # The connection drops: Buddy never sends kill and never sees an acknowledgement.
-        await process._websocket.close()
+        await process._channel.close()
         await asyncio.wait_for(process._receiver, 5)
         self.assertFalse(process.cleanup_confirmed)
         self.assertEqual(process.returncode, -1)
@@ -759,7 +760,7 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
                 async with asyncio.timeout(5):
                     while not entered.is_set():
                         await asyncio.sleep(0.01)
-                await process._websocket.close()
+                await process._channel.close()
             await self.assert_registry_empty(host)
             self.assertTrue(native.cleanup_confirmed)
             self.assertFalse(host.stdin_workers)
@@ -791,7 +792,7 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
         text = ('café \U0001f600 line\n' * 20000) + 'end'
         encoded = text.encode('utf-8')
         with patch.object(runner, 'MAX_WEBSOCKET_MESSAGE_BYTES', 64 * 1024), patch.object(
-            machines, 'MAX_STDIN_MESSAGE_CHARS', 4096
+            machines.RemoteProcess, 'stdin_piece_chars', 4096
         ):
             process = await remote.start_process([sys.executable, '-c', fixture], str(self.root))
             await asyncio.wait_for(process.write(text), 10)
@@ -820,7 +821,7 @@ class RemoteCleanupTests(unittest.IsolatedAsyncioTestCase):
         remote = await self.fake_remote(exchange)
         process = await remote.start_process(['synthetic-fixture'], str(self.root))
         first, second = 'a' * 50, 'b' * 50
-        with patch.object(machines, 'MAX_STDIN_MESSAGE_CHARS', 8):
+        with patch.object(machines.RemoteProcess, 'stdin_piece_chars', 8):
             writes = [asyncio.create_task(process.write(first)), asyncio.create_task(process.write(second))]
             process.close_stdin()
             await asyncio.gather(*writes)

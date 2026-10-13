@@ -1167,6 +1167,16 @@
 									>
 										{$i18n.t('Manage Connections')}
 									</button>
+									<button
+										type="button"
+										class="focus-ring mt-1 rounded-lg px-0 py-1 text-[0.6875rem] font-normal leading-none text-gray-600 underline-offset-2 transition-colors duration-100 hover:text-gray-800 hover:underline focus:outline-hidden focus:underline dark:text-gray-300 dark:hover:text-gray-100"
+										on:click={() => {
+											show = false;
+											showSettings.set('machines');
+										}}
+									>
+										{$i18n.t('Use your Claude or ChatGPT plan')}
+									</button>
 								</div>
 							{:else}
 								<div class="">

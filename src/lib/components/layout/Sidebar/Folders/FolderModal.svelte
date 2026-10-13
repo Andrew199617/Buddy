@@ -12,6 +12,7 @@
 
 	import Textarea from '$lib/components/common/Textarea.svelte';
 	import Knowledge from '$lib/components/workspace/Models/Knowledge.svelte';
+	import ProjectFolderSection from '$lib/components/projectFolders/ProjectFolderSection.svelte';
 	import { getFolderById } from '$lib/apis/folders';
 	const i18n = getContext('i18n');
 
@@ -33,6 +34,7 @@
 	};
 
 	let loading = false;
+	let projectSection: ProjectFolderSection;
 
 	const submitHandler = async () => {
 		loading = true;
@@ -49,6 +51,13 @@
 			toast.error(
 				$i18n.t('Maximum number of files per folder is {{max}}.', { max: maxFileCount ?? 0 })
 			);
+			loading = false;
+			return;
+		}
+
+		// The project folder is saved first: if it is refused, nothing else changes.
+		const projectSaved = await projectSection?.save();
+		if (projectSaved === false) {
 			loading = false;
 			return;
 		}
@@ -240,6 +249,11 @@
 							</div>
 						</Knowledge>
 					</div>
+
+					{#if edit && folderId}
+						<hr class=" border-gray-50 dark:border-gray-850/30 my-2.5 w-full" />
+						<ProjectFolderSection bind:this={projectSection} {folderId} />
+					{/if}
 
 					<div class="flex justify-end pt-3 text-sm font-normal gap-1.5">
 						<button

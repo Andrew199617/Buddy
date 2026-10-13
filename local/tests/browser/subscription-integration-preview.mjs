@@ -10,7 +10,6 @@ import {
 
 const buildDirectory = process.env.BUDDY_UI_TEST_BUILD || resolve(workspace, 'build');
 const outputDirectory = resolve(workspace, 'local/tests/.qa/subscription-integration');
-const companionExpected = process.env.BUDDY_SUBSCRIPTION_TEST_COMPANION === '1';
 const selectedCases = new Set(
 	(process.argv.find((argument) => argument.startsWith('--only='))?.slice(7) || '')
 		.split(',')
@@ -72,8 +71,29 @@ function providerFixture(id, signedIn = id === 'codex') {
 		},
 		login: { state: 'idle' },
 		models: signedIn ? [{ id: subscriptionModel.id, name: subscriptionModel.name }] : [],
-		default_workspace: 'Synthetic workspace; no directory access'
+		default_workspace: 'Synthetic workspace; no directory access',
+		// Signs in with the computer's own CLI sign-in; no token or key is stored.
+		credential: { mode: 'machine', stored: {} }
 	};
+}
+
+// What administrators set in Admin Settings → AI plans.
+function policyFixture() {
+	return {
+		user_machines: 'all',
+		machine_group_ids: [],
+		plan_sign_in: true,
+		api_keys: true,
+		server_machine: true,
+		desktop_download_url: '',
+		owner_id: 'buddy-design-user'
+	};
+}
+
+// The part of the policy every user's Settings → Machines reads.
+function publicPolicyFixture() {
+	const { plan_sign_in, api_keys, desktop_download_url } = policyFixture();
+	return { plan_sign_in, api_keys, desktop_download_url };
 }
 
 function createFixtures(mode = 'normal', role = 'admin') {
@@ -202,6 +222,14 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			};
 			provider.models = [];
 		}
+		if (mode === 'computer-sign-in') {
+			// Claude is on and signed in on this server, but not yet on computer A.
+			provider.settings.enable = true;
+			provider.computers = [
+				{ machine_id: 'local', name: 'This server', online: true, state: 'ready' },
+				{ machine_id: 'runner-a', name: 'Synthetic computer A', online: true, state: 'signed_out' }
+			];
+		}
 		return provider;
 	}
 
@@ -329,6 +357,325 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		await route.fulfill({ status: 200, json: { machine, machines } });
 	}
 
+	// --- Chat folders' project folders and the chat's Project tab -------------
+	const runTargetModes = new Set(['run-target-new', 'run-target-bound']);
+	const projectModes = new Set([
+		'project-tab',
+		'folder-chip',
+		'folder-edit',
+		'folder-browse',
+		...runTargetModes
+	]);
+	const projectRelayBase = '/api/v1/runners/machines/pc-1/workspace';
+	const workPc = {
+		machine_id: 'pc-1',
+		name: 'Work PC',
+		kind: 'app',
+		online: true,
+		platform: 'win32',
+		can_browse: true,
+		folders: 'on',
+		providers: [{ id: 'claude', name: 'Claude', access: 'full' }],
+		recent_paths: ['C:\\code\\site']
+	};
+	// Folders on Work PC, for browsing its whole disk.
+	const workPcFolders = {
+		'C:\\': [{ name: 'code', path: 'C:\\code', hidden: false, link: false, selectable: true }],
+		'C:\\code': [
+			{ name: 'docs', path: 'C:\\code\\docs', hidden: false, link: false, selectable: true },
+			{ name: 'site', path: 'C:\\code\\site', hidden: false, link: false, selectable: true }
+		]
+	};
+	let projectChoice = {
+		folder_id: 'website',
+		folder_name: 'Website',
+		mode: 'folder',
+		paths: { 'pc-1': { path: 'C:\\code\\site', problem: null } }
+	};
+	const projectGrant = {
+		id: 'grant-code',
+		name: 'code',
+		path: 'C:\\code',
+		capabilities: { read: true, write: true, execute: true },
+		available: true,
+		unavailableReason: null
+	};
+	const projectListings = {
+		site: [
+			{ name: 'src', path: 'site/src', type: 'directory' },
+			{ name: 'README.md', path: 'site/README.md', type: 'file' }
+		],
+		'site/src': [{ name: 'app.ts', path: 'site/src/app.ts', type: 'file' }]
+	};
+	let readmeContent = '# Site\r\nHello\r\n';
+	let readmeVersion = 'readme-1';
+	const projectSaves = [];
+	const projectRelayClients = new Set();
+	let projectTerminal = null;
+
+	function folderProject() {
+		return {
+			folder_id: 'website',
+			folder_name: 'Website',
+			own: projectChoice,
+			inherited: null,
+			shared_instructions: false,
+			has_plans: true,
+			computers: [workPc]
+		};
+	}
+
+	function terminalFixture(status, output, exitCode = null) {
+		projectTerminal = { id: 'term-1', workspaceId: 'work-1', status, output, exitCode };
+		return { terminal: projectTerminal };
+	}
+
+	async function routeProjectRelay(route, request, url, relayPath) {
+		const method = request.method();
+		const headers = request.headers();
+		assert.equal(
+			headers.authorization,
+			'Bearer buddy-design-fake-token',
+			'The relay uses the Buddy sign-in'
+		);
+		assert.match(headers['x-buddy-relay-client'] || '', /^[A-Za-z0-9_-]{1,64}$/);
+		projectRelayClients.add(headers['x-buddy-relay-client']);
+		const body = request.postDataJSON();
+		if (method === 'GET' && relayPath === '/v1/grants') {
+			return { grants: [projectGrant] };
+		}
+		if (method === 'GET' && relayPath === '/v1/directories') {
+			assert.equal(url.searchParams.get('grantId'), 'grant-code');
+			const listing = projectListings[url.searchParams.get('path')];
+			assert.ok(listing, 'Browsing stays inside the project folder');
+			return { path: url.searchParams.get('path'), entries: listing };
+		}
+		if (method === 'GET' && relayPath === '/v1/files') {
+			assert.equal(url.searchParams.get('path'), 'site/README.md');
+			return { path: 'site/README.md', content: readmeContent, version: readmeVersion };
+		}
+		if (method === 'PUT' && relayPath === '/v1/files') {
+			projectSaves.push(body);
+			if (projectSaves.length === 4) {
+				return { status: 503, json: { detail: 'Work PC is offline.' } };
+			}
+			if (projectSaves.length === 2 && !body.overwrite) {
+				return {
+					status: 409,
+					json: { error: 'This file changed on the host after it was opened.' }
+				};
+			}
+			readmeContent = body.content;
+			readmeVersion = 'readme-' + (projectSaves.length + 1);
+			return { path: body.path, content: body.content, version: readmeVersion };
+		}
+		if (method === 'POST' && relayPath === '/v1/workspaces') {
+			assert.deepEqual(body, { grantId: 'grant-code', path: 'site' });
+			return {
+				workspace: {
+					id: 'work-1',
+					name: 'site',
+					hostId: 'pc-host',
+					grantId: 'grant-code',
+					path: 'C:\\code\\site'
+				}
+			};
+		}
+		if (method === 'POST' && relayPath === '/v1/terminals') {
+			assert.deepEqual(body, { workspaceId: 'work-1' });
+			return terminalFixture('ready', '');
+		}
+		if (method === 'POST' && relayPath === '/v1/terminals/term-1/commands') {
+			assert.deepEqual(body, { executable: 'npm', args: ['run', 'test'] });
+			return terminalFixture('running', '> test\n');
+		}
+		if (method === 'GET' && relayPath === '/v1/terminals/term-1') {
+			return terminalFixture('exited', '> test\nok\n', 0);
+		}
+		if (method === 'DELETE' && relayPath === '/v1/terminals/term-1') {
+			return terminalFixture('closed', projectTerminal?.output ?? '', 0);
+		}
+		if (method === 'DELETE' && relayPath === '/v1/session') {
+			return { revoked: true };
+		}
+		throw new Error('Unexpected project relay request: ' + method + ' ' + relayPath);
+	}
+
+	/** Answers the folder and Project tab requests; returns false for anything else. */
+	async function routeProjectFolders(route, request, url, path) {
+		const method = request.method();
+		let reply = null;
+		if (path === '/api/v1/folders/website' && method === 'GET') {
+			reply = {
+				id: 'website',
+				name: 'Website',
+				user_id: 'buddy-design-user',
+				parent_id: null,
+				data: {},
+				meta: {},
+				items: { chats: [], files: [] },
+				write_access: true,
+				created_at: 1,
+				updated_at: 1
+			};
+		} else if (path === '/api/v1/subscriptions/folders/website/project') {
+			requests.push({ method, path, body: request.postDataJSON() });
+			if (method === 'PUT') {
+				const body = request.postDataJSON();
+				const paths = {};
+				for (const [machineId, path] of Object.entries(body.paths || {})) {
+					paths[machineId] = { path, problem: null };
+				}
+				projectChoice = { folder_id: 'website', folder_name: 'Website', mode: body.mode, paths };
+			}
+			reply = folderProject();
+		} else if (
+			path === '/api/v1/subscriptions/machines/pc-1/folders/suggested' &&
+			method === 'GET'
+		) {
+			requests.push({ method, path });
+			if (mode === 'run-target-new') {
+				// Slow enough that the bar's folder menu opens before the suggestions arrive.
+				await new Promise((resolve) => setTimeout(resolve, 600));
+			}
+			const day = 86400;
+			reply = {
+				state: 'ok',
+				folders: [
+					{
+						path: 'C:\\code\\api',
+						sources: ['claude', 'codex'],
+						last_used: Math.floor(Date.now() / 1000 / day) * day - 2 * day
+					}
+				]
+			};
+		} else if (path === '/api/v1/subscriptions/machines/pc-1/folders' && method === 'GET') {
+			const listed = url.searchParams.get('path') || '';
+			requests.push({ method, path, listed });
+			if (!listed) {
+				reply = {
+					path: '',
+					parent: null,
+					roots: [{ name: 'C:', path: 'C:\\', kind: 'drive' }],
+					entries: [],
+					truncated: false
+				};
+			} else {
+				assert.ok(workPcFolders[listed], 'Browsing asks only for folders it was shown');
+				let parent = null;
+				if (listed === 'C:\\code') parent = 'C:\\';
+				reply = {
+					path: listed,
+					parent,
+					roots: [],
+					entries: workPcFolders[listed],
+					truncated: false
+				};
+			}
+		} else if (path === '/api/v1/subscriptions/machines/pc-1/folders/check' && method === 'POST') {
+			const body = request.postDataJSON();
+			requests.push({ method, path, body });
+			reply = { path: body.path };
+		} else if (path.startsWith(projectRelayBase + '/')) {
+			requests.push({ method, path });
+			reply = await routeProjectRelay(route, request, url, path.slice(projectRelayBase.length));
+		} else {
+			return false;
+		}
+		if (reply && typeof reply.status === 'number' && reply.json) {
+			await route.fulfill(reply);
+		} else {
+			await route.fulfill({ status: 200, json: reply });
+		}
+		return true;
+	}
+
+	// --- Where chats run: the composer's bar -----------------------------------
+	// A bound chat opens with Work PC offline, until the case brings it online.
+	let workPcOnline = mode !== 'run-target-bound';
+	const runTargetComputer = {
+		machine_id: 'pc-1',
+		name: 'Work PC',
+		kind: 'app',
+		online: true,
+		platform: 'win32',
+		can_browse: true,
+		folders: 'on',
+		recent_paths: [],
+		revision: 'rev-pc-1',
+		providers: { codex: { state: 'unknown', message: null } }
+	};
+
+	function runTargetOptions() {
+		// Other cases keep the bar hidden, as for someone the policy doesn't allow.
+		if (!runTargetModes.has(mode)) return { allowed: false, has_plans: false };
+		return {
+			allowed: true,
+			has_plans: true,
+			plan_access: { codex: 'full' },
+			computers: [{ ...runTargetComputer, online: workPcOnline }],
+			recent: [{ machine_id: 'pc-1', path: 'C:\\code\\site', last_used: 1760000000 }],
+			chat_folder: null,
+			default: {
+				kind: 'detached',
+				machine_id: null,
+				folder: null,
+				access: 'chat',
+				from: 'none',
+				access_locked: false
+			}
+		};
+	}
+
+	async function routeRunTarget(route, request, url, path) {
+		if (path === '/api/v1/subscriptions/run-target/options') {
+			requests.push({ method: request.method(), path });
+			await route.fulfill({ status: 200, json: runTargetOptions() });
+			return true;
+		}
+		if (path === '/api/v1/subscriptions/run-target/readiness') {
+			requests.push({
+				method: request.method(),
+				path,
+				provider: url.searchParams.get('provider'),
+				machineId: url.searchParams.get('machine_id')
+			});
+			await route.fulfill({ status: 200, json: { state: 'ready', message: null } });
+			return true;
+		}
+		if (/^\/api\/v1\/subscriptions\/chats\/[^/]+\/run-target$/.test(path)) {
+			requests.push({ method: request.method(), path });
+			if (mode !== 'run-target-bound') {
+				await route.fulfill({ status: 404, json: { detail: 'That chat no longer exists.' } });
+				return true;
+			}
+			await route.fulfill({
+				status: 200,
+				json: {
+					bound: true,
+					kind: 'computer',
+					machine_id: 'pc-1',
+					computer: { name: 'Work PC', kind: 'app', online: true },
+					folder_mode: 'path',
+					path: 'C:\\code\\site',
+					access: 'full',
+					source: 'bar',
+					note: null,
+					problem: null
+				}
+			});
+			return true;
+		}
+		return false;
+	}
+
+	let sessionOptions = {};
+	if (mode === 'project-tab') sessionOptions = { folderId: 'website' };
+	if (mode === 'run-target-new') sessionOptions = { path: '/' };
+	if (mode === 'folder-chip' || mode === 'folder-edit' || mode === 'folder-browse') {
+		sessionOptions = { path: '/folders/website' };
+	}
+
 	async function routeRequest(route) {
 		const request = route.request();
 		const url = new URL(request.url());
@@ -363,6 +710,12 @@ function createFixtures(mode = 'normal', role = 'admin') {
 			});
 			return;
 		}
+		if (projectModes.has(mode) && (await routeProjectFolders(route, request, url, path))) {
+			return;
+		}
+		if (await routeRunTarget(route, request, url, path)) {
+			return;
+		}
 		if (!path.startsWith('/api/v1/subscriptions')) {
 			await route.fallback();
 			return;
@@ -378,12 +731,42 @@ function createFixtures(mode = 'normal', role = 'admin') {
 				body?.expected_machine_revision ?? url.searchParams.get('expected_machine_revision')
 		};
 		requests.push(recordedRequest);
+		// The non-administrator case only checks that nothing asks; a member's own
+		// per-user view is not modelled here.
 		if (role !== 'admin') {
 			await route.fulfill({ status: 403, json: { detail: 'Synthetic administrator guard.' } });
 			return;
 		}
+		if (path === '/api/v1/subscriptions/admin/policy' && request.method() === 'GET') {
+			await route.fulfill({ status: 200, json: policyFixture() });
+			return;
+		}
+		if (path === '/api/v1/subscriptions/admin/machines' && request.method() === 'GET') {
+			// No computer is connected through the Buddy app in these cases.
+			await route.fulfill({ status: 200, json: { machines: [] } });
+			return;
+		}
 		const providerId = path.split('/')[4];
-		if (providerId === 'claude' || providerId === 'codex') {
+		let chosenMachineId = null;
+		// A plan's settings name the computer it runs on; only sign-in actions name a chosen computer.
+		if (!path.endsWith('/config')) {
+			chosenMachineId = body?.machine_id ?? url.searchParams.get('machine_id');
+		}
+		if ((providerId === 'claude' || providerId === 'codex') && chosenMachineId) {
+			// A sign-in action on a chosen computer names it, with the revision the page showed.
+			const chosen = machines.find((machine) => machine.id === chosenMachineId);
+			assert.ok(chosen, 'A chosen computer is one of the person’s');
+			assert.equal(
+				recordedRequest.expectedMachineId,
+				null,
+				'A chosen computer is not the plan’s guard'
+			);
+			assert.equal(
+				recordedRequest.expectedMachineRevision,
+				chosen.revision ?? 'local',
+				'A chosen computer carries its revision'
+			);
+		} else if (providerId === 'claude' || providerId === 'codex') {
 			const recovering = recoversMissingMachine(recordedRequest, providerId);
 			assert.equal(
 				typeof recordedRequest.expectedMachineId,
@@ -408,7 +791,12 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		if (path === '/api/v1/subscriptions') {
 			await route.fulfill({
 				status: 200,
-				json: { providers: [describeClaude(), describeProvider('codex')], machines }
+				json: {
+					allowed: true,
+					providers: [describeClaude(), describeProvider('codex')],
+					machines,
+					policy: publicPolicyFixture()
+				}
 			});
 			return;
 		}
@@ -565,6 +953,12 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		externalRequests,
 		webSocketRequests,
 		fixtureErrors,
+		sessionOptions,
+		projectSaves,
+		projectRelayClients,
+		bringWorkPcOnline: () => {
+			workPcOnline = true;
+		},
 		beforeNavigation: async (context) => {
 			await context.routeWebSocket('**/*', (socket) => {
 				webSocketRequests.push(socket.url());
@@ -733,6 +1127,11 @@ async function captureScreenshot(page, name) {
 	await page.screenshot({ path: resolve(outputDirectory, name + '.png'), animations: 'disabled' });
 }
 
+// Each person's Claude and ChatGPT cards are in Settings → Machines; the older
+// address-registered machines are in the administrators' AI plans tab.
+const PROVIDERS_TAB = 'machines';
+const ADMIN_PLANS_TAB = 'admin:plans';
+
 async function setSettings(page, value) {
 	await page.evaluate(
 		async ({ stores, value }) => {
@@ -756,7 +1155,7 @@ function providerCard(page, name) {
 }
 
 async function openLogin(page) {
-	await setSettings(page, 'admin:connections');
+	await setSettings(page, PROVIDERS_TAB);
 	await providerCard(page, 'Claude').getByRole('button', { name: 'Sign in', exact: true }).click();
 	await loginDialog(page).waitFor();
 }
@@ -797,7 +1196,7 @@ function machineDialog(page) {
 }
 
 async function openProviderSettings(page, name = 'Claude') {
-	await setSettings(page, 'admin:connections');
+	await setSettings(page, PROVIDERS_TAB);
 	await page
 		.getByRole('button', { name: 'Configure ' + name + ' subscription', exact: true })
 		.click();
@@ -805,7 +1204,7 @@ async function openProviderSettings(page, name = 'Claude') {
 }
 
 async function openMachine(page, name = null) {
-	await setSettings(page, 'admin:connections');
+	await setSettings(page, ADMIN_PLANS_TAB);
 	await page
 		.getByRole('button', { name: name ? 'Configure ' + name : 'Add machine', exact: true })
 		.click();
@@ -843,14 +1242,15 @@ async function runCase(browser, profile, name, mode, callback, role = 'admin') {
 	}
 	const fixtures = createFixtures(mode, role);
 	let session;
-	let result = { name: profile.name + '-' + name, passed: false, companionExpected };
+	let result = { name: profile.name + '-' + name, passed: false };
 	try {
 		session = await createSession(browser, {
 			mobile: profile.mobile,
 			theme: profile.theme,
 			reducedMotion: true,
 			role,
-			beforeNavigation: fixtures.beforeNavigation
+			beforeNavigation: fixtures.beforeNavigation,
+			...fixtures.sessionOptions
 		});
 		await callback(session, fixtures);
 		assert.deepEqual(session.errors, [], 'No uncaught page errors');
@@ -1066,7 +1466,7 @@ async function codexSignInTextCase(browser, profile) {
 		'codex-sign-in-text',
 		'codex-signed-out',
 		async ({ page }, fixtures) => {
-			await setSettings(page, 'admin:connections');
+			await setSettings(page, PROVIDERS_TAB);
 			await providerCard(page, 'ChatGPT')
 				.getByRole('button', { name: 'Sign in', exact: true })
 				.click();
@@ -1168,7 +1568,7 @@ async function checkingTransitionCase(browser, profile) {
 		'checking-transition',
 		'checking-transition',
 		async ({ page }, fixtures) => {
-			await setSettings(page, 'admin:connections');
+			await setSettings(page, PROVIDERS_TAB);
 			await providerCard(page, 'Claude')
 				.getByText('Checking Claude Code…', { exact: true })
 				.waitFor();
@@ -1199,7 +1599,7 @@ async function checkingTransitionCase(browser, profile) {
 async function lateCheckCase(browser, profile, errorResponse) {
 	const mode = errorResponse ? 'checking-late-error' : 'checking-late';
 	await runCase(browser, profile, mode, mode, async ({ page }, fixtures) => {
-		await setSettings(page, 'admin:connections');
+		await setSettings(page, PROVIDERS_TAB);
 		await providerCard(page, 'Claude')
 			.getByText('Checking Claude Code…', { exact: true })
 			.waitFor();
@@ -1215,7 +1615,7 @@ async function lateCheckCase(browser, profile, errorResponse) {
 		await setSettings(page, false);
 		await providerCard(page, 'Claude').waitFor({ state: 'hidden' });
 		fixtures.markCheckingReady();
-		await setSettings(page, 'admin:connections');
+		await setSettings(page, PROVIDERS_TAB);
 		await providerCard(page, 'Claude')
 			.getByRole('button', { name: 'Sign in', exact: true })
 			.waitFor();
@@ -1247,7 +1647,7 @@ async function failedCheckCase(browser, profile) {
 		'checking-error',
 		'checking-error',
 		async ({ page }, fixtures) => {
-			await setSettings(page, 'admin:connections');
+			await setSettings(page, PROVIDERS_TAB);
 			const card = providerCard(page, 'Claude');
 			await card.getByText('Checking Claude Code…', { exact: true }).waitFor();
 			await card
@@ -1308,7 +1708,7 @@ async function pendingCheckUnmountCase(browser, profile) {
 		'checking-timer-unmount',
 		'checking-transition',
 		async ({ page }, fixtures) => {
-			await setSettings(page, 'admin:connections');
+			await setSettings(page, PROVIDERS_TAB);
 			await providerCard(page, 'Claude')
 				.getByText('Checking Claude Code…', { exact: true })
 				.waitFor();
@@ -1326,7 +1726,7 @@ async function pendingCheckUnmountCase(browser, profile) {
 
 async function apiBillingCase(browser, profile) {
 	await runCase(browser, profile, 'api-billing', 'api-billing', async ({ page }, fixtures) => {
-		await setSettings(page, 'admin:connections');
+		await setSettings(page, PROVIDERS_TAB);
 		const card = providerCard(page, 'Claude');
 		await card
 			.getByText('Synthetic API billing account; sign in with a Claude plan instead.', {
@@ -1352,7 +1752,7 @@ async function usageNavigationCase(browser, profile) {
 	await runCase(browser, profile, 'usage-navigation', 'normal', async ({ page }, fixtures) => {
 		const draft = 'Synthetic unsent subscription draft';
 		await page.locator('#chat-input').fill(draft);
-		await setSettings(page, 'admin:connections');
+		await setSettings(page, PROVIDERS_TAB);
 		const card = providerCard(page, 'ChatGPT');
 		await card.getByText('Usage unavailable', { exact: true }).waitFor();
 		const unknown = card.getByText('Unknown limit', { exact: true }).locator('xpath=../..');
@@ -1392,29 +1792,21 @@ async function usageNavigationCase(browser, profile) {
 		await page.locator('#buddy-sidebar-close').waitFor();
 		assert.equal(
 			await page.locator('#sidebar-companion-button').count(),
-			companionExpected ? 1 : 0
+			0,
+			'The Projects page link is gone; its tools are in each chat'
 		);
 		assert.equal(fixtures.count('POST'), 0, 'Browsing subscription settings initiates no login');
 		await page.locator('#buddy-sidebar-close').click();
 		await captureScreenshot(page, profile.name + '-subscription-navigation');
-		if (companionExpected) {
-			await page.locator('#chat-input').fill('');
-			await page.goto(origin + '/companion', { waitUntil: 'domcontentloaded' });
-			await page.getByLabel('Host address', { exact: true }).waitFor();
-			assert.equal(
-				await page.getByLabel('Host address', { exact: true }).inputValue(),
-				'http://127.0.0.1:8765'
-			);
-			assert.equal(
-				await page.getByRole('button', { name: 'Pair host', exact: true }).isDisabled(),
-				true
-			);
-			assert.equal(
-				fixtures.externalRequests.length,
-				0,
-				'Subscription identity grants no companion session'
-			);
-		}
+		// Old links to the Projects page go home.
+		await page.locator('#chat-input').fill('');
+		await page.goto(origin + '/companion', { waitUntil: 'domcontentloaded' });
+		await page.waitForURL((url) => url.pathname === '/');
+		assert.equal(
+			fixtures.externalRequests.length,
+			0,
+			'Subscription identity grants no computer session'
+		);
 	});
 }
 
@@ -1425,7 +1817,7 @@ async function permissionCase(browser, profile) {
 		'non-admin',
 		'normal',
 		async ({ page }, fixtures) => {
-			await page.goto(origin + '/c/buddy-design-chat?settings=admin%3Aconnections', {
+			await page.goto(origin + '/c/buddy-design-chat?settings=admin%3Aplans', {
 				waitUntil: 'domcontentloaded'
 			});
 			await page.locator('#chat-input').waitFor();
@@ -1436,11 +1828,14 @@ async function permissionCase(browser, profile) {
 					.count(),
 				0
 			);
-			assert.equal(
-				fixtures.requests.filter((request) => request.path.startsWith('/api/v1/subscriptions'))
-					.length,
-				0
+			// The chat page asks where its chat runs; nothing else about plans is asked.
+			const planRequests = fixtures.requests.filter(
+				(request) =>
+					request.path.startsWith('/api/v1/subscriptions') &&
+					!request.path.startsWith('/api/v1/subscriptions/run-target/') &&
+					!request.path.endsWith('/run-target')
 			);
+			assert.equal(planRequests.length, 0);
 			await setSettings(page, false);
 			await page.locator('#chat-input').click();
 			await waitUntil(
@@ -1473,12 +1868,11 @@ async function machineCrudCase(browser, profile) {
 			'https://host.docker.internal:8765'
 		);
 		assert.equal(
-			await dialog.locator('#machine-browser-url').inputValue(),
-			'',
-			'Backend address is never inferred as browser address'
+			await dialog.locator('#machine-browser-url').count(),
+			0,
+			'Computers are opened through Buddy, so no browser address is asked for'
 		);
 		await dialog.locator('#machine-name').fill('Synthetic new computer');
-		await dialog.locator('#machine-browser-url').fill('http://127.0.0.1:8765');
 		await dialog.locator('#machine-key').fill('synthetic-runner-key-never-used');
 		await dialog.getByRole('button', { name: 'Verify', exact: true }).click();
 		await dialog
@@ -1486,7 +1880,7 @@ async function machineCrudCase(browser, profile) {
 			.waitFor();
 		const verified = fixtures.requests.find((request) => request.path === machinesPath + '/verify');
 		assert.equal(verified.body.url, 'https://host.docker.internal:8765');
-		assert.equal(verified.body.browser_url, 'http://127.0.0.1:8765');
+		assert.equal(verified.body.browser_url, undefined);
 		await dialog.getByRole('button', { name: 'Save', exact: true }).click();
 		await dialog.waitFor({ state: 'hidden' });
 		await page
@@ -1507,10 +1901,6 @@ async function machineCrudCase(browser, profile) {
 			await machineDialog(page).locator('#machine-key').getAttribute('placeholder'),
 			'Leave empty to keep the saved key'
 		);
-		assert.equal(
-			await machineDialog(page).locator('#machine-browser-url').inputValue(),
-			'http://127.0.0.1:8765'
-		);
 		const edited = machineDialog(page);
 		await edited.locator('#machine-url').fill('https://moved-runner.example.invalid');
 		assert.equal(
@@ -1530,7 +1920,6 @@ async function machineCrudCase(browser, profile) {
 			'The same origin keeps the saved key'
 		);
 		await edited.locator('#machine-url').fill('https://host.docker.internal:8765');
-		await machineDialog(page).locator('#machine-browser-url').fill('');
 		await machineDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
 		await machineDialog(page).waitFor({ state: 'hidden' });
 		const updates = fixtures.requests.filter(
@@ -1538,13 +1927,13 @@ async function machineCrudCase(browser, profile) {
 		);
 		assert.equal(updates.length, 2);
 		assert.equal(updates[0].body.url, 'https://host.docker.internal:8765');
-		assert.equal(updates[0].body.browser_url, 'http://127.0.0.1:8765');
+		assert.equal(updates[0].body.browser_url, undefined);
 		assert.equal(updates[1].body.url, 'https://host.docker.internal:8765');
 		assert.equal(updates[1].body.id, 'runner-new');
 		assert.equal(
 			updates[1].body.browser_url,
-			null,
-			'Clearing optional browser address is explicit'
+			undefined,
+			'Saving leaves any browser address saved earlier alone'
 		);
 		assert.equal(updates[1].body.key, undefined, 'Blank edit preserves existing server key');
 		await openMachine(page, 'Synthetic new computer');
@@ -1627,7 +2016,6 @@ async function delayedMachineCase(browser, profile, action, method, errorRespons
 			await dialog.locator('#machine-key').fill('synthetic-delayed-key');
 		} else if (action === 'save') {
 			await dialog.locator('#machine-name').fill('Synthetic renamed computer A');
-			await dialog.locator('#machine-browser-url').fill('https://fixture-a.example.invalid');
 		}
 		if (action === 'remove') {
 			await confirmMachineRemoval(await askToRemoveMachine(page, 'Synthetic computer A'));
@@ -1694,13 +2082,10 @@ async function delayedMachineCase(browser, profile, action, method, errorRespons
 				(request) => request.method === 'POST' && request.path === machinesPath
 			);
 			assert.equal(request.body.id, 'runner-a');
-			assert.equal(request.body.browser_url, 'https://fixture-a.example.invalid');
+			assert.equal(request.body.name, 'Synthetic renamed computer A');
 		}
 		if (action === 'remove' && !errorResponse) {
 			assert.equal(fixtures.count('DELETE', machinesPath + '/runner-a'), 1);
-			await providerCard(page, 'Claude')
-				.getByText('Selected machine is unavailable.', { exact: true })
-				.waitFor({ state: 'attached' });
 		}
 		await reopened.locator('#machine-name').fill('Synthetic preserved new draft');
 		await page.waitForTimeout(150);
@@ -1709,13 +2094,19 @@ async function delayedMachineCase(browser, profile, action, method, errorRespons
 			'Synthetic preserved new draft'
 		);
 		await dismissDialog(page, reopened, 'x');
+		if (action === 'remove' && !errorResponse) {
+			await setSettings(page, PROVIDERS_TAB);
+			await providerCard(page, 'Claude')
+				.getByText('Selected machine is unavailable.', { exact: true })
+				.waitFor({ state: 'attached' });
+		}
 	});
 }
 
 async function staleStatusSettingsCase(browser, profile, variant) {
 	const name = 'settings-status-' + variant;
 	await runCase(browser, profile, name, name, async ({ page }, fixtures) => {
-		await setSettings(page, 'admin:connections');
+		await setSettings(page, PROVIDERS_TAB);
 		await waitUntil(fixtures.hasHeldCheck, 'Old machine status must be in flight');
 		await openProviderSettings(page);
 		const dialog = settingsDialog(page);
@@ -1814,7 +2205,7 @@ async function staleStatusRegistryCase(browser, profile) {
 		'checking-registry',
 		'checking-registry',
 		async ({ page }, fixtures) => {
-			await setSettings(page, 'admin:connections');
+			await setSettings(page, PROVIDERS_TAB);
 			await waitUntil(fixtures.hasHeldCheck, 'Old registry status must be pending');
 			await openMachine(page, 'Synthetic computer A');
 			await machineDialog(page).locator('#machine-name').fill('Synthetic updated computer A');
@@ -1824,6 +2215,7 @@ async function staleStatusRegistryCase(browser, profile) {
 			await machineDialog(page).locator('#machine-key').fill('synthetic-new-runner-a-key');
 			await machineDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
 			await machineDialog(page).waitFor({ state: 'hidden' });
+			await setSettings(page, PROVIDERS_TAB);
 			await providerCard(page, 'Claude')
 				.getByText(/via Claude Code on Synthetic updated computer A/)
 				.waitFor();
@@ -1905,7 +2297,7 @@ async function delayedSettingsCase(browser, profile, method, errorResponse = fal
 async function delayedEnableCase(browser, profile, outcome = 'success') {
 	const name = 'enable-delayed-' + outcome;
 	await runCase(browser, profile, name, name, async ({ page }, fixtures) => {
-		await setSettings(page, 'admin:connections');
+		await setSettings(page, PROVIDERS_TAB);
 		const toggle = providerCard(page, 'Claude').getByRole('switch');
 		assert.equal(await toggle.getAttribute('aria-checked'), 'false');
 		await toggle.click();
@@ -1914,7 +2306,7 @@ async function delayedEnableCase(browser, profile, outcome = 'success') {
 		if (outcome === 'remount') {
 			await setSettings(page, false);
 			await providerCard(page, 'Claude').waitFor({ state: 'hidden' });
-			await setSettings(page, 'admin:connections');
+			await setSettings(page, PROVIDERS_TAB);
 			await toggle.waitFor();
 			expectedDraft = 'false';
 		}
@@ -1973,7 +2365,7 @@ async function delayedEnableCase(browser, profile, outcome = 'success') {
 async function enableDuringOtherReloadCase(browser, profile) {
 	const name = 'enable-delayed-other-reload';
 	await runCase(browser, profile, name, name, async ({ page }, fixtures) => {
-		await setSettings(page, 'admin:connections');
+		await setSettings(page, PROVIDERS_TAB);
 		const claudeToggle = providerCard(page, 'Claude').getByRole('switch');
 		const codexToggle = providerCard(page, 'ChatGPT').getByRole('switch');
 		await claudeToggle.click();
@@ -2017,6 +2409,7 @@ async function removedMachineCase(browser, profile, replacement = 'runner-b') {
 			}
 			await confirmMachineRemoval(confirmation);
 			await machineDialog(page).waitFor({ state: 'hidden' });
+			await setSettings(page, PROVIDERS_TAB);
 			await providerCard(page, 'Claude')
 				.getByText('Selected machine is unavailable.', { exact: true })
 				.waitFor();
@@ -2082,7 +2475,7 @@ async function removedMachineCase(browser, profile, replacement = 'runner-b') {
 async function delayedLogoutCase(browser, profile, method) {
 	const name = 'logout-' + method;
 	await runCase(browser, profile, name, name, async ({ page }, fixtures) => {
-		await setSettings(page, 'admin:connections');
+		await setSettings(page, PROVIDERS_TAB);
 		await providerCard(page, 'Claude')
 			.getByRole('button', { name: 'Sign out', exact: true })
 			.click();
@@ -2092,7 +2485,7 @@ async function delayedLogoutCase(browser, profile, method) {
 			await providerCard(page, 'Claude').waitFor({ state: 'hidden' });
 		}
 		if (method === 'unmount-same') {
-			await setSettings(page, 'admin:connections');
+			await setSettings(page, PROVIDERS_TAB);
 			await providerCard(page, 'Claude')
 				.getByRole('button', { name: 'Sign out', exact: true })
 				.waitFor();
@@ -2160,6 +2553,7 @@ async function staleConfigGuardCase(browser, profile) {
 			await openMachine(page, 'Synthetic computer B');
 			await machineDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
 			await machineDialog(page).waitFor({ state: 'hidden' });
+			await setSettings(page, PROVIDERS_TAB);
 			await providerCard(page, 'Claude')
 				.getByText(/via Claude Code on Synthetic computer B/)
 				.waitFor();
@@ -2277,19 +2671,19 @@ async function permissionDisclosureCase(browser, profile) {
 		assert.equal(await dialog.locator('input[value="chat"]').isChecked(), true);
 		await dialog
 			.getByText(
-				"Can run read-only commands. Codex's read-only sandbox does not limit reads to the working folder, so it can read any file your account can. No edits.",
+				"Can run read-only commands. Codex's read-only sandbox does not limit reads to the start folder, so it can read any file your account can. No edits.",
 				{ exact: true }
 			)
 			.waitFor();
 		await dialog
 			.getByText(
-				'CLI permissions apply on the selected computer. Model sign-in does not create project or file API grants.',
+				'New chats start with this, and each chat can choose its own above the message box. Model sign-in does not create project or file API grants.',
 				{ exact: true }
 			)
 			.waitFor();
 		await dialog
 			.getByText(
-				'The working folder is CLI context, not a project or filesystem grant. Chat only uses an empty folder.',
+				'Where it starts for chats outside a chat folder, and in folders that let the AI choose. A chat folder with a specific project folder starts there instead. This is CLI context, not a project or filesystem grant. Chat only uses an empty folder.',
 				{ exact: true }
 			)
 			.waitFor();
@@ -2327,7 +2721,7 @@ async function revisionReplacementCase(browser, profile, action) {
 			await waitUntil(fixtures.hasHeldConfig, 'Old instance config must be pending');
 			await dismissDialog(page, settingsDialog(page), 'x');
 		} else {
-			await setSettings(page, 'admin:connections');
+			await setSettings(page, PROVIDERS_TAB);
 			await providerCard(page, 'Claude')
 				.getByRole('button', { name: 'Sign out', exact: true })
 				.click();
@@ -2340,6 +2734,7 @@ async function revisionReplacementCase(browser, profile, action) {
 		await machineDialog(page).locator('#machine-name').fill('Synthetic replacement computer A');
 		await machineDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
 		await machineDialog(page).waitFor({ state: 'hidden' });
+		await setSettings(page, PROVIDERS_TAB);
 		await providerCard(page, 'Claude')
 			.getByText(/via Claude Code on Synthetic replacement computer A/)
 			.waitFor();
@@ -2386,9 +2781,6 @@ async function loginRevisionCase(browser, profile, metadataOnly = false, equival
 	await runCase(browser, profile, name, mode, async ({ page }, fixtures) => {
 		await openMachine(page, 'Synthetic computer A');
 		await machineDialog(page).locator('#machine-name').fill('Synthetic renamed computer A');
-		await machineDialog(page)
-			.locator('#machine-browser-url')
-			.fill('https://browser-a.example.invalid');
 		if (!metadataOnly) {
 			await machineDialog(page)
 				.locator('#machine-url')
@@ -2484,6 +2876,372 @@ async function loginRevisionCase(browser, profile, metadataOnly = false, equival
 	});
 }
 
+function chatPanel(page, profile) {
+	if (profile.mobile) return page.locator('.modal');
+	return page.locator('#controls-container');
+}
+
+async function projectTabCase(browser, profile) {
+	await runCase(browser, profile, 'project-tab', 'project-tab', async ({ page }, fixtures) => {
+		await page
+			.locator('.buddy-chat-header')
+			.getByRole('button', { name: 'Controls', exact: true })
+			.click();
+		const panel = chatPanel(page, profile);
+		await panel.getByRole('button', { name: 'Project', exact: true }).click();
+		await panel.getByText('C:\\code\\site', { exact: true }).waitFor();
+		const up = panel.getByRole('button', { name: 'Up one folder', exact: true });
+		await panel.getByRole('button', { name: 'README.md', exact: true }).waitFor();
+		assert.equal(
+			await up.isDisabled(),
+			true,
+			'Browsing starts at the project folder and stops there'
+		);
+		await panel.getByRole('button', { name: 'src', exact: true }).click();
+		await panel.getByRole('button', { name: 'app.ts', exact: true }).waitFor();
+		await up.click();
+		await panel.getByRole('button', { name: 'README.md', exact: true }).click();
+
+		const editor = panel.getByLabel('Contents of README.md', { exact: true });
+		await editor.waitFor();
+		assert.equal(await editor.inputValue(), '# Site\nHello\n');
+		assert.equal(await editor.getAttribute('readonly'), '', 'Files open read-only');
+		await panel.getByRole('button', { name: 'Edit', exact: true }).click();
+		await editor.fill('# Site\nHello again\n');
+		await panel.getByRole('button', { name: 'Save', exact: true }).click();
+		await panel.getByText('Saved on Work PC', { exact: true }).waitFor();
+		assert.equal(
+			fixtures.projectSaves[0].content,
+			'# Site\r\nHello again\r\n',
+			'Saving keeps CRLF'
+		);
+		assert.equal(fixtures.projectSaves[0].baseVersion, 'readme-1');
+		assert.equal(fixtures.projectSaves[0].overwrite, false);
+
+		// The tab keeps its open file while the panel shows another tab or closes.
+		await editor.fill('# Site\nKept while away\n');
+		await panel.getByRole('button', { name: 'Controls', exact: true }).click();
+		await panel.getByRole('button', { name: 'Project', exact: true }).click();
+		assert.equal(await editor.inputValue(), '# Site\nKept while away\n');
+		await panel.getByRole('button', { name: 'Close', exact: true }).first().click();
+		await page
+			.locator('.buddy-chat-header')
+			.getByRole('button', { name: 'Controls', exact: true })
+			.click();
+		await editor.waitFor();
+		assert.equal(
+			await editor.inputValue(),
+			'# Site\nKept while away\n',
+			'Closing the panel keeps unsaved edits'
+		);
+
+		await editor.fill('# Site\nHello once more\n');
+		await panel.getByRole('button', { name: 'Save', exact: true }).click();
+		await panel.getByText(/README\.md changed on Work PC after you opened it/).waitFor();
+		await panel.getByRole('button', { name: 'Overwrite', exact: true }).click();
+		await panel.getByText('Saved on Work PC', { exact: true }).waitFor();
+		assert.equal(fixtures.projectSaves.length, 3);
+		assert.equal(
+			fixtures.projectSaves[2].overwrite,
+			true,
+			'Overwrite is chosen only after a conflict'
+		);
+		assert.equal(fixtures.projectSaves[2].baseVersion, 'readme-2');
+
+		await editor.fill('# Site\nOffline edit\n');
+		await panel.getByRole('button', { name: 'Save', exact: true }).click();
+		await panel.getByText('Not saved: Work PC is offline.', { exact: true }).waitFor();
+		assert.equal(
+			await editor.inputValue(),
+			'# Site\nOffline edit\n',
+			'A failed save keeps the editor and the edits'
+		);
+		// Going back with unsaved edits asks first.
+		page.once('dialog', (dialog) => dialog.accept());
+		await panel.getByRole('button', { name: '← Files', exact: true }).click();
+		await panel.getByRole('button', { name: 'README.md', exact: true }).waitFor();
+
+		await panel.getByRole('tab', { name: 'Commands', exact: true }).click();
+		const start = panel.getByRole('button', { name: 'Start a command session', exact: true });
+		assert.equal(await start.isDisabled(), true, 'Commands wait for the risk to be confirmed');
+		await panel
+			.getByLabel('I understand. Let me run commands on Work PC.', { exact: true })
+			.check();
+		await start.click();
+		await panel.getByLabel('Program', { exact: true }).fill('npm');
+		await panel.getByLabel('Arguments, one per line', { exact: true }).fill('run\ntest');
+		await panel.getByRole('button', { name: 'Run', exact: true }).click();
+		await panel.getByText('Finished with exit code 0', { exact: true }).waitFor();
+		assert.match(await panel.getByLabel('Command output', { exact: true }).innerText(), /ok/);
+		await panel.getByRole('button', { name: 'Stop session', exact: true }).click();
+		await panel.getByText('The command session stopped.', { exact: true }).waitFor();
+		assert.equal(await start.isEnabled(), true, 'A new session can start after stopping');
+		assert.equal(fixtures.projectRelayClients.size, 1, 'One page session on the computer');
+		await captureScreenshot(page, profile.name + '-project-tab');
+	});
+}
+
+async function folderChipCase(browser, profile) {
+	await runCase(browser, profile, 'folder-chip', 'folder-chip', async ({ page }, fixtures) => {
+		const chip = page.getByRole('button', { name: 'Project folder: Work PC · site', exact: true });
+		await chip.waitFor();
+		await chip.click();
+		const dialog = page.locator('.modal').filter({ hasText: 'Project folder for “Website”' });
+		await dialog.getByText('Let the AI choose', { exact: true }).click();
+		await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+		await dialog.waitFor({ state: 'hidden' });
+		await page
+			.getByRole('button', { name: 'Project folder: AI chooses where to work', exact: true })
+			.waitFor();
+		const saved = fixtures.requests.filter((request) => request.method === 'PUT');
+		assert.equal(saved.length, 1);
+		assert.deepEqual(saved[0].body, { mode: 'auto', paths: {} });
+		await captureScreenshot(page, profile.name + '-folder-chip');
+	});
+}
+
+async function folderEditCase(browser, profile) {
+	await runCase(browser, profile, 'folder-edit', 'folder-edit', async ({ page }, fixtures) => {
+		await page.locator('button[aria-label="Folder options"]').click();
+		await page.getByRole('button', { name: 'Edit', exact: true }).click();
+		const dialog = page.locator('.modal').filter({ hasText: 'Project folder' });
+		await dialog.getByRole('button', { name: 'Change', exact: true }).click();
+		const pathInput = dialog.getByLabel('Folder path', { exact: true });
+		await pathInput.fill('C:\\code\\docs');
+		await pathInput.press('Enter');
+		await dialog.getByText('C:\\code\\docs', { exact: true }).waitFor();
+		assert.equal(
+			await dialog.isVisible(),
+			true,
+			'Enter in the path picker does not submit the dialog'
+		);
+		assert.equal(fixtures.requests.filter((request) => request.method === 'PUT').length, 0);
+		await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+		await dialog.waitFor({ state: 'hidden' });
+		const saved = fixtures.requests.filter((request) => request.method === 'PUT');
+		assert.deepEqual(saved[0].body, {
+			mode: 'folder',
+			paths: { 'pc-1': 'C:\\code\\docs' }
+		});
+		await page
+			.getByRole('button', { name: 'Project folder: Work PC · docs', exact: true })
+			.waitFor();
+	});
+}
+
+async function computerSignInCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'computer-sign-in',
+		'computer-sign-in',
+		async ({ page }, fixtures) => {
+			await setSettings(page, PROVIDERS_TAB);
+			const row = page
+				.getByRole('list', { name: 'Plans on Synthetic computer A' })
+				.getByRole('listitem')
+				.filter({ hasText: 'Claude' });
+			assert.match(await row.innerText(), /Not signed in/);
+			await row.getByRole('button', { name: 'Sign in here', exact: true }).click();
+			await loginDialog(page).waitFor();
+			await startLogin(page);
+			await waitUntil(() => fixtures.count('POST') === 1, 'One sign-in starts');
+			const start = fixtures.requests.find(
+				(request) =>
+					request.method === 'POST' && request.path === '/api/v1/subscriptions/claude/login'
+			);
+			// The chosen computer is named apart from the plan's own computer.
+			assert.equal(start.body.machine_id, 'runner-a');
+			assert.equal(start.body.expected_machine_revision, 'fixture-revision-a-1');
+			assert.equal(start.body.expected_machine_id, undefined);
+			await captureScreenshot(page, `computer-sign-in-${profile.name}`);
+		}
+	);
+}
+
+function runTargetBar(page) {
+	return page.locator('[role="group"][aria-label="Where this chat runs"]');
+}
+
+// Dropdowns wrap their trigger in a role="button" span, so chips are found by their own class.
+function runTargetChip(bar, text) {
+	return bar.locator('button.buddy-run-target-chip').filter({ hasText: text });
+}
+
+async function runTargetNewCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'run-target-new',
+		'run-target-new',
+		async ({ page }, fixtures) => {
+			const bar = runTargetBar(page);
+			await bar.waitFor();
+			const readiness = () =>
+				fixtures.requests.filter(
+					(request) => request.path === '/api/v1/subscriptions/run-target/readiness'
+				);
+			if (profile.mobile) {
+				// One summary chip opens a sheet with every choice.
+				const summary = bar.locator('.buddy-run-target-summary');
+				assert.match(await summary.innerText(), /Detached/);
+				const box = await summary.boundingBox();
+				assert.ok(box && box.height >= 44, 'The summary chip is a full touch target');
+				await summary.click();
+				const sheet = page.getByRole('dialog', { name: 'Where this chat runs' });
+				await sheet.waitFor();
+				await sheet.getByRole('menuitemradio', { name: /Work PC/ }).click();
+				await waitUntil(() => readiness().length === 1, 'Picking a computer checks it again');
+				await sheet.getByRole('option', { name: /site C:\\code\\site/ }).click();
+				await sheet.waitFor({ state: 'hidden' });
+				await waitUntil(
+					async () => /Work PC · site · Full/.test(await summary.innerText()),
+					'The summary shows the computer, folder and access'
+				);
+				// The sheet keeps focus inside while open and gives it back when it closes.
+				await summary.click();
+				await sheet.waitFor();
+				for (let press = 0; press < 30; press += 1) await page.keyboard.press('Tab');
+				assert.equal(
+					await sheet.evaluate((node) => node.contains(document.activeElement)),
+					true,
+					'Tab stays inside the sheet'
+				);
+				await sheet.getByRole('button', { name: 'Done', exact: true }).click();
+				await sheet.waitFor({ state: 'hidden' });
+				await waitUntil(
+					() => summary.evaluate((node) => node === document.activeElement),
+					'Focus returns to the summary chip'
+				);
+			} else {
+				await runTargetChip(bar, 'Detached').click();
+				await page.getByRole('menuitemradio', { name: /Work PC/ }).click();
+				await waitUntil(() => readiness().length === 1, 'Picking a computer checks it again');
+				assert.equal(readiness()[0].provider, 'codex');
+				await runTargetChip(bar, 'Remote · Work PC').waitFor();
+				await runTargetChip(bar, 'Full access').waitFor();
+				await runTargetChip(bar, 'AI chooses').click();
+				// A folder ChatGPT worked in, checked on the computer before it is used.
+				await page.getByRole('option', { name: /^api C:\\code\\api/ }).click();
+				await runTargetChip(bar, /^\s*api\s*$/).waitFor();
+				// Going from one open menu straight to another chip opens that one at once,
+				// since the composer stays put under the pointer.
+				await runTargetChip(bar, /^\s*api\s*$/).click();
+				await page.getByRole('option', { name: /^api C:\\code\\api/ }).waitFor();
+				const folderPopup = page.getByRole('dialog', { name: 'Folder', exact: true });
+				assert.equal(
+					await folderPopup
+						.locator('[role="listbox"] :is(button, input):not([role="option"])')
+						.count(),
+					0,
+					'The folder list holds only folder options'
+				);
+				await runTargetChip(bar, 'Full access').click();
+				await page.getByRole('menuitemradio', { name: /Read files/ }).waitFor();
+				await page.keyboard.press('Escape');
+				const checks = fixtures.requests.filter((request) =>
+					request.path.endsWith('/folders/check')
+				);
+				assert.deepEqual(
+					checks.map((request) => request.body),
+					[{ path: 'C:\\code\\api' }]
+				);
+			}
+			await captureScreenshot(page, `run-target-new-${profile.name}`);
+			if (profile.mobile) {
+				// A phone turned sideways is wider than the phone breakpoint, but still a touch screen.
+				await page.setViewportSize({ width: 844, height: 390 });
+				await waitUntil(
+					async () => (await page.evaluate(() => window.innerWidth)) === 844,
+					'The page sees the wider screen'
+				);
+				assert.equal(await bar.locator('.buddy-run-target-summary').count(), 1);
+				assert.equal(await bar.locator('button.buddy-run-target-chip').count(), 0);
+			}
+		}
+	);
+}
+
+async function runTargetBoundCase(browser, profile) {
+	await runCase(
+		browser,
+		profile,
+		'run-target-bound',
+		'run-target-bound',
+		async ({ page }, fixtures) => {
+			const bar = runTargetBar(page);
+			await bar.waitFor();
+
+			// The chat runs in an exact folder, so its Project tab opens that folder, with no Change.
+			await page
+				.locator('.buddy-chat-header')
+				.getByRole('button', { name: 'Controls', exact: true })
+				.click();
+			const panel = chatPanel(page, profile);
+			await panel.getByRole('button', { name: 'Project', exact: true }).click();
+			await panel.getByText('C:\\code\\site', { exact: true }).waitFor();
+			await panel.getByText('Work PC', { exact: true }).first().waitFor();
+			// Check again asks about the chat's own computer, which is offline at first.
+			await panel.getByText(/Work PC is offline/).waitFor();
+			fixtures.bringWorkPcOnline();
+			await panel.getByRole('button', { name: 'Check again', exact: true }).click();
+			await panel.getByRole('button', { name: 'README.md', exact: true }).waitFor();
+			assert.equal(
+				await panel.getByRole('button', { name: 'Change', exact: true }).count(),
+				0,
+				'A started chat’s folder is not changed from its Project tab'
+			);
+			await panel.getByRole('button', { name: 'Close', exact: true }).first().click();
+
+			if (profile.mobile) {
+				await bar
+					.locator('.buddy-run-target-summary')
+					.filter({ hasText: 'Work PC · site · Full' })
+					.click();
+			} else {
+				await runTargetChip(bar, 'Work PC · site · Full').click();
+			}
+			await page.getByText('This chat runs on Work PC, in site, with Full access.').waitFor();
+			await page.getByRole('button', { name: 'New chat here' }).waitFor();
+			await captureScreenshot(page, `run-target-bound-${profile.name}`);
+		}
+	);
+}
+
+async function folderBrowseCase(browser, profile) {
+	await runCase(browser, profile, 'folder-browse', 'folder-browse', async ({ page }, fixtures) => {
+		await page.locator('button[aria-label="Folder options"]').click();
+		await page.getByRole('button', { name: 'Edit', exact: true }).click();
+		const dialog = page.locator('.modal').filter({ hasText: 'Project folder' });
+
+		// A folder Claude Code and Codex worked in, suggested by the computer.
+		await dialog.getByRole('button', { name: 'Change', exact: true }).click();
+		const suggestion = dialog.getByRole('button', { name: /^api C:\\code\\api/ });
+		await suggestion.waitFor();
+		assert.match(await suggestion.innerText(), /Claude Code and Codex · 2 days ago/);
+		await suggestion.click();
+		await dialog.getByText('C:\\code\\api', { exact: true }).waitFor();
+
+		// Any folder on the computer, not only shared ones.
+		await dialog.getByRole('button', { name: 'Change', exact: true }).click();
+		await dialog.getByRole('button', { name: 'Browse Work PC…', exact: true }).click();
+		await dialog.getByRole('button', { name: 'C:', exact: true }).click();
+		await dialog.getByText('Choose a folder, not a whole drive.', { exact: true }).waitFor();
+		await dialog.getByRole('button', { name: 'code', exact: true }).click();
+		await dialog.getByRole('button', { name: 'Use “code”', exact: true }).click();
+		await dialog.getByText('C:\\code', { exact: true }).waitFor();
+		await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+		await dialog.waitFor({ state: 'hidden' });
+		const saved = fixtures.requests.filter((request) => request.method === 'PUT');
+		assert.deepEqual(saved[0].body, { mode: 'folder', paths: { 'pc-1': 'C:\\code' } });
+		const listed = fixtures.requests.filter((request) => request.listed !== undefined);
+		assert.deepEqual(
+			listed.map((request) => request.listed),
+			['', 'C:\\', 'C:\\code']
+		);
+	});
+}
+
 const { chromium } = await import(process.env.BUDDY_PLAYWRIGHT_MODULE || 'playwright');
 mkdirSync(outputDirectory, { recursive: true });
 const browser = await chromium.launch({ headless: true });
@@ -2492,6 +3250,13 @@ try {
 		{ name: 'desktop', mobile: false, theme: 'light' },
 		{ name: 'phone', mobile: true, theme: 'dark' }
 	]) {
+		await projectTabCase(browser, profile);
+		await folderChipCase(browser, profile);
+		await folderEditCase(browser, profile);
+		await folderBrowseCase(browser, profile);
+		await runTargetNewCase(browser, profile);
+		await runTargetBoundCase(browser, profile);
+		await computerSignInCase(browser, profile);
 		await cancellationCase(browser, profile, 'x');
 		await cancellationCase(browser, profile, 'escape');
 		await cancellationCase(browser, profile, 'backdrop');

@@ -13,20 +13,16 @@ import logging
 import os
 import socket
 import sys
-import tempfile
+import uuid
 from pathlib import Path
 from urllib.parse import quote
 
 import aiohttp
 
-from open_webui.utils.subscriptions.discovery import find_tool
-from open_webui.utils.subscriptions.events import SubscriptionError
-from open_webui.utils.subscriptions.runner_transport import (
-    normalize_runner_url,
-    runner_ssl_context,
-    runner_trace_config,
-)
-from open_webui.utils.subscriptions.process import (
+from buddy_runner import protocol
+from buddy_runner.discovery import find_tool
+from buddy_runner.local_process import start_local_process
+from buddy_runner.process import (
     ChildProcess,
     MAX_STDERR_BYTES,
     OutputLimitError,
@@ -35,11 +31,16 @@ from open_webui.utils.subscriptions.process import (
     run_command,
     subscription_env,
 )
+from open_webui.utils.subscriptions.events import SubscriptionError
+from open_webui.utils.subscriptions.runner_transport import (
+    normalize_runner_url,
+    runner_ssl_context,
+    runner_trace_config,
+)
 
 log = logging.getLogger(__name__)
 
 LOCAL_MACHINE_ID = 'local'
-TEMP_FILE_TOKEN = '{temp:%s}'
 MAX_WEBSOCKET_MESSAGE_BYTES = 32 * 1024 * 1024
 # Unread stdout from a Runner process. Its WebSocket also carries heartbeats
 # and the stop reply, which are only handled while it is read, so the output
@@ -74,55 +75,24 @@ async def _finish_cancelled_cleanup(operation: asyncio.Task) -> None:
     operation.result()
 
 
-def temp_file_arg(name: str) -> str:
-    """Placeholder for a temporary file in process arguments; see start_process."""
-    return TEMP_FILE_TOKEN % name
+# Folder listing for the folder picker. At most two per computer at a time, so
+# picking folders never takes the call slots that chat turns need.
+FOLDER_CALL_SECONDS = 10
+MAX_FOLDER_CALLS_PER_COMPUTER = 2
+BROWSING_NEEDS_APP = "Browsing needs the Buddy app on that computer. Type the folder's full path."
+SERVER_BROWSING = "Folders on Buddy server can't be browsed. Type the folder's full path."
+_folder_call_slots: dict[str, asyncio.Semaphore] = {}
 
 
-def _write_temp_files(temp_files: dict[str, str] | None, directory: str | None = None) -> dict[str, str]:
-    paths = {}
-    for name, content in (temp_files or {}).items():
-        handle = tempfile.NamedTemporaryFile(
-            'w', encoding='utf-8', suffix='.md', prefix=f'buddy-{name}-', dir=directory, delete=False
-        )
-        with handle:
-            handle.write(content)
-        paths[name] = handle.name
-    return paths
-
-
-def _substitute_temp_files(args: list[str], paths: dict[str, str]) -> list[str]:
-    substituted = []
-    for arg in args:
-        for name, path in paths.items():
-            arg = arg.replace(temp_file_arg(name), path)
-        substituted.append(arg)
-    return substituted
-
-
-def start_local_process(
-    args: list[str],
-    cwd: str,
-    extra_env: dict[str, str] | None = None,
-    temp_files: dict[str, str] | None = None,
-    temp_dir: str | None = None,
-) -> ChildProcess:
-    """Start a CLI on this computer; shared by LocalMachine and the runner."""
-    paths = _write_temp_files(temp_files, temp_dir)
-    try:
-        return ChildProcess(
-            _substitute_temp_files(args, paths),
-            cwd,
-            subscription_env(extra_env),
-            cleanup_paths=list(paths.values()),
-        )
-    except (OSError, ValueError, TypeError):
-        for path in paths.values():
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
-        raise
+def _folder_call_slot(machine_id: str, machine_name: str) -> asyncio.Semaphore:
+    """This computer's folder call slots; refuses at once rather than queueing when both are busy."""
+    slots = _folder_call_slots.get(machine_id)
+    if slots is None:
+        slots = asyncio.Semaphore(MAX_FOLDER_CALLS_PER_COMPUTER)
+        _folder_call_slots[machine_id] = slots
+    if slots.locked():
+        raise SubscriptionError(f'Buddy is still listing folders on {machine_name}. Try again in a moment.')
+    return slots
 
 
 class LocalMachine:
@@ -162,6 +132,12 @@ class LocalMachine:
             return Path(path).is_dir()
         return Path(path).is_file()
 
+    async def list_folders(self, path: str, show_hidden: bool, prefix: str) -> dict:
+        raise SubscriptionError(SERVER_BROWSING)
+
+    async def suggest_folders(self) -> dict:
+        raise SubscriptionError(SERVER_BROWSING)
+
     async def run(self, args: list[str], cwd: str, timeout: float, extra_env: dict | None = None):
         return await run_command(args, cwd, subscription_env(extra_env), timeout)
 
@@ -179,12 +155,55 @@ class LocalMachine:
         pass
 
 
+class AiohttpProcessChannel:
+    """A Runner process stream over its own aiohttp WebSocket.
+
+    RemoteProcess reads and writes one process through a channel: ``closed``,
+    ``receive_event(timeout)``, ``events()``, ``send_text(text)``,
+    ``send_json(message)`` and ``close()``. The outbound tunnel provides the
+    same methods for its streams.
+    """
+
+    def __init__(self, websocket: aiohttp.ClientWebSocketResponse):
+        self._websocket = websocket
+
+    @property
+    def closed(self) -> bool:
+        return self._websocket.closed
+
+    async def receive_event(self, timeout: float):
+        reply = await self._websocket.receive(timeout=timeout)
+        if reply.type != aiohttp.WSMsgType.TEXT:
+            return {}
+        return json.loads(reply.data)
+
+    async def events(self):
+        async for message in self._websocket:
+            if message.type != aiohttp.WSMsgType.TEXT:
+                continue
+            yield json.loads(message.data)
+
+    async def send_text(self, text: str) -> None:
+        await self._websocket.send_str(text)
+
+    async def send_json(self, message: dict) -> None:
+        await self._websocket.send_json(message)
+
+    async def close(self) -> None:
+        await self._websocket.close()
+
+
 class RemoteProcess(StreamedOutput):
     """A process on a Buddy Runner, with the same methods as ChildProcess."""
 
+    # How long a stop may take to be confirmed, unless the caller says otherwise.
+    cleanup_timeout = 5.0
+    # Stdin is sent in pieces of at most this many characters.
+    stdin_piece_chars = MAX_STDIN_MESSAGE_CHARS
+
     def __init__(
-        self, websocket: aiohttp.ClientWebSocketResponse, args: list[str], pid: int,
-        *, process_id: str | None = None, machine: 'RemoteMachine | None' = None,
+        self, channel, args: list[str], pid: int,
+        *, process_id: str | None = None, machine=None,
     ):
         super().__init__()
         self._output_limit_bytes = MAX_REMOTE_STDOUT_BYTES
@@ -195,7 +214,7 @@ class RemoteProcess(StreamedOutput):
         self.process_id = process_id
         self._machine = machine
         self.returncode: int | None = None
-        self._websocket = websocket
+        self._channel = channel
         self._stderr = ''
         self._exited = asyncio.Event()
         self._confirmed_stopped = asyncio.Event()
@@ -211,7 +230,7 @@ class RemoteProcess(StreamedOutput):
     def cleanup_confirmed(self) -> bool:
         return (
             self._confirmed_stopped.is_set() and self._receiver.done()
-            and self._websocket.closed
+            and self._channel.closed
         )
 
     @property
@@ -249,10 +268,7 @@ class RemoteProcess(StreamedOutput):
 
     async def _receive(self) -> None:
         try:
-            async for message in self._websocket:
-                if message.type != aiohttp.WSMsgType.TEXT:
-                    continue
-                event = json.loads(message.data)
+            async for event in self._channel.events():
                 if not isinstance(event, dict):
                     raise ValueError('Runner process event must be an object')
                 if event.get('type') == 'stdout':
@@ -288,7 +304,7 @@ class RemoteProcess(StreamedOutput):
                 )
             self._post_eof()
             self._exited.set()
-            await self._websocket.close()
+            await self._channel.close()
 
     def stderr_text(self) -> str:
         return self._stderr
@@ -300,19 +316,19 @@ class RemoteProcess(StreamedOutput):
         # Large input, such as a history with images, goes in bounded pieces.
         # The Runner writes them in order, so the CLI reads the same bytes.
         async with self._write_lock:
-            if self._websocket.closed or self._exited.is_set():
+            if self._channel.closed or self._exited.is_set():
                 raise self._closed_error()
-            for start in range(0, len(text), MAX_STDIN_MESSAGE_CHARS):
-                piece = text[start:start + MAX_STDIN_MESSAGE_CHARS]
+            for start in range(0, len(text), self.stdin_piece_chars):
+                piece = text[start:start + self.stdin_piece_chars]
                 try:
-                    await self._websocket.send_json({'type': 'stdin', 'data': piece})
+                    await self._channel.send_json({'type': 'stdin', 'data': piece})
                 except (aiohttp.ClientError, ConnectionResetError) as error:
                     raise self._closed_error() from error
 
     async def _send_quietly(self, message: dict) -> None:
         try:
-            if not self._websocket.closed:
-                await self._websocket.send_json(message)
+            if not self._channel.closed:
+                await self._channel.send_json(message)
         except (aiohttp.ClientError, ConnectionResetError, RuntimeError):
             pass
 
@@ -338,7 +354,7 @@ class RemoteProcess(StreamedOutput):
 
     def kill(self) -> None:
         """Schedule verified cleanup; async callers should await ``close``."""
-        operation = self._ensure_close_task(5.0)
+        operation = self._ensure_close_task(self.cleanup_timeout)
         operation.add_done_callback(self._log_cleanup_failure)
 
     def _log_cleanup_failure(self, operation: asyncio.Task) -> None:
@@ -367,12 +383,15 @@ class RemoteProcess(StreamedOutput):
         if self._machine is None or self.process_id is None:
             raise failure
         try:
-            stopped = await self._machine.confirm_process_stopped(self.process_id)
+            stopped = await self._runner_confirms_stop()
         except SubscriptionError as error:
             raise failure from error
         if not stopped:
             raise failure
         self._confirmed_stopped.set()
+
+    async def _runner_confirms_stop(self) -> bool:
+        return await self._machine.confirm_process_stopped(self.process_id)
 
     async def _confirm_stop_without_reply(self, confirmation: asyncio.Task) -> None:
         """Ask the Runner over HTTP, while still accepting a late reply on the connection.
@@ -409,7 +428,7 @@ class RemoteProcess(StreamedOutput):
                 # Keep the transport alive until the host has acknowledged
                 # native cleanup. A stopped acknowledgement need not include
                 # exit output, so explicitly release that open stream here.
-                await self._websocket.close()
+                await self._channel.close()
                 await self._receiver
         except TimeoutError as error:
             raise TimeoutError(f'Runner did not confirm cleanup of process {self.pid} within {timeout:g} seconds') from error
@@ -420,10 +439,12 @@ class RemoteProcess(StreamedOutput):
             if not self._confirmed_stopped.is_set():
                 # Release a failed transport without calling that release a
                 # successful process stop. The caller still receives failure.
-                await self._websocket.close()
+                await self._channel.close()
 
-    async def kill_and_wait(self, timeout: float = 5.0) -> None:
+    async def kill_and_wait(self, timeout: float | None = None) -> None:
         self._disposal_started = True
+        if timeout is None:
+            timeout = self.cleanup_timeout
         operation = self._ensure_close_task(timeout)
         try:
             await asyncio.shield(operation)
@@ -431,9 +452,72 @@ class RemoteProcess(StreamedOutput):
             await _finish_cancelled_cleanup(operation)
             raise
 
-    async def close(self, timeout: float = 5.0) -> None:
+    async def close(self, timeout: float | None = None) -> None:
         self._disposal_started = True
         await self.kill_and_wait(timeout)
+
+
+def _parse_startup_reply(event) -> tuple[int, str | None]:
+    """The process ID and stop ID from a Runner's startup reply, or why it started nothing."""
+    if not isinstance(event, dict):
+        raise ValueError('Runner startup response must be an object')
+    if event.get('type') == 'start_failed':
+        message = event.get('message')
+        if not isinstance(message, str) or not message:
+            message = 'The Runner did not start the process.'
+        raise _StartRefusedError(message)
+    if event.get('type') != 'started':
+        raise ValueError(event.get('message') or 'Runner did not acknowledge startup')
+    pid = event.get('pid')
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        raise ValueError('Runner startup response has no valid process ID')
+    # Runners without this ID can only confirm cleanup on this connection.
+    process_id = None
+    if isinstance(event.get('id'), str) and event['id']:
+        process_id = event['id']
+    return pid, process_id
+
+
+async def _close_refused_start(machine, channel) -> None:
+    # The Runner reported that nothing started, so a failed close cannot
+    # leave a process behind.
+    try:
+        await channel.close()
+    except Exception as error:
+        log.debug('Could not close the refused %s startup connection: %s', machine.name, error)
+
+
+async def start_over_channel(machine, channel, args: list[str], start_message: str | None, process_class=None):
+    """Wait for a Runner's startup reply on ``channel`` and own cleanup of whatever it started.
+
+    ``start_message`` is sent first unless the transport already carried it.
+    A startup that fails after the Runner may have started something goes to
+    ``machine.dispose_failed_start``, which raises unless cleanup is proven.
+    """
+    if process_class is None:
+        process_class = RemoteProcess
+    program = os.path.basename(args[0])
+    pid = None
+    process_id = None
+    try:
+        if start_message is not None:
+            await channel.send_text(start_message)
+        event = await channel.receive_event(timeout=60)
+        if isinstance(event, dict) and event.get('type') != 'start_failed':
+            # A malformed reply that still names a process leaves its cleanup to prove.
+            pid = event.get('pid')
+        pid, process_id = _parse_startup_reply(event)
+    except _StartRefusedError as refusal:
+        await _close_refused_start(machine, channel)
+        raise SubscriptionError(f'{machine.name} could not start {program}: {refusal}') from refusal
+    except Exception as error:
+        await machine.dispose_failed_start(channel, args, pid)
+        raise SubscriptionError(f'{machine.name} could not start {program}: {error}') from error
+    except asyncio.CancelledError:
+        cleanup = asyncio.create_task(machine.dispose_failed_start(channel, args, pid))
+        await _finish_cancelled_cleanup(cleanup)
+        raise
+    return process_class(channel, args, pid, process_id=process_id, machine=machine)
 
 
 def check_runner_url(url: str) -> None:
@@ -521,6 +605,12 @@ class RemoteMachine:
         result = await self._request('POST', '/paths/check', {'path': path, 'kind': kind})
         return bool(result.get('exists'))
 
+    async def list_folders(self, path: str, show_hidden: bool, prefix: str) -> dict:
+        raise SubscriptionError(BROWSING_NEEDS_APP)
+
+    async def suggest_folders(self) -> dict:
+        raise SubscriptionError(BROWSING_NEEDS_APP)
+
     async def run(self, args: list[str], cwd: str, timeout: float, extra_env: dict | None = None):
         payload = {'args': args, 'cwd': cwd, 'timeout': timeout, 'env': extra_env or {}}
         result = await self._request('POST', '/run', payload, timeout=timeout + 15)
@@ -557,39 +647,7 @@ class RemoteMachine:
             )
         except (aiohttp.ClientError, TimeoutError) as error:
             raise SubscriptionError(f'Could not reach {self.name} at {self.url}: {error}') from error
-
-        pid = None
-        process_id = None
-        try:
-            await websocket.send_str(start_message)
-            reply = await websocket.receive(timeout=60)
-            event = json.loads(reply.data) if reply.type == aiohttp.WSMsgType.TEXT else {}
-            if not isinstance(event, dict):
-                raise ValueError('Runner startup response must be an object')
-            if event.get('type') == 'start_failed':
-                message = event.get('message')
-                if not isinstance(message, str) or not message:
-                    message = 'The Runner did not start the process.'
-                raise _StartRefusedError(message)
-            pid = event.get('pid')
-            if event.get('type') != 'started':
-                raise ValueError(event.get('message') or 'Runner did not acknowledge startup')
-            if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
-                raise ValueError('Runner startup response has no valid process ID')
-            # Runners without this ID can only confirm cleanup on this connection.
-            if isinstance(event.get('id'), str) and event['id']:
-                process_id = event['id']
-        except _StartRefusedError as refusal:
-            await self._close_refused_start(websocket)
-            raise SubscriptionError(f'{self.name} could not start {program}: {refusal}') from refusal
-        except Exception as error:
-            await self._dispose_failed_start(websocket, args, pid)
-            raise SubscriptionError(f'{self.name} could not start {program}: {error}') from error
-        except asyncio.CancelledError:
-            cleanup = asyncio.create_task(self._dispose_failed_start(websocket, args, pid))
-            await _finish_cancelled_cleanup(cleanup)
-            raise
-        return RemoteProcess(websocket, args, pid, process_id=process_id, machine=self)
+        return await start_over_channel(self, AiohttpProcessChannel(websocket), args, start_message)
 
     async def confirm_process_stopped(self, process_id: str) -> bool:
         """Ask the Runner to stop a process whose connection ended, and confirm its cleanup.
@@ -606,18 +664,10 @@ class RemoteMachine:
                 result = await self._request('POST', path, timeout=15, session=session)
         return result.get('stopped') is True
 
-    async def _close_refused_start(self, websocket) -> None:
-        # The Runner reported that nothing started, so a failed close cannot
-        # leave a process behind.
-        try:
-            await websocket.close()
-        except Exception as error:
-            log.debug('Could not close the refused %s startup connection: %s', self.name, error)
-
-    async def _dispose_failed_start(self, websocket, args: list[str], pid: int | None) -> None:
+    async def dispose_failed_start(self, channel, args: list[str], pid: int | None) -> None:
         if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
             try:
-                await RemoteProcess(websocket, args, pid).close()
+                await RemoteProcess(channel, args, pid).close()
             except Exception as error:
                 raise StartupCleanupUnconfirmedError(
                     f'{self.name} could not confirm cleanup of startup process {pid}'
@@ -625,7 +675,7 @@ class RemoteMachine:
             return
         detail = f'{self.name} startup ended before a process identity was received; process cleanup unconfirmed'
         try:
-            await websocket.close()
+            await channel.close()
         except Exception as error:
             raise StartupCleanupUnconfirmedError(detail) from error
         log.warning(detail)
@@ -635,3 +685,137 @@ class RemoteMachine:
         self._closed = True
         if self._session and not self._session.closed:
             await self._session.close()
+
+
+# How long a tunnel machine call waits for a computer that just went offline,
+# for example while its Buddy app restarts.
+TUNNEL_RECONNECT_WAIT_SECONDS = 5
+# How long confirming a stop waits for the computer to reconnect.
+TUNNEL_CONFIRM_WAIT_SECONDS = 20
+
+
+class TunnelProcess(RemoteProcess):
+    """A process on a computer connected over the tunnel."""
+
+    # A stop may have to wait for the computer to reconnect before it can be confirmed.
+    cleanup_timeout = TUNNEL_CONFIRM_WAIT_SECONDS + 5.0
+    stdin_piece_chars = protocol.STDIN_PIECE_CHARS
+
+    async def _runner_confirms_stop(self) -> bool:
+        return await self._machine.confirm_process_stopped(self.process_id, self._channel.instance_id)
+
+
+class TunnelMachine:
+    """A user's computer that connected to Buddy through the Buddy app's Runner."""
+
+    def __init__(self, machine_id: str, name: str, hub):
+        self.id = machine_id
+        self.name = name
+        self._hub = hub
+
+    async def _connection(self, wait: float = TUNNEL_RECONNECT_WAIT_SECONDS):
+        connection = await self._hub.wait_connection(self.id, wait)
+        if connection is None:
+            raise SubscriptionError(f'{self.name} is offline. Open the Buddy app on that computer.')
+        return connection
+
+    async def info(self) -> dict:
+        return (await self._connection()).info
+
+    async def chat_dir(self) -> str:
+        return (await self.info())['chat_dir']
+
+    async def default_workspace(self) -> str:
+        return (await self.info())['default_workspace']
+
+    async def find_tool(self, tool: str, configured_path: str = '') -> str | None:
+        connection = await self._connection()
+        result = await connection.call('tools.find', {'tool': tool, 'configured_path': configured_path})
+        return (result or {}).get('path')
+
+    async def path_exists(self, path: str, kind: str) -> bool:
+        connection = await self._connection()
+        result = await connection.call('paths.check', {'path': path, 'kind': kind})
+        return bool((result or {}).get('exists'))
+
+    async def list_folders(self, path: str, show_hidden: bool, prefix: str) -> dict:
+        """The Runner's raw reply; folder_listing checks it before anyone sees it."""
+        connection = await self._connection()
+        async with _folder_call_slot(self.id, self.name):
+            params = {'path': path, 'hidden': show_hidden, 'prefix': prefix}
+            return await connection.call('folders.list', params, timeout=FOLDER_CALL_SECONDS)
+
+    async def suggest_folders(self) -> dict:
+        connection = await self._connection()
+        async with _folder_call_slot(self.id, self.name):
+            return await connection.call('folders.suggest', {}, timeout=FOLDER_CALL_SECONDS)
+
+    async def start_process(
+        self,
+        args: list[str],
+        cwd: str,
+        extra_env: dict[str, str] | None = None,
+        temp_files: dict[str, str] | None = None,
+    ) -> TunnelProcess:
+        program = os.path.basename(args[0])
+        # The Runner records this name before starting anything, so a stop
+        # after a lost connection always gets a definite answer.
+        start = {
+            'type': 'start',
+            'args': args,
+            'cwd': cwd,
+            'env': extra_env or {},
+            'temp_files': temp_files or {},
+            'start_id': uuid.uuid4().hex,
+        }
+        try:
+            # Encode before sending, so a local encoding error starts nothing.
+            json.dumps(start)
+        except (TypeError, ValueError) as error:
+            raise SubscriptionError(f'{self.name} could not start {program}: {error}') from error
+        connection = await self._connection()
+        stream = await connection.open_stream(start)
+        return await start_over_channel(self, stream, args, None, process_class=TunnelProcess)
+
+    async def confirm_process_stopped(self, process_id: str | None, instance_id: str | None = None) -> bool:
+        """Ask the computer to stop a process whose stream ended, and confirm its cleanup.
+
+        Waits for a computer that is reconnecting. A computer whose Runner
+        restarted since the process started cannot vouch for it.
+        """
+        connection = await self._hub.wait_connection(self.id, TUNNEL_CONFIRM_WAIT_SECONDS)
+        if connection is None:
+            raise SubscriptionError(f'{self.name} is offline, so cleanup of its process could not be confirmed.')
+        if instance_id is not None and connection.instance_id != instance_id:
+            return False
+        if not process_id:
+            return False
+        result = await connection.call('process.stop', {'process_id': process_id}, timeout=15)
+        return (result or {}).get('stopped') is True
+
+    async def dispose_failed_start(self, channel, args: list[str], pid: int | None) -> None:
+        """Prove that a startup which failed midway left nothing running.
+
+        Closing the stream makes the Runner stop whatever it started for it.
+        The startup's name then gets a definite answer, even when the reply
+        with the process ID never arrived.
+        """
+        detail = f'{self.name} could not confirm cleanup of a provider startup'
+        try:
+            await channel.close()
+            if await self._startup_stopped(channel):
+                return
+        except Exception as error:
+            raise StartupCleanupUnconfirmedError(detail) from error
+        raise StartupCleanupUnconfirmedError(detail)
+
+    async def _startup_stopped(self, channel) -> bool:
+        connection = await self._hub.wait_connection(self.id, TUNNEL_CONFIRM_WAIT_SECONDS)
+        if connection is None or connection.instance_id != channel.instance_id or not channel.start_id:
+            return False
+        result = await connection.call('process.stop', {'start_id': channel.start_id}, timeout=15)
+        return (result or {}).get('stopped') is True
+
+    async def close(self) -> None:
+        # The connection belongs to the hub; this handle owns nothing to close.
+        pass

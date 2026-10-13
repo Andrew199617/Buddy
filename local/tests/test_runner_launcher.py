@@ -12,7 +12,7 @@ from pathlib import Path
 REPOSITORY = Path(__file__).resolve().parents[2]
 LAUNCHER = REPOSITORY / 'local' / 'start-buddy-runner.ps1'
 CMD_WRAPPER = REPOSITORY / 'local' / 'start-buddy-runner.cmd'
-RUNNER_MODULE = 'open_webui.utils.subscriptions.runner'
+RUNNER_MODULE = 'buddy_runner'
 
 # Stands in for python.exe: prints its arguments and the environment it was
 # given, then exits with FAKE_PYTHON_EXIT_CODE.

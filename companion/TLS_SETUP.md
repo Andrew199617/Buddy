@@ -8,9 +8,8 @@ queries and fragments are refused. HTTP and WebSocket redirects are refused
 before forwarding the privileged Runner key.
 
 The Runner still listens only on loopback, normally port **8765**. TLS does not
-approve project roots or change provider permissions. A browser address remains
-separate from the backend Runner address and requires its own reachable, trusted
-transport. This setup does not install browser or Windows trust.
+approve project roots or change provider permissions. This setup does not
+install browser or Windows trust.
 
 ## Certificate material
 
@@ -46,25 +45,13 @@ remains `127.0.0.1:8765`. The Runner has one listener: with these flags it
 speaks only HTTPS, on loopback as well, and without them only HTTP. The TLS
 server requires TLS 1.2 or newer.
 
-## The Projects page with a TLS Runner
+## Project files with a TLS Runner
 
-The Projects page connects from the browser. Its default host address,
-`http://127.0.0.1:8765`, stops working once the Runner uses TLS. Choose one of
-these instead, and enter the address in the page's Host address field or as the
-machine's browser address in Machines:
-
-- Use `https://localhost:8765`. The certificate must also list `localhost` in
-  its Subject Alternative Name (or `127.0.0.1`, to use that address), and the
-  browser must trust its issuer. This setup does not install that trust; adding
-  a private CA to Windows or the browser is a separate operator decision.
-- Keep this Runner for Buddy in Docker, and start a second Runner without the
-  TLS flags for the Projects page, on another free loopback port and with its
-  own `-StateDir`. Let that Runner create the folder: on Windows it refuses a
-  folder that other accounts can use (see
-  [Keep the Runner key private](README.md#keep-the-runner-key-private)).
-  Approve project roots only on that Runner, and use
-  `http://127.0.0.1:<port>`. Each Runner has its own key, pairing codes and
-  project grants.
+Buddy's web app no longer connects to a Runner from the browser: the Projects
+page, its host address and pairing are gone. Browsing, editing and commands
+live in each chat's Project tab, which works only for computers connected with
+the Buddy app. A Runner started on its own with these TLS flags runs Claude and
+ChatGPT for Buddy, but its folders cannot be opened from Buddy.
 
 ## Docker trust scoped to Runner requests
 

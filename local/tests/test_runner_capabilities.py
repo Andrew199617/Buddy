@@ -21,7 +21,7 @@ from aiohttp.test_utils import TestClient, TestServer
 ROOT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT_DIR / 'backend'))
 
-from open_webui.utils.subscriptions.workspace_capabilities import (  # noqa: E402
+from buddy_runner.workspace_capabilities import (  # noqa: E402
     CapabilityError,
     FILE_BYTES,
     OUTPUT_BYTES,
@@ -30,8 +30,8 @@ from open_webui.utils.subscriptions.workspace_capabilities import (  # noqa: E40
     _digest,
     _normalize_pairing_code,
 )
-from open_webui.utils.subscriptions.pinned_paths import PinnedPath, PinnedPathError  # noqa: E402
-from open_webui.utils.subscriptions.process import ProcessClosedError  # noqa: E402
+from buddy_runner.pinned_paths import PinnedPath, PinnedPathError  # noqa: E402
+from buddy_runner.process import ProcessClosedError  # noqa: E402
 
 ORIGIN = 'http://localhost:8082'
 SECOND_ORIGIN = 'http://127.0.0.1:8082'
@@ -177,7 +177,7 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status, 401)
 
     async def test_real_runner_separates_provider_key_pair_token_and_operator_controls(self):
-        from open_webui.utils.subscriptions import runner
+        from buddy_runner import runner
 
         provider_key = secrets.token_urlsafe(32)
         app = runner.build_app(
@@ -301,7 +301,7 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
         from unittest.mock import patch
 
         await self.start()
-        with patch('open_webui.utils.subscriptions.workspace_capabilities.MAX_SESSIONS', 2):
+        with patch('buddy_runner.workspace_capabilities.MAX_SESSIONS', 2):
             await self.pair()
             first_token = self.token
             self.host.issue_pairing_code()
@@ -374,7 +374,7 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_directory_listing_runs_off_the_event_loop_without_repinning_entries(self):
         from unittest.mock import patch
-        from open_webui.utils.subscriptions import workspace_capabilities
+        from buddy_runner import workspace_capabilities
 
         for index in range(20):
             (self.project / f'file-{index}.txt').write_text('x', encoding='utf-8')
@@ -483,7 +483,7 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_one_missing_root_leaves_other_grants_listed_and_revocable(self):
         import shutil
-        from open_webui.utils.subscriptions import runner
+        from buddy_runner import runner
 
         second = self.base / 'second'
         second.mkdir()
@@ -560,7 +560,7 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
     @unittest.skipIf(sys.platform == 'win32', 'POSIX descriptor traversal fixture')
     async def test_posix_ancestor_swap_keeps_file_and_listing_on_pinned_directory(self):
         from unittest.mock import patch
-        from open_webui.utils.subscriptions import pinned_paths
+        from buddy_runner import pinned_paths
 
         nested = self.project / 'nested'
         saved = self.project / 'original-nested'
@@ -601,7 +601,7 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_posix_leaf_fifo_swap_is_rejected_without_blocking(self):
         import signal
         from unittest.mock import patch
-        from open_webui.utils.subscriptions import pinned_paths
+        from buddy_runner import pinned_paths
 
         leaf = self.project / 'nested' / 'inside.txt'
         original_open = pinned_paths._open_at
@@ -737,7 +737,7 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_save_keeps_previous_contents_and_reports_json(self):
         from unittest.mock import patch
-        from open_webui.utils.subscriptions import pinned_paths
+        from buddy_runner import pinned_paths
 
         await self.start()
         await self.pair()
@@ -765,7 +765,7 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
     @unittest.skipUnless(sys.platform == 'win32', 'Windows native handle sharing fixture')
     async def test_windows_save_keeps_the_directory_pinned_during_the_rename(self):
         from unittest.mock import patch
-        from open_webui.utils.subscriptions import pinned_paths
+        from buddy_runner import pinned_paths
 
         await self.start()
         await self.pair()
@@ -840,7 +840,7 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
         status, _, _ = await self.request('GET', f'/v1/terminals/{terminal_id}')
         self.assertEqual(status, 404)
         from unittest.mock import patch
-        with patch('open_webui.utils.subscriptions.workspace_capabilities.MAX_TERMINAL_HISTORY', 2):
+        with patch('buddy_runner.workspace_capabilities.MAX_TERMINAL_HISTORY', 2):
             retained = []
             for _ in range(2):
                 status, body, _ = await self.request('POST', '/v1/terminals', json={'workspaceId': workspace_id})
@@ -855,7 +855,7 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status, 200)
         # Lower only the configured test fixture's entry threshold, preserving
         # the same streaming enumeration and rejection path as the 5,000 limit.
-        with patch('open_webui.utils.subscriptions.workspace_capabilities.MAX_DIRECTORY_ENTRIES', 2):
+        with patch('buddy_runner.workspace_capabilities.MAX_DIRECTORY_ENTRIES', 2):
             status, _, _ = await self.request('GET', '/v1/directories', params={'grantId': grant['id'], 'path': ''})
             self.assertEqual(status, 413)
 
@@ -1198,7 +1198,7 @@ class RunnerCapabilityTests(unittest.IsolatedAsyncioTestCase):
         # Expire both only after setup so this verifies disposal, not network timing.
         self.host._sessions[first_key].expires_at = 0
         self.host._sessions[second_key].expires_at = 0
-        with self.assertLogs('open_webui.utils.subscriptions.workspace_capabilities', level='ERROR'):
+        with self.assertLogs('buddy_runner.workspace_capabilities', level='ERROR'):
             deadline = time.monotonic() + 2
             while (self.host._sessions or self.host._pending_sessions or self.host._terminals) and time.monotonic() < deadline:
                 await asyncio.sleep(0.01)

@@ -16,6 +16,9 @@ from open_webui.utils.subscriptions.common import (
     ACCESS_CHAT,
     ACCESS_READ,
     CHAT_INSTRUCTIONS,
+    CREDENTIAL_API_KEY,
+    CREDENTIAL_MACHINE,
+    CREDENTIAL_PLAN_TOKEN,
     ProviderModel,
     ProviderSettings,
     TurnRequest,
@@ -34,9 +37,9 @@ from open_webui.utils.subscriptions.events import (
     TokenUsage,
     TurnFailed,
 )
-from open_webui.utils.subscriptions.discovery import TOOL_CLAUDE
-from open_webui.utils.subscriptions.machines import temp_file_arg
-from open_webui.utils.subscriptions.process import ProcessClosedError
+from buddy_runner.discovery import TOOL_CLAUDE
+from buddy_runner.local_process import temp_file_arg
+from buddy_runner.process import ProcessClosedError
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +48,7 @@ NOT_INSTALLED_MESSAGE = (
     'Claude Code was not found. Install it from https://claude.com/claude-code '
     'or set its path in the Claude subscription settings.'
 )
-NOT_SIGNED_IN_MESSAGE = 'Claude is not signed in. Sign in under Admin Settings → Connections → Subscriptions.'
+NOT_SIGNED_IN_MESSAGE = 'Claude is not signed in. Sign in under Settings → Machines.'
 EFFORT_LEVELS = ('low', 'medium', 'high', 'xhigh', 'max')
 # No WebFetch: a prompt in the folder could make it send file contents to any URL.
 READ_ONLY_TOOLS = 'Read,Grep,Glob,WebSearch'
@@ -57,6 +60,9 @@ LOGIN_URL = re.compile(r'https://\S+/oauth/authorize\?\S+')
 # 'third_party' bills Bedrock, Vertex, or Foundry, and 'oauth_token' is any
 # other token, such as a gateway's.
 PLAN_AUTH_METHOD = 'claude.ai'
+# What ``claude auth status`` reports for CLAUDE_CODE_OAUTH_TOKEN and ANTHROPIC_API_KEY.
+PLAN_TOKEN_AUTH_METHOD = 'oauth_token'
+API_KEY_AUTH_METHOD = 'api_key'
 FALLBACK_MODELS = [
     ProviderModel(key='opus', value='opus', name='Claude Opus'),
     ProviderModel(key='sonnet', value='sonnet', name='Claude Sonnet'),
@@ -196,6 +202,21 @@ def _readable_error(text: str) -> str:
     if 'not logged in' in text.lower() or '/login' in text:
         return NOT_SIGNED_IN_MESSAGE
     return text
+
+
+def _credential_mismatch_message(credential_mode: str, auth_method: str) -> str | None:
+    """Why the CLI's sign-in is not the one Buddy expects for this provider, or None when it is."""
+    if credential_mode == CREDENTIAL_PLAN_TOKEN:
+        if auth_method == PLAN_TOKEN_AUTH_METHOD:
+            return None
+        return 'Claude Code is not using your Claude token. Add it again in Settings → Machines.'
+    if credential_mode == CREDENTIAL_API_KEY:
+        if auth_method == API_KEY_AUTH_METHOD:
+            return None
+        return 'Claude Code is not using your Anthropic API key. Add it again in Settings → Machines.'
+    if auth_method == PLAN_AUTH_METHOD:
+        return None
+    return _not_a_plan_message(auth_method)
 
 
 def _not_a_plan_message(auth_method: str) -> str:
@@ -365,6 +386,8 @@ class ClaudeCodeProvider:
     def __init__(self, state_dir: Path):
         self._sessions = SessionStore(state_dir / 'claude-sessions.json')
         self._login: ClaudeLogin | None = None
+        # Set by the service before each use: which sign-in the CLI should be using.
+        self.credential_mode = CREDENTIAL_MACHINE
         self._usage_windows: dict[str, dict] = {}
         self._limit_reached = False
 
@@ -430,9 +453,14 @@ class ClaudeCodeProvider:
             },
             'usage': self.usage_summary(),
         }
-        if status['signed_in'] and auth_method != PLAN_AUTH_METHOD:
-            status['api_billing'] = True
-            status['message'] = _not_a_plan_message(auth_method)
+        if status['signed_in']:
+            mismatch = _credential_mismatch_message(self.credential_mode, auth_method)
+            if mismatch is None:
+                status['billing'] = 'api_key' if self.credential_mode == CREDENTIAL_API_KEY else 'plan'
+            else:
+                # Not the sign-in these models are for, so turns are refused.
+                status['api_billing'] = True
+                status['message'] = mismatch
         return status
 
     async def list_models(self, settings: ProviderSettings, machine) -> list[ProviderModel]:
@@ -485,6 +513,8 @@ class ClaudeCodeProvider:
     async def start_login(self, settings: ProviderSettings, machine, method: str) -> dict:
         # method is unused: Claude Code only offers the paste-the-code flow.
         # Codex uses it to pick 'browser' or 'device', and both share this signature.
+        if self.credential_mode != CREDENTIAL_MACHINE:
+            raise SubscriptionError('Claude uses your stored token or key here. Remove it to sign in on the computer.')
         await self.cancel_login()
         cli = await self._require_cli(settings, machine)
         # BROWSER=none keeps the CLI from opening a tab on that computer; Buddy
@@ -571,7 +601,8 @@ class ClaudeCodeProvider:
         cli = await self._require_cli(settings, machine)
         await self.cancel_login()
         returncode, _, error_output = await machine.run([cli, 'auth', 'logout'], await machine.chat_dir(), 60)
-        self._sessions.clear()
+        # Only this computer's sessions belonged to the account that signed out.
+        self._sessions.forget_prefix(f'{machine.id}|')
         if returncode != 0:
             raise SubscriptionError(_shorten(error_output, 400) or 'Claude Code could not sign out.')
 

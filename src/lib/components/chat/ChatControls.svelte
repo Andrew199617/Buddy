@@ -1,9 +1,9 @@
 <script context="module" lang="ts">
-	let savedTab: 'controls' | 'files' | 'overview' = 'controls';
+	let savedTab: 'controls' | 'files' | 'project' | 'overview' = 'controls';
 </script>
 
 <script lang="ts">
-	import { onMount, tick, getContext } from 'svelte';
+	import { onDestroy, onMount, tick, getContext } from 'svelte';
 	import type { Writable } from 'svelte/store';
 	import type { i18n as I18n } from 'i18next';
 	import { createLazyComponent } from '$lib/utils/lazy-component';
@@ -25,6 +25,11 @@
 	import Drawer from '../common/Drawer.svelte';
 	import ResizableSidePanel from '../common/ResizableSidePanel.svelte';
 	import { isSavedChatId } from '$lib/utils/chatId';
+	import { getFolderProject, type FolderProject } from '$lib/apis/subscriptions';
+	import { KeptProjectPanel, showKeptPanel } from './ProjectPanel/kept-panel';
+	import type { ProjectTarget } from './ProjectPanel/project-session';
+	import { projectTabAvailable } from './ProjectPanel/project-tab';
+	import { projectFolderChanges } from '$lib/components/projectFolders/project-folder-changes';
 
 	const i18n: Writable<I18n> = getContext('i18n');
 
@@ -46,6 +51,9 @@
 	function importOverview() {
 		return import('./Overview.svelte');
 	}
+	function importProjectPanel() {
+		return import('./ProjectPanel/ProjectPanel.svelte');
+	}
 
 	const callOverlayFeature = createLazyComponent(importCallOverlay);
 	const artifactsFeature = createLazyComponent(importArtifacts);
@@ -53,6 +61,7 @@
 	const fileNavFeature = createLazyComponent(importFileNav);
 	const pyodideFileNavFeature = createLazyComponent(importPyodideFileNav);
 	const overviewFeature = createLazyComponent(importOverview);
+	const projectFeature = createLazyComponent(importProjectPanel);
 
 	export let history;
 	export let models = [];
@@ -71,6 +80,14 @@
 	export let modelId;
 
 	export let codeInterpreterEnabled = false;
+	// The chat folder this chat is in, for its Project tab.
+	export let folderId: string | null = null;
+	// The exact folder the open chat runs in, which its Project tab opens instead of the folder's.
+	export let chatTarget: ProjectTarget | null = null;
+	// True while where the chat runs is still loading; the Project tab waits for it.
+	export let chatTargetLoading = false;
+	// Checks again whether the chat's own computer is online.
+	export let onChatTargetCheck: () => void = () => {};
 
 	let largeScreen = false;
 	let dragged = false;
@@ -109,16 +126,134 @@
 		(codeInterpreterEnabled && $config?.code?.interpreter_engine !== 'jupyter');
 	$: showOverviewTab = hasMessages;
 
+	// The chat folder's project folder, for the Project tab. Hidden without plans.
+	let folderProject: FolderProject | null = null;
+	let folderProjectFor: string | null = null;
+	// While it loads, a selected Project tab stays selected instead of falling back.
+	let folderProjectLoading = folderId !== null;
+	let folderProjectRequest = 0;
+
+	async function loadFolderProject(id: string | null) {
+		const request = ++folderProjectRequest;
+		if (id !== folderProjectFor) {
+			// Another chat folder: show nothing until its project folder arrives.
+			folderProjectFor = id;
+			folderProject = null;
+		}
+		if (!id) {
+			folderProjectLoading = false;
+			return;
+		}
+		folderProjectLoading = true;
+		try {
+			const loaded = await getFolderProject(localStorage.token, id);
+			if (request !== folderProjectRequest) return;
+			folderProject = null;
+			if (loaded?.has_plans) folderProject = loaded;
+		} catch {
+			// Keeps what is shown; opening the panel again retries.
+		} finally {
+			if (request === folderProjectRequest) folderProjectLoading = false;
+		}
+	}
+
+	function reloadFolderProject() {
+		void loadFolderProject(folderId);
+	}
+
+	// Loads for each chat folder, and again each time the panel opens, so a plan
+	// added or a folder changed elsewhere shows up.
+	function refreshFolderProject(id: string | null, panelOpen: boolean) {
+		if (id !== folderProjectFor || panelOpen) void loadFolderProject(id);
+	}
+
+	$: refreshFolderProject(folderId, $showControls);
+	// Saved from the folder page or its settings while this chat is open.
+	$: if ($projectFolderChanges.folderId === folderId && $projectFolderChanges.count > 0) {
+		reloadFolderProject();
+	}
+	$: showProjectTab = folderProject !== null || chatTarget !== null;
+	$: projectTabLoading = folderProjectLoading || chatTargetLoading;
+	$: projectTabAvailable.set(showProjectTab);
+	$: projectKey = panelKey(folderId, chatTarget);
+
+	/** What the kept panel shows: the chat's own folder, or else its chat folder. */
+	function panelKey(id: string | null, target: ProjectTarget | null): string | null {
+		if (target) return `target:${target.computer.machine_id}:${target.path}`;
+		if (id) return `folder:${id}`;
+		return null;
+	}
+
+	// The Project tab's panel starts the first time the tab shows, then lives as
+	// long as this chat keeps the same folder: switching tabs, an artifact
+	// opening or closing the panel keeps its open file and running command.
+	let keptProject: KeptProjectPanel | null = null;
+	let keptProjectKey: string | null = null;
+
+	/** The Project tab's "Check again": the chat's own computer, or else the chat folder's project. */
+	function recheckProjectPanel() {
+		if (chatTarget) {
+			onChatTargetCheck();
+			return;
+		}
+		reloadFolderProject();
+	}
+
+	function keepProjectPanel(component: any, key: string | null) {
+		const props = { project: folderProject, chatTarget, onChanged: recheckProjectPanel };
+		if (keptProject && keptProjectKey === key) {
+			keptProject.update(props);
+			return;
+		}
+		dropProjectPanel();
+		keptProject = new KeptProjectPanel(component, props, i18n);
+		keptProjectKey = key;
+	}
+
+	/** Ends the panel's session on the computer, which also stops its commands. */
+	function dropProjectPanel() {
+		keptProject?.destroy();
+		keptProject = null;
+		keptProjectKey = null;
+	}
+
+	$: if (activeTab === 'project' && $showControls && showProjectTab && $projectFeature.component) {
+		// Runs again when the chat's folder changes, such as when where it runs finishes loading.
+		keepProjectPanel($projectFeature.component, projectKey);
+	}
+	$: if (keptProject && keptProjectKey === projectKey) {
+		keptProject.update({ project: folderProject, chatTarget });
+	}
+	$: if (keptProject && keptProjectKey !== projectKey) dropProjectPanel();
+	$: if (keptProject && !showProjectTab && !projectTabLoading) dropProjectPanel();
+
+	function leaveProjectTab() {
+		dropProjectPanel();
+		projectTabAvailable.set(false);
+	}
+
+	onDestroy(leaveProjectTab);
+
 	// Tab fallback: if active tab becomes hidden, switch to next available
 	$: if (!showOverviewTab && activeTab === 'overview') activeTab = 'controls';
 	$: if (!showFilesTab && activeTab === 'files') activeTab = 'controls';
+	$: if (!showProjectTab && !projectTabLoading && activeTab === 'project') {
+		activeTab = 'controls';
+	}
 	$: if (!showControlsTab && activeTab === 'controls') {
 		if (showFilesTab) activeTab = 'files';
+		else if (showProjectTab) activeTab = 'project';
 		else if (showOverviewTab) activeTab = 'overview';
 	}
 
 	// Auto-close if there are no visible tabs
-	$: if (!showControlsTab && !showFilesTab && !showOverviewTab) {
+	$: if (
+		!showControlsTab &&
+		!showFilesTab &&
+		!showOverviewTab &&
+		!showProjectTab &&
+		!projectTabLoading
+	) {
 		showControls.set(false);
 	}
 
@@ -225,6 +360,8 @@
 			void artifactsFeature.load();
 		} else if (activeTab === 'overview') {
 			void overviewFeature.load();
+		} else if (activeTab === 'project') {
+			void projectFeature.load();
 		} else if (activeTab === 'files' && terminalFilesAvailable && $selectedTerminalId) {
 			void fileNavFeature.load();
 		} else if (activeTab === 'files' && codeInterpreterEnabled) {
@@ -319,6 +456,17 @@
 										{$i18n.t('Files')}
 									</button>
 								{/if}
+								{#if showProjectTab}
+									<button
+										class="px-2.5 py-1 text-sm rounded-lg transition whitespace-nowrap {activeTab ===
+										'project'
+											? 'bg-gray-100/40 dark:bg-gray-800/25 font-normal text-gray-700 dark:text-gray-200'
+											: 'text-gray-500 dark:text-gray-400 hover:bg-gray-100/30 dark:hover:bg-gray-800/20 hover:text-gray-600 dark:hover:text-gray-300'}"
+										on:click={() => (activeTab = 'project')}
+									>
+										{$i18n.t('Project')}
+									</button>
+								{/if}
 								{#if showOverviewTab}
 									<button
 										class="px-2.5 py-1 text-sm rounded-lg transition whitespace-nowrap {activeTab ===
@@ -386,6 +534,17 @@
 										onClose={closeFeaturePanel}
 									/>
 								{/if}
+							{:else if activeTab === 'project' && showProjectTab}
+								{#if $projectFeature.component}
+									<div class="h-full" use:showKeptPanel={keptProject}></div>
+								{:else}
+									<LazyFeatureStatus
+										feature={$i18n.t('Project')}
+										error={$projectFeature.error}
+										onRetry={projectFeature.load}
+										onClose={closeFeaturePanel}
+									/>
+								{/if}
 							{:else if activeTab === 'files' && codeInterpreterEnabled}
 								{#if $pyodideFileNavFeature.component}
 									<svelte:component this={$pyodideFileNavFeature.component} />
@@ -421,7 +580,8 @@
 			<div
 				class="w-full {specialPanel && !$showCallOverlay
 					? ' '
-					: 'bg-white dark:bg-gray-900'} z-40 pointer-events-auto {activeTab === 'files'
+					: 'bg-white dark:bg-gray-900'} z-40 pointer-events-auto {activeTab === 'files' ||
+				activeTab === 'project'
 					? ''
 					: 'overflow-y-auto'} scrollbar-hidden"
 				id="controls-container"
@@ -498,6 +658,17 @@
 										{$i18n.t('Files')}
 									</button>
 								{/if}
+								{#if showProjectTab}
+									<button
+										class="px-2.5 py-1 text-sm rounded-lg transition whitespace-nowrap {activeTab ===
+										'project'
+											? 'bg-gray-100/40 dark:bg-gray-800/25 font-normal text-gray-700 dark:text-gray-200'
+											: 'text-gray-500 dark:text-gray-400 hover:bg-gray-100/30 dark:hover:bg-gray-800/20 hover:text-gray-600 dark:hover:text-gray-300'}"
+										on:click={() => (activeTab = 'project')}
+									>
+										{$i18n.t('Project')}
+									</button>
+								{/if}
 								{#if showOverviewTab}
 									<button
 										class="px-2.5 py-1 text-sm rounded-lg transition whitespace-nowrap {activeTab ===
@@ -567,6 +738,17 @@
 										feature={$i18n.t('Files')}
 										error={$fileNavFeature.error}
 										onRetry={fileNavFeature.load}
+										onClose={closeFeaturePanel}
+									/>
+								{/if}
+							{:else if activeTab === 'project' && showProjectTab}
+								{#if $projectFeature.component}
+									<div class="h-full" use:showKeptPanel={keptProject}></div>
+								{:else}
+									<LazyFeatureStatus
+										feature={$i18n.t('Project')}
+										error={$projectFeature.error}
+										onRetry={projectFeature.load}
 										onClose={closeFeaturePanel}
 									/>
 								{/if}

@@ -10,12 +10,72 @@ The Runner has two independent authorization boundaries:
 | API | Client | Authority |
 | --- | --- | --- |
 | Provider execution (`/health`, `/run`, `/process`, `/processes/{id}/stop`) | Buddy backend | Privileged Runner key; OS-account execution |
-| Workspace API (`/v1/*`) | Browser, mobile, future desktop | Temporary origin-bound pairing token; explicit project grants |
+| Workspace API (`/v1/*`) | A chat's Project tab, relayed by Buddy in connect mode; paired clients of a Runner on its own | Buddy's owner check, or a temporary origin-bound pairing token; explicit project grants |
 | Operator controls | Host operator | Privileged Runner key; browser Origin requests refused |
 
 The privileged key never goes to the workspace browser. Provider credentials
 remain on the selected provider machine. Provider login, chat organization
 folders, machine registration and a supplied path never create project grants.
+A chat folder's project folder only says where Claude and ChatGPT start: it
+creates no grant and never restarts the Runner.
+
+Most people never start the Runner themselves: the Buddy app runs it in
+[connect mode](#connect-mode-the-runner-dials-out-to-buddy). The rest of this
+guide covers the Runner on its own, which listens on loopback for a paired
+browser and an address-registered Buddy (the older setup).
+
+## Connect mode: the Runner dials out to Buddy
+
+In connect mode the Runner opens one WebSocket to Buddy,
+`wss://<buddy>/api/v1/runners/connect`, and serves everything over it: provider
+execution, and the requests of a chat's Project tab, which Buddy relays for the
+computer's owner.
+Nothing listens on the computer, so it needs no open port or certificate. The
+protocol is versioned in `backend/buddy_runner/protocol.py`.
+
+The Buddy app starts it like this, writing the connection as one JSON line on
+stdin, so the credential never reaches the disk or the command line:
+
+```powershell
+buddy-runner run --connection-stdin --state-dir <app data>\runner [--root <folder> ...] [--write] [--allow-host-execution]
+```
+
+`--root`, `--write` and `--allow-host-execution` mean what they mean below,
+and only the computer chooses them: Buddy cannot add folders or permissions.
+A relayed page needs no pairing code because Buddy has checked it belongs to
+the computer's owner, but it gets only the grants a paired browser would. The
+Project tab can browse only inside shared folders, edit only with `--write`,
+and run commands only with `--allow-host-execution`; leaving or reloading the
+page ends its session and stops its commands.
+
+Without the app, for example on a server, enroll once and run from the saved,
+owner-only connection file. The token comes from
+`POST /api/v1/runners/enrollments`, made while signed in to Buddy; it is
+single-use and lasts 60 seconds:
+
+```powershell
+$env:PYTHONPATH = "$PWD\backend"
+.venv\Scripts\python.exe -P -m buddy_runner enroll --server https://buddy.example.com --token <token>
+.venv\Scripts\python.exe -P -m buddy_runner run --root C:\Projects\site
+```
+
+- **Credential.** Enrolling returns a machine credential once; Buddy keeps only
+  its hash. The Runner sends it only over verified HTTPS, or plain HTTP to
+  Buddy on the same computer. For a server with a private certificate
+  authority, set `BUDDY_SERVER_CA_FILE` to its PEM file.
+- **Status.** stdout carries JSON lines,
+  `{"event": "status", "state", "message"}`, with `connecting`, `connected`,
+  `offline` and `stopped`; logs go to stderr.
+- **Reconnecting.** After a network problem it reconnects by itself, waiting a
+  random time that grows from 1 to 60 seconds. When the connection drops,
+  Buddy waits up to 25 seconds for it to return and confirm that running
+  Claude Code and Codex processes stopped.
+- **Ending for good.** It exits with 3 when the computer was removed from
+  Buddy, 4 when its owner may no longer connect computers, 5 when the same
+  computer connected again elsewhere, and 6 when Buddy needs a newer Runner.
+- **Stopping.** With `--connection-stdin`, write `{"command": "stop"}` or close
+  stdin; otherwise press Ctrl+C. Running processes are stopped and Buddy is
+  told before the connection closes.
 
 ## Start on the computer containing the project
 
@@ -52,10 +112,12 @@ With approved roots, the host prints a one-use pairing code valid for five
 minutes. The code is five dash-separated groups of four letters and digits
 (100 random bits); case, spaces and dashes do not matter when typing it, and
 O, I and L are read as 0, 1 and 1. Eight wrong attempts use up a code.
-Inspect the host name, current instance ID and endpoint in Buddy's
-project UI, then pair. Tokens expire after 30 minutes and stay in client memory.
-The Projects page revokes its session when it is closed, reloaded or left. A
-page the browser discards without notice stays paired until the token expires.
+Buddy's web app no longer pairs by code: it opens computers through the Buddy
+app's connection instead. Pairing remains for other workspace clients of a
+Runner on its own, until that setup is retired. Tokens expire after 30 minutes
+and stay in client memory. A client should revoke its session through
+`DELETE /v1/session` when it is done; one that disappears without doing so
+stays paired until the token expires.
 The same instance ID is shown by discovery, pairing and workspace responses.
 Restart changes it and invalidates all previous tokens, grants and sessions.
 
@@ -216,17 +278,16 @@ A registered machine's `url` is reached by Buddy's backend, for example
 `https://host.docker.internal:8765` from Docker Desktop with verified Runner TLS.
 Every non-loopback address requires HTTPS; Docker and Tailscale names or IPs
 do not waive certificate verification. [The HTTPS setup](TLS_SETUP.md) describes
-operator-supplied certificates and application-scoped public trust. Its optional `browser_url`
-is a separately configured HTTPS origin or loopback HTTP origin. It is never
-inferred from the backend address. Registry metadata contains no key or grants.
+operator-supplied certificates and application-scoped public trust. Registry
+metadata contains no key or grants. A machine's saved browser address is kept
+for older editors, but nothing in the web app uses it.
 
-A phone's 127.0.0.1 addresses the phone itself. Remote PC/cloud access needs an
-approved private HTTPS transport to the execution host's loopback listener,
-rewriting its upstream Host header and preserving the browser Origin when using
-a proxy. Runner TLS can serve backend provider requests directly on loopback.
-No certificates, trust stores, VPN, firewall, public listener, persistent service
-or live Docker configuration are changed automatically. Future desktop clients
-can use the same versioned API.
+Browsers and phones never reach a Runner directly. A chat's Project tab opens a
+computer only through Buddy's relay, over the Buddy app's own connection, so it
+works from any device that can reach Buddy. A Runner started on its own runs
+Claude and ChatGPT for Buddy, but its folders can't be opened from Buddy. No
+certificates, trust stores, VPN, firewall, public listener, persistent service
+or live Docker configuration are changed automatically.
 
 Discovery is `GET /v1/capabilities`; it advertises API support and observed host
 identity, not permission. Actual file/write/execute authority comes only from
@@ -248,8 +309,9 @@ saving before remote mutations. Changing a backend URL, key or observed host
 instance disables affected providers, clears inherited access and paths, and
 quiesces old operations. Editing only the name or browser address grants nothing
 and retains the execution revision.
-Older machine editors that omit the optional browser address preserve its
-saved value. Explicitly clearing the field removes only that address.
+The machine editor no longer shows the browser address, which only the retired
+Projects page used, and saving without it preserves the saved value. An
+explicit null still clears it.
 
 Provider execution and host transitions require a single Buddy backend worker.
 The server refuses new provider execution and mutations with multiple workers,
@@ -263,6 +325,8 @@ providers, read account credentials or approve live directories:
 
 ```powershell
 .venv\Scripts\python.exe -B -m unittest discover -s local\tests -p 'test_runner*.py' -v
+.venv\Scripts\python.exe -B -m unittest discover -s local\tests -p test_tunnel.py -v
+.venv\Scripts\python.exe -B -m unittest discover -s local\tests -p 'test_credential*.py' -v
 .venv\Scripts\python.exe -B -m unittest discover -s local\tests -p test_process_containment.py -v
 .venv\Scripts\python.exe -B -m unittest discover -s local\tests -p test_remote_process_cleanup.py -v
 .venv\Scripts\python.exe -B -m unittest discover -s local\tests -p 'test_subscription*.py' -v

@@ -1,0 +1,55 @@
+{
+	"name": "buddy-desktop",
+	"productName": "Buddy",
+	"version": "0.1.0",
+	"description": "Buddy in its own window, with this computer connected to it.",
+	"private": true,
+	"main": "dist/src/main.js",
+	"scripts": {
+		"build": "tsc -p tsconfig.json",
+		"start": "npm run build && electron .",
+		"test": "npm run build && node --test \"dist/test/**/*.test.js\"",
+		"test:app": "npm run build && node test-app/app-smoke.mjs",
+		"build:runner": "powershell -NoProfile -ExecutionPolicy Bypass -File build-runner.ps1",
+		"dist": "npm run build && electron-builder --win nsis"
+	},
+	"devDependencies": {
+		"@types/node": "24.19.2",
+		"electron": "44.4.5",
+		"electron-builder": "26.15.3",
+		"playwright-core": "1.63.0",
+		"typescript": "5.9.3"
+	},
+	"build": {
+		"appId": "com.buddy.desktop",
+		"productName": "Buddy",
+		"directories": {
+			"output": "release"
+		},
+		"files": [
+			"dist/src/**/*",
+			"pages/**/*",
+			"package.json"
+		],
+		"extraResources": [
+			{
+				"from": "resources/runner",
+				"to": "runner"
+			},
+			{
+				"from": "../static/static/favicon.png",
+				"to": "icons/buddy.png"
+			}
+		],
+		"win": {
+			"target": "nsis",
+			"icon": "../static/static/web-app-manifest-512x512.png"
+		},
+		"nsis": {
+			"oneClick": false,
+			"perMachine": false,
+			"allowToChangeInstallationDirectory": true,
+			"shortcutName": "Buddy"
+		}
+	}
+}

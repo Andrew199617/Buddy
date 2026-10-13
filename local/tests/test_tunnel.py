@@ -1,0 +1,495 @@
+"""The Runner tunnel end to end: the real Runner and Buddy's hub over an in-memory connection.
+
+Run from the repository root:
+    python -m unittest discover -s local/tests -p test_tunnel.py -v
+
+Processes are this test's Python interpreter running short scripts.
+"""
+
+import asyncio
+import json
+import sys
+import tempfile
+import threading
+import types
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import aiohttp
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'backend'))
+
+import buddy_runner.runner as runner_module  # noqa: E402
+from buddy_runner.runner import Runner  # noqa: E402
+from buddy_runner.tunnel import Tunnel  # noqa: E402
+from buddy_runner.workspace_capabilities import WorkspaceCapabilities  # noqa: E402
+from open_webui.utils.subscriptions.events import SubscriptionError  # noqa: E402
+from open_webui.utils.subscriptions.machines import (  # noqa: E402
+    StartupCleanupUnconfirmedError,
+    TunnelMachine,
+)
+from open_webui.utils.subscriptions import machines as machines_module  # noqa: E402
+from open_webui.utils.subscriptions.tunnel_hub import RunnerCallError, RunnerConnection, RunnerHub, TunnelStream  # noqa: E402
+
+CLOSED = object()
+
+
+class ServerSide:
+    """What RunnerConnection reads and writes: text in, text out, close."""
+
+    def __init__(self, link):
+        self.link = link
+
+    async def receive_text(self):
+        text = await self.link.to_server.get()
+        if text is CLOSED:
+            raise ConnectionResetError('in-memory connection closed')
+        return text
+
+    async def send_text(self, text):
+        if self.link.closed:
+            raise ConnectionResetError('in-memory connection closed')
+        self.link.to_runner.put_nowait(text)
+
+    async def close(self, code, reason=''):
+        self.link.drop()
+
+
+class RunnerSide:
+    """What the Runner's Tunnel reads and writes, shaped like an aiohttp WebSocket."""
+
+    def __init__(self, link):
+        self.link = link
+
+    @property
+    def closed(self):
+        return self.link.closed
+
+    def __aiter__(self):
+        return self._messages()
+
+    async def _messages(self):
+        while True:
+            text = await self.link.to_runner.get()
+            if text is CLOSED:
+                return
+            yield types.SimpleNamespace(type=aiohttp.WSMsgType.TEXT, data=text)
+
+    async def send_str(self, text):
+        if self.link.closed:
+            raise ConnectionResetError('in-memory connection closed')
+        self.link.to_server.put_nowait(text)
+
+
+class Link:
+    def __init__(self):
+        self.to_server = asyncio.Queue()
+        self.to_runner = asyncio.Queue()
+        self.closed = False
+
+    def drop(self):
+        if not self.closed:
+            self.closed = True
+            self.to_server.put_nowait(CLOSED)
+            self.to_runner.put_nowait(CLOSED)
+
+
+class TunnelEndToEndTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        directory = tempfile.TemporaryDirectory(prefix='buddy-tunnel-test-')
+        self.addCleanup(directory.cleanup)
+        self.state_dir = Path(directory.name)
+        self.runner = Runner(self.state_dir, WorkspaceCapabilities())
+        self.addAsyncCleanup(self.runner.close)
+        self.hub = RunnerHub()
+        self.machine = TunnelMachine('machine-1', 'Fixture PC', self.hub)
+        self.tasks = []
+        self.connect()
+
+    async def asyncTearDown(self):
+        for link in self.links:
+            link.drop()
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+
+    def connect(self, runner=None):
+        runner = runner or self.runner
+        link = Link()
+        self.links = getattr(self, 'links', []) + [link]
+        connection = RunnerConnection(
+            ServerSide(link), 'machine-1', 'owner-1', runner.workspaces.host['id'], runner.describe(),
+        )
+        self.hub.attach(connection)
+        self.tasks.append(asyncio.create_task(connection.serve()))
+        self.tasks.append(asyncio.create_task(Tunnel(RunnerSide(link), runner).serve()))
+        return link, connection
+
+    async def read_all(self, process):
+        output = ''
+        while True:
+            chunk = await process.read_text()
+            if chunk is None:
+                return output
+            output += chunk
+
+    async def test_calls_reach_the_runner(self):
+        self.assertTrue(await self.machine.path_exists(str(self.state_dir), 'dir'))
+        self.assertFalse(await self.machine.path_exists(str(self.state_dir / 'missing'), 'dir'))
+        self.assertEqual(await self.machine.chat_dir(), str(self.state_dir / 'chat'))
+
+    async def test_a_slow_path_check_does_not_hold_up_other_calls(self):
+        release = threading.Event()
+
+        def slow_path_exists(path, kind):
+            release.wait(5)
+            return True
+
+        self.runner.path_exists = slow_path_exists
+        checking = asyncio.create_task(self.machine.path_exists('Z:\\asleep', 'dir'))
+        connection = await self.hub.wait_connection('machine-1', 1)
+        # Another call is answered while the drive is still busy.
+        health = await asyncio.wait_for(connection.call('health', {}), 2)
+        self.assertEqual(health['chat_dir'], str(self.state_dir / 'chat'))
+        self.assertFalse(checking.done())
+        release.set()
+        self.assertTrue(await asyncio.wait_for(checking, 5))
+
+    async def test_a_path_check_that_never_answers_gives_up(self):
+        stuck = threading.Event()
+        self.addCleanup(stuck.set)
+        self.runner.path_exists = lambda path, kind: stuck.wait(5)
+        with patch.object(runner_module, 'PATH_CHECK_SECONDS', 0.2):
+            with self.assertRaisesRegex(SubscriptionError, 'took too long'):
+                await self.machine.path_exists('Z:\\asleep', 'dir')
+
+    async def test_path_checks_stuck_on_a_drive_are_refused_instead_of_piling_up(self):
+        stuck = threading.Event()
+        self.addCleanup(stuck.set)
+        self.runner.path_exists = lambda path, kind: stuck.wait(5)
+        with patch.object(runner_module, 'PATH_CHECK_SECONDS', 0.2):
+            for _ in range(runner_module.PATH_CHECK_SLOTS):
+                with self.assertRaisesRegex(SubscriptionError, 'took too long'):
+                    await self.machine.path_exists('Z:\\asleep', 'dir')
+            # Both checks still wait on the drive, so the next one is refused at once.
+            with self.assertRaisesRegex(SubscriptionError, 'still waiting on a slow drive'):
+                await asyncio.wait_for(self.machine.path_exists('Z:\\asleep', 'dir'), 1)
+        stuck.set()
+
+    async def test_folder_browsing_waits_for_the_app_switch(self):
+        connection = await self.hub.wait_connection('machine-1', 1)
+        self.assertTrue(self.runner.describe()['capabilities']['folderBrowsing'])
+        with self.assertRaises(Exception) as refused:
+            await connection.call('folders.list', {'path': str(self.state_dir)})
+        self.assertIn('Folder browsing is off', str(refused.exception))
+        self.runner.set_folder_browsing(True)
+        listing = await connection.call('folders.list', {'path': str(self.state_dir)})
+        self.assertEqual([entry['name'] for entry in listing['entries']], ['chat', 'tmp', 'workspace'])
+        roots = await connection.call('folders.list', {'path': ''})
+        self.assertTrue(roots['roots'])
+        self.assertEqual(roots['entries'], [])
+
+    async def test_folder_suggestions_come_from_cli_history(self):
+        project = self.state_dir.parent / (self.state_dir.name + '-project')
+        project.mkdir()
+        self.addCleanup(project.rmdir)
+        claude_home = self.state_dir / 'claude-home'
+        session = claude_home / 'projects' / 'p' / 'a.jsonl'
+        session.parent.mkdir(parents=True)
+        session.write_text(json.dumps({'cwd': str(project)}) + '\n', encoding='utf-8')
+        self.runner.set_folder_browsing(True)
+        connection = await self.hub.wait_connection('machine-1', 1)
+        homes = (claude_home, self.state_dir / 'none')
+        # The test folders sit in the temporary folder, which is normally left out.
+        with patch.object(runner_module.agent_history, 'default_homes', return_value=homes):
+            with patch.object(runner_module.agent_history, 'default_exclusions', return_value=[]):
+                result = await connection.call('folders.suggest', {})
+        self.assertEqual([folder['path'] for folder in result['folders']], [str(project)])
+
+    async def test_an_app_computer_lists_its_folders_through_buddy(self):
+        with self.assertRaises(RunnerCallError) as refused:
+            await self.machine.list_folders(str(self.state_dir), False, '')
+        self.assertEqual(refused.exception.status, 403)
+        self.runner.set_folder_browsing(True)
+        listing = await self.machine.list_folders(str(self.state_dir), False, 'w')
+        self.assertEqual([entry['name'] for entry in listing['entries']], ['workspace'])
+        suggestions = await self.machine.suggest_folders()
+        self.assertIn('folders', suggestions)
+
+    async def test_folder_calls_on_one_computer_are_limited(self):
+        self.runner.set_folder_browsing(True)
+        slots = machines_module._folder_call_slot('machine-1', 'Fixture PC')
+        async with slots:
+            async with slots:
+                with self.assertRaisesRegex(SubscriptionError, 'still listing folders on Fixture PC'):
+                    await self.machine.list_folders(str(self.state_dir), False, '')
+        listing = await self.machine.list_folders(str(self.state_dir), False, '')
+        self.assertTrue(listing['entries'])
+
+    async def test_computers_without_the_app_cannot_be_browsed(self):
+        remote = machines_module.RemoteMachine('runner-a', 'Old PC', 'https://old.example.invalid', 'key')
+        with self.assertRaisesRegex(SubscriptionError, 'needs the Buddy app'):
+            await remote.list_folders('C:\\', False, '')
+        local = machines_module.LocalMachine(self.state_dir)
+        with self.assertRaisesRegex(SubscriptionError, 'Buddy server'):
+            await local.suggest_folders()
+
+    async def test_a_process_runs_and_its_exit_confirms_cleanup(self):
+        process = await self.machine.start_process(
+            [sys.executable, '-c', 'import sys; print(sys.stdin.readline().strip().upper())'], str(self.state_dir)
+        )
+        await process.write('hello over the tunnel\n')
+        process.close_stdin()
+        self.assertIn('HELLO OVER THE TUNNEL', await self.read_all(process))
+        self.assertEqual(await process.wait(10), 0)
+        self.assertTrue(process.cleanup_confirmed)
+
+    async def test_large_input_arrives_whole_in_bounded_pieces(self):
+        text = 'x' * (600 * 1024) + '\n'
+        script = 'import sys; data = sys.stdin.read(); print(len(data))'
+        process = await self.machine.start_process([sys.executable, '-c', script], str(self.state_dir))
+        await process.write(text)
+        process.close_stdin()
+        self.assertEqual((await self.read_all(process)).strip(), str(len(text)))
+        await process.wait(10)
+
+    async def test_kill_is_acknowledged_only_after_the_runner_stopped_it(self):
+        process = await self.machine.start_process(
+            [sys.executable, '-c', 'import time; time.sleep(30)'], str(self.state_dir)
+        )
+        self.assertEqual(len(self.runner.processes), 1)
+        native = next(iter(self.runner.processes))
+        await process.close()
+        self.assertTrue(process.cleanup_confirmed)
+        # The acknowledgement came only after the Runner's own cleanup finished.
+        self.assertIsNotNone(native.returncode)
+        async with asyncio.timeout(10):
+            while self.runner.processes:
+                await asyncio.sleep(0.02)
+
+    async def test_a_dropped_connection_stops_the_process_and_reconnecting_confirms_it(self):
+        process = await self.machine.start_process(
+            [sys.executable, '-c', 'import time; time.sleep(30)'], str(self.state_dir)
+        )
+        first_link = self.links[0]
+        first_link.drop()
+        # The Runner stops processes whose connection ended.
+        async with asyncio.timeout(10):
+            while self.runner.processes:
+                await asyncio.sleep(0.05)
+        reconnect = asyncio.get_running_loop().call_later(0.2, self.connect)
+        self.addCleanup(reconnect.cancel)
+        await process.close()
+        # The old stream is gone; the reconnected Runner confirmed the stop.
+        self.assertTrue(process.cleanup_confirmed)
+
+    async def test_a_restarted_runner_cannot_confirm_an_old_process(self):
+        process = await self.machine.start_process(
+            [sys.executable, '-c', 'import time; time.sleep(30)'], str(self.state_dir)
+        )
+        self.links[0].drop()
+        async with asyncio.timeout(10):
+            while self.runner.processes:
+                await asyncio.sleep(0.05)
+        restarted = Runner(self.state_dir, WorkspaceCapabilities())
+        self.addAsyncCleanup(restarted.close)
+        self.connect(restarted)
+        with self.assertRaises((SubscriptionError, TimeoutError, Exception)):
+            await process.close()
+        self.assertFalse(process._confirmed_stopped.is_set())
+
+    async def test_an_offline_machine_says_so(self):
+        for link in self.links:
+            link.drop()
+        await asyncio.sleep(0)
+        machine = TunnelMachine('machine-1', 'Fixture PC', self.hub)
+        with self.assertRaisesRegex(SubscriptionError, 'offline'):
+            await machine._connection(wait=0.1)
+
+
+class RelayTests(unittest.IsolatedAsyncioTestCase):
+    """The chat's Project tab, relayed through Buddy to the computer's own workspace API."""
+
+    async def asyncSetUp(self):
+        directory = tempfile.TemporaryDirectory(prefix='buddy-relay-test-')
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        self.project = root / 'project'
+        self.project.mkdir()
+        (self.project / 'notes.md').write_text('fixture notes', encoding='utf-8')
+        state = root / 'state'
+        self.runner = Runner(state, WorkspaceCapabilities(roots=[{'path': str(self.project)}]))
+        self.addAsyncCleanup(self.runner.close)
+        self.link = Link()
+        self.connection = RunnerConnection(
+            ServerSide(self.link), 'machine-1', 'owner-1', self.runner.workspaces.host['id'], self.runner.describe(),
+        )
+        self.tasks = [
+            asyncio.create_task(self.connection.serve()),
+            asyncio.create_task(Tunnel(RunnerSide(self.link), self.runner).serve()),
+        ]
+
+    async def asyncTearDown(self):
+        self.link.drop()
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+
+    async def relay(self, method, path, query=None, body=None, client_id='page-a'):
+        reply = await self.connection.call('workspace.request', {
+            'client_id': client_id, 'method': method, 'path': path, 'query': query or {}, 'body': body,
+        })
+        return reply['status'], reply['body']
+
+    async def grant_id(self):
+        status, body = await self.relay('GET', '/v1/grants')
+        self.assertEqual(status, 200)
+        return body['grants'][0]['id']
+
+    async def test_approved_folders_can_be_browsed_and_read(self):
+        grant_id = await self.grant_id()
+        status, listing = await self.relay('GET', '/v1/directories', {'grantId': grant_id, 'path': ''})
+        self.assertEqual(status, 200)
+        self.assertEqual([entry['name'] for entry in listing['entries']], ['notes.md'])
+        status, file = await self.relay('GET', '/v1/files', {'grantId': grant_id, 'path': 'notes.md'})
+        self.assertEqual((status, file['content']), (200, 'fixture notes'))
+
+    async def test_writes_and_commands_stay_refused_unless_approved_on_the_computer(self):
+        grant_id = await self.grant_id()
+        status, _ = await self.relay('PUT', '/v1/files', body={
+            'grantId': grant_id, 'path': 'notes.md', 'content': 'changed', 'overwrite': True,
+        })
+        self.assertEqual(status, 403)
+        self.assertEqual((self.project / 'notes.md').read_text(encoding='utf-8'), 'fixture notes')
+        status, created = await self.relay('POST', '/v1/workspaces', body={'grantId': grant_id, 'path': ''})
+        self.assertEqual(status, 200)
+        status, _ = await self.relay('POST', '/v1/terminals', body={'workspaceId': created['workspace']['id']})
+        self.assertEqual(status, 403)
+
+    async def test_pairing_and_malformed_requests_are_refused(self):
+        status, _ = await self.relay('POST', '/v1/pair', body={'code': 'AAAA'})
+        self.assertEqual(status, 404)
+        status, _ = await self.relay('GET', '/v1/grants', client_id='not valid!')
+        self.assertEqual(status, 400)
+        status, _ = await self.relay('PATCH', '/v1/grants')
+        self.assertEqual(status, 405)
+
+    async def test_each_page_keeps_its_own_workspaces(self):
+        grant_id = await self.grant_id()
+        await self.relay('POST', '/v1/workspaces', body={'grantId': grant_id, 'path': ''}, client_id='page-a')
+        _, mine = await self.relay('GET', '/v1/workspaces', client_id='page-a')
+        _, theirs = await self.relay('GET', '/v1/workspaces', client_id='page-b')
+        self.assertEqual(len(mine['workspaces']), 1)
+        self.assertEqual(theirs['workspaces'], [])
+
+    async def test_a_dropped_connection_ends_the_relayed_sessions(self):
+        await self.grant_id()
+        self.assertTrue(any(key.startswith('relay:') for key in self.runner.workspaces._sessions))
+        self.link.drop()
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+        self.assertFalse(any(key.startswith('relay:') for key in self.runner.workspaces._sessions))
+
+
+class StartupCleanupTests(unittest.IsolatedAsyncioTestCase):
+    """A startup whose reply never came is cleaned up by its name."""
+
+    class FakeConnection:
+        def __init__(self, instance_id, answer):
+            self.instance_id = instance_id
+            self.answer = answer
+            self.calls = []
+            self.closed = False
+
+        async def call(self, method, params, timeout=30):
+            self.calls.append((method, params))
+            return self.answer
+
+    class FakeHub:
+        def __init__(self, connection):
+            self.connection_to_return = connection
+
+        async def wait_connection(self, machine_id, timeout):
+            return self.connection_to_return
+
+    def stream(self, instance_id):
+        stream = TunnelStream.__new__(TunnelStream)
+        stream.start_id = 'start-1'
+        stream.instance_id = instance_id
+        stream._closed = True
+        stream._connection = types.SimpleNamespace(forget_stream=lambda number: None)
+        stream.number = 1
+        return stream
+
+    async def test_the_same_runner_answers_for_the_startup_name(self):
+        connection = self.FakeConnection('instance-a', {'stopped': True, 'known': False})
+        machine = TunnelMachine('machine-1', 'Fixture PC', self.FakeHub(connection))
+        await machine.dispose_failed_start(self.stream('instance-a'), ['claude'], None)
+        self.assertEqual(connection.calls, [('process.stop', {'start_id': 'start-1'})])
+
+    async def test_a_restarted_runner_leaves_the_startup_unconfirmed(self):
+        connection = self.FakeConnection('instance-b', {'stopped': True})
+        machine = TunnelMachine('machine-1', 'Fixture PC', self.FakeHub(connection))
+        with self.assertRaises(StartupCleanupUnconfirmedError):
+            await machine.dispose_failed_start(self.stream('instance-a'), ['claude'], None)
+        self.assertEqual(connection.calls, [])
+
+    async def test_an_offline_machine_leaves_the_startup_unconfirmed(self):
+        machine = TunnelMachine('machine-1', 'Fixture PC', self.FakeHub(None))
+        with self.assertRaises(StartupCleanupUnconfirmedError):
+            await machine.dispose_failed_start(self.stream('instance-a'), ['claude'], None)
+
+
+class HubTests(unittest.IsolatedAsyncioTestCase):
+    def connection(self, machine_id='machine-1', instance_id='instance-a'):
+        socket = types.SimpleNamespace(close=self.record_close)
+        return RunnerConnection(socket, machine_id, 'owner-1', instance_id, {})
+
+    async def record_close(self, code, reason=''):
+        self.closed_with.append(code)
+
+    async def asyncSetUp(self):
+        self.closed_with = []
+
+    async def test_a_newer_connection_replaces_the_older_one(self):
+        hub = RunnerHub()
+        first = self.connection()
+        second = self.connection(instance_id='instance-b')
+        self.assertIsNone(hub.attach(first))
+        self.assertIs(hub.attach(second), first)
+        self.assertIs(hub.connection('machine-1'), second)
+        hub.detach(first)
+        self.assertIs(hub.connection('machine-1'), second)
+
+    async def test_waiting_wakes_when_the_machine_connects(self):
+        hub = RunnerHub()
+        waiting = asyncio.create_task(hub.wait_connection('machine-1', 5))
+        await asyncio.sleep(0)
+        connection = self.connection()
+        hub.attach(connection)
+        self.assertIs(await waiting, connection)
+        self.assertIsNone(await hub.wait_connection('machine-2', 0.05))
+
+    async def test_disconnect_closes_with_the_given_code(self):
+        hub = RunnerHub()
+        hub.attach(self.connection())
+        await hub.disconnect('machine-1', 4401, 'removed')
+        self.assertEqual(self.closed_with, [4401])
+        self.assertFalse(hub.is_online('machine-1'))
+
+    async def test_a_call_fails_cleanly_when_the_runner_disconnects(self):
+        sent = []
+
+        async def send_text(text):
+            sent.append(json.loads(text))
+
+        connection = RunnerConnection(
+            types.SimpleNamespace(send_text=send_text, close=self.record_close), 'machine-1', 'owner-1', 'a', {},
+        )
+        calling = asyncio.create_task(connection.call('health'))
+        await asyncio.sleep(0)
+        connection._shut()
+        with self.assertRaisesRegex(SubscriptionError, 'disconnected'):
+            await calling
+        self.assertEqual(sent[0]['method'], 'health')
+
+
+if __name__ == '__main__':
+    unittest.main()

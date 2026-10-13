@@ -92,8 +92,9 @@ class SubscriptionPresetRowTests(unittest.IsolatedAsyncioTestCase):
     async def apply(self, model_id):
         request = types.SimpleNamespace(state=types.SimpleNamespace())
         payload = {'model': model_id, 'messages': []}
-        admin = types.SimpleNamespace(role='admin')
-        return await self.service._apply_preset(request, payload, {}, admin, self.models)
+        admin = types.SimpleNamespace(id='fixture-admin', role='admin')
+        model_id, payload, _ = await self.service._apply_preset(request, payload, {}, admin, self.models)
+        return model_id, payload
 
     async def test_a_row_reusing_a_subscription_model_id_cannot_redirect_or_instruct_it(self):
         self.rows[BASE_ID] = preset_row(BASE_ID, OTHER_ID, 'Fixture injected instructions')
@@ -122,6 +123,19 @@ class SubscriptionPresetRowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model_id, BASE_ID)
         self.assertEqual(payload['temperature'], 0.2)
         self.assertEqual(self.system_prompts, ['Fixture preset instructions'])
+
+    async def test_a_preset_written_by_someone_else_is_marked_to_run_chat_only(self):
+        # A turn runs on the requesting user's own machine, so another user's
+        # preset must not be able to steer tools there.
+        self.rows[PRESET_ID] = preset_row(PRESET_ID, BASE_ID, 'Fixture preset instructions')
+        request = types.SimpleNamespace(state=types.SimpleNamespace())
+        author = types.SimpleNamespace(id='fixture-member', role='user')
+        someone_else = types.SimpleNamespace(id='fixture-other', role='user')
+        payload = {'model': PRESET_ID, 'messages': []}
+        _, _, foreign = await self.service._apply_preset(request, dict(payload), {}, author, self.models)
+        self.assertFalse(foreign)
+        _, _, foreign = await self.service._apply_preset(request, dict(payload), {}, someone_else, self.models)
+        self.assertTrue(foreign)
 
     def test_only_rows_with_a_base_model_conflict_with_a_listed_subscription_model(self):
         conflicting = self.service.is_conflicting_preset_row

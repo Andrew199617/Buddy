@@ -1,10 +1,8 @@
 <script context="module" lang="ts">
 	import { writable } from 'svelte/store';
-	import type { SubscriptionMachine as MachineRegistryEntry } from '$lib/apis/subscriptions';
 
 	// Dismissing a dialog does not undo an accepted registry write.
 	const pendingMutations = writable(0);
-	const machineChanges = writable<MachineRegistryEntry[] | null>(null);
 </script>
 
 <script lang="ts">
@@ -19,6 +17,8 @@
 		type SubscriptionMachineInfo,
 		type SubscriptionProvider
 	} from '$lib/apis/subscriptions';
+
+	import { machineRegistryChanges } from './machine-registry';
 
 	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
@@ -38,7 +38,6 @@
 
 	let name = '';
 	let url = '';
-	let browserUrl = '';
 	let key = '';
 	let info: SubscriptionMachineInfo | null = null;
 	let actionPending = false;
@@ -91,7 +90,6 @@
 	const loadForm = () => {
 		name = machine?.name ?? '';
 		url = machine?.url ?? DEFAULT_URL;
-		browserUrl = machine?.browser_url ?? '';
 		key = '';
 		info = null;
 	};
@@ -118,14 +116,14 @@
 
 	onMount(() => {
 		let initial = true;
-		return machineChanges.subscribe((machines) => {
+		return machineRegistryChanges.subscribe((machines) => {
 			if (initial) {
 				initial = false;
 				return;
 			}
 			if (!disposed && machines) {
 				Promise.resolve(onChanged(machines)).catch(() => {
-					// Registry reload errors are presented by the current Connections page.
+					// Registry reload errors are presented by the AI plans tab that opened this dialog.
 				});
 			}
 		});
@@ -160,12 +158,7 @@
 
 	const verify = () =>
 		runAction(async (isCurrent) => {
-			const result = await verifySubscriptionMachine(
-				localStorage.token,
-				url.trim(),
-				key.trim(),
-				browserUrl.trim() || undefined
-			);
+			const result = await verifySubscriptionMachine(localStorage.token, url.trim(), key.trim());
 			if (isCurrent()) info = result;
 		});
 
@@ -178,10 +171,9 @@
 				id: machine?.id,
 				name: name.trim(),
 				url: url.trim(),
-				browser_url: browserUrl.trim() || null,
 				key: key.trim() || undefined
 			});
-			machineChanges.set(result.machines);
+			machineRegistryChanges.set(result.machines);
 			if (isCurrent()) {
 				toast.success($i18n.t('Saved {{name}}', { name: result.machine.name }));
 				show = false;
@@ -204,7 +196,7 @@
 			}
 			const machineName = machine.name;
 			const result = await deleteSubscriptionMachine(localStorage.token, machine.id);
-			machineChanges.set(result.machines);
+			machineRegistryChanges.set(result.machines);
 			if (isCurrent()) {
 				toast.success($i18n.t('Removed {{name}}', { name: machineName }));
 				show = false;
@@ -268,25 +260,6 @@
 				<p class="text-xs text-gray-400 dark:text-gray-600">
 					{$i18n.t(
 						'Use HTTPS with a certificate trusted by Buddy. In Docker, host.docker.internal reaches the computer running Docker; Buddy must be able to reach the Runner port.'
-					)}
-				</p>
-			</div>
-
-			<div class="flex flex-col gap-1">
-				<label class="text-xs text-gray-500" for="machine-browser-url"
-					>{$i18n.t('Browser address')}</label
-				>
-				<input
-					id="machine-browser-url"
-					class={inputClass}
-					bind:value={browserUrl}
-					disabled={busy}
-					autocomplete="off"
-					spellcheck="false"
-				/>
-				<p class="text-xs text-gray-400 dark:text-gray-600">
-					{$i18n.t(
-						'Optional pairing address your browser can reach directly: loopback HTTP on this computer, or reachable HTTPS for a phone. This address creates no project or file permissions.'
 					)}
 				</p>
 			</div>
@@ -383,7 +356,7 @@
 		{#if providersOnMachine.length}
 			<p>
 				{$i18n.t(
-					'These subscriptions run on it. Removing it turns them off, clears their access, working folder, and CLI path, and stops replies in progress:'
+					'These subscriptions run on it. Removing it turns them off, clears their access, start folder, and CLI path, and stops replies in progress:'
 				)}
 			</p>
 			<ul class="list-disc pl-5">

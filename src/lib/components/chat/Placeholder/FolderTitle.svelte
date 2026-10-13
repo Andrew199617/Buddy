@@ -29,6 +29,7 @@
 	import DeleteConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 	import Emoji from '$lib/components/common/Emoji.svelte';
 	import EmojiPicker from '$lib/components/common/EmojiPicker.svelte';
+	import ProjectFolderChip from '$lib/components/projectFolders/ProjectFolderChip.svelte';
 
 	export let folder = null;
 	export let readOnly: boolean = false;
@@ -275,5 +276,11 @@
 				</FolderMenu>
 			</div>
 		{/if}
+	</div>
+
+	<div class="-mt-1 mb-3 flex w-full px-6 @md:max-w-3xl">
+		{#key folder.id}
+			<ProjectFolderChip folderId={folder.id} folderName={folder.name} />
+		{/key}
 	</div>
 {/if}

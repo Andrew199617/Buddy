@@ -3,8 +3,9 @@
 #   docker compose -f docker/buddy/compose.yaml up -d --build
 #
 # Settings come from docker/buddy/.env (copy example.env). Claude Code and
-# Codex run on machines added in Admin Settings → Connections → Subscriptions,
-# such as a TLS-enabled Runner at https://host.docker.internal:8765.
+# Codex run on computers connected with the Buddy app (Settings → Machines), or
+# on Runners added in Admin Settings → AI plans, such as a TLS-enabled Runner at
+# https://host.docker.internal:8765.
 # Use the optional runner TLS overlay for application-scoped public CA trust;
 # see companion/TLS_SETUP.md. Never mount the Runner private key here. Once
 # you use it, pass it on every compose command, or Compose recreates Buddy

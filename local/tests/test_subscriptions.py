@@ -18,7 +18,10 @@ from unittest.mock import patch
 ROOT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT_DIR / 'backend'))
 
-from open_webui.utils.subscriptions import claude_code, codex, discovery, runner, streaming  # noqa: E402
+from buddy_runner import discovery  # noqa: E402
+from test_subscription_machines import OWNER, FakeGroups, FakeUsers, MemoryCredentials, owner_providers  # noqa: E402
+from buddy_runner import runner  # noqa: E402
+from open_webui.utils.subscriptions import claude_code, codex, streaming  # noqa: E402
 from open_webui.utils.subscriptions.common import (  # noqa: E402
     ProviderSettings,
     TurnRequest,
@@ -40,12 +43,13 @@ from open_webui.utils.subscriptions.events import (  # noqa: E402
     TurnFailed,
 )
 from open_webui.utils.subscriptions.machines import (  # noqa: E402
+    AiohttpProcessChannel,
     LocalMachine,
     RemoteMachine,
     RemoteProcess,
-    temp_file_arg,
 )
-from open_webui.utils.subscriptions.process import (  # noqa: E402
+from buddy_runner.local_process import temp_file_arg  # noqa: E402
+from buddy_runner.process import (  # noqa: E402
     ChildProcess,
     OutputLimitError,
     ProcessClosedError,
@@ -140,6 +144,17 @@ class ConversationTests(unittest.TestCase):
             reloaded = SessionStore(path, limit=2)
             self.assertIsNone(reloaded.get('a'))
             self.assertEqual(reloaded.get('c'), 'session-c')
+
+    def test_session_store_forgets_one_computers_sessions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'sessions.json'
+            store = SessionStore(path)
+            store.put('laptop|/code|key-1', 'session-1')
+            store.put('desktop|/code|key-1', 'session-2')
+            store.forget_prefix('laptop|')
+            reloaded = SessionStore(path)
+            self.assertIsNone(reloaded.get('laptop|/code|key-1'))
+            self.assertEqual(reloaded.get('desktop|/code|key-1'), 'session-2')
 
 
 class CommonTests(unittest.TestCase):
@@ -1225,7 +1240,7 @@ class MachineTests(unittest.TestCase):
 
         async def run():
             connection = DroppedConnection()
-            process = RemoteProcess(connection, ['codex', 'app-server'], 7)
+            process = RemoteProcess(AiohttpProcessChannel(connection), ["codex", "app-server"], 7)
             with self.assertRaisesRegex(ProcessClosedError, 'Runner connection ended'):
                 await process.wait(5)
             self.assertEqual(process.returncode, -1)
@@ -1440,16 +1455,32 @@ def load_subscription_service(data_dir: Path, config: StandInConfig):
         'open_webui.env': types.SimpleNamespace(DATA_DIR=str(data_dir), UVICORN_WORKERS=1),
         'open_webui.models.config': types.SimpleNamespace(Config=config),
         'open_webui.models.models': types.SimpleNamespace(Models=None),
+        'open_webui.models.users': types.SimpleNamespace(Users=FakeUsers()),
+        'open_webui.models.groups': types.SimpleNamespace(Groups=FakeGroups()),
+        'open_webui.models.subscription_credentials': types.SimpleNamespace(
+            KIND_API_KEY='api_key', KIND_PLAN_TOKEN='plan_token', SubscriptionCredentials=MemoryCredentials(),
+        ),
         'open_webui.utils.payload': types.SimpleNamespace(
             apply_model_params_to_body_openai=None,
             apply_system_prompt_to_body=None,
         ),
+        # Where chats run; these tests start no chats.
+        'open_webui.models.chat_run_targets': types.SimpleNamespace(
+            SOURCE_BAR='bar', SOURCE_DEFAULT='default', SOURCE_REFUSED='refused',
+            ChatRunTargetModel=type('ChatRunTargetModel', (), {}), ChatRunTargets=None,
+        ),
+        # Project folders read chat folders; these tests use none.
+        'open_webui.models.access_grants': types.SimpleNamespace(AccessGrants=None),
+        'open_webui.models.chats': types.SimpleNamespace(Chats=None),
+        'open_webui.models.folders': types.SimpleNamespace(Folders=None),
+        'open_webui.utils.access_control.folders': types.SimpleNamespace(has_folder_access=None),
     }
     service_path = ROOT_DIR / 'backend' / 'open_webui' / 'utils' / 'subscriptions' / 'service.py'
     spec = importlib.util.spec_from_file_location('subscription_service_under_test', service_path)
     service = importlib.util.module_from_spec(spec)
     with patch.dict(sys.modules, stand_ins):
         spec.loader.exec_module(service)
+    service._server_owner_id = OWNER
     return service
 
 
@@ -1460,7 +1491,7 @@ class DeleteMachineTests(unittest.TestCase):
         self.data_dir = Path(directory.name)
         self.config = StandInConfig()
         self.service = load_subscription_service(self.data_dir, self.config)
-        self.service.PROVIDERS = {provider: StandInProvider() for provider in ('claude', 'codex')}
+        self.service._providers = owner_providers(self.service, {provider: StandInProvider() for provider in ('claude', 'codex')})
 
     def test_providers_retain_the_removed_machine_and_forget_its_permissions_and_paths(self):
         # Paths that exist only on the machine being removed.
@@ -1484,7 +1515,7 @@ class DeleteMachineTests(unittest.TestCase):
         runner_connection = StandInRunnerConnection()
         self.service._remote_machines['office-pc'] = runner_connection
 
-        asyncio.run(self.service.delete_machine('office-pc'))
+        asyncio.run(self.service.delete_machine(OWNER, 'office-pc'))
 
         for provider_id in ('claude', 'codex'):
             settings = self.config.values[f'subscriptions.{provider_id}']
@@ -1495,7 +1526,7 @@ class DeleteMachineTests(unittest.TestCase):
             self.assertFalse(settings['enable'])
         self.assertEqual(self.config.values['subscriptions.machines'], [])
         self.assertTrue(runner_connection.closed)
-        self.assertTrue(all(provider.cancel_calls == 1 for provider in self.service.PROVIDERS.values()))
+        self.assertTrue(all(provider.cancel_calls == 1 for provider in self.service._providers.values()))
 
     def test_a_failed_atomic_reset_keeps_the_machine_and_provider_settings(self):
         office_pc = {'id': 'office-pc', 'name': 'Office PC', 'url': 'http://office-pc:8765', 'key': 'test-key'}
@@ -1510,18 +1541,18 @@ class DeleteMachineTests(unittest.TestCase):
         self.service._remote_machines['office-pc'] = runner_connection
 
         with self.assertRaises(RuntimeError):
-            asyncio.run(self.service.delete_machine('office-pc'))
+            asyncio.run(self.service.delete_machine(OWNER, 'office-pc'))
 
         self.assertEqual(self.config.values, original)
         self.assertFalse(runner_connection.closed)
-        self.assertTrue(all(provider.cancel_calls == 0 for provider in self.service.PROVIDERS.values()))
+        self.assertTrue(all(provider.cancel_calls == 0 for provider in self.service._providers.values()))
 
     def test_this_server_cannot_be_removed(self):
         workspace = str(self.data_dir)
         self.config.values['subscriptions.claude'] = {'workspace': workspace, 'machine_id': 'local'}
 
         with self.assertRaises(SubscriptionError):
-            asyncio.run(self.service.delete_machine('local'))
+            asyncio.run(self.service.delete_machine(OWNER, 'local'))
 
         self.assertEqual(self.config.values['subscriptions.claude']['workspace'], workspace)
 

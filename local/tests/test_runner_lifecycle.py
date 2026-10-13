@@ -13,8 +13,8 @@ from aiohttp import ClientSession
 from aiohttp.test_utils import TestServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'backend'))
-from open_webui.utils.subscriptions import runner
-from open_webui.utils.subscriptions.process import OutputLimitError
+from buddy_runner import runner
+from buddy_runner.process import OutputLimitError
 
 
 class RunnerBoundaryTests(unittest.IsolatedAsyncioTestCase):
@@ -242,7 +242,7 @@ class RunnerBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(process.closed)
         self.assertTrue(socket.closed)
         self.assertEqual(host.processes, set())
-        self.assertEqual(host.websockets, set())
+        self.assertEqual(host.channels, set())
 
     async def test_active_websocket_disconnect_closes_registered_process(self):
         socket = await self.client.ws_connect(
@@ -436,7 +436,7 @@ class RunnerBoundaryTests(unittest.IsolatedAsyncioTestCase):
         socket = GoodSocket()
         command = asyncio.create_task(asyncio.sleep(30))
         host.processes.update((process, initially_broken))
-        host.websockets.add(socket)
+        host.channels.add(socket)
         host.command_requests.add(command)
         try:
             with self.assertRaisesRegex(OSError, 'synthetic native cleanup failure'):
@@ -450,7 +450,7 @@ class RunnerBoundaryTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(initially_broken.closed)
         finally:
             host.processes.clear()
-            host.websockets.clear()
+            host.channels.clear()
             host.command_requests.clear()
             host._shutdown_task = None
 

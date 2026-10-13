@@ -6,14 +6,39 @@ from typing import Any
 
 from open_webui.utils.subscriptions.conversation import Conversation
 
-# ``owned_by`` of subscription models. They run on the administrator's personal
-# plan, so only administrators may use them.
+# ``owned_by`` of subscription models. Each runs on one user's own plan and
+# machine, so only that user sees and uses it.
 SUBSCRIPTION_OWNED_BY = 'subscription'
 
 ACCESS_CHAT = 'chat'
 ACCESS_READ = 'read'
 ACCESS_FULL = 'full'
 ACCESS_LEVELS = (ACCESS_CHAT, ACCESS_READ, ACCESS_FULL)
+
+# How a provider signs in on the user's machines.
+# The CLI's own sign-in on that machine, which must be a plan.
+CREDENTIAL_MACHINE = 'machine'
+# A one-year Claude token, from ``claude setup-token``, that Buddy keeps for the user.
+CREDENTIAL_PLAN_TOKEN = 'plan_token'
+# The user's own Anthropic or OpenAI API key, billed per use.
+CREDENTIAL_API_KEY = 'api_key'
+CREDENTIAL_MODES = (CREDENTIAL_MACHINE, CREDENTIAL_PLAN_TOKEN, CREDENTIAL_API_KEY)
+
+# Set by the chat middleware to the chat folder whose own system prompt or
+# knowledge files reached a turn. Built on the server, never taken from the request.
+FOLDER_INSTRUCTIONS_KEY = 'folder_instructions_id'
+
+
+def folder_adds_instructions(data) -> bool:
+    """A chat folder's data adds a system prompt or knowledge files to its chats."""
+    if not isinstance(data, dict):
+        return False
+    prompt = data.get('system_prompt')
+    if isinstance(prompt, str) and prompt.strip():
+        return True
+    files = data.get('files')
+    return isinstance(files, list) and len(files) > 0
+
 
 # Shown to the model in chat-only mode, ahead of the chat's own system prompt.
 CHAT_INSTRUCTIONS = (
@@ -29,7 +54,8 @@ class ProviderSettings:
     access: str = ACCESS_CHAT
     workspace: str = ''
     cli_path: str = ''
-    # Which machine runs the CLI: 'local' (this server) or a Buddy Runner id.
+    # Which machine runs the CLI: one of the user's computers, 'local' (this
+    # server, for the instance owner), or '' before one is chosen.
     machine_id: str = 'local'
 
 

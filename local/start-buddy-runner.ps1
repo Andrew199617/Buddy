@@ -3,9 +3,9 @@
 # containers use verified HTTPS at host.docker.internal:<Port>. Supply the TLS
 # certificate and private key from the host operator; only its public CA goes
 # into Docker. With -TlsCertificate the Runner answers only HTTPS, on loopback
-# too; see companion\TLS_SETUP.md for the Projects page. The Runner key is
+# too; see companion\TLS_SETUP.md. The Runner key is
 # created in %USERPROFILE%\.buddy-runner\key on first start; paste it into Buddy
-# under Admin Settings → Connections → Subscriptions → Machines. Where
+# under Admin Settings → AI plans → Your Runner addresses. Where
 # PowerShell scripts are disabled, run start-buddy-runner.cmd with the same
 # parameters.
 param(
@@ -58,7 +58,7 @@ $env:PYTHONIOENCODING = 'utf-8'
 # -P keeps the current folder off sys.path, so a project folder the Runner is
 # started from cannot replace a module the Runner imports. PYTHONPATH still
 # supplies backend.
-$runnerArgs = @('-P', '-m', 'open_webui.utils.subscriptions.runner', '--port', $Port)
+$runnerArgs = @('-P', '-m', 'buddy_runner', '--port', $Port)
 if ($StateDir) {
     $runnerArgs += @('--state-dir', $StateDir)
 }

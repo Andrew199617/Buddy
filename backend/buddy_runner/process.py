@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 
-from open_webui.utils.subscriptions.windows_job import spawn_in_job
+from buddy_runner.windows_job import spawn_in_job
 
 log = logging.getLogger(__name__)
 

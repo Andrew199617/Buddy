@@ -23,7 +23,7 @@ from open_webui.utils.subscriptions.common import ProviderSettings, TurnRequest 
 from open_webui.utils.subscriptions.conversation import parse_messages  # noqa: E402
 from open_webui.utils.subscriptions.events import SubscriptionError  # noqa: E402
 from open_webui.utils.subscriptions.streaming import collect_events, failure_events  # noqa: E402
-from test_subscription_machines import MemoryConfig, load_service  # noqa: E402
+from test_subscription_machines import OWNER, OWNER_USER, MemoryConfig, load_service, owner_providers  # noqa: E402
 
 
 class OfflineMachine:
@@ -125,7 +125,7 @@ class CodexEffortMetadataTests(unittest.IsolatedAsyncioTestCase):
     async def chat_from_rehydrated_registry(self, effort, workers=1, model_efforts=None):
         config = MemoryConfig({'subscriptions.codex': {'enable': True, 'machine_id': 'local'}})
         service = load_service(config, ROOT / 'unused-offline-effort-test-data')
-        service.PROVIDERS['codex'] = self.provider
+        service._providers[service.ProviderRef(OWNER, 'codex')] = self.provider
         service.UVICORN_WORKERS = workers
         service.parse_messages = parse_messages
         service.collect_events = collect_events
@@ -134,10 +134,10 @@ class CodexEffortMetadataTests(unittest.IsolatedAsyncioTestCase):
         service.working_directory = AsyncMock(return_value='fixture-chat-directory')
 
         async def no_database_preset(request, payload, metadata, user, models):
-            return payload['model'], payload
+            return payload['model'], payload, False
 
         service._apply_preset = no_database_preset
-        service.status_cache._entries['codex'] = service._CacheEntry(
+        service.status_cache._entries[service.ProviderRef(OWNER, 'codex').on('local')] = service._CacheEntry(
             {'installed': True, 'signed_in': True, 'api_billing': False}, time.monotonic() + 60,
         )
         model_id = 'codex.fixture-model'
@@ -150,7 +150,7 @@ class CodexEffortMetadataTests(unittest.IsolatedAsyncioTestCase):
             types.SimpleNamespace(state=types.SimpleNamespace()),
             {'model': model_id, 'messages': [{'role': 'user', 'content': 'Fixture prompt'}],
              'reasoning_effort': effort},
-            types.SimpleNamespace(role='admin'),
+            OWNER_USER,
             registry,
         )
 

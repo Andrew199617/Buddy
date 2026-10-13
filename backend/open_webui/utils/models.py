@@ -27,7 +27,11 @@ from open_webui.utils.plugin import (
     get_function_module_from_cache,
 )
 from open_webui.utils.subscriptions.common import SUBSCRIPTION_OWNED_BY
-from open_webui.utils.subscriptions.service import get_subscription_models
+from open_webui.utils.subscriptions.service import (
+    get_subscription_catalog,
+    personalize_models,
+    user_offers_model,
+)
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
@@ -63,13 +67,10 @@ async def get_all_base_models(request: Request, user: UserModel = None):
     openai_task = fetch_openai_models(request, user) if config.get('openai.enable') else asyncio.sleep(0, result=[])
     ollama_task = fetch_ollama_models(request, user) if config.get('ollama.enable') else asyncio.sleep(0, result=[])
     function_task = get_function_models(request)
-    subscription_task = get_subscription_models()
 
-    openai_models, ollama_models, function_models, subscription_models = await asyncio.gather(
-        openai_task, ollama_task, function_task, subscription_task
-    )
+    openai_models, ollama_models, function_models = await asyncio.gather(openai_task, ollama_task, function_task)
 
-    return function_models + openai_models + ollama_models + subscription_models
+    return function_models + openai_models + ollama_models
 
 
 async def get_all_models(request, refresh: bool = False, user: UserModel = None):
@@ -113,6 +114,10 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
 
     # deep copy the base models to avoid modifying the original list
     models = [model.copy() for model in base_models]
+    # Subscription models run on each user's own plan, so they stay out of the
+    # shared base-model cache. Every known one is registered for routing; the
+    # filtered list shows each user only their own.
+    models.extend(await get_subscription_catalog(user))
 
     # If there are no models, return an empty list
     if len(models) == 0:
@@ -484,9 +489,12 @@ async def get_arena_model_ids(models, arena_model, user, bypass_filter=False):
                 if isinstance(model_id, str) and model_id in available_models
             ]
 
+    # Each user may pit only their own subscription models in the arena.
+    subscription_candidates = [model for model in candidates if model.get('owned_by') == SUBSCRIPTION_OWNED_BY]
+    candidates = [model for model in candidates if model.get('owned_by') != SUBSCRIPTION_OWNED_BY]
+    if subscription_candidates:
+        candidates.extend(await personalize_models(subscription_candidates, user))
     if user.role != 'admin':
-        # Subscription providers enforce this independently of ordinary model ACLs.
-        candidates = [model for model in candidates if model.get('owned_by') != SUBSCRIPTION_OWNED_BY]
         if not bypass_filter:
             candidates = await get_filtered_models(candidates, user)
             if not BYPASS_MODEL_ACCESS_CONTROL and any(
@@ -498,9 +506,7 @@ async def get_arena_model_ids(models, arena_model, user, bypass_filter=False):
                     base_model_id = candidate.get('info', {}).get('base_model_id')
                     if base_model_id:
                         candidate_reference = SimpleNamespace(id=candidate['id'], base_model_id=base_model_id)
-                        if not await has_base_model_access(
-                            user.id, candidate_reference, user_role=user.role, user_group_ids=user_group_ids
-                        ):
+                        if not await _has_usable_base_models(user, candidate_reference, user_group_ids):
                             continue
                     usable_candidates.append(candidate)
                 candidates = usable_candidates
@@ -510,7 +516,33 @@ async def get_arena_model_ids(models, arena_model, user, bypass_filter=False):
     return [model['id'] for model in candidates]
 
 
+async def _has_usable_base_models(user, model_reference, user_group_ids, db=None) -> bool:
+    """The base-model chain check, where a plan model base counts as usable exactly
+    when the user's own providers offer it.
+
+    Plan models have no model rows, so the ordinary chain check would treat them
+    as admin-only; a preset on one runs on the user's own plan.
+    """
+    base_model_id = getattr(model_reference, 'base_model_id', None)
+    if base_model_id and await user_offers_model(user, base_model_id):
+        return True
+    return await has_base_model_access(
+        user.id, model_reference, user_role=user.role, user_group_ids=user_group_ids, db=db
+    )
+
+
 async def check_model_access(user, model, model_info=None, db=None):
+    if model.get('owned_by') == SUBSCRIPTION_OWNED_BY and not model.get('preset'):
+        # A subscription model runs on one user's own plan and machine, so
+        # only users whose own providers offer it may use it.
+        if not await user_offers_model(user, model.get('id')):
+            log.warning(
+                'Model access denied: user_id=%r model_id=%r reason=subscription_not_offered',
+                user.id,
+                model.get('id'),
+            )
+            raise Exception('Model not found')
+        return
     if model.get('arena'):
         meta = model.get('info', {}).get('meta', {})
         access_grants = meta.get('access_grants', [])
@@ -563,17 +595,26 @@ async def check_model_access(user, model, model_info=None, db=None):
             raise Exception('Model not found')
 
         # Enforce access on chained base models
-        if not await has_base_model_access(
-            user.id, model_info, user_role=user.role, user_group_ids=user_group_ids, db=db
-        ):
+        if not await _has_usable_base_models(user, model_info, user_group_ids, db=db):
             raise Exception('Model not found')
 
 
 async def get_filtered_models(models, user, db=None):
-    if user.role != 'admin':
-        # Subscription models run on the administrator's personal plan, so
-        # neither access grants nor BYPASS_MODEL_ACCESS_CONTROL list them.
-        models = [model for model in models if model.get('owned_by') != SUBSCRIPTION_OWNED_BY]
+    # Subscription models run on each user's own plan, so ownership decides
+    # who sees them; neither access grants nor BYPASS_MODEL_ACCESS_CONTROL do.
+    subscription_models = [model for model in models if model.get('owned_by') == SUBSCRIPTION_OWNED_BY]
+    models = [model for model in models if model.get('owned_by') != SUBSCRIPTION_OWNED_BY]
+    own_subscription_models = []
+    if subscription_models:
+        own_subscription_models = await personalize_models(subscription_models, user)
+    # A preset on the user's own plan is still a Workspace row, so its access
+    # grants decide whether this user may see it.
+    own_presets = [model for model in own_subscription_models if model.get('preset')]
+    own_base_models = [model for model in own_subscription_models if not model.get('preset')]
+    return await _filter_by_access(models + own_presets, user, db) + own_base_models
+
+
+async def _filter_by_access(models, user, db=None):
 
     # Filter out models that the user does not have access to
     if (

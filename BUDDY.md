@@ -128,69 +128,241 @@ and saved tokens stay intact; Buddy registers a separate dynamic client when a
 new callback address is needed. For static OAuth credentials, the provider must
 also allow that exact callback URI.
 
-## Projects on an execution host
+## Where a chat runs
 
-Buddy Runner now provides both backend provider execution and the separately
-paired Companion workspace API. The configurable default is **127.0.0.1:8765**,
-matching the existing Machines runner; a second Node host on 8083 is no longer
-required. Its host operator explicitly approves project roots and read/write/
-command capabilities. Browser paths, chat folders, provider working directories,
-and provider sign-in never approve a filesystem grant.
+With Claude or ChatGPT plans set up (see
+[Claude and ChatGPT subscriptions](#claude-and-chatgpt-subscriptions)), a bar
+above the message box says where a new chat runs:
 
-See [the Companion guide](companion/README.md) for startup, pairing, operator
-revocation and the browser/mobile transport boundary. Provider commands run on
-the selected subscription machine. Choosing a Companion project does not move
-those commands or change their permissions. Direct file API access stays inside
-approved projects; provider read access and opt-in commands can be broader.
+- **Run on**: **Local** is the computer you are using, when the Buddy app runs
+  on it. **Remote** lists your other computers. **Detached** uses no computer
+  at all. Each computer shows whether its plans are ready, offline, or need
+  signing in there.
+- **Folder**: on a computer, an exact folder, or **Let the AI choose**, which
+  starts in that computer's start folder. The list offers the chat folder's
+  project folder, your recent folders, and the folders Claude Code and Codex
+  worked in on that computer. **Choose folder…** opens the Windows folder
+  dialog in the app, **Browse** browses the computer from any browser or
+  phone, and you can paste a full path. Buddy checks that the folder exists
+  first. Suggestions and browsing list folder names only, and need **Let
+  Buddy suggest and browse folders** allowed once in the Buddy app on that
+  computer; without it, type the path.
+- **Access**: **Chat only**, **Read files** or **Full access** for this chat.
+  It starts at the plan's default (see
+  [What the models may do](#what-the-models-may-do)).
+
+On a phone the bar is one chip that opens a sheet with the same choices.
+
+A new chat runs **Detached** unless you choose otherwise or its chat folder
+says otherwise (see [Project folders](#project-folders)). A Detached chat is
+Chat only, with no folder or files. Buddy runs it on one of your computers
+where the plan is signed in, or on This server when the administrator allows
+it. Chats Buddy starts for you, such as automations, get the same default as a
+new chat. Replies in channels always run Detached.
+
+Where a chat runs is set when it starts. Afterwards the bar shows it read-only;
+tap it for the details and **New chat here**, which starts a new chat in the
+same chat folder with the same choices. If that computer is offline, was set
+up again or removed, or the folder no longer exists, Buddy refuses with a
+reason instead of working somewhere else. A clone or branch of your own chat
+runs where the original runs; a copy of a chat someone else shared starts like
+a new chat. Chats from before this keep running where they did: as their chat
+folder says, or else on their plan's computer, letting the AI choose the
+folder.
+
+### The main chat
+
+The **Main chat** button next to **New chat** opens your main chat: one
+always-on Detached chat, the same on every device. Once its context grows past
+60,000 tokens, Buddy summarizes its older messages, so it can run as long as
+you like. That needs **Context Compaction** turned on in Admin Settings →
+Interface; until then the main chat keeps its whole history like any other
+chat. If you delete it, the button starts a new one.
+
+## Project folders
+
+A chat folder sets the defaults for new chats in it: where they run, which
+folder they use and with what access. The **+** next to a chat folder in the
+sidebar starts a new chat with them. Open the folder's settings (**Edit**, or
+the chip under the folder's title) and choose its **Project folder**:
+
+- **Let the AI choose** (the default): new chats run on a computer with the
+  plan and start in its start folder (see
+  [What the models may do](#what-the-models-may-do)). With Full access, Buddy
+  tells them to find the project you mention and to use absolute paths.
+- **A specific folder**: an exact folder on each computer. Pick it in the
+  Buddy app's Windows folder dialog, from the folders shared in the app, from
+  recent folders, or by typing its full path. Buddy checks that it exists on
+  that computer first. Network paths and whole drives are refused.
+- **No files, just chat**: new chats in this folder run Detached.
+
+Subfolders follow the nearest parent folder that has a choice. The choice is
+yours alone: people you share a folder with choose their own, and Buddy never
+stores your path in the shared folder. If someone else can change a chat
+folder's system prompt or knowledge (its owner, or anyone allowed to edit it),
+its chats stay Chat only until you choose a project folder for it yourself, or
+tick **Use files in this chat anyway** in the bar's access menu for one chat,
+just as presets written by someone else run Chat only.
+
+The bar starts from the folder's choice, and you can still change it before
+the first message. Changing the folder's choice later changes only new chats;
+started chats keep where they run.
+
+A project folder is where the models start, not a fence. With Full access they
+can still reach other folders, and the folder's own `CLAUDE.md`, `AGENTS.md`,
+settings and hooks run as you, so choose only folders you trust. Cloud
+computers, once built, have no exact folder: their models work in their own
+workspace.
+
+### The chat's Project tab
+
+In a chat that runs in an exact folder, the side panel's **Project** tab
+opens that folder on its computer. Other chats in a chat folder with a
+specific project folder open the folder's choice. Buddy relays the requests
+over that computer's own connection, so it works from a phone or another
+browser too. It needs the Buddy app on that computer, and the
+project folder must be inside a folder shared in the app:
+
+- **Files**: browse inside the project folder and read text files. With
+  **Allow editing files** on in the app, tap **Edit** to change a file. Saving
+  keeps its line endings, and if the file changed on the computer meanwhile,
+  Buddy asks whether to reload it or overwrite the copy there.
+- **Commands**: with **Allow running commands** on in the app, confirm the
+  risk, start a session in the project folder, and run one program with its
+  arguments, one per line. There is no shell. The output keeps the latest
+  256 KiB.
+
+The tab keeps its session while you switch side panel tabs or close the
+panel. Leaving the chat, or reloading the page, ends it and stops its
+commands; Buddy asks first if a file has unsaved changes or a command is
+running.
+
+This replaces the separate Projects page; old links to it go home.
 
 ## Claude and ChatGPT subscriptions
 
-Buddy can chat with Claude and OpenAI models on your Claude Pro/Max and ChatGPT
-Plus/Pro plans. Usage counts against the plan's limits instead of API billing.
-Buddy runs the official command-line apps, Claude Code (`claude -p`) and Codex
-(`codex app-server`), on a machine: the computer running Buddy, or a Buddy
-Runner on another computer (see [Machines](#machines-and-the-buddy-runner)).
-Each app signs in with its own flow and keeps its own credentials on that
-machine. Buddy does not read or store your password or tokens.
+Buddy chats with Claude and OpenAI models through the official command-line
+apps, Claude Code (`claude -p`) and Codex (`codex app-server`). Each person
+uses their own Claude or ChatGPT plan, or their own API key, on computers they
+connect themselves. Only that person can choose their models; nobody else sees
+or uses them.
 
 Anthropic's help center says `claude -p` and the Claude Agent SDK draw from
 your plan's limits. OpenAI documents Codex sign-in with ChatGPT for scripted
-use. Buddy does not copy the apps' tokens into its own API calls, which the
-plans do not allow. Keep this for your own use: only administrators can choose
-these models, and sharing a personal plan with other people breaks its terms.
+use. Buddy never copies the apps' own tokens into its API calls and never reads
+their credential files (`~/.claude/.credentials.json`, `~/.codex/auth.json`).
+It stores a token or key only when you paste one in, encrypted. A plan is
+personal: sign in only with your own.
 
-Set it up under **Admin Settings → Connections → Subscriptions**:
+### Connect a computer with the Buddy app
 
-1. Install the app if it is missing. The Claude desktop app already includes
-   Claude Code, which Buddy finds automatically. Install Codex with
-   `npm install -g @openai/codex`.
-2. Turn on **Claude** or **ChatGPT** and choose **Sign in**.
-   - Claude: open the sign-in page, approve, then paste the code it shows.
-     This works from a phone.
-   - ChatGPT: **Get sign-in link** returns to the machine running Codex (the
-     computer running Buddy or the selected Runner), so open the link in a
-     browser on that machine. **Use a device code instead** works from any
-     device after you allow device code sign-in in ChatGPT's security settings.
-     If Codex is already signed in on that machine, Buddy uses that sign-in.
-3. The plan's models appear in the model picker, tagged **Claude plan** or
+1. Install **Buddy for Windows** on the computer (Mac is coming). An
+   administrator can show its download link in Settings → Machines; to build
+   the installer, see [the desktop app guide](desktop/README.md).
+2. Open the app, enter your Buddy address, and sign in.
+3. In **Settings → Machines**, choose **Connect this computer** and confirm in
+   the app's own dialog. The computer appears under **Your computers** and stays
+   connected while the app runs. **Start Buddy when you sign in** keeps it
+   available from your phone.
+
+The app connects out to Buddy over one WebSocket, so the computer needs no open
+port and no certificate. Only the Buddy server needs an ordinary HTTPS address;
+plain HTTP is accepted only when Buddy runs on the same computer.
+
+- **The connection's credential** is encrypted for your Windows account by the
+  app. Buddy keeps only its hash and never shows it to the web page.
+- **Shared folders** and the **Allow editing files** and **Allow running
+  commands** switches are chosen in the app, with Windows dialogs, so the Buddy
+  server cannot widen them. They limit what a chat's
+  [Project tab](#the-chats-project-tab) can open, edit and run; they do not
+  limit Claude and ChatGPT.
+- **Whoever controls the Buddy server** can run Claude Code and Codex on a
+  connected computer as your account. The app says so before connecting.
+- **Disconnect** from Settings → Machines or the app's taskbar icon. Removing a
+  computer from the list in Buddy disconnects its app too.
+
+Connected computers need a single Buddy worker (`UVICORN_WORKERS=1`, the
+default): their connections live in that worker's memory.
+
+### Set up Claude and ChatGPT
+
+Under **Settings → Machines → AI plans**:
+
+1. Install the CLI on the computer if it is missing. The Claude desktop app
+   already includes Claude Code, which Buddy finds automatically. Install Codex
+   with `npm install -g @openai/codex`.
+2. Turn on **Claude** or **ChatGPT**, open the gear button, and choose the
+   computer it **Runs on**. That is where sign-in starts and where chats from
+   before [chat targets](#where-a-chat-runs) run; each new chat chooses its
+   own computer in the bar.
+3. Choose how it signs in:
+   - **Your computer's sign-in** uses the CLI's own sign-in on that computer.
+     **Sign in** starts it from Buddy. Claude shows a page to approve and a
+     code to paste back, which works from a phone. ChatGPT's **Get sign-in
+     link** must open in a browser on that computer; **Use a device code
+     instead** works anywhere after you allow device code sign-in in ChatGPT's
+     security settings.
+   - **Claude token, for all your computers**: run `claude setup-token` once
+     and paste the token (in the app, **Open a terminal** starts it for you).
+     It lasts a year and works on every computer you connect. Buddy warns 30
+     days before it expires.
+   - **Anthropic API key** or **OpenAI API key**: billed per use by the
+     provider, on every computer you connect. Codex gets the key for each
+     session without saving it on the computer.
+4. The models appear in your model picker, tagged **Claude plan** or
    **ChatGPT plan**. ChatGPT shows how much of its usage limit you have used.
 
-If you run Buddy with more than one worker (`UVICORN_WORKERS`), sign in from a
-terminal instead (`claude auth login` or `codex login`); the CLIs keep the
-sign-in on disk, so every worker sees it. Accounts that bill the API (an
-Anthropic Console login or a Codex API key) are flagged and their models are
-hidden, so a plan-tagged model never bills the API.
+**Your computers** lists the plans on each computer. With **Your computer's
+sign-in**, each computer has its own: **Sign in here** and **Sign out** act on
+that computer only. A computer's **Advanced** settings choose its own start
+folder and CLI paths; until you save them, it uses what each plan saved.
 
-The gear button sets what the models may do:
+In **Your computer's sign-in**, an account that bills the API (an Anthropic
+Console login or a Codex API key login) is flagged and its models are hidden,
+so a plan-tagged model never bills the API by surprise.
+
+Tokens and keys are encrypted with `BUDDY_SUBSCRIPTION_SECRET_KEY`, which by
+default is the key that protects tool sign-ins (and through it,
+`WEBUI_SECRET_KEY`). To change it, set the new key and list the old one in
+`BUDDY_SUBSCRIPTION_OLD_SECRET_KEYS` until everyone has saved their
+credentials again. The browser only ever sees a fingerprint and the expiry
+date.
+
+### Policy for administrators
+
+**Admin Settings → AI plans** sets:
+
+- **Who can connect computers and use AI plans**: everyone, selected groups,
+  or administrators only. Computers of people who are no longer allowed
+  disconnect at once.
+- **Plan sign-in**: turn it off before offering Buddy publicly. Anthropic does
+  not allow third-party products to offer Claude plan sign-in without its
+  approval. API keys stay available.
+- **Personal API keys**.
+- **Run on this server**: lets the instance owner (the first administrator)
+  also run the CLIs inside the Buddy server, as **This server**.
+- **Buddy for Windows download link**: shown in Settings → Machines to people
+  using a browser.
+
+**Everyone's computers** lists each connected computer with its owner and
+status, without any secrets; **Remove** disconnects it. Cloud computers, a
+Runner container per person, are designed but not built yet; see
+[the cloud Runner design](companion/CLOUD_RUNNERS.md).
+
+### What the models may do
+
+Each chat chooses its access in the bar above the message box. The gear
+button's **Default access for new chats** is where the bar starts:
 
 | Setting     | Claude Code                                        | Codex                              |
 | ----------- | -------------------------------------------------- | ---------------------------------- |
 | Chat only   | No tools; Buddy's chat instructions                | No command, file, or MCP tools     |
-| Read files  | Read, search, and web tools in the working folder  | Read-only commands; no MCP servers |
+| Read files  | Read, search, and web tools in the start folder    | Read-only commands; no MCP servers |
 | Full access | All tools, including the terminal, without prompts | No sandbox, no approval prompts    |
 
-In **Read files**, Claude Code's file tools stay inside the working folder,
-and it ignores the folder's settings, hooks, MCP servers, and skills. Codex's
+In **Read files**, Claude Code's file tools stay inside the folder it starts
+in: the chat's folder, or the start folder.
+It ignores the folder's settings, hooks, MCP servers, and skills. Codex's
 read-only sandbox blocks writes but cannot limit reads to one folder (custom
 read rules need Codex's elevated Windows sandbox), so a Codex model can read
 any file your account can. Buddy turns off Codex hooks in every setting and
@@ -198,11 +370,15 @@ Codex MCP servers outside Full access. Instruction files in the folder
 (`CLAUDE.md`, `AGENTS.md`) can still steer the model.
 
 **Full access** lets the model edit files and run terminal commands on the
-machine as you, in the working folder you choose (`subscriptions/workspace` in
-Buddy's data folder, or `~/.buddy-runner/workspace` on a runner, by default).
-Anyone who can sign in to Buddy as an administrator can then do the same.
-Status lines show each command while it runs, and the reasoning block keeps a
-log of them.
+computer as you. It starts in the chat's folder, or else in the start folder:
+the computer's own in **Advanced**, or the plan's **Start folder** (by default
+`workspace` in the Runner's data folder: `%APPDATA%\Buddy\runner\workspace`
+for the app, `~/.buddy-runner/workspace` for a Runner started on its own, or
+`subscriptions/workspace` in Buddy's data folder on This server). Status lines
+show each command while it runs, and the reasoning block keeps a log of them.
+
+A model someone else shared with you, for example in a preset, runs on your
+own plan and computer in **Chat only**, and so does a Detached chat.
 
 Notes:
 
@@ -219,17 +395,16 @@ Notes:
   prompt-based (legacy) function calling for them. Attached files, knowledge,
   web search, and research tools still reach the model as context.
 
-### Machines and the Buddy Runner
+### Older setup: a Runner by address
 
-A machine is where Claude Code and Codex run, sign in, and work on files. The
-**Machines** list under Subscriptions always has **This server**, the
-computer or container running Buddy. To use another computer, such as your
-Windows PC while Buddy runs in Docker, start the Buddy Runner there and add it:
+Before the app, the instance owner ran the Buddy Runner by hand and added it by
+address. This keeps working until production has moved to the app, and is
+listed as **Your Runner addresses (older setup)** in Admin Settings → AI plans:
 
 1. On that computer, run `local\start-buddy-runner.ps1` from this checkout in
    PowerShell. From Command Prompt, or where PowerShell scripts are disabled,
    run `local\start-buddy-runner.cmd` with the same parameters. (Without the
-   launchers, run `python -P -m open_webui.utils.subscriptions.runner` with
+   launchers, run `python -P -m buddy_runner` with
    `backend` on `PYTHONPATH`; `-P` stops modules in the current folder from
    loading.) It listens on `127.0.0.1:8765` and creates its key in
    `~/.buddy-runner/key` on first start. On Windows, that folder and key must
@@ -242,19 +417,13 @@ Windows PC while Buddy runs in Docker, start the Buddy Runner there and add it:
    backend's application-specific certificate trust. Every non-loopback
    connection requires verified HTTPS, including Docker and Tailscale names
    and addresses. See [the HTTPS setup](companion/TLS_SETUP.md).
-3. Open a provider's gear button and set **Runs on** to that machine. Sign in
-   from there; the sign-in lives on that machine.
+3. Open a provider's gear button and set **Runs on** to that machine.
 
-The runner starts the CLIs over plain pipes and streams their output to Buddy;
-a process stops when Buddy's connection to it closes. Anyone holding the
-runner key can run any command as the user running the runner, so it listens
-only on the local loopback by default and Buddy never sends the key to the
-browser.
-
-Changing a provider's machine clears its paths and access and disables it until
-you explicitly configure that machine. Removing a machine disables affected
-providers and preserves the missing selection; it never switches execution to
-This server. Editing a registered target also invalidates its old provider work.
+Anyone holding that Runner's key can run any command as the user running it,
+so it listens only on the local loopback by default and Buddy never sends the
+key to the browser. Changing a provider's machine clears its paths and access
+and disables it until you configure that machine. Removing a machine disables
+affected providers and never switches execution to This server.
 
 ## Buddy in Docker
 
@@ -310,9 +479,11 @@ docker compose -f docker/buddy/compose.yaml up -d --build
 The Windows folder is left unchanged as a backup. Do not start the Windows
 instance on it again: it would run the same automations as Buddy in Docker.
 
-Claude Code and Codex are not installed in the image. Add a Buddy Runner on
-your PC as a machine so they run there with your sign-ins, repositories, and
-terminal. Inside the container, `localhost` is the container itself; use
+Claude Code and Codex are not installed in the image. Connect your PC with the
+Buddy app, using `http://localhost:8082` as its Buddy address, so they run there
+with your sign-ins, repositories, and terminal (see
+[Connect a computer](#connect-a-computer-with-the-buddy-app)). Inside the
+container, `localhost` is the container itself; use
 `http://host.docker.internal:<port>` for services on your PC, such as a
 llama.cpp server.
 

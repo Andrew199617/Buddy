@@ -44,11 +44,11 @@
 	const getReadDescription = (providerId: string) => {
 		if (providerId === 'codex') {
 			return $i18n.t(
-				"Can run read-only commands. Codex's read-only sandbox does not limit reads to the working folder, so it can read any file your account can. No edits."
+				"Can run read-only commands. Codex's read-only sandbox does not limit reads to the start folder, so it can read any file your account can. No edits."
 			);
 		}
 		return $i18n.t(
-			'Can read and search files and the web using CLI permissions on the selected computer. Reads are not restricted to the working folder by an OS sandbox. No edits or commands.'
+			'Can read and search files and the web using CLI permissions on the selected computer. Reads are not restricted to the start folder by an OS sandbox. No edits or commands.'
 		);
 	};
 
@@ -160,7 +160,9 @@
 					disabled={saving}
 					on:change={changeMachine}
 				>
-					{#if !machines.some((machine) => machine.id === machineId)}
+					{#if !machineId}
+						<option value="" disabled>{$i18n.t('Choose a computer')}</option>
+					{:else if !machines.some((machine) => machine.id === machineId)}
 						<option value={machineId} disabled>{$i18n.t('Unavailable machine')}</option>
 					{/if}
 					{#each machines as machine (machine.id)}
@@ -169,20 +171,22 @@
 				</select>
 				<p class="text-xs text-gray-400 dark:text-gray-600">
 					{$i18n.t(
-						'The machine where the CLI runs, signs in, and works on files. Add machines under Machines.'
+						'The computer where the CLI runs, signs in, and works on files. Connect computers from the Buddy app, under Settings → Machines.'
 					)}
 				</p>
 				{#if machineId !== initialMachineId}
 					<p class="text-xs text-amber-700 dark:text-amber-400">
 						{$i18n.t(
-							'Changing machines disables this subscription and clears its access, working folder, and CLI path. Save, then explicitly enable it and choose access on the new machine.'
+							'Changing machines disables this subscription and clears its access, start folder, and CLI path. Save, then explicitly enable it and choose access on the new machine.'
 						)}
 					</p>
 				{/if}
 			</div>
 
 			<fieldset class="flex flex-col gap-1.5">
-				<legend class="mb-1 text-xs text-gray-500">{$i18n.t('What the model can do')}</legend>
+				<legend class="mb-1 text-xs text-gray-500">
+					{$i18n.t('Default access for new chats')}
+				</legend>
 				{#each accessOptions as option}
 					<label
 						class="flex cursor-pointer gap-2.5 rounded-xl border px-3 py-2 transition {access ===
@@ -207,20 +211,20 @@
 				{#if access === 'full'}
 					<p class="text-xs text-amber-700 dark:text-amber-400">
 						{$i18n.t(
-							'Anyone who can sign in to Buddy as an administrator can then run commands on that machine.'
+							'Buddy can then run commands on that computer as your account there, and so can anyone who controls this Buddy server.'
 						)}
 					</p>
 				{/if}
 				<p class="text-xs text-gray-400 dark:text-gray-600">
 					{$i18n.t(
-						'CLI permissions apply on the selected computer. Model sign-in does not create project or file API grants.'
+						'New chats start with this, and each chat can choose its own above the message box. Model sign-in does not create project or file API grants.'
 					)}
 				</p>
 			</fieldset>
 
 			<div class="flex flex-col gap-1">
 				<label class="text-xs text-gray-500" for="subscription-workspace">
-					{$i18n.t('Working folder')}
+					{$i18n.t('Start folder')}
 				</label>
 				<input
 					id="subscription-workspace"
@@ -233,7 +237,7 @@
 				/>
 				<p class="text-xs text-gray-400 dark:text-gray-600">
 					{$i18n.t(
-						'The working folder is CLI context, not a project or filesystem grant. Chat only uses an empty folder.'
+						'Where it starts for chats outside a chat folder, and in folders that let the AI choose. A chat folder with a specific project folder starts there instead. This is CLI context, not a project or filesystem grant. Chat only uses an empty folder.'
 					)}
 				</p>
 			</div>

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta
+			http-equiv="Content-Security-Policy"
+			content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'"
+		/>
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Buddy</title>
+		<style>
+			:root {
+				color-scheme: light dark;
+				--text: #1d2520;
+				--soft: #5d6a61;
+				--page: #ffffff;
+				--accent: #27634b;
+			}
+			@media (prefers-color-scheme: dark) {
+				:root {
+					--text: #ecefed;
+					--soft: #a5b0a8;
+					--page: #171a18;
+					--accent: #3f8f6b;
+				}
+			}
+			body {
+				margin: 0;
+				min-height: 100vh;
+				display: grid;
+				place-items: center;
+				padding: 24px;
+				box-sizing: border-box;
+				background: var(--page);
+				color: var(--text);
+				font-family: 'Segoe UI', system-ui, sans-serif;
+				text-align: center;
+			}
+			h1 {
+				font-size: 22px;
+				margin: 0 0 8px;
+			}
+			p {
+				color: var(--soft);
+				font-size: 14px;
+				line-height: 1.55;
+				margin: 0 0 20px;
+			}
+			a {
+				display: inline-flex;
+				align-items: center;
+				min-height: 44px;
+				padding: 0 20px;
+				border-radius: 10px;
+				background: var(--accent);
+				color: #fff;
+				font-weight: 600;
+				text-decoration: none;
+			}
+		</style>
+	</head>
+	<body>
+		<main>
+			<h1>Buddy is not reachable</h1>
+			<p>
+				<span id="server-address">Your Buddy address</span> did not answer. Check your connection,
+				then try again. To use another address, choose Change Buddy address in the Buddy menu.
+			</p>
+			<a id="retry" href="#">Try again</a>
+		</main>
+		<script src="../dist/src/offline-page.js"></script>
+	</body>
+</html>
