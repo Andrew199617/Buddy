@@ -3621,8 +3621,9 @@ async function folderAllowHomelessCase(browser, profile) {
 			// Claude's own computer is gone, but every plan that is on runs on each computer:
 			// Work PC lists both, and only ChatGPT, which is Chat only, is offered more access.
 			await request.waitFor();
-			assert.match(await request.innerText(), /ChatGPT\s*·\s*Work PC\s*·\s*Chat only/);
-			assert.equal(await request.getByText('Claude', { exact: true }).count(), 0);
+			const offered = await request.innerText();
+			assert.match(offered, /ChatGPT\s*·\s*Work PC\s*·\s*Chat only/);
+			assert.doesNotMatch(offered, /Claude/, 'Claude already has full access');
 			assert.equal(await dialog.getByText(/has no computer it can use/).count(), 0);
 			// Choosing a folder lists the computer with the plans it runs.
 			await dialog.getByText('A specific folder', { exact: true }).click();
