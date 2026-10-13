@@ -365,6 +365,12 @@ async def get_folder_project(folder_id: str, user=Depends(get_machine_user)):
     return await service.describe_folder_project(user, folder_id)
 
 
+@router.get('/new-folder/project')
+async def get_new_folder_project(parent_id: Optional[str] = None, user=Depends(get_machine_user)):
+    """What a folder about to be created starts with, for the create dialog."""
+    return await service.describe_new_folder_project(user, parent_id)
+
+
 @router.put('/folders/{folder_id}/project')
 async def save_folder_project(folder_id: str, form_data: FolderProjectForm, user=Depends(get_machine_session_user)):
     try:

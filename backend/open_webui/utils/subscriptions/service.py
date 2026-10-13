@@ -1876,42 +1876,6 @@ async def _folder_computers(user, choices: dict, named_machine_ids: set[str]) ->
     return computers
 
 
-async def _folder_plan_machine(owner_id: str, machine_id: str, configs: dict[str, dict]) -> dict | None:
-    """The computer a plan runs on, with the revision a settings change must confirm, or
-    None when it has none it can use: none chosen, removed, This server not allowed, or
-    added by address without its runner key (as after a config import)."""
-    if not machine_id:
-        return None
-    if machine_id == LOCAL_MACHINE_ID:
-        if not await _may_use_server_machine(owner_id):
-            return None
-        return {'id': machine_id, 'name': 'This server', 'revision': 'local'}
-    config = configs.get(machine_id)
-    revision = await _machine_revision(owner_id, machine_id)
-    if config is None or revision is None:
-        return None
-    if _folder_computer_kind(machine_id, config) == 'address' and not config.get('key'):
-        return None
-    return {'id': machine_id, 'name': config['name'], 'revision': revision}
-
-
-async def _folder_plans(user) -> list[dict]:
-    """Each plan's switch, access and computer, so a folder's settings can ask to let a
-    Chat-only plan use files. Contacts no computer."""
-    configs = {config['id']: config for config in await _owned_machine_configs(user.id)}
-    plans = []
-    for provider_id in PROVIDER_IDS:
-        settings = await _load_settings(ProviderRef(user.id, provider_id))
-        plans.append({
-            'id': provider_id,
-            'name': PROVIDER_LABELS[provider_id],
-            'enable': settings.enable,
-            'access': settings.access,
-            'machine': await _folder_plan_machine(user.id, settings.machine_id, configs),
-        })
-    return plans
-
-
 def _describe_saved_path(saved, revision: str) -> dict:
     problem = None
     if saved.revision != revision:
@@ -1948,6 +1912,34 @@ async def describe_folder_project(user, folder_id: str) -> dict:
     folder = await _readable_chat_folder(user, folder_id)
     choices = await project_folders.load_choices(user.id)
     own, inherited = await project_folders.resolve_folder(user.id, folder, choices)
+    # Instructions someone else can change keep chats chat-only until the person chooses here.
+    shared_instructions = await project_folders.has_shared_instructions(user.id, folder)
+    # Instructions added in the folder dialog would be shared too.
+    editable_by_others = await project_folders.others_can_edit(user.id, folder)
+    return await _describe_project(
+        user, folder.id, folder.name, own, inherited, shared_instructions, editable_by_others, choices
+    )
+
+
+async def describe_new_folder_project(user, parent_id: str | None) -> dict:
+    """What a chat folder about to be created starts with: its parent's choice, if any,
+    and the computers it can be on. Contacts no computer."""
+    choices = await project_folders.load_choices(user.id)
+    inherited = None
+    # A new top-level folder is this person's alone until they share it.
+    editable_by_others = False
+    if parent_id:
+        parent = await _readable_chat_folder(user, parent_id)
+        parent_own, parent_inherited = await project_folders.resolve_folder(user.id, parent, choices)
+        inherited = parent_own or parent_inherited
+        # Whoever may edit the parent may edit a folder created in it.
+        editable_by_others = await project_folders.others_can_edit(user.id, parent, levels_below=1)
+    # A new folder has no instructions of its own yet.
+    return await _describe_project(user, '', '', None, inherited, False, editable_by_others, choices)
+
+
+async def _describe_project(user, folder_id: str, folder_name: str, own, inherited, shared_instructions: bool,
+                            editable_by_others: bool, choices: dict) -> dict:
     named_machine_ids = set()
     for choice in (own, inherited):
         if choice is not None:
@@ -1963,14 +1955,13 @@ async def describe_folder_project(user, folder_id: str) -> dict:
         if (await _load_settings(ProviderRef(user.id, provider_id))).enable:
             has_plans = True
     return {
-        'folder_id': folder.id,
-        'folder_name': folder.name,
+        'folder_id': folder_id,
+        'folder_name': folder_name,
         'own': _describe_folder_choice(own, revisions),
         'inherited': _describe_folder_choice(inherited, revisions),
-        # Instructions someone else can change keep chats chat-only until the person chooses here.
-        'shared_instructions': await project_folders.has_shared_instructions(user.id, folder),
+        'shared_instructions': shared_instructions,
+        'others_can_edit': editable_by_others,
         'has_plans': has_plans,
-        'plans': await _folder_plans(user),
         'computers': await _folder_computers(user, choices, named_machine_ids),
     }
 
