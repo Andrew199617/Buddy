@@ -1,5 +1,11 @@
 # Buddy changelog
 
+## [Unreleased]
+
+### Removed
+
+- Code Interpreter. Buddy's Claude and ChatGPT plans run code on your own computers instead. The composer toggle, its settings and permission, the model options, the chat Files tab for its files, and its output in chats are gone. Its `ENABLE_CODE_INTERPRETER`, `CODE_INTERPRETER_*` and `USER_PERMISSIONS_FEATURES_CODE_INTERPRETER` environment variables are ignored. The Run button on code blocks (Code Execution) stays.
+
 ## [0.11.4] - 2026-10-07
 
 ### Added
