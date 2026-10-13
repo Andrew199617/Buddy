@@ -35,7 +35,7 @@
 
 <style>
 	:global(.buddy-available-tools-menu) {
-		width: min(312px, calc(100vw - 16px));
+		width: min(420px, calc(100vw - 24px));
 		border: 1px solid var(--buddy-action-edge, rgba(255, 255, 255, 0.7));
 		border-radius: 30px;
 		background: var(--buddy-action-surface, rgba(245, 249, 246, 0.94));
@@ -43,7 +43,7 @@
 		box-shadow: 0 18px 48px rgba(17, 35, 24, 0.2);
 		-webkit-backdrop-filter: blur(28px) saturate(150%);
 		backdrop-filter: blur(28px) saturate(150%);
-		overflow-x: hidden;
+		overflow: hidden;
 		overscroll-behavior: contain;
 	}
 
@@ -52,48 +52,6 @@
 		background: var(--buddy-action-surface, rgba(49, 57, 52, 0.94));
 		color: var(--buddy-action-text, #f0f5f1);
 		box-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
-	}
-
-	:global(.buddy-available-tools-menu .available-tools-content > div:first-child) {
-		padding: 8px 12px 0 16px;
-		color: inherit;
-	}
-
-	:global(.buddy-available-tools-menu .available-tools-content > div:first-child > div) {
-		font-size: 16px;
-	}
-
-	:global(.buddy-available-tools-menu .available-tools-content > div:first-child > button) {
-		display: flex;
-		width: 44px;
-		height: 44px;
-		align-items: center;
-		justify-content: center;
-		border-radius: 50%;
-	}
-
-	:global(.buddy-available-tools-menu [role='button']) {
-		min-height: 44px;
-		border-radius: 12px;
-	}
-
-	:global(.buddy-available-tools-menu [role='button']:not([aria-disabled='true']):hover),
-	:global(.buddy-available-tools-menu [role='button']:focus-visible) {
-		background: var(--buddy-action-hover, rgba(52, 91, 63, 0.09));
-	}
-
-	:global(.buddy-available-tools-menu [class*='text-xs']) {
-		font-size: 13px;
-	}
-
-	:global(.buddy-available-tools-menu [class*='text-gray-500']),
-	:global(.buddy-available-tools-menu [class*='text-gray-600']) {
-		color: var(--buddy-action-muted, #66796c);
-	}
-
-	:global(.dark .buddy-available-tools-menu [class*='text-gray-500']),
-	:global(.dark .buddy-available-tools-menu [class*='text-gray-600']) {
-		color: var(--buddy-action-muted, #a9b7ad);
 	}
 
 	@media (prefers-reduced-transparency: reduce) {

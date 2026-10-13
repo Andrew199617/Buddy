@@ -90,6 +90,8 @@
 
 	let models: any[] | null = null;
 	$: modelOptions = models ?? [];
+	// Task and compaction models run for every user; subscription models are admin-only.
+	$: sharedModelOptions = modelOptions.filter((model: any) => model?.owned_by !== 'subscription');
 	const normalizeModelSelection = (modelId: string | null | undefined) => {
 		if (!modelId) {
 			return '';
@@ -195,7 +197,7 @@
 								}}
 							>
 								<option value="" selected>{$i18n.t('Current Model')}</option>
-								{#each modelOptions as model}
+								{#each sharedModelOptions as model}
 									<option value={model.id} class="bg-gray-100 dark:bg-gray-700">
 										{model.name}
 										{model?.connection_type === 'local' ? `(${$i18n.t('Local')})` : ''}
@@ -216,7 +218,7 @@
 								}}
 							>
 								<option value="" selected>{$i18n.t('Current Model')}</option>
-								{#each modelOptions as model}
+								{#each sharedModelOptions as model}
 									<option value={model.id} class="bg-gray-100 dark:bg-gray-700">
 										{model.name}
 										{model?.connection_type === 'local' ? `(${$i18n.t('Local')})` : ''}
@@ -292,7 +294,7 @@
 							}}
 						>
 							<option value="" selected>{$i18n.t('Current Model')}</option>
-							{#each modelOptions as model}
+							{#each sharedModelOptions as model}
 								<option value={model.id} class="bg-gray-100 dark:bg-gray-700">
 									{model.name}
 									{model?.connection_type === 'local' ? `(${$i18n.t('Local')})` : ''}

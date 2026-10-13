@@ -151,6 +151,7 @@ from open_webui.routers import (
     audio,
     auths,
     automations,
+    backups,
     calendar,
     channels,
     chats,
@@ -173,6 +174,7 @@ from open_webui.routers import (
     retrieval,
     scim,
     skills,
+    subscriptions,
     tasks,
     terminals,
     tools,
@@ -270,6 +272,8 @@ from open_webui.utils.oauth import (
 from open_webui.utils.plugin import install_tool_and_function_dependencies
 from open_webui.utils.redis import get_redis_client
 from open_webui.utils.session_pool import cleanup_response, get_client_timeout, get_session, stream_wrapper
+from open_webui.utils.subscriptions.common import SUBSCRIPTION_OWNED_BY
+from open_webui.utils.subscriptions.service import is_conflicting_preset_row
 from open_webui.utils.tool_approval import (
     ResolveToolCallForm,
     build_tool_approval_resume_payload,
@@ -865,6 +869,8 @@ if ENABLE_ADMIN_ANALYTICS:
     app.include_router(analytics.router, prefix='/api/v1/analytics', tags=['analytics'])
 app.include_router(utils.router, prefix='/api/v1/utils', tags=['utils'])
 app.include_router(terminals.router, prefix='/api/v1/terminals', tags=['terminals'])
+app.include_router(subscriptions.router, prefix='/api/v1/subscriptions', tags=['subscriptions'])
+app.include_router(backups.router, prefix='/api/v1/backups', tags=['backups'])
 app.include_router(automations.router, prefix='/api/v1/automations', tags=['automations'])
 app.include_router(calendar.router, prefix='/api/v1/calendars', tags=['calendars'])
 
@@ -1116,6 +1122,9 @@ async def chat_completion(
 
             model = request.app.state.MODELS[model_id]
             model_info = await Models.get_model_by_id(model_id)
+            if is_conflicting_preset_row(model, model_info):
+                # A preset row that reuses a subscription model's ID cannot redirect or reconfigure it.
+                model_info = None
             missing_base_model = bool(
                 model_info and model_info.base_model_id and model_info.base_model_id not in request.app.state.MODELS
             )
@@ -1237,6 +1246,16 @@ async def chat_completion(
         ):
             tool_servers = None
 
+        function_calling = (
+            form_data.get('params', {}).get('function_calling')
+            or model_info_params.get('function_calling')
+            or 'native'
+        )
+        if model.get('owned_by') == SUBSCRIPTION_OWNED_BY:
+            # Claude Code and Codex run their own tools and cannot receive
+            # Buddy's tool definitions, so files and tools use prompt injection.
+            function_calling = 'legacy'
+
         automation_id = form_data.pop('automation_id', None)
         tool_approval_mode = (
             'full'
@@ -1273,11 +1292,7 @@ async def chat_completion(
                 'stream_delta_chunk_size': stream_delta_chunk_size,
                 'reasoning_tags': reasoning_tags,
                 'compact_token_threshold': compact_token_threshold,
-                'function_calling': (
-                    form_data.get('params', {}).get('function_calling')
-                    or model_info_params.get('function_calling')
-                    or 'native'
-                ),
+                'function_calling': function_calling,
                 'tool_approval_mode': tool_approval_mode,
             },
         }
@@ -1916,6 +1931,12 @@ from open_webui.utils.anthropic import (
 )
 
 
+async def load_models_for_messages(request: Request, user) -> None:
+    """Load the model list, which tells a subscription model from a preset row that reuses its ID."""
+    if not request.app.state.MODELS:
+        await get_all_models(request, user=user)
+
+
 @app.post('/api/message/count_tokens')
 @app.post('/api/v1/messages/count_tokens')  # Anthropic Messages token-count endpoint
 async def count_message_tokens(
@@ -1923,6 +1944,7 @@ async def count_message_tokens(
     form_data: dict,
     user=Depends(get_verified_user),
 ):
+    await load_models_for_messages(request, user)
     return {'input_tokens': await openai.count_anthropic_tokens(request, form_data, user)}
 
 
@@ -2006,6 +2028,7 @@ async def generate_messages(
     Anthropic's x-api-key header (via middleware translation).
     """
     requested_model = form_data.get('model', '')
+    await load_models_for_messages(request, user)
     input_tokens = None
     try:
         input_tokens = await openai.count_anthropic_tokens(request, form_data, user)
@@ -2015,6 +2038,10 @@ async def generate_messages(
 
     model_id = requested_model
     model_info = await Models.get_model_by_id(model_id)
+    if is_conflicting_preset_row(request.app.state.MODELS.get(model_id), model_info):
+        # A preset row that reuses a subscription model's ID cannot send its
+        # requests to an API connection; chat_completion reaches the plan.
+        model_info = None
     if model_info and model_info.base_model_id:
         model_id = model_info.base_model_id
 

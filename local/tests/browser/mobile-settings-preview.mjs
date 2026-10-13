@@ -16,7 +16,7 @@ const usage = {
 };
 
 async function createSettingsPage(options) {
-  const session = await createMockedPage({ ...options, urlPath: '/c/mobile-preview-chat-1' });
+  const session = await createMockedPage({ ...options, urlPath: options.urlPath ?? '/c/mobile-preview-chat-1' });
   const stored = { ui: { textScale: options.textScale ?? 1, models: ['preview-default-model'], pinnedModels: [], showChatMenu: false }, keybindings: {} };
   const settingsWrites = [];
   await session.context.route('**/api/v1/users/user/settings**', async (route) => {
@@ -70,6 +70,19 @@ async function openSettings(page) {
   await page.locator('#owui-chat-settings-button').click();
   await page.locator('#settings-tabs-container').waitFor({ state: 'attached' });
   await page.waitForTimeout(300);
+  await assertReadableSettingsLabels(page);
+}
+
+async function assertReadableSettingsLabels(page) {
+  const categories = await page.locator('#settings-tabs-container button[role="tab"]').evaluateAll((buttons) => buttons.map((button) => ({
+    panelId: button.getAttribute('aria-controls'),
+    label: button.querySelector('span')?.textContent.trim() ?? ''
+  })));
+  assert.ok(categories.length > 0, 'Settings should show category labels');
+  for (const category of categories) {
+    assert.ok(category.label.length > 0, category.panelId + ' should have a category label');
+    assert.doesNotMatch(category.label, /settings\.(personal|admin)\./, category.panelId + ' should show a readable category label');
+  }
 }
 
 async function geometry(page) {
@@ -105,6 +118,13 @@ async function nativeCategory(page, id) {
   await tab.click();
   await categoryPanel(page, id).waitFor({ state: 'visible' });
   assert.equal(await tab.getAttribute('aria-selected'), 'true');
+  const heading = page.locator('#owui-mobile-settings-heading');
+  if (await heading.count()) {
+    const categoryLabel = (await tab.locator('span').textContent()).trim();
+    await page.waitForFunction((expected) => {
+      return document.getElementById('owui-mobile-settings-heading')?.textContent.trim() === expected;
+    }, categoryLabel);
+  }
 }
 
 async function baselineScenario() {
@@ -144,6 +164,7 @@ async function assertMobileHome(page) {
     return tabs.length > 0 && tabs.every((tab) => tab.classList.contains('owui-settings-category-row'));
   });
   assert.equal(await page.locator('.owui-mobile-settings').count(), 1);
+  await assertReadableSettingsLabels(page);
   const value = await geometry(page);
   assert.ok(Math.abs(value.panel.x) <= 1 && Math.abs(value.panel.width - value.viewport.width) <= 1);
   assert.ok(value.panel.y >= value.viewport.top - 1 && value.panel.bottom <= value.viewport.top + value.viewport.height + 1);
@@ -209,6 +230,8 @@ async function mobileScenario(name, options) {
     for (const id of categories) {
       await nativeCategory(page, id);
       assert.equal(await page.locator('.owui-settings-panel').getAttribute('data-settings-view'), 'detail');
+      const heading = await page.locator('#owui-mobile-settings-heading').innerText();
+      assert.doesNotMatch(heading, /settings\.(personal|admin)\./, id + ' should show a readable detail heading');
       const panel = categoryPanel(page, id);
       assert.ok((await panel.innerText()).trim().length > 0);
       assert.equal(await page.getByRole('button', { name: 'Back to Settings', exact: true }).isVisible(), true);
@@ -286,7 +309,7 @@ async function mobileScenario(name, options) {
     await save.click();
     await page.waitForFunction(() => document.body.innerText.includes('Settings saved successfully'));
     assert.equal(session.settingsWrites.at(-1).ui.system, 'Synthetic settings QA prompt');
-    await mobileBack(page);
+    await assertMobileHome(page);
     if (options.keyboard) {
       const keyboardHome = await assertMobileHome(page);
       assert.ok(keyboardHome.panel.bottom <= 403);
@@ -361,14 +384,57 @@ async function nestedMenuScenario() {
   }
 }
 
+async function localeScenario(locale) {
+  const session = await createSettingsPage({
+    locale,
+    urlPath: '/c/mobile-preview-chat-1?settings=general',
+    viewport: { width: 390, height: 844 },
+    dark: true,
+    modelSelectorVisible: false
+  });
+  try {
+    const { page } = session;
+    await page.locator('#settings-tabs-container').waitFor({ state: 'attached' });
+    await page.waitForTimeout(300);
+    await assertReadableSettingsLabels(page);
+    const home = await assertMobileHome(page);
+    const labels = home.tabs.map((tab) => tab.name.trim());
+    assert.ok(labels.includes('General'), locale + ' should fall back to the English General label');
+    assert.ok(labels.includes('Audio'), locale + ' should fall back to the English Audio label');
+    await page.screenshot({ path: resolve(outputDirectory, 'mobile-settings-locale-' + locale + '.png') });
+    for (const category of home.tabs) {
+      await nativeCategory(page, category.controls);
+      const heading = await page.locator('#owui-mobile-settings-heading').innerText();
+      assert.equal(heading, category.name.trim(), locale + ' should keep the readable category label in the detail heading');
+      await mobileBack(page);
+    }
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.waitForTimeout(180);
+    await assertReadableSettingsLabels(page);
+    assert.deepEqual(session.settingsWrites, []);
+    const errors = session.errors.filter((message) => /TypeError|ReferenceError|SyntaxError|RangeError/.test(message));
+    assert.deepEqual(errors, []);
+    const result = { test: 'saved-locale-' + locale, labels, errors };
+    results.push(result);
+    console.log(JSON.stringify(result, null, 2));
+  } finally {
+    await session.browser.close();
+  }
+}
+
 try {
   if (baseline) await baselineScenario();
-  else if (process.argv.includes('--phone')) {
+  else if (process.argv.includes('--locales')) {
+    await localeScenario('en');
+    await localeScenario('en-AU');
+  } else if (process.argv.includes('--phone')) {
     await mobileScenario('phone-dark', { viewport: { width: 390, height: 844 }, dark: true });
   } else if (process.argv.includes('--remaining')) {
     await nestedMenuScenario();
     await mobileScenario('phone-dark', { viewport: { width: 390, height: 844 }, dark: true });
   } else {
+    await localeScenario('en');
+    await localeScenario('en-AU');
     await mobileScenario('narrow-large-keyboard', { viewport: { width: 320, height: 740 }, textScale: 1.25, keyboard: true });
     await wideScenario('desktop', { viewport: { width: 1280, height: 900 }, hasTouch: false, isMobile: false });
     await wideScenario('duo', { viewport: { width: 860, height: 720 } });

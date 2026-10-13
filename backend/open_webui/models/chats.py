@@ -16,6 +16,7 @@ from open_webui.models.automations import AutomationRun
 from open_webui.models.chat_messages import ChatMessage, ChatMessages
 from open_webui.models.folders import Folders
 from open_webui.models.tags import Tag, TagModel, Tags
+from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.misc import get_output_text, sanitize_data_for_db, sanitize_text_for_db
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import (
@@ -29,6 +30,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     and_,
+    cast,
     delete,
     exists,
     func,
@@ -102,20 +104,61 @@ def chat_search_message_content_match_sql(dialect_name: str, key: str) -> str:
     raise NotImplementedError(f'Unsupported dialect: {dialect_name}')
 
 
-def chat_list_order(sort_by: str = 'updated_at', sort_dir: str = 'desc', user_id: str | None = None):
-    if sort_by != 'unread_updated_at':
-        sort_column = Chat.title if sort_by == 'title' else Chat.updated_at
-        order_clause = sort_column.asc() if sort_dir == 'asc' else sort_column.desc()
-        return order_clause, Chat.id
-
-    unfinished_assistant = (
+def unfinished_assistant_reply():
+    return (
         select(ChatMessage.id)
         .where(ChatMessage.chat_id == Chat.id)
         .where(ChatMessage.role == 'assistant')
         .where(ChatMessage.done.is_(False))
         .exists()
     )
-    conditions = [Chat.updated_at > func.coalesce(Chat.last_read_at, 0), ~unfinished_assistant]
+
+
+async def unread_chat_condition(session: AsyncSession, active_chat_ids: set[str] | None):
+    """Match chats updated since they were last read.
+
+    A reply that is still being generated does not count yet. When the live
+    task ids are known, only those chats count as generating, so a reply left
+    unfinished by a restart stays unread, as the sidebar rows show it. With
+    active_chat_ids=None every unfinished reply counts as generating.
+    """
+    updated_since_read = or_(Chat.last_read_at.is_(None), Chat.updated_at > Chat.last_read_at)
+    if active_chat_ids is None:
+        return and_(updated_since_read, ~unfinished_assistant_reply())
+    if not active_chat_ids:
+        return updated_since_read
+
+    # One JSON bind avoids database parameter limits even with many
+    # active tasks. Both supported dialects expand it inside SQL.
+    active_ids = bindparam('active_chat_ids', JSONCodec.dumps(sorted(active_chat_ids)))
+    connection = await session.connection()
+    dialect_name = connection.dialect.name
+    if dialect_name == 'sqlite':
+        active_rows = func.json_each(active_ids).table_valued('value')
+        active_query = select(active_rows.c.value)
+    elif dialect_name == 'postgresql':
+        active_value = func.json_array_elements_text(cast(active_ids, JSON)).column_valued('value')
+        active_query = select(active_value)
+    else:
+        raise NotImplementedError(f'Unsupported dialect: {dialect_name}')
+
+    still_generating = and_(Chat.id.in_(active_query), unfinished_assistant_reply())
+    return and_(updated_since_read, ~still_generating)
+
+
+async def chat_list_order(
+    session: AsyncSession,
+    sort_by: str = 'updated_at',
+    sort_dir: str = 'desc',
+    active_chat_ids: set[str] | None = None,
+    user_id: str | None = None,
+):
+    if sort_by != 'unread_updated_at':
+        sort_column = Chat.title if sort_by == 'title' else Chat.updated_at
+        order_clause = sort_column.asc() if sort_dir == 'asc' else sort_column.desc()
+        return order_clause, Chat.id
+
+    conditions = [await unread_chat_condition(session, active_chat_ids)]
     if user_id is not None:
         conditions.append(Chat.user_id == user_id)
 
@@ -1567,7 +1610,7 @@ class ChatTable:
             if not include_archived:
                 stmt = stmt.filter_by(archived=False)
 
-            stmt = stmt.order_by(*chat_list_order(sort_by, sort_dir))
+            stmt = stmt.order_by(*await chat_list_order(session, sort_by, sort_dir))
 
             if skip:
                 stmt = stmt.offset(skip)
@@ -1814,18 +1857,11 @@ class ChatTable:
         self,
         user_id: str,
         folder_ids: list[str],
+        active_chat_ids: set[str] | None,
         db: AsyncSession | None = None,
     ) -> dict[str, int]:
         if not folder_ids:
             return {}
-
-        unfinished_assistant = (
-            select(ChatMessage.id)
-            .where(ChatMessage.chat_id == Chat.id)
-            .where(ChatMessage.role == 'assistant')
-            .where(ChatMessage.done.is_(False))
-            .exists()
-        )
 
         async with get_async_db_context(db) as session:
             result = await session.execute(
@@ -1834,12 +1870,38 @@ class ChatTable:
                     Chat.user_id == user_id,
                     Chat.folder_id.in_(folder_ids),
                     Chat.archived == False,
-                    Chat.updated_at > func.coalesce(Chat.last_read_at, 0),
-                    ~unfinished_assistant,
+                    await unread_chat_condition(session, active_chat_ids),
                 )
                 .group_by(Chat.folder_id)
             )
             return {folder_id: count for folder_id, count in result.all() if folder_id}
+
+    async def get_unread_summary(
+        self,
+        user_id: str,
+        active_chat_ids: set[str],
+        include_folders: bool = True,
+        db: AsyncSession | None = None,
+    ) -> dict:
+        """Count owned unread chats without loading history or chat metadata.
+
+        Pass include_folders=False when the sidebar hides its Folders section,
+        so only chats it can still show are counted: those outside folders and
+        pinned ones, which the Pinned section lists wherever they are filed.
+        """
+        async with get_async_db_context(db) as session:
+            conditions = [
+                Chat.user_id == user_id,
+                Chat.archived.is_(False),
+                Chat.meta['internal'].as_boolean().is_not(True),
+                await unread_chat_condition(session, active_chat_ids),
+            ]
+            if not include_folders:
+                conditions.append(or_(Chat.folder_id.is_(None), Chat.pinned.is_(True)))
+
+            result = await session.execute(select(func.count(Chat.id), func.min(Chat.id)).where(*conditions))
+            count, first_chat_id = result.one()
+            return {'count': count, 'only_chat_id': first_chat_id if count == 1 else None}
 
     async def get_chats(self, skip: int = 0, limit: int = 50, db: AsyncSession | None = None) -> list[ChatModel]:
         async with get_async_db_context(db) as session:
@@ -2158,6 +2220,7 @@ class ChatTable:
         limit: int = 60,
         sort_by: str = 'updated_at',
         sort_dir: str = 'desc',
+        active_chat_ids: set[str] | None = None,
         db: AsyncSession | None = None,
     ) -> list[ChatTitleIdResponse]:
         async with get_async_db_context(db) as session:
@@ -2168,7 +2231,7 @@ class ChatTable:
                 .filter_by(archived=False)
                 .where(Chat.meta['internal'].as_boolean().is_not(True))
             )
-            stmt = stmt.order_by(*chat_list_order(sort_by, sort_dir))
+            stmt = stmt.order_by(*await chat_list_order(session, sort_by, sort_dir, active_chat_ids))
 
             if skip:
                 stmt = stmt.offset(skip)
@@ -2198,6 +2261,7 @@ class ChatTable:
         sort_by: str = 'updated_at',
         sort_dir: str = 'desc',
         unread_for_user_id: str | None = None,
+        active_chat_ids: set[str] | None = None,
         db: AsyncSession | None = None,
     ) -> list[dict]:
         """Get chats in a folder across ALL users. Returns dicts with user_id."""
@@ -2209,7 +2273,9 @@ class ChatTable:
                 .filter_by(archived=False)
                 .where(Chat.meta['internal'].as_boolean().is_not(True))
             )
-            stmt = stmt.order_by(*chat_list_order(sort_by, sort_dir, unread_for_user_id))
+            stmt = stmt.order_by(
+                *await chat_list_order(session, sort_by, sort_dir, active_chat_ids, user_id=unread_for_user_id)
+            )
 
             if skip:
                 stmt = stmt.offset(skip)

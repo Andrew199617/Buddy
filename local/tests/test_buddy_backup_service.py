@@ -1,0 +1,574 @@
+"""Tests for the release backup service (docker/buddy/backup/buddy_backup.py).
+
+Run from the repository root:
+    python -m unittest discover -s local/tests -p test_buddy_backup_service.py -v
+
+Or inside the backup image, which has the same Python and SQLite as the service:
+    docker run --rm --entrypoint python -v "$PWD:/repo:ro" buddy-backup:local -m unittest discover -s /repo/local/tests -p test_buddy_backup_service.py
+
+They use temporary files and a fake p4; nothing talks to Perforce or Docker.
+"""
+
+import importlib.util
+import os
+import sqlite3
+import tarfile
+import tempfile
+import time
+import unittest
+from contextlib import closing
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / 'docker' / 'buddy' / 'backup' / 'buddy_backup.py'
+_spec = importlib.util.spec_from_file_location('buddy_backup', SCRIPT)
+bb = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(bb)
+
+PACIFIC = 'America/Los_Angeles'
+
+
+def utc(*parts):
+    return datetime(*parts, tzinfo=UTC)
+
+
+class ScheduleTest(unittest.TestCase):
+    def test_after_todays_slot(self):
+        # 2026-10-10 10:00 PDT (17:00 UTC): the last slot is today 03:00 PDT (10:00 UTC), the next is tomorrow.
+        last_slot, next_slot = bb.schedule_slots(utc(2026, 10, 10, 17, 0), '03:00', PACIFIC)
+        self.assertEqual(last_slot, utc(2026, 10, 10, 10, 0))
+        self.assertEqual(next_slot, utc(2026, 10, 11, 10, 0))
+
+    def test_before_todays_slot(self):
+        # 01:00 PDT (08:00 UTC): before today's slot, so the last slot was yesterday.
+        last_slot, next_slot = bb.schedule_slots(utc(2026, 10, 10, 8, 0), '03:00', PACIFIC)
+        self.assertEqual(last_slot, utc(2026, 10, 9, 10, 0))
+        self.assertEqual(next_slot, utc(2026, 10, 10, 10, 0))
+
+    def test_exactly_at_slot_counts_as_last(self):
+        last_slot, next_slot = bb.schedule_slots(utc(2026, 10, 10, 10, 0), '03:00', PACIFIC)
+        self.assertEqual(last_slot, utc(2026, 10, 10, 10, 0))
+        self.assertEqual(next_slot, utc(2026, 10, 11, 10, 0))
+
+    def test_dst_end_keeps_wall_clock(self):
+        # DST ends 2026-11-01: 03:00 PST is 11:00 UTC, an hour later in UTC than the night before.
+        last_slot, next_slot = bb.schedule_slots(utc(2026, 10, 31, 12, 0), '03:00', PACIFIC)
+        self.assertEqual(last_slot, utc(2026, 10, 31, 10, 0))
+        self.assertEqual(next_slot, utc(2026, 11, 1, 11, 0))
+
+    def test_dst_start_keeps_wall_clock(self):
+        # DST starts 2026-03-08: 03:00 PDT is 10:00 UTC, an hour earlier in UTC than the night before.
+        last_slot, next_slot = bb.schedule_slots(utc(2026, 3, 7, 12, 0), '03:00', PACIFIC)
+        self.assertEqual(last_slot, utc(2026, 3, 7, 11, 0))
+        self.assertEqual(next_slot, utc(2026, 3, 8, 10, 0))
+
+    def test_time_skipped_by_spring_forward_runs_after_the_jump(self):
+        # 2026-03-08 has no 02:30 in Los Angeles; it runs at 03:30 PDT (10:30 UTC), never in the future of now.
+        last_slot, next_slot = bb.schedule_slots(utc(2026, 3, 8, 10, 15), '02:30', PACIFIC)
+        self.assertEqual(last_slot, utc(2026, 3, 7, 10, 30))
+        self.assertEqual(next_slot, utc(2026, 3, 8, 10, 30))
+        last_slot, next_slot = bb.schedule_slots(utc(2026, 3, 8, 10, 31), '02:30', PACIFIC)
+        self.assertEqual(last_slot, utc(2026, 3, 8, 10, 30))
+        self.assertEqual(next_slot, utc(2026, 3, 9, 9, 30))
+
+    def test_time_repeated_by_fall_back_runs_once_at_the_first_occurrence(self):
+        # 2026-11-01 01:30 happens twice; the slot is the first one, 01:30 PDT (08:30 UTC).
+        for now in (utc(2026, 11, 1, 8, 45), utc(2026, 11, 1, 9, 45)):
+            with self.subTest(now=now):
+                last_slot, next_slot = bb.schedule_slots(now, '01:30', PACIFIC)
+                self.assertEqual(last_slot, utc(2026, 11, 1, 8, 30))
+                self.assertEqual(next_slot, utc(2026, 11, 2, 9, 30))
+                self.assertGreater(next_slot, now)
+
+    def test_slots_always_surround_now(self):
+        # Every 10 minutes across both 2026 DST changes, for times inside and outside the changed hours.
+        for schedule_time in ('00:30', '01:30', '02:30', '03:00', '23:59'):
+            for start in (utc(2026, 3, 7, 0, 0), utc(2026, 10, 31, 0, 0)):
+                for step in range(0, 72 * 6):
+                    now = start + timedelta(minutes=10 * step)
+                    last_slot, next_slot = bb.schedule_slots(now, schedule_time, PACIFIC)
+                    self.assertLessEqual(last_slot, now, (schedule_time, now))
+                    self.assertGreater(next_slot, now, (schedule_time, now))
+
+    def test_rejects_bad_time(self):
+        with self.assertRaises(ValueError):
+            bb.schedule_slots(utc(2026, 10, 10, 17, 0), '25:00', PACIFIC)
+
+
+class TimeFormatTest(unittest.TestCase):
+    def test_fixed_width_and_round_trip(self):
+        whole_second = bb.format_time(utc(2026, 10, 10, 3, 0, 0))
+        fractional = bb.format_time(utc(2026, 10, 10, 3, 0, 0, 123456))
+        self.assertEqual(whole_second, '2026-10-10T03:00:00.000Z')
+        self.assertEqual(fractional, '2026-10-10T03:00:00.123Z')
+        self.assertEqual(bb.parse_time(fractional), utc(2026, 10, 10, 3, 0, 0, 123000))
+
+
+class EnvValueTest(unittest.TestCase):
+    def test_strips_one_pair_of_quotes(self):
+        os.environ['BUDDY_BACKUP_TEST_VALUE'] = '"//Backups/Buddy"'
+        self.assertEqual(bb.env_value('BUDDY_BACKUP_TEST_VALUE'), '//Backups/Buddy')
+        os.environ['BUDDY_BACKUP_TEST_VALUE'] = 'plain'
+        self.assertEqual(bb.env_value('BUDDY_BACKUP_TEST_VALUE'), 'plain')
+        del os.environ['BUDDY_BACKUP_TEST_VALUE']
+
+
+class StatusStoreTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.store = bb.StatusStore(os.path.join(self.temporary.name, 'status', 'status.db'))
+        self.store.ensure_schema()
+        self.slot = utc(2026, 10, 10, 10, 0)
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def insert_run(self, status, trigger, created_at, finished_at=None):
+        run_id = f'run-{created_at.isoformat()}-{status}'
+        finished_text = None
+        if finished_at is not None:
+            finished_text = bb.format_time(finished_at)
+        with self.store.transaction() as connection:
+            connection.execute(
+                'INSERT INTO backup_runs (id, status, trigger, created_at, finished_at) VALUES (?, ?, ?, ?, ?)',
+                (run_id, status, trigger, bb.format_time(created_at), finished_text),
+            )
+        return run_id
+
+    def run_row(self, run_id):
+        with closing(self.store.connect()) as connection:
+            return dict(connection.execute('SELECT * FROM backup_runs WHERE id = ?', (run_id,)).fetchone())
+
+    def test_due_when_nothing_ran_since_the_slot(self):
+        self.insert_run('succeeded', 'scheduled', self.slot - timedelta(days=1))
+        self.assertTrue(self.store.scheduled_run_due(self.slot, self.slot + timedelta(hours=6)))
+
+    def test_not_due_after_a_success_or_while_one_is_in_flight(self):
+        for status in ('succeeded', 'running', 'queued'):
+            with self.subTest(status=status):
+                run_id = self.insert_run(status, 'manual', self.slot + timedelta(minutes=5))
+                self.assertFalse(self.store.scheduled_run_due(self.slot, self.slot + timedelta(hours=1)))
+                with self.store.transaction() as connection:
+                    connection.execute('DELETE FROM backup_runs WHERE id = ?', (run_id,))
+
+    def test_failed_scheduled_run_retries_after_an_hour(self):
+        failed_at = self.slot + timedelta(minutes=1)
+        self.insert_run('failed', 'scheduled', self.slot, finished_at=failed_at)
+        self.assertFalse(self.store.scheduled_run_due(self.slot, failed_at + timedelta(minutes=59)))
+        self.assertTrue(self.store.scheduled_run_due(self.slot, failed_at + timedelta(hours=1)))
+
+    def test_starts_the_scheduled_run_when_due(self):
+        now = self.slot + timedelta(hours=4)
+        run_id = self.store.start_scheduled_run_if_due(self.slot, now)
+        row = self.run_row(run_id)
+        self.assertEqual((row['status'], row['trigger']), ('running', 'scheduled'))
+        self.assertIsNone(self.store.start_scheduled_run_if_due(self.slot, now + timedelta(seconds=30)))
+
+    def test_queued_run_goes_before_the_scheduled_run(self):
+        # Queued before the slot, so it does not count as tonight's backup, but it still goes first.
+        queued = self.insert_run('queued', 'manual', self.slot - timedelta(minutes=5))
+        now = self.slot + timedelta(minutes=1)
+        self.assertIsNone(self.store.start_scheduled_run_if_due(self.slot, now))
+        self.assertEqual(self.store.claim_queued_run(now), queued)
+
+    def test_no_scheduled_run_while_an_earlier_run_is_still_running(self):
+        # A run-now started at 02:59 is still running at 03:00: the scheduled run must not start beside it.
+        self.store.start_run('manual', self.slot - timedelta(minutes=1))
+        self.assertIsNone(self.store.start_scheduled_run_if_due(self.slot, self.slot))
+        with closing(self.store.connect()) as connection:
+            running = connection.execute("SELECT count(*) FROM backup_runs WHERE status = 'running'").fetchone()[0]
+        self.assertEqual(running, 1)
+
+    def test_claims_the_oldest_queued_run_once(self):
+        older = self.insert_run('queued', 'manual', self.slot)
+        newer = self.insert_run('queued', 'manual', self.slot + timedelta(seconds=1))
+        now = self.slot + timedelta(minutes=1)
+        self.assertEqual(self.store.claim_queued_run(now), older)
+        self.assertEqual(self.store.claim_queued_run(now), newer)
+        self.assertIsNone(self.store.claim_queued_run(now))
+        self.assertEqual(self.run_row(older)['status'], 'running')
+        self.assertEqual(self.run_row(older)['started_at'], bb.format_time(now))
+
+    def test_start_run_refuses_while_another_is_running(self):
+        self.store.start_run('manual', self.slot)
+        with self.assertRaises(bb.BackupError):
+            self.store.start_run('scheduled', self.slot)
+
+    def test_restart_fails_interrupted_runs(self):
+        run_id = self.store.start_run('scheduled', self.slot)
+        self.store.fail_interrupted_runs(self.slot + timedelta(minutes=2))
+        row = self.run_row(run_id)
+        self.assertEqual(row['status'], 'failed')
+        self.assertIn('Interrupted', row['error'])
+
+    def test_finish_run_records_result(self):
+        run_id = self.store.start_run('manual', self.slot)
+        sizes = {bb.DATABASE_NAME: 100, bb.ARCHIVE_NAME: 200, bb.ENV_NAME: 30}
+        result = bb.RunResult(ok=True, log=['line'] * 3, changelist=42, sizes=sizes, db_revision='abc123')
+        self.store.finish_run(run_id, result, self.slot + timedelta(minutes=1))
+        row = self.run_row(run_id)
+        self.assertEqual(row['status'], 'succeeded')
+        self.assertEqual(row['changelist'], 42)
+        self.assertEqual((row['db_bytes'], row['data_bytes'], row['env_bytes']), (100, 200, 30))
+        self.assertEqual(row['db_revision'], 'abc123')
+        self.assertEqual(row['log'], 'line\nline\nline')
+
+    def test_workspace_failure_is_recorded_as_a_failed_run(self):
+        run_id = self.store.start_scheduled_run_if_due(self.slot, self.slot)
+        settings = bb.Settings(depot='//Backups/Buddy-test')
+        disk_full = OSError(28, 'No space left on device')
+        with patch.object(bb, 'WORK_DIR', self.temporary.name), patch.object(bb.os, 'makedirs', side_effect=disk_full):
+            self.assertFalse(bb.do_backup(self.store, settings, run_id, 'scheduled'))
+        row = self.run_row(run_id)
+        self.assertEqual(row['status'], 'failed')
+        self.assertIn('No space left on device', row['error'])
+        # Nothing is left running, so a retry or a manual run can start.
+        self.assertIsNotNone(self.store.start_run('manual', self.slot + timedelta(minutes=5)))
+
+    def test_heartbeat_keeps_one_row(self):
+        settings = bb.Settings(depot='//Backups/Buddy-test', p4_port='ssl:example:1666', timezone=PACIFIC)
+        self.store.heartbeat(settings, self.slot, self.slot)
+        self.store.heartbeat(settings, self.slot + timedelta(days=1), self.slot + timedelta(seconds=30))
+        with closing(self.store.connect()) as connection:
+            rows = connection.execute('SELECT * FROM backup_scheduler').fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['depot_path'], '//Backups/Buddy-test')
+        self.assertEqual(rows[0]['next_run_at'], bb.format_time(self.slot + timedelta(days=1)))
+
+
+class HeartbeatWhileRunningTest(unittest.TestCase):
+    def test_beats_during_a_blocking_step_and_stops_after(self):
+        beats = []
+
+        def beat():
+            beats.append(time.monotonic())
+            if len(beats) == 2:
+                raise sqlite3.OperationalError('database is locked')
+
+        with bb.heartbeat_while_running(beat, interval=0.02):
+            time.sleep(0.2)
+        count_at_exit = len(beats)
+        time.sleep(0.1)
+        # A failed beat (the second) did not stop the thread, and nothing beats after the run.
+        self.assertGreaterEqual(count_at_exit, 4)
+        self.assertEqual(len(beats), count_at_exit)
+
+
+def create_wal_database(path, rows):
+    """A WAL-mode database whose rows are still only in the -wal file; the returned connection keeps it there."""
+    connection = sqlite3.connect(path)
+    connection.execute('PRAGMA journal_mode=WAL')
+    connection.execute('PRAGMA wal_autocheckpoint=0')
+    connection.execute('CREATE TABLE item (id INTEGER PRIMARY KEY, name TEXT)')
+    connection.executemany('INSERT INTO item (name) VALUES (?)', [(f'item {n}',) for n in range(rows)])
+    connection.commit()
+    return connection
+
+
+def count_items(path):
+    with closing(sqlite3.connect(path)) as connection:
+        return connection.execute('SELECT count(*) FROM item').fetchone()[0]
+
+
+class SnapshotTest(unittest.TestCase):
+    def test_copies_rows_still_in_the_wal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = os.path.join(directory, 'live.db')
+            writer = create_wal_database(source, rows=50)
+            try:
+                self.assertGreater(os.path.getsize(source + '-wal'), 0)
+                copy = os.path.join(directory, 'copy.db')
+                bb.snapshot_sqlite(source, copy)
+                self.assertEqual(count_items(copy), 50)
+                self.assertFalse(os.path.exists(copy + '-wal'))
+            finally:
+                writer.close()
+
+
+class DataArchiveTest(unittest.TestCase):
+    def test_archive_contents(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = os.path.join(directory, 'data')
+            files = {
+                'uploads/photo.png': b'png',
+                'static/favicon.png': b'icon',
+                'cache/image/generations/picture.png': b'generated',
+                'cache/embedding/models/model.bin': b'model',
+                'cache/whisper/models/base.pt': b'model',
+                'cache/tiktoken/cl100k': b'model',
+                'local-patches.log': b'log',
+                'webui.db': b'not opened by the archive',
+                'webui.db-wal': b'wal',
+                'webui.db-shm': b'shm',
+            }
+            for name, content in files.items():
+                path = Path(data_dir, name)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+            os.makedirs(os.path.join(data_dir, 'vector_db'))
+            writer = create_wal_database(os.path.join(data_dir, 'vector_db', 'chroma.sqlite3'), rows=7)
+            scratch_dir = os.path.join(directory, 'scratch')
+            os.makedirs(scratch_dir)
+            archive_path = os.path.join(directory, 'data.tar.gz')
+            log = []
+            try:
+                vanished = bb.build_data_archive(data_dir, archive_path, scratch_dir, log)
+            finally:
+                writer.close()
+
+            with tarfile.open(archive_path) as archive:
+                names = set(archive.getnames())
+                extract_dir = os.path.join(directory, 'extracted')
+                archive.extractall(extract_dir, filter='data')
+
+            for kept in ('uploads/photo.png', 'static/favicon.png', 'cache/image/generations/picture.png',
+                         'local-patches.log', 'vector_db/chroma.sqlite3'):
+                self.assertIn(kept, names)
+            for left_out in ('webui.db', 'webui.db-wal', 'webui.db-shm', 'cache/embedding', 'cache/whisper',
+                             'cache/tiktoken', 'vector_db/chroma.sqlite3-wal', 'vector_db/chroma.sqlite3-shm'):
+                self.assertNotIn(left_out, names)
+            self.assertFalse(any(name.startswith('cache/embedding/') for name in names))
+            self.assertEqual(count_items(os.path.join(extract_dir, 'vector_db', 'chroma.sqlite3')), 7)
+            self.assertEqual(vanished, [])
+            self.assertEqual(os.listdir(scratch_dir), [])
+            self.assertIn('vector_db/chroma.sqlite3: SQLite copied with the backup API', log)
+
+
+class UploadedSqliteTest(unittest.TestCase):
+    """SQLite files people upload are attachments: archived byte for byte, never opened as databases."""
+
+    def archive_uploads(self, uploads):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        data_dir = os.path.join(temporary.name, 'data')
+        os.makedirs(os.path.join(data_dir, 'uploads'))
+        for name, content in uploads.items():
+            Path(data_dir, 'uploads', name).write_bytes(content)
+        scratch_dir = os.path.join(temporary.name, 'scratch')
+        os.makedirs(scratch_dir)
+        archive_path = os.path.join(temporary.name, 'data.tar.gz')
+        log = []
+        vanished = bb.build_data_archive(data_dir, archive_path, scratch_dir, log)
+        with tarfile.open(archive_path) as archive:
+            archived = {}
+            for member in archive.getmembers():
+                if member.isfile():
+                    archived[member.name] = archive.extractfile(member).read()
+        return archived, log, vanished
+
+    def valid_sqlite_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'attachment.db')
+            with closing(sqlite3.connect(path)) as connection:
+                connection.execute('CREATE TABLE note (body TEXT)')
+                connection.execute("INSERT INTO note VALUES ('hello')")
+                connection.commit()
+            return Path(path).read_bytes()
+
+    def test_damaged_sqlite_upload_does_not_break_the_backup(self):
+        damaged = bb.SQLITE_HEADER + b'\x00' * 4000
+        archived, log, vanished = self.archive_uploads({'1_broken.db': damaged})
+        self.assertEqual(archived['uploads/1_broken.db'], damaged)
+        self.assertEqual(vanished, [])
+        self.assertFalse(any('backup API' in line for line in log))
+
+    def test_valid_sqlite_upload_is_archived_byte_for_byte(self):
+        original = self.valid_sqlite_bytes()
+        archived, _, _ = self.archive_uploads({'2_notes.db': original})
+        self.assertEqual(archived['uploads/2_notes.db'], original)
+
+    def test_upload_named_like_a_side_file_is_kept(self):
+        archived, _, _ = self.archive_uploads({'3_report.txt': b'report', '3_report.txt-journal': b'journal'})
+        self.assertEqual(archived['uploads/3_report.txt-journal'], b'journal')
+
+
+def create_buddy_database(path, file_ids):
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute('CREATE TABLE file (id TEXT PRIMARY KEY, path TEXT)')
+        connection.executemany(
+            'INSERT INTO file VALUES (?, ?)', [(file_id, f'/app/backend/data/uploads/{file_id}.png') for file_id in file_ids]
+        )
+        connection.commit()
+
+
+class ConsistentSnapshotTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.data_dir = os.path.join(temporary.name, 'data')
+        os.makedirs(os.path.join(self.data_dir, 'uploads'))
+        for file_id in ('a', 'b'):
+            Path(self.data_dir, 'uploads', f'{file_id}.png').write_bytes(b'png')
+        create_buddy_database(os.path.join(self.data_dir, 'webui.db'), ['a', 'b'])
+        self.root = os.path.join(temporary.name, 'ws')
+        self.scratch_dir = os.path.join(temporary.name, 'scratch')
+        os.makedirs(self.root)
+        os.makedirs(self.scratch_dir)
+        data_dir_patch = patch.object(bb, 'DATA_DIR', self.data_dir)
+        data_dir_patch.start()
+        self.addCleanup(data_dir_patch.stop)
+        self.real_build_data_archive = bb.build_data_archive
+
+    def delete_upload(self, file_id):
+        with closing(sqlite3.connect(os.path.join(self.data_dir, 'webui.db'))) as connection:
+            connection.execute('DELETE FROM file WHERE id = ?', (file_id,))
+            connection.commit()
+        os.remove(os.path.join(self.data_dir, 'uploads', f'{file_id}.png'))
+
+    def archived_names(self):
+        with tarfile.open(os.path.join(self.root, bb.ARCHIVE_NAME)) as archive:
+            return set(archive.getnames())
+
+    def test_unchanged_files_take_one_attempt(self):
+        log = []
+        bb.snapshot_database_and_files(self.root, self.scratch_dir, log)
+        self.assertFalse(any('taking it again' in line for line in log))
+        self.assertEqual(bb.file_record_ids(os.path.join(self.root, bb.DATABASE_NAME)), {'a', 'b'})
+        self.assertTrue({'uploads/a.png', 'uploads/b.png'} <= self.archived_names())
+
+    def test_deletion_between_database_and_archive_is_taken_again(self):
+        archive_calls = []
+
+        def build_after_a_deletion(*args):
+            archive_calls.append(args)
+            if len(archive_calls) == 1:
+                # Buddy deletes upload b after webui.db was copied, before the archive reaches it.
+                self.delete_upload('b')
+            return self.real_build_data_archive(*args)
+
+        log = []
+        with patch.object(bb, 'build_data_archive', build_after_a_deletion):
+            bb.snapshot_database_and_files(self.root, self.scratch_dir, log)
+        self.assertEqual(len(archive_calls), 2)
+        self.assertTrue(any('1 file record(s)' in line and 'taking it again' in line for line in log))
+        self.assertEqual(bb.file_record_ids(os.path.join(self.root, bb.DATABASE_NAME)), {'a'})
+        self.assertIn('uploads/a.png', self.archived_names())
+        self.assertNotIn('uploads/b.png', self.archived_names())
+
+    def test_fails_when_files_keep_vanishing(self):
+        def build_with_a_vanishing_file(*args):
+            return self.real_build_data_archive(*args) + ['cache/audio/transcriptions/temporary.wav']
+
+        with patch.object(bb, 'build_data_archive', build_with_a_vanishing_file):
+            with self.assertRaises(bb.BackupError) as raised:
+                bb.snapshot_database_and_files(self.root, self.scratch_dir, [])
+        self.assertIn(f'{bb.SNAPSHOT_ATTEMPTS} attempts', str(raised.exception))
+
+
+class EnvFileTest(unittest.TestCase):
+    def write_env(self, directory, text):
+        path = os.path.join(directory, 'source.env')
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write(text)
+        return path
+
+    def test_logs_a_count_and_the_required_name_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = self.write_env(
+                directory,
+                '# comment\nWEBUI_SECRET_KEY="s3cret-value"\nexport BUDDY_PORT=8082\nEMPTY=\nSPACED= # note\n',
+            )
+            self.assertEqual(
+                bb.env_file_keys(source),
+                {'WEBUI_SECRET_KEY': True, 'BUDDY_PORT': True, 'EMPTY': False, 'SPACED': False},
+            )
+            log = []
+            bb.copy_env_file(source, os.path.join(directory, 'buddy.env'), log)
+            self.assertEqual(log, ['buddy.env: 4 settings; WEBUI_SECRET_KEY set'])
+
+    def test_multiline_quoted_values_are_one_setting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = self.write_env(
+                directory,
+                "WEBUI_SECRET_KEY='first-line\nSYNTHETIC_SECRET_FRAGMENT==\nlast-line'\n"
+                'OTHER="escaped \\" quote\nSECOND_FRAGMENT=x"\n'
+                'BUDDY_PORT=8082\n',
+            )
+            self.assertEqual(
+                bb.env_file_keys(source), {'WEBUI_SECRET_KEY': True, 'OTHER': True, 'BUDDY_PORT': True}
+            )
+            log = []
+            bb.copy_env_file(source, os.path.join(directory, 'buddy.env'), log)
+            self.assertNotIn('FRAGMENT', '\n'.join(log))
+
+    def test_requires_the_secret_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = self.write_env(directory, 'WEBUI_SECRET_KEY=\nBUDDY_PORT=8082\n')
+            with self.assertRaises(bb.BackupError):
+                bb.copy_env_file(source, os.path.join(directory, 'buddy.env'), [])
+
+    def test_missing_mount_is_an_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(bb.BackupError):
+                bb.copy_env_file(os.path.join(directory, 'absent.env'), os.path.join(directory, 'buddy.env'), [])
+
+
+class FakePerforce(bb.Perforce):
+    """Records p4 commands and answers fstat from a dict of depot file -> head action."""
+
+    def __init__(self, head_actions, fail_submit=False):
+        settings = bb.Settings(depot='//Backups/Buddy-test', p4_port='ssl:example:1666', p4_user='owner',
+                               p4_client='buddy-backup-test')
+        super().__init__(settings, log=[])
+        self.head_actions = head_actions
+        self.fail_submit = fail_submit
+        self.commands = []
+
+    def run(self, args, **kwargs):
+        self.commands.append(args)
+        if args[:2] == ['-ztag', 'fstat']:
+            action = self.head_actions.get(args[-1])
+            if action is None:
+                return ''
+            return f'... depotFile {args[-1]}\n... headAction {action}\n'
+        if args[:2] == ['-ztag', 'submit']:
+            if self.fail_submit:
+                raise bb.BackupError('p4 submit exited 1: out of space')
+            return '... change 41\n... submittedChange 42\n'
+        return ''
+
+
+class PerforceSubmitTest(unittest.TestCase):
+    def opened(self, perforce):
+        return [(args[0], os.path.basename(args[-1])) for args in perforce.commands if args[0] in ('add', 'edit')]
+
+    def test_first_run_adds_and_later_runs_edit(self):
+        perforce = FakePerforce({
+            '//Backups/Buddy-test/webui.db': 'edit',
+            '//Backups/Buddy-test/data.tar.gz': 'add',
+            '//Backups/Buddy-test/buddy.env': 'delete',
+        })
+        change = perforce.submit('/work/ws', bb.BACKUP_FILES, 'Buddy backup')
+        self.assertEqual(change, 42)
+        self.assertEqual(
+            self.opened(perforce), [('edit', 'webui.db'), ('edit', 'data.tar.gz'), ('add', 'buddy.env')]
+        )
+        for args in perforce.commands:
+            if args[0] in ('add', 'edit'):
+                self.assertEqual(args[1:3], ['-t', 'binary+S7'])
+
+    def test_client_spec_maps_only_the_backup_path(self):
+        perforce = FakePerforce({})
+        spec = perforce.client_spec('/work/ws')
+        self.assertIn('\t//Backups/Buddy-test/... //buddy-backup-test/...\n', spec)
+        self.assertIn('SubmitOptions: submitunchanged\n', spec)
+        self.assertIn('Host:\n', spec)
+
+    def test_failed_submit_reverts(self):
+        perforce = FakePerforce({}, fail_submit=True)
+        with self.assertRaises(bb.BackupError):
+            perforce.submit('/work/ws', bb.BACKUP_FILES, 'Buddy backup')
+        self.assertEqual(perforce.commands[-1], ['revert', '-k', '//buddy-backup-test/...'])
+
+    def test_flush_runs_before_files_are_opened(self):
+        perforce = FakePerforce({})
+        perforce.submit('/work/ws', bb.BACKUP_FILES, 'Buddy backup')
+        verbs = [args[0] for args in perforce.commands]
+        self.assertLess(verbs.index('flush'), verbs.index('add'))
+        self.assertEqual(perforce.commands[0], ['client', '-i'])
+
+
+if __name__ == '__main__':
+    unittest.main()

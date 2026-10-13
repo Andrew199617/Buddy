@@ -510,7 +510,7 @@
 				{#if $user?.role === 'admin' || ($user?.permissions?.chat?.delete ?? true)}
 					<button
 						draggable="false"
-						class="flex h-[1.6875rem] w-full items-center gap-2 rounded-xl px-2 text-[0.8125rem] cursor-pointer select-none hover:bg-gray-50/40 dark:hover:bg-gray-800/40"
+						class="chat-menu-delete flex h-[1.6875rem] w-full items-center gap-2 rounded-xl px-2 text-[0.8125rem] cursor-pointer select-none"
 						on:click={() => {
 							deleteChatHandler();
 						}}

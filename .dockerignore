@@ -21,3 +21,23 @@ backend/data/*
 
 .venv
 .git
+
+# Buddy: the `web` image is the build stage, which copies the whole context,
+# so keep secrets, local data, and local caches out of the context.
+**/.env
+**/.env.*
+**/.webui_secret_key
+/.claude
+/open-webui-data
+/buddy-data-*
+/slackdump
+/slackdump-research
+/local/tests/.qa
+/build
+/.cache
+/.uv-cache
+/.uv-tools
+/.python
+/*.log
+**/node_modules
+**/__pycache__

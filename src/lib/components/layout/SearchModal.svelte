@@ -263,7 +263,7 @@
 		}
 	];
 
-	let query = '';
+	export let query = '';
 	let page = 1;
 
 	let chatList = null;

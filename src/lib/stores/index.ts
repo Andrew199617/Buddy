@@ -52,7 +52,7 @@ export const shortCodesToEmojis = writable(
 
 export const TTSWorker = writable(null);
 
-export const chatId = writable('');
+export { chatId } from './chatSelection';
 export const chatTitle = writable('');
 
 export const channels = writable([]);
@@ -169,19 +169,30 @@ export const desktopEvent: Writable<DesktopEvent | null> = writable(null);
 export const isLastActiveTab = writable(true);
 export const playingNotificationSound = writable(false);
 
-export type Model = OpenAIModel | OllamaModel;
+export type Model = OpenAIModel | OllamaModel | SubscriptionModel;
 
 type BaseModel = {
 	id: string;
 	name: string;
 	info?: ModelConfig;
-	owned_by: 'ollama' | 'openai' | 'arena';
+	owned_by: 'ollama' | 'openai' | 'arena' | 'subscription';
 };
 
 export interface OpenAIModel extends BaseModel {
 	owned_by: 'openai';
 	external: boolean;
 	source?: string;
+}
+
+// Served through the Claude Code or Codex CLI on the administrator's own plan.
+export interface SubscriptionModel extends BaseModel {
+	owned_by: 'subscription';
+	subscription: {
+		provider: 'claude' | 'codex';
+		model: string;
+		description: string;
+		efforts: string[];
+	};
 }
 
 export interface OllamaModel extends BaseModel {

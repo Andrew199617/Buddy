@@ -7,6 +7,18 @@
 
 	export let value = '';
 	export let placeholder = $i18n.t('Search');
+
+	function handleSearchKeydown(event: KeyboardEvent): void {
+		const input = event.currentTarget;
+		if (
+			event.key === 'Escape' &&
+			input instanceof Element &&
+			input.closest('[data-composer-menu]')
+		) {
+			return;
+		}
+		event.stopPropagation();
+	}
 </script>
 
 <div class="my-0.5 flex ml-2 mr-0.5 h-[1.6875rem] shrink-0 items-center gap-2">
@@ -19,6 +31,6 @@
 		autocomplete="off"
 		aria-label={placeholder}
 		on:click|stopPropagation
-		on:keydown|stopPropagation
+		on:keydown={handleSearchKeydown}
 	/>
 </div>

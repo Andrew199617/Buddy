@@ -42,6 +42,7 @@
 	import { getModels } from '$lib/apis';
 
 	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
+	import XMark from '$lib/components/icons/XMark.svelte';
 	import Check from '$lib/components/icons/Check.svelte';
 	import Download from '$lib/components/icons/Download.svelte';
 	import Search from '$lib/components/icons/Search.svelte';
@@ -62,6 +63,7 @@
 	export let compareEnabled = false;
 	export let multipleEnabled = false;
 	export let disabled = false;
+	export let preserveComposerFocus = false;
 	export let placeholder = $i18n.t('Select a model');
 	export let searchEnabled = true;
 	export let searchPlaceholder = $i18n.t('Search a model');
@@ -88,17 +90,34 @@
 	let show = false;
 	let triggerElement: HTMLElement | null = null;
 	let contentElement: HTMLElement | null = null;
+	let searchInputElement: HTMLInputElement | null = null;
+	let composerFocusedOnOpen = false;
+	let coarsePointer = false;
+	$: mobilePicker = $mobile || coarsePointer;
+
 	const portal = (node: HTMLElement) => {
 		document.body.appendChild(node);
 		const panel = node.firstElementChild as HTMLElement;
-		const cleanup = autoUpdate(triggerElement!, node, () => {
-			// Let flip measure the full list after content or viewport changes.
+		const viewport = window.visualViewport;
+		let anchor = triggerElement!;
+		if (preserveComposerFocus && mobilePicker) {
+			anchor = triggerElement!.closest<HTMLElement>('.buddy-composer') || triggerElement!;
+		}
+
+		function positionPicker(): void {
+			let pickerOffset = 2;
+			if (preserveComposerFocus && mobilePicker) {
+				pickerOffset = 6;
+				const availableWidth = (viewport?.width ?? window.innerWidth) - 16;
+				panel.style.width = `${Math.min(anchor.getBoundingClientRect().width, availableWidth)}px`;
+			}
+			// Measure the full list before constraining it to the space above the keyboard.
 			panel.style.maxHeight = '';
-			computePosition(triggerElement!, node, {
+			computePosition(anchor, node, {
 				strategy: 'fixed',
 				placement: `${placement === 'auto' ? 'bottom' : placement}-${align}`,
 				middleware: [
-					offset(2),
+					offset(pickerOffset),
 					placement === 'auto' && flip({ padding: 8, crossAxis: false }),
 					shift({ padding: 8 }),
 					size({
@@ -113,43 +132,86 @@
 				node.style.left = `${x}px`;
 				node.style.top = `${y}px`;
 			});
-		});
+		}
 
-		return {
-			destroy() {
-				cleanup();
-				node.remove();
-			}
-		};
+		const stopAutoUpdate = autoUpdate(anchor, node, positionPicker);
+		viewport?.addEventListener('resize', positionPicker);
+		viewport?.addEventListener('scroll', positionPicker);
+
+		function disposePicker(): void {
+			stopAutoUpdate();
+			viewport?.removeEventListener('resize', positionPicker);
+			viewport?.removeEventListener('scroll', positionPicker);
+			node.remove();
+		}
+
+		return { destroy: disposePicker };
 	};
+
+	function preservePickerInputFocus(event: PointerEvent): void {
+		if (!preserveComposerFocus || !mobilePicker || !event.isPrimary || event.button !== 0) {
+			return;
+		}
+		const target = event.target;
+		if (!(target instanceof Element)) {
+			return;
+		}
+		// Search is deliberate; all other picker interactions keep the active keyboard.
+		if (target.closest('input, textarea, select, [contenteditable="true"]')) {
+			return;
+		}
+		const activeElement = document.activeElement;
+		if (activeElement?.closest('#chat-input') || activeElement === searchInputElement) {
+			event.preventDefault();
+		}
+	}
 
 	const focusSearchInput = () => {
-		if (!$mobile) {
-			document.getElementById('model-search-input')?.focus();
-		}
-	};
-	const focusChatInput = () => {
-		if (!$mobile) {
-			document.getElementById('chat-input')?.focus();
+		if (!mobilePicker) {
+			searchInputElement?.focus({ preventScroll: true });
 		}
 	};
 
+	function restoreChatInputFocus(): void {
+		const chatInput = document.getElementById('chat-input');
+		if (mobilePicker) {
+			if (
+				preserveComposerFocus &&
+				(composerFocusedOnOpen || document.activeElement === searchInputElement)
+			) {
+				// iOS needs this focus inside the selection gesture, before the search disappears.
+				chatInput?.focus({ preventScroll: true });
+			}
+			return;
+		}
+		window.setTimeout(() => chatInput?.focus({ preventScroll: true }), 0);
+	}
+
+	function closePicker(restoreChatFocus = false): void {
+		if (restoreChatFocus) {
+			restoreChatInputFocus();
+		}
+		show = false;
+		triggerElement?.blur();
+	}
+
 	const toggleOpen = async () => {
-		show = !show;
 		if (show) {
-			searchValue = '';
-			listScrollTop = 0;
-			if (!selectionOnly) {
-				setOllamaVersion();
-				setProviderDownloadConnections();
-			}
-			resetView();
-			await tick();
-			for (const delay of [0, 50, 150]) {
-				window.setTimeout(focusSearchInput, delay);
-			}
-		} else {
-			document.getElementById(`model-selector-${id}-button`)?.blur();
+			closePicker(preserveComposerFocus);
+			return;
+		}
+		composerFocusedOnOpen = Boolean(document.activeElement?.closest('#chat-input'));
+		show = true;
+		searchValue = '';
+		listScrollTop = 0;
+		if (!selectionOnly) {
+			setOllamaVersion();
+			setProviderDownloadConnections();
+		}
+		resetView();
+		await tick();
+		for (const delay of [0, 50, 150]) {
+			window.setTimeout(focusSearchInput, delay);
 		}
 	};
 
@@ -159,26 +221,33 @@
 		}
 	};
 
-	const handlePointerDown = (e: PointerEvent) => {
-		if (!show) return;
-		const target = e.target as Node;
-		if (
-			(triggerElement && triggerElement.contains(target)) ||
-			(contentElement && contentElement.contains(target)) ||
-			((target as HTMLElement).closest?.('.model-selector-child-menu') ?? false)
-		) {
+	const handlePointerDown = (event: PointerEvent) => {
+		const target = event.target;
+		if (!(target instanceof Node)) {
 			return;
 		}
-		show = false;
-		document.getElementById(`model-selector-${id}-button`)?.blur();
+		if (triggerElement?.contains(target)) {
+			preservePickerInputFocus(event);
+			return;
+		}
+		if (!show) {
+			return;
+		}
+		if (
+			contentElement?.contains(target) ||
+			(target instanceof Element && target.closest('.model-selector-child-menu'))
+		) {
+			preservePickerInputFocus(event);
+			return;
+		}
+		closePicker();
 	};
 
-	const handleKeydown = (e: KeyboardEvent) => {
-		if (show && e.key === 'Escape') {
-			e.preventDefault();
-			e.stopPropagation();
-			show = false;
-			document.getElementById(`model-selector-${id}-button`)?.blur();
+	const handleKeydown = (event: KeyboardEvent) => {
+		if (show && event.key === 'Escape') {
+			event.preventDefault();
+			event.stopPropagation();
+			closePicker(preserveComposerFocus);
 		}
 	};
 
@@ -402,7 +471,7 @@
 		}
 
 		// Set the virtual scroll position so the selected item is rendered and centered
-		const targetScrollTop = Math.max(0, selectedModelIdx * ITEM_HEIGHT - 128 + ITEM_HEIGHT / 2);
+		const targetScrollTop = Math.max(0, selectedModelIdx * itemHeight - 128 + itemHeight / 2);
 		listScrollTop = targetScrollTop;
 
 		await tick();
@@ -443,14 +512,12 @@
 
 			values = [item.value];
 			value = item.value;
-			show = false;
-			window.setTimeout(focusChatInput, 0);
+			closePicker(true);
 			return;
 		}
 
 		value = item.value;
-		show = false;
-		window.setTimeout(focusChatInput, 0);
+		closePicker(true);
 	};
 
 	const setDefaultHandler = async () => {
@@ -751,6 +818,13 @@
 	};
 
 	onMount(() => {
+		const coarsePointerQuery = window.matchMedia('(pointer: coarse)');
+		function updateCoarsePointer(): void {
+			coarsePointer = coarsePointerQuery.matches;
+		}
+		updateCoarsePointer();
+		coarsePointerQuery.addEventListener('change', updateCoarsePointer);
+
 		if (items) {
 			tags = items
 				.filter((item) => includeHidden || !(item.model?.info?.meta?.hidden ?? false))
@@ -759,6 +833,7 @@
 			// Remove duplicates and sort
 			tags = Array.from(new Set(tags)).sort((a, b) => a.localeCompare(b));
 		}
+		return () => coarsePointerQuery.removeEventListener('change', updateCoarsePointer);
 	});
 
 	const cancelModelPullHandler = async (model: string) => {
@@ -855,7 +930,13 @@
 		deleteModelTarget = null;
 	};
 
-	const ITEM_HEIGHT = 32;
+	let itemHeight = 32;
+	$: {
+		itemHeight = 32;
+		if (preserveComposerFocus && mobilePicker) {
+			itemHeight = 44;
+		}
+	}
 	const OVERSCAN = 10;
 
 	let listScrollTop = 0;
@@ -883,10 +964,10 @@
 		};
 	};
 
-	$: visibleStart = Math.max(0, Math.floor(listScrollTop / ITEM_HEIGHT) - OVERSCAN);
+	$: visibleStart = Math.max(0, Math.floor(listScrollTop / itemHeight) - OVERSCAN);
 	$: visibleEnd = Math.min(
 		filteredItems.length,
-		Math.ceil((listScrollTop + listViewportHeight) / ITEM_HEIGHT) + OVERSCAN
+		Math.ceil((listScrollTop + listViewportHeight) / itemHeight) + OVERSCAN
 	);
 </script>
 
@@ -901,7 +982,7 @@
 	}}
 />
 
-<svelte:window on:pointerdown={handlePointerDown} on:keydown={handleKeydown} />
+<svelte:window on:pointerdown|capture={handlePointerDown} on:keydown={handleKeydown} />
 
 <div class="relative w-full">
 	<button
@@ -942,20 +1023,39 @@
 		<div
 			use:portal
 			bind:this={contentElement}
+			data-composer-menu={preserveComposerFocus ? 'model-picker' : undefined}
 			style="position: fixed; z-index: 9999; top: 0; left: 0; width: max-content;"
 		>
 			<div
 				class="z-40 {className ??
 					'w-[20rem]'} max-w-[calc(100vw-1rem)] justify-start rounded-xl border border-gray-100 bg-white p-0.5 shadow-lg outline-hidden dark:border-gray-800 dark:bg-gray-850 dark:text-white flex flex-col overflow-hidden"
+				class:composer-model-picker={preserveComposerFocus && mobilePicker}
+				class:buddy-composer-picker={preserveComposerFocus && mobilePicker}
 				transition:flyAndScale
 			>
 				<slot>
+					{#if preserveComposerFocus && mobilePicker}
+						<div class="flex h-11 shrink-0 items-center justify-between px-3">
+							<span class="text-sm font-medium">{$i18n.t('Choose a model')}</span>
+							<button
+								type="button"
+								class="focus-ring flex size-9 items-center justify-center rounded-full text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+								aria-label={$i18n.t('Close')}
+								on:click={() => closePicker(true)}
+							>
+								<XMark className="size-4" />
+							</button>
+						</div>
+					{/if}
 					{#if searchEnabled}
-						<div class="my-0.5 flex ml-2 mr-0.5 h-[1.6875rem] shrink-0 items-center gap-2">
+						<div
+							class="model-picker-search my-0.5 flex ml-2 mr-0.5 h-[1.6875rem] shrink-0 items-center gap-2"
+						>
 							<Search className=" size-3.5 shrink-0" strokeWidth="2" />
 
 							<input
 								id="model-search-input"
+								bind:this={searchInputElement}
 								bind:value={searchValue}
 								class="w-full bg-transparent text-[0.8125rem] font-normal outline-hidden placeholder:text-gray-400 dark:placeholder:text-gray-500"
 								placeholder={searchPlaceholder}
@@ -963,6 +1063,7 @@
 								aria-label={$i18n.t('Search In Models')}
 								on:keydown={(e) => {
 									if (e.code === 'Enter') {
+										e.preventDefault();
 										if (selectedModelIdx >= filteredItems.length) {
 											const target = downloadTargets[selectedModelIdx - filteredItems.length];
 											if (target && !target.download) {
@@ -1001,7 +1102,7 @@
 										<Tooltip content={$i18n.t('Compare')}>
 											<button
 												type="button"
-												class="focus-ring flex size-[1.375rem] shrink-0 items-center justify-center rounded-lg transition-colors duration-100 {compareEnabled
+												class="model-picker-compare focus-ring flex size-[1.375rem] shrink-0 items-center justify-center rounded-lg transition-colors duration-100 {compareEnabled
 													? ($settings?.highContrastMode ?? false)
 														? 'bg-gray-200 text-gray-900 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-800'
 														: 'bg-gray-50 text-gray-700 hover:bg-gray-50 dark:bg-gray-800/60 dark:text-gray-200 dark:hover:bg-gray-800/60'
@@ -1089,7 +1190,7 @@
 									listScrollTop = listContainer.scrollTop;
 								}}
 							>
-								<div style="height: {visibleStart * ITEM_HEIGHT}px;" />
+								<div style="height: {visibleStart * itemHeight}px;" />
 								{#each filteredItems.slice(visibleStart, visibleEnd) as item, i (item.value)}
 									{@const index = visibleStart + i}
 									<ModelItem
@@ -1101,6 +1202,7 @@
 										{unloadModelHandler}
 										{deleteModelHandler}
 										{selectionOnly}
+										{preserveComposerFocus}
 										{compareEnabled}
 										{selectedValues}
 										onClick={() => {
@@ -1108,7 +1210,7 @@
 										}}
 									/>
 								{/each}
-								<div style="height: {(filteredItems.length - visibleEnd) * ITEM_HEIGHT}px;" />
+								<div style="height: {(filteredItems.length - visibleEnd) * itemHeight}px;" />
 							</div>
 						{/if}
 
@@ -1284,3 +1386,34 @@
 		</div>
 	{/if}
 </div>
+
+<style>
+	.composer-model-picker {
+		width: min(24rem, calc(100vw - 1rem));
+		border-radius: 1rem;
+		padding: 0.25rem;
+	}
+
+	.composer-model-picker .model-picker-search {
+		height: 2.5rem;
+		margin: 0 0.5rem 0.25rem;
+		padding: 0 0.5rem;
+		border-radius: 0.75rem;
+		background: rgb(128 128 128 / 8%);
+	}
+
+	.composer-model-picker .model-picker-search input {
+		font-size: 1rem;
+	}
+
+	.composer-model-picker .model-picker-compare {
+		width: 2rem;
+		height: 2rem;
+	}
+
+	.composer-model-picker :global(button[role='option']) {
+		height: 44px;
+		padding-inline: 0.75rem;
+		font-size: 0.875rem;
+	}
+</style>

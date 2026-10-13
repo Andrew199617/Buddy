@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { getContext, onMount } from 'svelte';
 	import { page } from '$app/stores';
-	import { config, mobile, showSidebar, user, type SessionUser } from '$lib/stores';
+	import { config, mobile, showSidebar, user } from '$lib/stores';
+	import { buddyDockState, getDockNavigation, type DockFeatures } from './navigation';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import ChatIcon from '$lib/components/icons/ChatBubbleOval.svelte';
 	import KnowledgeIcon from '$lib/components/icons/BookOpen.svelte';
@@ -13,25 +14,19 @@
 	export let viewportHeight: number | null = null;
 	export let viewportTop = 0;
 
-	type DockFeatures = {
-		enable_notes?: boolean;
-		enable_automations?: boolean;
-		enable_plugins?: boolean;
-	};
-
 	const i18n: any = getContext('i18n');
+	let mounted = false;
 
 	$: dockFeatures = $config?.features as DockFeatures | undefined;
 	$: pathname = $page.url.pathname;
-	$: admin = $user?.role === 'admin';
-	$: notesVisible =
-		(dockFeatures?.enable_notes ?? false) &&
-		(admin || ($user?.permissions?.features?.notes ?? true));
-	$: knowledgeVisible = admin || Boolean($user?.permissions?.workspace?.knowledge);
-	$: automationsVisible =
-		(dockFeatures?.enable_automations ?? false) &&
-		(admin || Boolean($user?.permissions?.features?.automations));
-	$: workspaceHref = getWorkspaceDestination($user, dockFeatures);
+	$: dockNavigation = getDockNavigation($user, dockFeatures);
+	$: notesVisible = dockNavigation.notesVisible;
+	$: knowledgeVisible = dockNavigation.knowledgeVisible;
+	$: automationsVisible = dockNavigation.automationsVisible;
+	$: workspaceHref = dockNavigation.workspaceHref;
+	$: if (mounted) {
+		buddyDockState.set({ mounted: true, keyboardOpen });
+	}
 	$: compactDock =
 		countVisibleLinks(notesVisible, knowledgeVisible, automationsVisible, workspaceHref) < 4;
 	$: knowledgeActive = matchesRoute(pathname, '/workspace/knowledge');
@@ -44,25 +39,6 @@
 
 	function matchesRoute(path: string, route: string) {
 		return path === route || path.startsWith(`${route}/`);
-	}
-
-	function getWorkspaceDestination(
-		currentUser: SessionUser | undefined,
-		currentFeatures: DockFeatures | undefined
-	): string | null {
-		if (currentUser?.role === 'admin' || currentUser?.permissions?.workspace?.models) {
-			return '/workspace/models';
-		}
-		if (currentUser?.permissions?.workspace?.prompts) {
-			return '/workspace/prompts';
-		}
-		if (currentFeatures?.enable_plugins && currentUser?.permissions?.workspace?.tools) {
-			return '/workspace/tools';
-		}
-		if (currentUser?.permissions?.workspace?.skills) {
-			return '/workspace/skills';
-		}
-		return null;
 	}
 
 	function countVisibleLinks(
@@ -117,6 +93,7 @@
 	}
 
 	onMount(() => {
+		mounted = true;
 		const viewport = window.visualViewport;
 		const primaryPointer = window.matchMedia('(pointer: coarse)');
 		const touchCapable =
@@ -160,6 +137,8 @@
 		updateKeyboardVisibility();
 
 		return () => {
+			mounted = false;
+			buddyDockState.set({ mounted: false, keyboardOpen: false });
 			clearTimeout(focusUpdateTimer);
 			viewport?.removeEventListener('resize', updateKeyboardVisibility);
 			viewport?.removeEventListener('scroll', updateKeyboardVisibility);

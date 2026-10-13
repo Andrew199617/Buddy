@@ -180,6 +180,38 @@ html.owui-usage-sheet-open, html.owui-usage-sheet-open body { overflow:hidden; }
 .dark .owui-usage-preview { border-color:#374151; }
 .dark .owui-usage-preview strong { color:#d1d5db; }
 @media (max-width:767px), (pointer:coarse) {
+ .buddy-chat .owui-context-rail {
+  align-self:flex-end;
+  width:fit-content;
+  max-width:calc(100% - 16px);
+  margin:0 8px 3px auto;
+  padding:0;
+ }
+ .buddy-chat .owui-context-badge {
+  min-height:34px;
+  padding:5px 10px;
+  border:1px solid rgba(94,126,104,.17);
+  border-radius:999px;
+  background:rgba(247,252,247,.88);
+  color:#607366;
+  box-shadow:0 3px 10px rgba(31,59,41,.08),inset 0 1px 0 rgba(255,255,255,.65);
+  backdrop-filter:blur(16px);
+  -webkit-backdrop-filter:blur(16px);
+ }
+ .buddy-chat .owui-context-badge:hover {
+  background:rgba(240,248,240,.96);
+  color:#34563e;
+ }
+ .dark .buddy-chat .owui-context-badge {
+  border-color:rgba(151,184,159,.17);
+  background:rgba(30,44,34,.88);
+  color:#acbcae;
+  box-shadow:0 3px 12px rgba(0,0,0,.2),inset 0 1px 0 rgba(255,255,255,.04);
+ }
+ .dark .buddy-chat .owui-context-badge:hover {
+  background:rgba(39,55,43,.96);
+  color:#d5e3d7;
+ }
  .owui-run-footer .owui-run-model { max-width:140px; }
  .owui-chat-details-action { min-height:44px !important; font-size: calc(.875rem + var(--buddy-font-size-offset, 0px)) !important; }
 }

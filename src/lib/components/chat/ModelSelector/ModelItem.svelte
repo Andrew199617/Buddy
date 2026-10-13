@@ -31,6 +31,7 @@
 	export let pinModelHandler: (modelId: string) => void = () => {};
 	export let deleteModelHandler: (model: any) => void = () => {};
 	export let selectionOnly = false;
+	export let preserveComposerFocus = false;
 
 	export let onClick: () => void = () => {};
 
@@ -302,6 +303,7 @@
 			<ModelItemMenu
 				bind:show={showMenu}
 				model={item.model}
+				{preserveComposerFocus}
 				{pinModelHandler}
 				{deleteModelHandler}
 				copyLinkHandler={() => {

@@ -1,0 +1,143 @@
+import { writable } from 'svelte/store';
+import type { SessionUser } from '$lib/stores';
+
+export type DockFeatures = {
+	enable_notes?: boolean;
+	enable_automations?: boolean;
+	enable_plugins?: boolean;
+};
+
+export type DockNavigation = {
+	notesVisible: boolean;
+	knowledgeVisible: boolean;
+	automationsVisible: boolean;
+	workspaceHref: string | null;
+};
+
+export type DockState = {
+	mounted: boolean;
+	keyboardOpen: boolean;
+};
+
+export type NavigationItems = {
+	notes: boolean;
+	workspace: boolean;
+	automations: boolean;
+};
+
+export type NavigationFallbacks = NavigationItems;
+
+// The dock owns its keyboard visibility and mount lifecycle. The sidebar uses
+// that same state so hidden navigation never removes a sidebar fallback.
+export const buddyDockState = writable<DockState>({ mounted: false, keyboardOpen: false });
+
+export function getWorkspaceDockDestination(
+	currentUser: SessionUser | undefined,
+	features: DockFeatures | undefined
+): string | null {
+	if (currentUser?.role === 'admin' || currentUser?.permissions?.workspace?.models) {
+		return '/workspace/models';
+	}
+	if (currentUser?.permissions?.workspace?.prompts) {
+		return '/workspace/prompts';
+	}
+	if (features?.enable_plugins && currentUser?.permissions?.workspace?.tools) {
+		return '/workspace/tools';
+	}
+	if (currentUser?.permissions?.workspace?.skills) {
+		return '/workspace/skills';
+	}
+	return null;
+}
+
+export function getWorkspaceLandingDestination(
+	currentUser: SessionUser | undefined,
+	features: DockFeatures | undefined
+): string | null {
+	if (currentUser?.role === 'admin' || currentUser?.permissions?.workspace?.models) {
+		return '/workspace/models';
+	}
+	if (currentUser?.permissions?.workspace?.knowledge) {
+		return '/workspace/knowledge';
+	}
+	return getWorkspaceDockDestination(currentUser, features);
+}
+
+export function getDockNavigation(
+	currentUser: SessionUser | undefined,
+	features: DockFeatures | undefined
+): DockNavigation {
+	const admin = currentUser?.role === 'admin';
+	return {
+		notesVisible:
+			(features?.enable_notes ?? false) &&
+			(admin || (currentUser?.permissions?.features?.notes ?? true)),
+		knowledgeVisible: admin || Boolean(currentUser?.permissions?.workspace?.knowledge),
+		automationsVisible:
+			(features?.enable_automations ?? false) &&
+			(admin || Boolean(currentUser?.permissions?.features?.automations)),
+		workspaceHref: getWorkspaceDockDestination(currentUser, features)
+	};
+}
+
+export function isDockAvailable(state: DockState, mobile: boolean, sidebarOpen: boolean): boolean {
+	return state.mounted && !state.keyboardOpen && !(mobile && sidebarOpen);
+}
+
+export function hasDockDestination(
+	navigation: DockNavigation,
+	destination: string | null
+): boolean {
+	if (!destination) {
+		return false;
+	}
+	if (destination === '/notes') {
+		return navigation.notesVisible;
+	}
+	if (destination === '/workspace/knowledge') {
+		return navigation.knowledgeVisible;
+	}
+	if (destination === '/automations') {
+		return navigation.automationsVisible;
+	}
+	return navigation.workspaceHref === destination;
+}
+
+// Destinations the user may open, before the dock removes the ones it already shows.
+export function getPermittedNavigation(
+	currentUser: SessionUser | undefined,
+	features: DockFeatures | undefined
+): NavigationItems {
+	const navigation = getDockNavigation(currentUser, features);
+	// /workspace redirects to its first permitted section, so without one it only
+	// sends the user home (for example, tools while the plugins feature is off).
+	const workspaceDestination = getWorkspaceLandingDestination(currentUser, features);
+
+	return {
+		notes: navigation.notesVisible,
+		workspace: workspaceDestination !== null,
+		automations: navigation.automationsVisible
+	};
+}
+
+export function getNavigationFallbacks(
+	currentUser: SessionUser | undefined,
+	features: DockFeatures | undefined,
+	state: DockState,
+	mobile: boolean,
+	sidebarOpen: boolean
+): NavigationFallbacks {
+	const navigation = getDockNavigation(currentUser, features);
+	const permitted = getPermittedNavigation(currentUser, features);
+	const dockAvailable = isDockAvailable(state, mobile, sidebarOpen);
+	const workspaceDestination = getWorkspaceLandingDestination(currentUser, features);
+
+	return {
+		notes: permitted.notes && !(dockAvailable && hasDockDestination(navigation, '/notes')),
+		workspace:
+			permitted.workspace &&
+			!(dockAvailable && hasDockDestination(navigation, workspaceDestination)),
+		automations:
+			permitted.automations && !(dockAvailable && hasDockDestination(navigation, '/automations'))
+	};
+}

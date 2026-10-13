@@ -33,7 +33,7 @@ from open_webui.models.folders import Folders
 from open_webui.models.shared_chats import SharedChatResponse, SharedChats
 from open_webui.models.tags import TagModel, Tags
 from open_webui.socket.main import get_event_emitter
-from open_webui.tasks import get_response_streams_by_chat_id, has_active_tasks, stop_item_tasks
+from open_webui.tasks import get_active_task_item_ids, get_response_streams_by_chat_id, has_active_tasks, stop_item_tasks
 from open_webui.utils.access_control import filter_allowed_access_grants, has_permission
 from open_webui.utils.access_control.folders import has_folder_write_access
 from open_webui.utils.auth import bearer_security, get_admin_user, get_current_user, get_verified_user
@@ -139,11 +139,14 @@ async def add_active_state_to_chat_list(
     return chat_list
 
 
-async def get_folder_unread_counts(user_id: str, db: AsyncSession | None = None) -> dict[str, int]:
+async def get_folder_unread_counts(request: Request, user_id: str, db: AsyncSession | None = None) -> dict[str, int]:
     user_folders = await Folders.get_folders_by_user_id(user_id, db=db)
     parent_by_id = {folder.id: folder.parent_id for folder in user_folders}
     unread_counts = dict.fromkeys(parent_by_id.keys(), 0)
-    direct_unread_counts = await Chats.count_unread_by_folder_ids(user_id, list(parent_by_id.keys()), db=db)
+    active_chat_ids = await get_active_task_item_ids(request.app.state.redis)
+    direct_unread_counts = await Chats.count_unread_by_folder_ids(
+        user_id, list(parent_by_id.keys()), active_chat_ids, db=db
+    )
 
     for unread_folder_id, unread_count in direct_unread_counts.items():
         current_id = unread_folder_id
@@ -169,6 +172,11 @@ class ChatConfigForm(BaseModel):
 
 class CompactChatForm(BaseModel):
     model: str | None = None
+
+
+class ChatUnreadSummaryResponse(BaseModel):
+    count: int
+    only_chat_id: str | None
 
 
 def chat_search_content_text(text: str) -> str:
@@ -287,14 +295,40 @@ async def get_session_user_chat_list(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.DEFAULT())
 
 
+async def can_see_folders(user, db: AsyncSession) -> bool:
+    """Apply the rule the sidebar uses to decide whether it shows the Folders section."""
+    config = await Config.get_many('folders.enable', 'user.permissions')
+    if not config.get('folders.enable'):
+        return False
+    if user.role == 'admin':
+        return True
+    return await has_permission(user.id, 'features.folders', config.get('user.permissions'), db=db)
+
+
+@router.get('/unread', response_model=ChatUnreadSummaryResponse)
+async def get_session_user_unread_chat_summary(
+    request: Request,
+    user=Depends(get_verified_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    try:
+        active_chat_ids = await get_active_task_item_ids(request.app.state.redis)
+        include_folders = await can_see_folders(user, db)
+        return await Chats.get_unread_summary(user.id, active_chat_ids, include_folders=include_folders, db=db)
+    except Exception:
+        log.exception('Unable to load unread chat summary')
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=ERROR_MESSAGES.DEFAULT())
+
+
 @router.post('/read')
 async def mark_chats_read_by_user_id(
+    request: Request,
     user=Depends(get_verified_user),
     db: AsyncSession = Depends(get_async_session),
 ):
     return {
         'updated_count': await Chats.mark_chats_read_by_user_id(user.id, db=db),
-        'folder_unread_counts': await get_folder_unread_counts(user.id, db=db),
+        'folder_unread_counts': await get_folder_unread_counts(request, user.id, db=db),
     }
 
 
@@ -938,6 +972,7 @@ async def get_chat_list_by_folder_id(
         limit = 10
         skip = (page - 1) * limit
 
+        active_chat_ids = await get_active_task_item_ids(request.app.state.redis)
         chats = await Chats.get_chats_by_folder_id_and_user_id(
             folder_id,
             user.id,
@@ -945,6 +980,7 @@ async def get_chat_list_by_folder_id(
             limit=limit,
             sort_by=sort_by,
             sort_dir=sort_dir,
+            active_chat_ids=active_chat_ids,
             db=db,
         )
         return await add_active_state_to_chat_list(request, chats)
@@ -2103,6 +2139,7 @@ class ChatFolderIdForm(BaseModel):
 
 @router.post('/{id}/unread')
 async def mark_chat_unread_by_id(
+    request: Request,
     id: str,
     user=Depends(get_verified_user),
     db: AsyncSession = Depends(get_async_session),
@@ -2119,7 +2156,7 @@ async def mark_chat_unread_by_id(
         'chat_id': id,
         'last_read_at': chat.last_read_at,
         'folder_id': folder_id,
-        'folder_unread_counts': await get_folder_unread_counts(user.id, db=db),
+        'folder_unread_counts': await get_folder_unread_counts(request, user.id, db=db),
     }
 
 

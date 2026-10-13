@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SettingsSaveButton from './SettingsSaveButton.svelte';
 	import { canUseApiKeys } from '$lib/utils/settings-access';
 	import { toast } from 'svelte-sonner';
 	import { onMount, getContext } from 'svelte';
@@ -35,7 +36,7 @@
 
 	const i18n = getContext('i18n');
 
-	export let saveHandler: () => void | Promise<void>;
+	export let saveHandler: (event: CustomEvent) => void | Promise<void>;
 
 	let profileImageUrl = '';
 	let name = '';
@@ -234,18 +235,13 @@
 			});
 		}
 	});
+	let saveButton: SettingsSaveButton;
 </script>
 
 <form
 	id="tab-account"
 	class="flex h-full flex-col text-sm"
-	on:submit|preventDefault={async () => {
-		const res = await submitHandler();
-
-		if (res) {
-			saveHandler();
-		}
-	}}
+	on:submit|preventDefault={() => saveButton.save()}
 >
 	<div class="flex-1 min-h-0 w-full overflow-y-auto scrollbar-hover pr-1.5">
 		<h2 class="mb-4 text-sm font-medium text-gray-900 dark:text-white">
@@ -571,12 +567,12 @@
 	</div>
 
 	<div class="shrink-0 flex w-full justify-end pt-3 text-sm font-normal">
-		<button
-			class="px-3.5 py-1.5 text-sm font-normal bg-black hover:bg-gray-900 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full"
+		<SettingsSaveButton
+			bind:this={saveButton}
 			type="submit"
-		>
-			{$i18n.t('Save')}
-		</button>
+			saveAction={submitHandler}
+			on:save={saveHandler}
+		/>
 	</div>
 </form>
 

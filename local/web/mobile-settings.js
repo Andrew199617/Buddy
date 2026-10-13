@@ -104,6 +104,7 @@
  const SVG_NS = 'http://www.w3.org/2000/svg';
  let current = null;
  let pendingFrame = null;
+ let navigationRevision = 0;
 
  function makeIcon(path, className) {
   const icon = document.createElementNS(SVG_NS, 'svg');
@@ -141,7 +142,9 @@
   else element.setAttribute(name, value);
  }
  function setView(state, view, focus) {
+  if (state.view !== view) state.navigationRevision = ++navigationRevision;
   state.view = view;
+  setAttributeIfChanged(state.nav, 'data-settings-navigation-revision', String(state.navigationRevision));
   setAttributeIfChanged(state.panel, 'data-settings-view', view);
   updateHeading(state);
   if (!focus) return;
@@ -245,7 +248,8 @@
    originalCloseLabel:close.getAttribute('aria-label'), originalModalLabel:modal.getAttribute('aria-labelledby'),
    originalTabsOrientation:tabs.getAttribute('aria-orientation'), originalView:panel.getAttribute('data-settings-view'),
    originalPanelWidth:savedStyle(panel, 'width'), originalPanelMaxWidth:savedStyle(panel, 'max-width'),
-   view:'home'
+   originalNavigationRevision:nav.getAttribute('data-settings-navigation-revision'),
+   navigationRevision:++navigationRevision, view:'home'
   };
   back.addEventListener('click', () => setView(state, 'home', true));
   close.classList.add('owui-settings-close');
@@ -284,6 +288,7 @@
   restoreAttribute(state.modal, 'aria-labelledby', state.originalModalLabel);
   restoreAttribute(state.tabs, 'aria-orientation', state.originalTabsOrientation);
   restoreAttribute(state.panel, 'data-settings-view', state.originalView);
+  restoreAttribute(state.nav, 'data-settings-navigation-revision', state.originalNavigationRevision);
   state.modal.style.removeProperty('--owui-settings-top');
   state.modal.style.removeProperty('--owui-settings-left');
   state.modal.style.removeProperty('--owui-settings-width');
@@ -316,6 +321,12 @@
   if (!current || !(event.target instanceof Element)) return;
   const button = event.target.closest('button[role="tab"]');
   if (button && current.nav.contains(button)) setView(current, 'detail', true);
+ }
+ function handleSettingsSaved(event) {
+  const state = current;
+  if (!state || event.target !== state.nav || !state.modal.isConnected) return;
+  if (event.detail?.navigationRevision !== String(state.navigationRevision)) return;
+  if (state.view === 'detail') setView(state, 'home', true);
  }
  function dismissNativeMenu(state) {
   const menus = document.querySelectorAll('[role="menu"], .app-dropdown-menu');
@@ -371,6 +382,7 @@
   const observer = new MutationObserver(schedule);
   observer.observe(document.body, { childList:true, subtree:true, characterData:true, attributes:true, attributeFilter:['aria-selected'] });
   document.addEventListener('click', handleCategoryClick, true);
+  document.addEventListener('buddy:settings-saved', handleSettingsSaved);
   window.addEventListener('keydown', handleKeys, true);
   window.addEventListener('resize', schedule);
   window.visualViewport?.addEventListener('resize', schedule);

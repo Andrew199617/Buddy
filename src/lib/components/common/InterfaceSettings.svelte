@@ -246,7 +246,7 @@
 			setAppFontFamily(fontFamily || defaultFontFamily());
 		}
 
-		saveSettings({
+		await saveSettings({
 			models: [defaultModelId],
 			imageCompressionSize: imageCompressionSize,
 			fontFamily

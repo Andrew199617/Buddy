@@ -12,6 +12,7 @@
 	import { toast } from 'svelte-sonner';
 
 	import { chatId, mobile, selectedFolder, showSidebar, user } from '$lib/stores';
+	import { refreshUnreadChats, setChatReadAt } from '$lib/stores/chatList';
 
 	import {
 		deleteFolderById,
@@ -126,6 +127,7 @@
 		}
 
 		if (typeof data?.last_read_at === 'number') {
+			setChatReadAt(data.chat_id, data.last_read_at);
 			folderRegistry[folderId]?.setChatReadAt?.(data.chat_id, data.last_read_at);
 		}
 	};
@@ -136,6 +138,7 @@
 			return null;
 		});
 		if (!res) return;
+		void refreshUnreadChats(localStorage.token);
 
 		if (res.folder_unread_counts) {
 			onFolderUnreadCounts(res.folder_unread_counts);
