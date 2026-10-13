@@ -63,7 +63,6 @@ function isDeferredStartupModule(id) {
 		normalizedPath.includes('/src/lib/components/chat/Artifacts.svelte') ||
 		normalizedPath.includes('/src/lib/components/chat/ChatControls/Embeds.svelte') ||
 		normalizedPath.includes('/src/lib/components/chat/FileNav.svelte') ||
-		normalizedPath.includes('/src/lib/components/chat/PyodideFileNav.svelte') ||
 		normalizedPath.includes('/src/lib/components/chat/Overview.svelte') ||
 		normalizedPath.includes('/src/lib/components/chat/Messages/CodeBlock.svelte') ||
 		normalizedPath.includes('/src/lib/components/chat/Messages/OutputEditView.svelte') ||

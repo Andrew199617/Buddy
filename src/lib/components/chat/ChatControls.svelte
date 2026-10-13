@@ -9,7 +9,6 @@
 	import { createLazyComponent } from '$lib/utils/lazy-component';
 	import LazyFeatureStatus from '$lib/components/common/LazyFeatureStatus.svelte';
 	import {
-		config,
 		terminalServers,
 		showControls,
 		showCallOverlay,
@@ -45,9 +44,6 @@
 	function importFileNav() {
 		return import('./FileNav.svelte');
 	}
-	function importPyodideFileNav() {
-		return import('./PyodideFileNav.svelte');
-	}
 	function importOverview() {
 		return import('./Overview.svelte');
 	}
@@ -59,7 +55,6 @@
 	const artifactsFeature = createLazyComponent(importArtifacts);
 	const embedsFeature = createLazyComponent(importEmbeds);
 	const fileNavFeature = createLazyComponent(importFileNav);
-	const pyodideFileNavFeature = createLazyComponent(importPyodideFileNav);
 	const overviewFeature = createLazyComponent(importOverview);
 	const projectFeature = createLazyComponent(importProjectPanel);
 
@@ -79,7 +74,6 @@
 	export let files;
 	export let modelId;
 
-	export let codeInterpreterEnabled = false;
 	// The chat folder this chat is in, for its Project tab.
 	export let folderId: string | null = null;
 	// The exact folder the open chat runs in, which its Project tab opens instead of the folder's.
@@ -121,9 +115,7 @@
 			(!selectedSystemTerminal &&
 				($user?.role === 'admin' || ($user?.permissions?.features?.direct_tool_servers ?? true))))
 	);
-	$: showFilesTab =
-		terminalFilesAvailable ||
-		(codeInterpreterEnabled && $config?.code?.interpreter_engine !== 'jupyter');
+	$: showFilesTab = terminalFilesAvailable;
 	$: showOverviewTab = hasMessages;
 
 	// The chat folder's project folder, for the Project tab. Hidden without plans.
@@ -364,8 +356,6 @@
 			void projectFeature.load();
 		} else if (activeTab === 'files' && terminalFilesAvailable && $selectedTerminalId) {
 			void fileNavFeature.load();
-		} else if (activeTab === 'files' && codeInterpreterEnabled) {
-			void pyodideFileNavFeature.load();
 		}
 	}
 
@@ -542,17 +532,6 @@
 										feature={$i18n.t('Project')}
 										error={$projectFeature.error}
 										onRetry={projectFeature.load}
-										onClose={closeFeaturePanel}
-									/>
-								{/if}
-							{:else if activeTab === 'files' && codeInterpreterEnabled}
-								{#if $pyodideFileNavFeature.component}
-									<svelte:component this={$pyodideFileNavFeature.component} />
-								{:else}
-									<LazyFeatureStatus
-										feature={$i18n.t('Files')}
-										error={$pyodideFileNavFeature.error}
-										onRetry={pyodideFileNavFeature.load}
 										onClose={closeFeaturePanel}
 									/>
 								{/if}
@@ -749,17 +728,6 @@
 										feature={$i18n.t('Project')}
 										error={$projectFeature.error}
 										onRetry={projectFeature.load}
-										onClose={closeFeaturePanel}
-									/>
-								{/if}
-							{:else if activeTab === 'files' && codeInterpreterEnabled}
-								{#if $pyodideFileNavFeature.component}
-									<svelte:component this={$pyodideFileNavFeature.component} overlay={dragged} />
-								{:else}
-									<LazyFeatureStatus
-										feature={$i18n.t('Files')}
-										error={$pyodideFileNavFeature.error}
-										onRetry={pyodideFileNavFeature.load}
 										onClose={closeFeaturePanel}
 									/>
 								{/if}
