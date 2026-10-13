@@ -90,7 +90,7 @@
 	// --- Display items ---
 
 	interface DisplayItem {
-		type: 'message' | 'reasoning' | 'function_call' | 'code_interpreter' | 'openai_tool';
+		type: 'message' | 'reasoning' | 'function_call' | 'openai_tool';
 		indices: number[];
 		item: any;
 		outputItem?: any;
@@ -123,8 +123,6 @@
 				});
 			} else if (t === 'function_call_output') {
 				// grouped with function_call
-			} else if (t === 'open_webui:code_interpreter') {
-				result.push({ type: 'code_interpreter', indices: [i], item });
 			} else if (['web_search_call', 'file_search_call', 'computer_call'].includes(t)) {
 				result.push({ type: 'openai_tool', indices: [i], item });
 			}
@@ -212,8 +210,6 @@
 				return 'Thought';
 			case 'function_call':
 				return di.item.name ?? 'Tool';
-			case 'code_interpreter':
-				return 'Code';
 			case 'openai_tool': {
 				const names: Record<string, string> = {
 					web_search_call: 'Search',
@@ -308,19 +304,6 @@
 											null,
 											2
 										)}</pre>
-								{/if}
-							</div>
-						{:else if di.type === 'code_interpreter'}
-							<div class="text-[0.9375rem] p-1.5 text-gray-500 dark:text-gray-400">
-								{#if di.item.code}
-									<pre class="text-xs font-mono whitespace-pre overflow-x-auto">{di.item.code}</pre>
-								{/if}
-								{#if di.item.output}
-									<pre
-										class="text-xs font-mono whitespace-pre-wrap overflow-x-auto mt-1 max-h-32 overflow-y-auto">{typeof di
-											.item.output === 'object'
-											? JSON.stringify(di.item.output, null, 2)
-											: di.item.output}</pre>
 								{/if}
 							</div>
 						{:else if di.type === 'openai_tool'}

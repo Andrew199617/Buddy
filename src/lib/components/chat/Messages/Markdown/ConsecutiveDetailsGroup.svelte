@@ -117,8 +117,6 @@
 				(t?.attributes?.done === 'true' && isToolResultError(decode(t?.text ?? ''))))
 	);
 
-	$: codeInterpreterCount = tokens.filter((t) => t?.attributes?.type === 'code_interpreter').length;
-
 	// Collect all embeds from tool_calls tokens
 	$: allEmbeds = (() => {
 		if (!allowEmbeds) return [];
@@ -160,14 +158,6 @@
 				count > 1 ? `${count} ${name}` : name
 			);
 			parts.push(...toolParts);
-		}
-
-		if (codeInterpreterCount > 0) {
-			if (codeInterpreterCount === 1) {
-				parts.push($i18n.t('Ran {{COUNT}} analysis', { COUNT: codeInterpreterCount }));
-			} else {
-				parts.push($i18n.t('Ran {{COUNT}} analyses', { COUNT: codeInterpreterCount }));
-			}
 		}
 
 		const detail = parts.join(', ');

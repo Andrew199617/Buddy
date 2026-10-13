@@ -12,8 +12,7 @@
 		copyToClipboard,
 		initMermaid,
 		renderMermaidDiagram,
-		renderVegaVisualization,
-		unescapeHtml
+		renderVegaVisualization
 	} from '$lib/utils';
 
 	import 'highlight.js/styles/github-dark.min.css';
@@ -46,7 +45,6 @@
 	export let token;
 	export let lang = '';
 	export let code = '';
-	export let attributes = {};
 
 	export let className = '';
 	export let editorClassName = '';
@@ -388,23 +386,6 @@
 	$: if (_token) {
 		render();
 	}
-
-	$: if (attributes) {
-		onAttributesUpdate();
-	}
-
-	const onAttributesUpdate = () => {
-		if (attributes?.output) {
-			try {
-				const output = JSON.parse(unescapeHtml(attributes.output));
-				stdout = output.stdout;
-				stderr = output.stderr;
-				result = output.result;
-			} catch (error) {
-				console.error('Error:', error);
-			}
-		}
-	};
 
 	onMount(async () => {
 		if (token) {
