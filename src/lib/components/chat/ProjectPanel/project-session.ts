@@ -18,7 +18,10 @@ export type ProjectTarget = {
 	chooseAgain: boolean;
 };
 
-/** The chat folder's exact project folders, one per computer that has one. */
+/**
+ * The chat folder's exact project folders, one per computer that has one. The folder's
+ * chosen computer comes first, since new chats start there.
+ */
 export function projectTargets(project: FolderProject): ProjectTarget[] {
 	const choice = effectiveChoice(project);
 	if (choice.mode !== 'folder') return [];
@@ -28,7 +31,9 @@ export function projectTargets(project: FolderProject): ProjectTarget[] {
 		if (!saved) continue;
 		targets.push({ computer, path: saved.path, chooseAgain: saved.problem !== null });
 	}
-	return targets;
+	const chosen = targets.filter((target) => target.computer.machine_id === choice.machineId);
+	const others = targets.filter((target) => target.computer.machine_id !== choice.machineId);
+	return [...chosen, ...others];
 }
 
 /**
