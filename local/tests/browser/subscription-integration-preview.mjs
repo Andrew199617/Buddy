@@ -3258,7 +3258,7 @@ async function folderAllowCase(browser, profile) {
 	await runCase(browser, profile, 'folder-allow', 'folder-allow', async ({ page }, fixtures) => {
 		const dialog = await openFolderSettings(page);
 		// Claude only chats, but it still runs on Work PC, so the choices show beside the request.
-		const request = dialog.getByRole('group', { name: 'Plans that only chat', exact: true });
+		const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 		await request.waitFor();
 		await dialog.getByText('Let the AI choose', { exact: true }).waitFor();
 
@@ -3267,7 +3267,7 @@ async function folderAllowCase(browser, profile) {
 		assert.equal(await allowFull.getAttribute('aria-describedby'), 'plan-access-plan-claude');
 		await allowFull.click();
 		const question = request.getByRole('group', {
-			name: 'Give Claude full access on Work PC?',
+			name: 'Start new Claude chats with full access?',
 			exact: true
 		});
 		await question.waitFor();
@@ -3278,7 +3278,7 @@ async function folderAllowCase(browser, profile) {
 		]);
 		await request
 			.getByText(
-				'Buddy can then run commands on that computer as your account there, and so can anyone who controls this Buddy server.',
+				'Buddy can then run commands as your account on the computer each of those chats runs on, and so can anyone who controls this Buddy server.',
 				{ exact: true }
 			)
 			.waitFor();
@@ -3291,7 +3291,9 @@ async function folderAllowCase(browser, profile) {
 		assert.equal(fixtures.planConfigs.length, 0, 'Cancelling changes nothing');
 
 		await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
-		await request.getByText('Let Claude read files on Work PC?', { exact: true }).waitFor();
+		await request
+			.getByText('Start new Claude chats able to read files?', { exact: true })
+			.waitFor();
 		await request.getByRole('button', { name: 'Allow', exact: true }).click();
 		await request.waitFor({ state: 'detached' });
 		assert.deepEqual(fixtures.planConfigs, [
@@ -3315,7 +3317,7 @@ async function folderAllowStaleCase(browser, profile) {
 		'folder-allow-stale',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', { name: 'Plans that only chat', exact: true });
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			await request.getByRole('button', { name: 'Allow full access', exact: true }).click();
 			await request.getByRole('button', { name: 'Allow', exact: true }).click();
 			await request
@@ -3341,10 +3343,10 @@ async function folderAllowBesideCase(browser, profile) {
 		'folder-allow-beside',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', { name: 'Plans that only chat', exact: true });
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			await request.waitFor();
 			const offered = await request.innerText();
-			assert.match(offered, /ChatGPT\s*·\s*Work PC\s*·\s*Chat only/);
+			assert.match(offered, /ChatGPT\s*·\s*Chat only/);
 			assert.doesNotMatch(offered, /Claude/, 'Claude already opens folders');
 
 			// A folder that is just chat has no use for files.
@@ -3356,7 +3358,9 @@ async function folderAllowBesideCase(browser, profile) {
 			await captureScreenshot(page, profile.name + '-folder-allow-beside');
 
 			await request.getByRole('button', { name: 'Allow full access', exact: true }).click();
-			await request.getByText('Give ChatGPT full access on Work PC?', { exact: true }).waitFor();
+			await request
+				.getByText('Start new ChatGPT chats with full access?', { exact: true })
+				.waitFor();
 			await request.getByRole('button', { name: 'Allow', exact: true }).click();
 			await request.waitFor({ state: 'hidden' });
 			assert.deepEqual(fixtures.planConfigs, [
@@ -3377,7 +3381,7 @@ async function folderAllowRaceCase(browser, profile) {
 		'folder-allow-beside',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', { name: 'Plans that only chat', exact: true });
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			await request.getByRole('button', { name: 'Allow full access', exact: true }).click();
 			fixtures.holdNextProjectRead();
 			await request.getByRole('button', { name: 'Allow', exact: true }).click();
@@ -3385,12 +3389,14 @@ async function folderAllowRaceCase(browser, profile) {
 
 			// The question stays, busy, until the plans show the change.
 			const question = dialog.getByRole('group', {
-				name: 'Give ChatGPT full access on Work PC?',
+				name: 'Start new ChatGPT chats with full access?',
 				exact: true
 			});
 			const allow = question.getByRole('button', { name: 'Allow', exact: true });
 			assert.equal(await allow.isDisabled(), true, 'Allow is busy');
-			const toast = page.getByText('ChatGPT now has full access on Work PC.', { exact: true });
+			const toast = page.getByText('New ChatGPT chats now start with full access.', {
+				exact: true
+			});
 			assert.equal(await toast.count(), 0, 'No success before the plans show it');
 
 			// Choices made meanwhile are kept, and the busy question survives being hidden.
@@ -3425,7 +3431,7 @@ async function folderAllowReloadErrorCase(browser, profile) {
 		'folder-allow',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', { name: 'Plans that only chat', exact: true });
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			const failure = dialog.getByText(
 				'The project folder could not be loaded: Synthetic project read failure',
 				{ exact: true }
@@ -3452,7 +3458,7 @@ async function folderAllowGoneCase(browser, profile) {
 		'folder-allow',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', { name: 'Plans that only chat', exact: true });
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
 			fixtures.removeWorkPc();
 			await request.getByRole('button', { name: 'Allow', exact: true }).click();
@@ -3487,7 +3493,7 @@ async function folderAllowHiddenRefusalCase(browser, profile) {
 		'folder-allow-beside',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', { name: 'Plans that only chat', exact: true });
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			await request.getByRole('button', { name: 'Allow full access', exact: true }).click();
 			fixtures.refuseNextPlanConfig('The start folder does not exist on Work PC: C:\\old');
 			fixtures.holdNextProjectRead();
@@ -3518,7 +3524,7 @@ async function folderAllowTurnedOffCase(browser, profile) {
 		'folder-allow',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', { name: 'Plans that only chat', exact: true });
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
 			fixtures.turnOffAfterNextPlanConfig(
 				'An old provider process could not confirm that it stopped.'
@@ -3543,7 +3549,7 @@ async function folderAllowClosedCase(browser, profile) {
 		'folder-allow',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', { name: 'Plans that only chat', exact: true });
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
 			fixtures.holdNextPlanConfig();
 			await request.getByRole('button', { name: 'Allow', exact: true }).click();
@@ -3571,7 +3577,7 @@ async function folderAllowRevokedCase(browser, profile) {
 		'folder-allow',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', { name: 'Plans that only chat', exact: true });
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
 			// An administrator stops this person using computers meanwhile.
 			fixtures.revokeMachines();
@@ -3593,12 +3599,14 @@ async function folderAllowLostAnswerCase(browser, profile) {
 		'folder-allow',
 		async ({ page }, fixtures) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', { name: 'Plans that only chat', exact: true });
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			await request.getByRole('button', { name: 'Allow reading files', exact: true }).click();
 			fixtures.loseNextPlanConfigAnswer('Synthetic gateway timeout');
 			await request.getByRole('button', { name: 'Allow', exact: true }).click();
 			// The access was saved, so the reload shows it: a success, not a refusal.
-			await page.getByText('Claude can now read files on Work PC.', { exact: true }).waitFor();
+			await page
+				.getByText('New Claude chats now start able to read files.', { exact: true })
+				.waitFor();
 			await request.waitFor({ state: 'detached' });
 			assert.equal(
 				await dialog.getByText(/was not given access/).count(),
@@ -3617,12 +3625,12 @@ async function folderAllowHomelessCase(browser, profile) {
 		'folder-allow-homeless',
 		async ({ page }) => {
 			const dialog = await openFolderSettings(page);
-			const request = dialog.getByRole('group', { name: 'Plans that only chat', exact: true });
+			const request = dialog.getByRole('group', { name: 'Plans set to Chat only', exact: true });
 			// Claude's own computer is gone, but every plan that is on runs on each computer:
 			// Work PC lists both, and only ChatGPT, which is Chat only, is offered more access.
 			await request.waitFor();
 			const offered = await request.innerText();
-			assert.match(offered, /ChatGPT\s*·\s*Work PC\s*·\s*Chat only/);
+			assert.match(offered, /ChatGPT\s*·\s*Chat only/);
 			assert.doesNotMatch(offered, /Claude/, 'Claude already has full access');
 			assert.equal(await dialog.getByText(/has no computer it can use/).count(), 0);
 			// Choosing a folder lists the computer with the plans it runs.

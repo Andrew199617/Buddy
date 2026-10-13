@@ -184,8 +184,7 @@
 		const now = project?.plans.find((candidate) => candidate.id === plan.id);
 		// The save can go through while its answer is lost; the reloaded plan shows it.
 		if (now && now.enable && now.access === access) {
-			const computerName = now.machine?.name ?? plan.machine?.name ?? '';
-			toast.success(accessGrantedMessage($i18n, plan.name, access, computerName));
+			toast.success(accessGrantedMessage($i18n, plan.name, access));
 			await planAllowed();
 			return;
 		}
