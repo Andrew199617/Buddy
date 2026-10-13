@@ -1,7 +1,9 @@
 // What a chat folder's project folder choice means, for the folder dialog, the
-// folder page chip and the chat's project panel. No requests here.
+// folder page chip and the chat's project panel, and where keyboard focus goes
+// in the folder settings. No requests here.
 
 import type {
+	FolderPlan,
 	FolderProject,
 	ProjectFolderChoice,
 	ProjectFolderComputer,
@@ -97,6 +99,40 @@ export function anyFullAccess(project: FolderProject): boolean {
 	return project.computers.some((computer) =>
 		computer.providers.some((provider) => provider.access === 'full')
 	);
+}
+
+// What a Chat-only plan can be allowed from the folder settings.
+export type FileAccess = 'read' | 'full';
+
+/** Plans that are on but Chat only, on a computer they can use: the folder's settings can let them use files. */
+export function plansToAllow(project: FolderProject): FolderPlan[] {
+	return project.plans.filter(
+		(plan) => plan.enable && plan.access === 'chat' && plan.machine !== null
+	);
+}
+
+/** Plans that are on and may use files, but have no computer they can use. */
+export function plansWithoutComputer(project: FolderProject): FolderPlan[] {
+	return project.plans.filter(
+		(plan) => plan.enable && plan.access !== 'chat' && plan.machine === null
+	);
+}
+
+// 'ready': some plan can open folders. Otherwise what is missing: a Chat-only
+// plan to 'allow', a 'computer' for the plans that are on, or a plan to 'turn_on'.
+export type FileAccessNeed = 'ready' | 'allow' | 'computer' | 'turn_on';
+
+export function fileAccessNeed(project: FolderProject): FileAccessNeed {
+	if (workingComputers(project).length > 0) return 'ready';
+	if (plansToAllow(project).length > 0) return 'allow';
+	if (project.has_plans) return 'computer';
+	return 'turn_on';
+}
+
+/** Whether keyboard focus fell to the page, because what had it was removed or disabled. */
+export function focusWasLost(): boolean {
+	const active = document.activeElement;
+	return !active || active === document.body || !active.isConnected;
 }
 
 export function pathPlaceholder(platform: string | null): string {

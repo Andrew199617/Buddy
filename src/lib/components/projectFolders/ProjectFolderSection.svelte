@@ -1,25 +1,36 @@
 <script lang="ts">
 	// "Project folder" in a chat folder's settings: where Claude and ChatGPT
 	// work for chats in it. Each person chooses for themselves.
-	import { getContext, onMount, tick } from 'svelte';
+	import { getContext, onDestroy, onMount, tick } from 'svelte';
+	import { toast } from 'svelte-sonner';
 
 	import {
 		clearFolderProject,
 		getFolderProject,
 		saveFolderProject,
+		type FolderPlan,
 		type FolderProject,
 		type ProjectFolderChoice,
 		type ProjectFolderComputer
 	} from '$lib/apis/subscriptions';
 	import Spinner from '$lib/components/common/Spinner.svelte';
+	import { showSettings } from '$lib/stores';
+	import { accessGrantedMessage } from '$lib/components/admin/Settings/Connections/plan-access';
+	import PlanAccessRequest from './PlanAccessRequest.svelte';
 	import ProjectFolderPicker from './ProjectFolderPicker.svelte';
 	import { announceProjectFolderChange } from './project-folder-changes';
 	import {
 		anyFullAccess,
 		claudeReadHint,
 		draftFromProject,
+		fileAccessNeed,
+		focusWasLost,
+		plansToAllow,
+		plansWithoutComputer,
 		sameDraft,
 		waitsForOwnChoice,
+		type FileAccess,
+		type FileAccessNeed,
 		type ProjectDraft
 	} from './project-folders';
 
@@ -38,24 +49,43 @@
 	let draft: ProjectDraft = { mode: 'auto', paths: {} };
 	let saved: ProjectDraft = { mode: 'auto', paths: {} };
 	let pickingFor: ProjectFolderComputer | null = null;
+	// Why loading again after a plan change failed; what was loaded before still saves.
+	let refreshError = '';
+	// Why an Allow was refused, when its request could not show it.
+	let refusal = '';
+	// The dialog can close while an Allow is still saving.
+	let destroyed = false;
+
+	onDestroy(() => {
+		destroyed = true;
+	});
+	let sectionElement: HTMLElement | null = null;
 
 	$: dirty = !sameDraft(draft, saved);
-	$: workingComputers =
-		project?.computers.filter((computer) => computer.providers.length > 0) ?? [];
-	$: noFilePlans = project !== null && project.has_plans && workingComputers.length === 0;
+	$: need = project ? fileAccessNeed(project) : 'ready';
+	$: allowablePlans = project ? plansToAllow(project) : [];
+	$: homelessPlans = project ? plansWithoutComputer(project) : [];
+	// The request under the choices hides while picking a folder, and when the folder is just chat.
+	$: compactHidden = pickingFor !== null || draft.mode === 'chat';
+
+	/** Shows a loaded project; the caller decides what happens to the draft. */
+	function showProject(loaded: FolderProject | null) {
+		// Null: not allowed to use computers, or the folder is gone; nothing to choose here.
+		hidden = loaded === null;
+		project = loaded;
+		if (loaded) saved = draftFromProject(loaded);
+	}
+
+	function startFromSaved() {
+		draft = { mode: saved.mode, paths: { ...saved.paths } };
+	}
 
 	async function load() {
 		loading = true;
 		loadError = '';
 		try {
-			const loaded = await getFolderProject(localStorage.token, folderId);
-			// Null: not allowed to use computers, or the folder is gone; nothing to choose here.
-			hidden = loaded === null || !loaded.has_plans;
-			project = loaded;
-			if (loaded) {
-				saved = draftFromProject(loaded);
-				draft = { mode: saved.mode, paths: { ...saved.paths } };
-			}
+			showProject(await getFolderProject(localStorage.token, folderId));
+			startFromSaved();
 		} catch (cause) {
 			project = null;
 			loadError = `${cause}`;
@@ -65,6 +95,114 @@
 	}
 
 	onMount(load);
+
+	/** Loads again after a plan changed, keeping a choice the person has not saved yet. */
+	async function refresh() {
+		refusal = '';
+		let loaded: FolderProject | null;
+		try {
+			loaded = await getFolderProject(localStorage.token, folderId);
+		} catch (cause) {
+			refreshError = $i18n.t('The project folder could not be loaded: {{reason}}', {
+				reason: `${cause}`
+			});
+			return;
+		}
+		refreshError = '';
+		// Checked once the plans are back: the person may have chosen something meanwhile.
+		const unsaved = !sameDraft(draft, saved);
+		showProject(loaded);
+		if (!unsaved) startFromSaved();
+	}
+
+	/** Puts keyboard focus back in the section when what had it was replaced. */
+	async function keepFocusInSection() {
+		await tick();
+		if (!focusWasLost() || !sectionElement) return;
+		const name = `project-folder-mode-${folderId}`;
+		const choices = Array.from(
+			sectionElement.querySelectorAll<HTMLInputElement>(`input[name="${name}"]`)
+		);
+		let target: HTMLElement | null = choices.find((choice) => choice.checked) ?? choices[0] ?? null;
+		if (!target) target = sectionElement.querySelector<HTMLElement>('button');
+		target?.focus();
+	}
+
+	// Set while Settings → Machines is open from here; plans may change there.
+	let waitingForSettings = false;
+
+	function openMachineSettings() {
+		waitingForSettings = true;
+		showSettings.set('machines');
+	}
+
+	async function settingsClosed() {
+		waitingForSettings = false;
+		await refresh();
+		announceProjectFolderChange(folderId);
+		await keepFocusInSection();
+	}
+
+	$: if (waitingForSettings && !$showSettings) void settingsClosed();
+
+	function machineSettingsReason(currentNeed: FileAccessNeed, homeless: FolderPlan[]): string {
+		if (currentNeed === 'turn_on') {
+			return $i18n.t(
+				'No AI plan is turned on. Turn one on in Settings → Machines to let the AI work in a folder on your computer.'
+			);
+		}
+		if (currentNeed === 'computer') {
+			return $i18n.t(
+				'The plans you turned on have no computer they can use. Choose one in Settings → Machines.'
+			);
+		}
+		// Beside a Chat-only plan that can be allowed here.
+		if (homeless.length === 1) {
+			return $i18n.t('{{name}} has no computer it can use. Choose one in Settings → Machines.', {
+				name: homeless[0].name
+			});
+		}
+		return $i18n.t(
+			'Some of your plans have no computer they can use. Choose one in Settings → Machines.'
+		);
+	}
+
+	function refusalMessage(plan: FolderPlan, access: FileAccess, reason: string): string {
+		const now = project?.plans.find((candidate) => candidate.id === plan.id);
+		// The server can save the access and then turn the plan off, when a running
+		// reply cannot be confirmed stopped.
+		if (now && now.access === access && !now.enable) {
+			return $i18n.t('{{name}} was given the access but then turned off: {{reason}}', {
+				name: plan.name,
+				reason
+			});
+		}
+		return $i18n.t('{{name}} was not given access: {{reason}}', { name: plan.name, reason });
+	}
+
+	async function planRefused(plan: FolderPlan, access: FileAccess, reason: string) {
+		const now = project?.plans.find((candidate) => candidate.id === plan.id);
+		// The save can go through while its answer is lost; the reloaded plan shows it.
+		if (now && now.enable && now.access === access) {
+			toast.success(accessGrantedMessage($i18n, plan.name, access));
+			await planAllowed();
+			return;
+		}
+		const message = refusalMessage(plan, access, reason);
+		// Closed, or the reload found the section has nothing to show (no access, folder gone).
+		if (destroyed || hidden || !project) {
+			toast.error(message);
+			return;
+		}
+		refusal = message;
+		await keepFocusInSection();
+	}
+
+	async function planAllowed() {
+		// The folder page chip and a chat's Project tab list this folder's computers too.
+		announceProjectFolderChange(folderId);
+		await keepFocusInSection();
+	}
 
 	function computerProviders(computer: ProjectFolderComputer): string {
 		return computer.providers.map((provider) => provider.name).join(', ');
@@ -118,8 +256,8 @@
 				if (mode === 'folder') paths = draft.paths;
 				project = await saveFolderProject(localStorage.token, folderId, { mode, paths });
 			}
-			saved = draftFromProject(project);
-			draft = { mode: saved.mode, paths: { ...saved.paths } };
+			showProject(project);
+			startFromSaved();
 			announceProjectFolderChange(folderId);
 			return true;
 		} catch (cause) {
@@ -148,7 +286,11 @@
 		</button>
 	</div>
 {:else if !hidden && project}
-	<section aria-labelledby="project-folder-heading" class="flex flex-col gap-2">
+	<section
+		bind:this={sectionElement}
+		aria-labelledby="project-folder-heading"
+		class="flex flex-col gap-2"
+	>
 		<div>
 			<h3 id="project-folder-heading" class="text-xs text-gray-500">{$i18n.t('Project folder')}</h3>
 			<p class="mt-0.5 text-[0.6875rem] text-gray-500 dark:text-gray-400">
@@ -168,12 +310,29 @@
 				onBack={closePicker}
 				onPick={choosePath}
 			/>
-		{:else if noFilePlans}
-			<p class="text-xs text-gray-600 dark:text-gray-300">
-				{$i18n.t(
-					"Your plans are set to Chat only, so they don't open folders. Change their access in Settings → Machines."
-				)}
-			</p>
+		{:else if need !== 'ready'}
+			{#if need === 'allow'}
+				<PlanAccessRequest
+					plans={allowablePlans}
+					reload={refresh}
+					onAllowed={planAllowed}
+					onRefused={planRefused}
+				/>
+			{/if}
+			{#if need !== 'allow' || homelessPlans.length > 0}
+				<div class="flex flex-col gap-1.5">
+					<p class="text-xs text-gray-600 dark:text-gray-300">
+						{machineSettingsReason(need, homelessPlans)}
+					</p>
+					<button
+						type="button"
+						class="min-h-11 self-start rounded-lg border border-gray-100 px-3 text-xs font-medium hover:bg-gray-100 dark:border-gray-850 dark:hover:bg-gray-850 md:min-h-8"
+						on:click={openMachineSettings}
+					>
+						{$i18n.t('Open Settings → Machines')}
+					</button>
+				</div>
+			{/if}
 		{:else}
 			<div class="flex flex-col gap-1.5" role="radiogroup" aria-labelledby="project-folder-heading">
 				{#if waitsForOwnChoice(project)}
@@ -334,6 +493,28 @@
 			</div>
 		{/if}
 
+		<!-- Another plan already opens folders; these could too. Hidden while picking a
+		     folder, and moot when this folder is just chat, but kept mounted so an Allow
+		     in progress stays busy. -->
+		{#if need === 'ready' && allowablePlans.length > 0}
+			<div hidden={compactHidden}>
+				<PlanAccessRequest
+					compact
+					hidden={compactHidden}
+					plans={allowablePlans}
+					reload={refresh}
+					onAllowed={planAllowed}
+					onRefused={planRefused}
+				/>
+			</div>
+		{/if}
+
+		{#if refusal}
+			<p role="alert" class="text-xs text-red-600 dark:text-red-400">{refusal}</p>
+		{/if}
+		{#if refreshError}
+			<p role="alert" class="text-xs text-red-600 dark:text-red-400">{refreshError}</p>
+		{/if}
 		{#if error}
 			<p role="alert" class="text-xs text-red-600 dark:text-red-400">{error}</p>
 		{/if}
