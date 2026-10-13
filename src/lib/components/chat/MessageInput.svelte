@@ -101,7 +101,6 @@
 
 	import InputVariablesModal from './MessageInput/InputVariablesModal.svelte';
 	import Voice from '../icons/Voice.svelte';
-	import Terminal from '../icons/Terminal.svelte';
 	import IntegrationsMenu from './MessageInput/IntegrationsMenu.svelte';
 	import TerminalMenu from './MessageInput/TerminalMenu.svelte';
 	import Component from '../icons/Component.svelte';
@@ -225,7 +224,6 @@
 
 	export let imageGenerationEnabled = false;
 	export let webSearchEnabled = false;
-	export let codeInterpreterEnabled = false;
 	export let toolApprovalMode = 'full';
 	export let onToolApprovalModeChange: Function = () => {};
 
@@ -281,7 +279,6 @@
 		selectedFilterIds,
 		imageGenerationEnabled,
 		webSearchEnabled,
-		codeInterpreterEnabled,
 		toolApprovalMode
 	};
 
@@ -1054,13 +1051,7 @@
 	let user = null;
 	export let placeholder = '';
 
-	type ModelCapability =
-		| 'vision'
-		| 'file_upload'
-		| 'web_search'
-		| 'image_generation'
-		| 'code_interpreter'
-		| 'terminal';
+	type ModelCapability = 'vision' | 'file_upload' | 'web_search' | 'image_generation' | 'terminal';
 	type ModelCapabilitiesById = Record<string, Partial<Record<ModelCapability, boolean>>>;
 
 	let modelCapabilitiesById: ModelCapabilitiesById = {};
@@ -1095,13 +1086,6 @@
 	$: imageGenerationCapableModels = getCapableModelIds(
 		selectedModelIds,
 		'image_generation',
-		modelCapabilitiesById
-	);
-
-	let codeInterpreterCapableModels = [];
-	$: codeInterpreterCapableModels = getCapableModelIds(
-		selectedModelIds,
-		'code_interpreter',
 		modelCapabilitiesById
 	);
 
@@ -1145,25 +1129,12 @@
 		$config?.features?.enable_image_generation &&
 		($_user.role === 'admin' || $_user?.permissions?.features?.image_generation);
 
-	let showCodeInterpreterButton = false;
-	$: showCodeInterpreterButton =
-		!$selectedTerminalId &&
-		selectedModelIds.length === codeInterpreterCapableModels.length &&
-		$config?.features?.enable_code_interpreter &&
-		($_user.role === 'admin' || $_user?.permissions?.features?.code_interpreter);
-
 	$: showIntegrationsButton =
 		showWebSearchButton ||
 		showImageGenerationButton ||
-		showCodeInterpreterButton ||
 		showToolsButton ||
 		showSkillsButton ||
 		(toggleFilters && toggleFilters.length > 0);
-
-	// Disable code interpreter when terminal is active (mutually exclusive)
-	$: if ($selectedTerminalId && codeInterpreterEnabled) {
-		codeInterpreterEnabled = false;
-	}
 
 	// Clear selected terminal when model doesn't support terminal
 	$: if ($selectedTerminalId && selectedModelIds.length > 0 && terminalCapableModels.length === 0) {
@@ -2548,7 +2519,6 @@
 
 															webSearchEnabled = false;
 															imageGenerationEnabled = false;
-															codeInterpreterEnabled = false;
 														}
 													}}
 													on:paste={async (e) => {
@@ -2681,13 +2651,11 @@
 												{toggleFilters}
 												{showWebSearchButton}
 												{showImageGenerationButton}
-												{showCodeInterpreterButton}
 												bind:selectedToolIds
 												bind:selectedSkillIds
 												bind:selectedFilterIds
 												bind:webSearchEnabled
 												bind:imageGenerationEnabled
-												bind:codeInterpreterEnabled
 												oauthRedirectHandler={(tool: {
 													id: string;
 													serverId: string;
@@ -2873,6 +2841,10 @@
 											{#if webSearchEnabled && showWebSearchButton}
 												<Tooltip content={$i18n.t('Web Search')} placement="top">
 													<button
+														aria-label={webSearchEnabled
+															? $i18n.t('Disable Web Search')
+															: $i18n.t('Enable Web Search')}
+														aria-pressed={webSearchEnabled}
 														on:click|preventDefault={() => (webSearchEnabled = !webSearchEnabled)}
 														type="button"
 														class="group p-[0.375rem] flex gap-1.5 items-center text-sm rounded-full transition-colors duration-300 focus:outline-hidden max-w-full overflow-hidden {webSearchEnabled ||
@@ -2891,6 +2863,10 @@
 											{#if imageGenerationEnabled && showImageGenerationButton}
 												<Tooltip content={$i18n.t('Image')} placement="top">
 													<button
+														aria-label={imageGenerationEnabled
+															? $i18n.t('Disable Image Generation')
+															: $i18n.t('Enable Image Generation')}
+														aria-pressed={imageGenerationEnabled}
 														on:click|preventDefault={() =>
 															(imageGenerationEnabled = !imageGenerationEnabled)}
 														type="button"
@@ -2899,32 +2875,6 @@
 															: 'bg-transparent text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 '}"
 													>
 														<Photo className="size-4" strokeWidth="1.75" />
-														<div class="hidden group-hover:block">
-															<XMark className="size-4" strokeWidth="1.75" />
-														</div>
-													</button>
-												</Tooltip>
-											{/if}
-
-											{#if codeInterpreterEnabled && showCodeInterpreterButton}
-												<Tooltip content={$i18n.t('Code Interpreter')} placement="top">
-													<button
-														aria-label={codeInterpreterEnabled
-															? $i18n.t('Disable Code Interpreter')
-															: $i18n.t('Enable Code Interpreter')}
-														aria-pressed={codeInterpreterEnabled}
-														on:click|preventDefault={() =>
-															(codeInterpreterEnabled = !codeInterpreterEnabled)}
-														type="button"
-														class=" group p-[0.375rem] flex gap-1.5 items-center text-sm transition-colors duration-300 max-w-full overflow-hidden {codeInterpreterEnabled
-															? ' text-sky-500 dark:text-sky-300 bg-sky-50 hover:bg-sky-100 dark:bg-sky-400/10 dark:hover:bg-sky-700/10 border border-sky-200/40 dark:border-sky-500/20'
-															: 'bg-transparent text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 '} {($settings?.highContrastMode ??
-														false)
-															? 'm-1'
-															: 'focus:outline-hidden rounded-full'}"
-													>
-														<Terminal className="size-3.5" strokeWidth="2" />
-
 														<div class="hidden group-hover:block">
 															<XMark className="size-4" strokeWidth="1.75" />
 														</div>
