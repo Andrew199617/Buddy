@@ -3407,7 +3407,9 @@ async function folderCreateSharedCase(browser, profile) {
 				);
 			}
 
-			// With no instructions yet, the folder can follow Website.
+			// With no instructions yet, the folder can follow Website. The row shows once
+			// the project folder has loaded.
+			await projectRow.waitFor();
 			await openProjectSettings();
 			await openRunOnList();
 			assert.equal(await followOption.count(), 1);
