@@ -20,6 +20,7 @@ import {
 	needsAttention,
 	parentWithinRoot,
 	planAccesses,
+	plansReadingAnywhere,
 	projectSummary,
 	runOnValue,
 	sameDraft,
@@ -70,7 +71,12 @@ describe('the effective choice', () => {
 	it('is the folder’s own, then its parent’s, then Let the AI choose', () => {
 		expect(effectiveChoice(project()).mode).toBe('auto');
 		const inherited = project({ inherited: choice('chat', {}, 'Work') });
-		expect(effectiveChoice(inherited)).toEqual({ mode: 'chat', paths: {}, fromFolderName: 'Work' });
+		expect(effectiveChoice(inherited)).toEqual({
+			mode: 'chat',
+			paths: {},
+			machineId: '',
+			fromFolderName: 'Work'
+		});
 		const own = project({ own: choice('auto'), inherited: choice('chat', {}, 'Work') });
 		expect(effectiveChoice(own).fromFolderName).toBe('');
 	});
@@ -128,6 +134,49 @@ describe('the chip', () => {
 			own: choice('folder', { 'pc-2': { path: 'D:\\site', problem: null } })
 		});
 		expect(needsAttention(otherComputer)).toBe(true);
+	});
+
+	it('checks and names the folder on the chosen computer', () => {
+		const homePc = { ...workPc, machine_id: 'pc-2', name: 'Home PC' };
+		const site = { path: 'D:\\site', problem: null };
+		const onHome = project({
+			computers: [workPc, homePc],
+			own: { ...choice('folder', { 'pc-2': site }), machine_id: 'pc-2' }
+		});
+		expect(needsAttention(onHome)).toBe(false);
+		expect(chipState(onHome).label).toBe('Home PC · site');
+		// Another computer's old folder doesn't change where new chats start.
+		const withOld = project({
+			computers: [workPc, homePc],
+			own: {
+				...choice('folder', {
+					'pc-1': { path: 'C:\\old', problem: 'computer_changed' as const },
+					'pc-2': site
+				}),
+				machine_id: 'pc-2'
+			}
+		});
+		expect(needsAttention(withOld)).toBe(false);
+		expect(chipState(withOld).label).toBe('Home PC · site');
+		// The chosen computer has no folder yet.
+		const missing = project({
+			computers: [workPc, homePc],
+			own: {
+				...choice('folder', { 'pc-1': { path: 'C:\\code\\site', problem: null } }),
+				machine_id: 'pc-2'
+			}
+		});
+		expect(needsAttention(missing)).toBe(true);
+	});
+
+	it('lets Buddy pick any computer that has the folder', () => {
+		const homePc = { ...workPc, machine_id: 'pc-2', name: 'Home PC' };
+		const oneOfTwo = project({
+			computers: [workPc, homePc],
+			own: choice('folder', { 'pc-2': { path: 'D:\\site', problem: null } })
+		});
+		expect(needsAttention(oneOfTwo)).toBe(false);
+		expect(chipState(oneOfTwo).label).toBe('Home PC · site');
 	});
 
 	it('asks for attention when every computer with a folder was removed', () => {
@@ -288,10 +337,12 @@ describe('the plans’ default access', () => {
 		};
 		const differing = planAccesses(project({ computers: [both] }));
 		expect(differing).toEqual([
-			{ name: 'Claude', access: 'full' },
-			{ name: 'ChatGPT', access: 'read' }
+			{ id: 'claude', name: 'Claude', access: 'full' },
+			{ id: 'codex', name: 'ChatGPT', access: 'read' }
 		]);
 		expect(sharedPlanAccess(differing)).toBeNull();
+		// Codex's read-only sandbox reads anywhere; Claude Code's reads stay in the folder.
+		expect(plansReadingAnywhere(differing).map((plan) => plan.name)).toEqual(['ChatGPT']);
 		expect(sharedPlanAccess(planAccesses(project()))).toBe('full');
 		expect(sharedPlanAccess(planAccesses(project({ computers: [] })))).toBeNull();
 	});

@@ -14,6 +14,8 @@ import type {
 export type EffectiveChoice = {
 	mode: ProjectFolderMode;
 	paths: ProjectFolderChoice['paths'];
+	// The computer new chats start on, or '' when Buddy picks one.
+	machineId: string;
 	// The parent folder the choice comes from, or '' when it is the folder's own or the default.
 	fromFolderName: string;
 };
@@ -38,19 +40,38 @@ export function instructionsShared(
 /** The folder's own choice, else its parent's, else "Let the AI choose". */
 export function effectiveChoice(project: FolderProject): EffectiveChoice {
 	if (project.own) {
-		return { mode: project.own.mode, paths: project.own.paths, fromFolderName: '' };
+		return {
+			mode: project.own.mode,
+			paths: project.own.paths,
+			machineId: project.own.machine_id ?? '',
+			fromFolderName: ''
+		};
 	}
 	if (waitsForOwnChoice(project)) {
-		return { mode: 'chat', paths: {}, fromFolderName: '' };
+		return { mode: 'chat', paths: {}, machineId: '', fromFolderName: '' };
 	}
 	if (project.inherited) {
 		return {
 			mode: project.inherited.mode,
 			paths: project.inherited.paths,
+			machineId: project.inherited.machine_id ?? '',
 			fromFolderName: project.inherited.folder_name
 		};
 	}
-	return { mode: 'auto', paths: {}, fromFolderName: '' };
+	return { mode: 'auto', paths: {}, machineId: '', fromFolderName: '' };
+}
+
+function listed(project: FolderProject, machineId: string): boolean {
+	return project.computers.some((computer) => computer.machine_id === machineId);
+}
+
+/**
+ * The computer the choice starts new chats on, or '' when Buddy picks one. A computer
+ * removed since counts as no choice: the server then uses any computer with the folder.
+ */
+export function chosenComputerId(project: FolderProject, choice: EffectiveChoice): string {
+	if (!choice.machineId || !listed(project, choice.machineId)) return '';
+	return choice.machineId;
 }
 
 export function lastSegment(path: string): string {
@@ -59,21 +80,30 @@ export function lastSegment(path: string): string {
 	return parts[parts.length - 1];
 }
 
-/** Computers that run a plan which may use files. */
-function workingComputers(project: FolderProject): ProjectFolderComputer[] {
-	return project.computers.filter((computer) => computer.providers.length > 0);
-}
-
 /**
- * Something needs choosing again: a computer was set up again, the computers
- * with folders were all removed, or one running a plan has no folder.
+ * Something needs choosing again. With a chosen computer: it has no folder, or was set up
+ * again since. Otherwise: a computer with a folder was set up again, or none of the
+ * person's computers has the folder.
  */
 export function needsAttention(project: FolderProject): boolean {
 	const choice = effectiveChoice(project);
 	if (choice.mode !== 'folder') return false;
-	if (Object.keys(choice.paths).length === 0) return true;
+	const chosen = chosenComputerId(project, choice);
+	if (chosen) {
+		// New chats start on that computer, in its folder.
+		const saved = choice.paths[chosen];
+		return !saved || saved.problem !== null;
+	}
 	if (Object.values(choice.paths).some((saved) => saved.problem !== null)) return true;
-	return workingComputers(project).some((computer) => !choice.paths[computer.machine_id]);
+	// Buddy starts new chats on any computer that has the folder.
+	return !Object.keys(choice.paths).some((machineId) => listed(project, machineId));
+}
+
+/** "Computer · folder", or the folder alone when its computer is gone. */
+function folderLabel(project: FolderProject, machineId: string, path: string): string {
+	const computer = project.computers.find((candidate) => candidate.machine_id === machineId);
+	if (!computer) return lastSegment(path);
+	return `${computer.name} · ${lastSegment(path)}`;
 }
 
 export type ChipState = { label: string; tone: 'normal' | 'attention'; fromFolderName: string };
@@ -95,11 +125,17 @@ export function chipState(project: FolderProject): ChipState {
 	if (choice.mode === 'auto') {
 		return { label: 'AI chooses where to work', tone: 'normal', fromFolderName };
 	}
+	const chosen = chosenComputerId(project, choice);
+	if (chosen) {
+		// needsAttention made sure the chosen computer has its folder.
+		const label = folderLabel(project, chosen, choice.paths[chosen].path);
+		return { label, tone: 'normal', fromFolderName };
+	}
+	// Buddy picks among the computers with the folder; one still listed names it.
 	const entries = Object.entries(choice.paths);
-	const [machineId, saved] = entries[0];
-	const computer = project.computers.find((candidate) => candidate.machine_id === machineId);
-	let label = lastSegment(saved.path);
-	if (computer) label = `${computer.name} · ${label}`;
+	const listedEntry = entries.find(([machineId]) => listed(project, machineId));
+	const [machineId, saved] = listedEntry ?? entries[0];
+	let label = folderLabel(project, machineId, saved.path);
 	if (entries.length > 1) label = `${label} +${entries.length - 1}`;
 	return { label, tone: 'normal', fromFolderName };
 }
@@ -284,13 +320,25 @@ export function choiceFromDraft(
 	return { mode, paths, machine_id: machineId, access: draft.access, offered };
 }
 
-export type PlanAccess = { name: string; access: SubscriptionAccess };
+export type PlanAccess = { id: string; name: string; access: SubscriptionAccess };
 
 /** Each plan that is on, and the access its new chats start with when the folder follows the plans. */
 export function planAccesses(project: FolderProject): PlanAccess[] {
 	// Every computer lists the same plans, the ones that are on.
 	const providers = project.computers[0]?.providers ?? [];
-	return providers.map((provider) => ({ name: provider.name, access: provider.access }));
+	return providers.map((provider) => ({
+		id: provider.id,
+		name: provider.name,
+		access: provider.access
+	}));
+}
+
+/**
+ * Plans whose Read files can reach past the folder: Codex's read-only sandbox blocks
+ * writes, not reads. Claude Code's file tools stay in the folder it starts in.
+ */
+export function plansReadingAnywhere(plans: PlanAccess[]): PlanAccess[] {
+	return plans.filter((plan) => plan.id === 'codex');
 }
 
 /** The access every plan starts with, or null when they differ or none is on. */

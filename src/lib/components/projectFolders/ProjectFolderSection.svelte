@@ -39,6 +39,7 @@
 		focusWasLost,
 		instructionsShared,
 		planAccesses,
+		plansReadingAnywhere,
 		projectSummary,
 		runOnValue,
 		sameDraft,
@@ -314,6 +315,16 @@
 		return $i18n.t('What your plans start with. Each chat can still change it.');
 	}
 
+	// How far reads reach depends on the plan, so plans that read past the folder are named.
+	function readFilesOptionDescription(current: PlanAccess[]): string {
+		const anywhere = plansReadingAnywhere(current);
+		if (anywhere.length === 0) return $i18n.t('Reads and searches files and changes nothing.');
+		return $i18n.t(
+			'Reads and searches files and changes nothing. {{names}} can read any file your account can, not just this folder.',
+			{ names: anywhere.map((plan) => plan.name).join(', ') }
+		);
+	}
+
 	function describeAccess(
 		current: PlanAccess[],
 		shared: SubscriptionAccess | null,
@@ -337,7 +348,7 @@
 			{
 				value: 'read',
 				name: $i18n.t('Read files'),
-				description: $i18n.t('Reads files in the folder and changes nothing.'),
+				description: readFilesOptionDescription(current),
 				icon: 'read'
 			},
 			{
@@ -790,7 +801,7 @@
 				{:else if mayStartRead && draft.mode === 'auto'}
 					<p class="text-xs text-gray-600 dark:text-gray-400">
 						{$i18n.t(
-							'With Read files, the AI may read only inside the folder it starts in. Choose a specific folder so it can read your project.'
+							'With Read files, the AI starts in its start folder, which may not be your project. Choose a specific folder so it starts there.'
 						)}
 					</p>
 				{/if}
