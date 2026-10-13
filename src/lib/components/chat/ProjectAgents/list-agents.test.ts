@@ -24,6 +24,7 @@ const workPc: ProjectFolderComputer = {
 	online: true,
 	platform: 'win32',
 	can_browse: true,
+	folders: 'on',
 	providers: [],
 	recent_paths: []
 };
