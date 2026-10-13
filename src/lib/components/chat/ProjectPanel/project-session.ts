@@ -2,7 +2,7 @@
 // open, how far its file browser may go, and how it reads command results.
 // No requests here.
 
-import { CompanionError, type CompanionTerminal } from '$lib/apis/companion';
+import { CompanionError, type CompanionGrant, type CompanionTerminal } from '$lib/apis/companion';
 import type {
 	ChatRunTargetDetails,
 	FolderProject,
@@ -18,7 +18,10 @@ export type ProjectTarget = {
 	chooseAgain: boolean;
 };
 
-/** The chat folder's exact project folders, one per computer that has one. */
+/**
+ * The chat folder's exact project folders, one per computer that has one. The folder's
+ * chosen computer comes first, since new chats start there.
+ */
 export function projectTargets(project: FolderProject): ProjectTarget[] {
 	const choice = effectiveChoice(project);
 	if (choice.mode !== 'folder') return [];
@@ -28,7 +31,9 @@ export function projectTargets(project: FolderProject): ProjectTarget[] {
 		if (!saved) continue;
 		targets.push({ computer, path: saved.path, chooseAgain: saved.problem !== null });
 	}
-	return targets;
+	const chosen = targets.filter((target) => target.computer.machine_id === choice.machineId);
+	const others = targets.filter((target) => target.computer.machine_id !== choice.machineId);
+	return [...chosen, ...others];
 }
 
 /**
@@ -68,6 +73,11 @@ export function targetProblem(target: ProjectTarget): TargetProblem {
 	if (target.computer.kind !== 'app') return 'not_browsable';
 	if (!target.computer.online) return 'offline';
 	return null;
+}
+
+/** A shared folder the computer still has and lets this page read. */
+export function isReadableGrant(grant: CompanionGrant): boolean {
+	return grant.available !== false && grant.capabilities.read;
 }
 
 /** The folder above `current`, or null at the project folder itself. Paths are '/'-separated. */

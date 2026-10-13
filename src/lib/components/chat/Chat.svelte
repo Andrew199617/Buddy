@@ -53,6 +53,12 @@
 		openChatFolderId,
 		type ChatFolderMove
 	} from '$lib/components/chat/ProjectPanel/chat-folder';
+	import {
+		createSaveQueue,
+		ownAgent,
+		systemWithAgent,
+		type ChatAgent
+	} from '$lib/components/chat/ProjectAgents/chat-agent';
 	import { refreshChatList, refreshFolderChatLists } from '$lib/stores/chatList';
 
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
@@ -458,6 +464,8 @@
 	let chatFiles = [];
 	let files: any[] = [];
 	let params = {};
+	// The custom agent from the project folder, saved with the chat.
+	let selectedAgent: ChatAgent | null = null;
 	let chatVariables = {};
 	let showChatVariablesModal = false;
 
@@ -1100,6 +1108,7 @@
 			currentId: null
 		};
 		params = {};
+		selectedAgent = null;
 		chatVariables = {};
 		chatFiles = [];
 		files = [];
@@ -2368,6 +2377,7 @@
 
 		chatFiles = [];
 		params = {};
+		selectedAgent = null;
 		chatVariables = {};
 		taskIds = null;
 		chatTasks = [];
@@ -2565,6 +2575,7 @@
 
 				params = structuredClone(chatContent?.params ?? {});
 				delete params.note_id;
+				selectedAgent = ownAgent(chat, $user?.id);
 				chatFiles = structuredClone(chatContent?.files ?? []);
 
 				// Load tasks from chat-level DB field
@@ -3703,11 +3714,11 @@
 			true;
 		// Always include system prompt — backend extracts it and prepends to DB messages.
 		// Only temp chats need conversation messages (persisted chats load from DB).
-		let messages: any[] = [
-			params?.system || $settings.system
-				? { role: 'system', content: `${params?.system ?? $settings?.system ?? ''}` }
-				: undefined
-		].filter(Boolean);
+		const chatSystem = `${params?.system ?? $settings?.system ?? ''}`;
+		const system = systemWithAgent(chatSystem, selectedAgent);
+		let messages: any[] = [system ? { role: 'system', content: system } : undefined].filter(
+			Boolean
+		);
 
 		if ($temporaryChatEnabled) {
 			messages = [
@@ -4177,6 +4188,7 @@
 					models: selectedModels,
 					system: $settings.system ?? undefined,
 					params: params,
+					agent: selectedAgent ?? undefined,
 					history: history,
 					messages: createMessagesList(history, history.currentId),
 					tags: [],
@@ -4226,6 +4238,29 @@
 				});
 			}
 		}
+	};
+
+	// Agent saves run one at a time, so the last choice is the one that stays saved.
+	const queueAgentSave = createSaveQueue();
+
+	const saveAgent = async (savingChatId: string, agent: ChatAgent | null) => {
+		const saved = await updateChatById(localStorage.token, savingChatId, { agent }).catch(
+			(error) => {
+				console.error('[agent save]', error);
+				toast.error($i18n.t('The agent could not be saved with this chat.'));
+				return null;
+			}
+		);
+		// The page may have moved on to another chat while this was saving.
+		if (saved && $chatId === savingChatId) chat = saved;
+	};
+
+	const changeAgent = (agent: ChatAgent | null) => {
+		selectedAgent = agent;
+		// A chat that isn't saved yet keeps it until its first message saves it.
+		if (!$chatId || $temporaryChatEnabled) return;
+		const savingChatId = $chatId;
+		void queueAgentSave(() => saveAgent(savingChatId, agent));
 	};
 
 	const saveControls = async () => {
@@ -4576,6 +4611,7 @@
 											title: title.length > 50 ? `${title.slice(0, 50)}...` : title,
 											models: selectedModels,
 											params: params,
+											agent: selectedAgent ?? undefined,
 											history: history,
 											messages: messages,
 											timestamp: Date.now()
@@ -4670,6 +4706,9 @@
 										bind:selectedToolIds
 										bind:selectedSkillIds
 										bind:selectedFilterIds
+										agentFolderId={sidePanelFolderId}
+										{selectedAgent}
+										onAgentChange={changeAgent}
 										bind:imageGenerationEnabled
 										bind:codeInterpreterEnabled
 										{pendingOAuthTools}
@@ -4827,6 +4866,9 @@
 									bind:selectedToolIds
 									bind:selectedSkillIds
 									bind:selectedFilterIds
+									agentFolderId={sidePanelFolderId}
+									{selectedAgent}
+									onAgentChange={changeAgent}
 									bind:imageGenerationEnabled
 									bind:codeInterpreterEnabled
 									bind:webSearchEnabled

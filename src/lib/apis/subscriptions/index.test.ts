@@ -173,6 +173,22 @@ describe('per-user machines and sign-ins', () => {
 		await expect(getFolderProject('fixture-token', 'website')).rejects.toBe('Buddy restarted');
 	});
 
+	it('asks what a new folder starts with, under its parent or at the top', async () => {
+		const { getNewFolderProject } = await import('./index');
+		await getNewFolderProject('fixture-token', 'folder / A');
+		expect(request().url.pathname).toBe('/api/v1/subscriptions/new-folder/project');
+		expect(request().url.searchParams.get('parent_id')).toBe('folder / A');
+		fetchMock.mockClear();
+		await getNewFolderProject('fixture-token', null);
+		expect(request().url.search).toBe('');
+		fetchMock.mockResolvedValueOnce({
+			ok: false,
+			status: 404,
+			json: async () => ({ detail: 'No' })
+		});
+		await expect(getNewFolderProject('fixture-token', 'gone')).resolves.toBeNull();
+	});
+
 	it('stores the Claude token under Claude only', async () => {
 		const { saveClaudePlanToken } = await import('./index');
 		await saveClaudePlanToken('fixture-token', 'sk-ant-oat01-fixture');

@@ -37,6 +37,7 @@ from open_webui.tasks import get_active_task_item_ids, get_response_streams_by_c
 from open_webui.utils.access_control import filter_allowed_access_grants, has_permission
 from open_webui.utils.access_control.folders import has_folder_write_access
 from open_webui.utils.auth import bearer_security, get_admin_user, get_current_user, get_verified_user
+from open_webui.utils.chat_agent import contents_for_owner, without_agent
 from open_webui.utils.chat_fork import build_fork_history
 from open_webui.utils.context_compaction import compact_chat_branch, get_chat_context_usage
 from open_webui.utils.misc import get_message_list
@@ -862,8 +863,13 @@ async def import_chats(
 ):
     await require_chat_import_permission(request, user, db)
 
+    # A file may come from anyone, so its chats start without a custom agent.
+    imported = [
+        form.model_copy(update={'chat': contents_for_owner(form.chat, None, user.id)}) for form in form_data.chats
+    ]
+
     try:
-        chats = await Chats.import_chats(user.id, form_data.chats, db=db)
+        chats = await Chats.import_chats(user.id, imported, db=db)
         # Imported chats keep their dates but start like new chats, not where chats from before targets ran.
         for chat in chats:
             await bind_imported_chat(user, chat.id)
@@ -1391,6 +1397,9 @@ async def get_chat_by_id(
 
     if chat:
         data = ChatResponse.model_validate(chat, from_attributes=True).model_dump()
+        if chat.user_id != user.id:
+            # Only the person who chose a custom agent sees its instructions.
+            data['chat'] = without_agent(data['chat'])
         data = overlay_response_streams(
             data,
             await get_response_streams_by_chat_id(request.app.state.redis, id),
@@ -1927,8 +1936,9 @@ async def clone_shared_chat_by_id(
                 detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
             )
 
+    # Someone else's custom agent never comes along.
     updated_chat = {
-        **chat.chat,
+        **contents_for_owner(chat.chat, chat.user_id, user.id),
         'originalChatId': chat.id,
         'branchPointMessageId': chat.chat['history']['currentId'],
         'title': f'Clone of {chat.title}',

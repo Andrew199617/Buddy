@@ -352,9 +352,23 @@ async def save_computer_settings(
         raise _bad_request(error)
 
 
+@router.get('/machines/{machine_id}/agents')
+async def get_machine_agents(machine_id: str, path: str, user=Depends(get_machine_user)):
+    try:
+        return await service.server_agent_files(user, machine_id, path)
+    except SubscriptionError as error:
+        raise _bad_request(error)
+
+
 @router.get('/folders/{folder_id}/project')
 async def get_folder_project(folder_id: str, user=Depends(get_machine_user)):
     return await service.describe_folder_project(user, folder_id)
+
+
+@router.get('/new-folder/project')
+async def get_new_folder_project(parent_id: Optional[str] = None, user=Depends(get_machine_user)):
+    """What a folder about to be created starts with, for the create dialog."""
+    return await service.describe_new_folder_project(user, parent_id)
 
 
 @router.put('/folders/{folder_id}/project')

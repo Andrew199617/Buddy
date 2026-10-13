@@ -11,6 +11,7 @@ import {
 	chatProjectTarget,
 	checkTerminalReply,
 	crumbsBelow,
+	isReadableGrant,
 	isTransientFailure,
 	isWithinProject,
 	mayHaveRun,
@@ -48,8 +49,8 @@ function project(overrides: Partial<FolderProject> = {}): FolderProject {
 		own: null,
 		inherited: null,
 		shared_instructions: false,
+		others_can_edit: false,
 		has_plans: true,
-		plans: [],
 		computers: [laptop, computer()],
 		...overrides
 	};
@@ -82,6 +83,24 @@ describe('the project folders a chat can open', () => {
 		expect(preferredTarget(targets)?.computer.name).toBe('Work PC');
 	});
 
+	it('opens the folder on the folder’s chosen computer first', () => {
+		const pc = computer();
+		const runsPlans = { ...laptop, providers: pc.providers };
+		const chosen = project({
+			computers: [pc, runsPlans],
+			own: {
+				...folderChoice({
+					laptop: { path: '/home/sam/site', problem: null },
+					'pc-1': { path: 'C:\\code\\site', problem: null }
+				}),
+				machine_id: 'laptop'
+			}
+		});
+		const targets = projectTargets(chosen);
+		expect(targets.map((target) => target.computer.machine_id)).toEqual(['laptop', 'pc-1']);
+		expect(preferredTarget(targets)?.computer.name).toBe('Laptop');
+	});
+
 	it('uses a parent folder’s choice and has none when the AI chooses', () => {
 		const inherited = project({
 			inherited: folderChoice({ 'pc-1': { path: 'C:\\x', problem: null } })
@@ -107,6 +126,22 @@ describe('the project folders a chat can open', () => {
 			own: folderChoice({ 'pc-1': { path: 'C:\\x', problem: 'computer_changed' } })
 		});
 		expect(projectTargets(chosen)[0].chooseAgain).toBe(true);
+	});
+
+	it('reads only shared folders the computer still has and lets it read', () => {
+		const shared = {
+			id: 'grant-code',
+			name: 'code',
+			path: 'C:\code',
+			capabilities: { read: true, write: false, execute: false },
+			available: true,
+			unavailableReason: null
+		};
+		expect(isReadableGrant(shared)).toBe(true);
+		expect(isReadableGrant({ ...shared, available: false })).toBe(false);
+		expect(
+			isReadableGrant({ ...shared, capabilities: { read: false, write: true, execute: false } })
+		).toBe(false);
 	});
 });
 

@@ -480,18 +480,6 @@ export type ProjectFolderComputer = {
 	recent_paths: string[];
 };
 
-// One of the person's plans, as their chat folder settings see it.
-export type FolderPlan = {
-	id: SubscriptionProviderId;
-	name: string;
-	// Off plans answer in no chat.
-	enable: boolean;
-	access: SubscriptionAccess;
-	// The computer it runs on, with the revision an access change must confirm,
-	// or null when it has none it can use.
-	machine: { id: string; name: string; revision: string } | null;
-};
-
 export type FolderProject = {
 	folder_id: string;
 	folder_name: string;
@@ -502,8 +490,10 @@ export type FolderProject = {
 	// The folder adds instructions others can change, so its chats stay chat-only
 	// until this person makes their own choice for it.
 	shared_instructions: boolean;
+	// Someone else may edit the folder (for one being created, its parent), so
+	// instructions added to it would be shared too.
+	others_can_edit: boolean;
 	has_plans: boolean;
-	plans: FolderPlan[];
 	computers: ProjectFolderComputer[];
 };
 
@@ -516,6 +506,22 @@ export const getFolderProject = async (
 	folderId: string
 ): Promise<FolderProject | null> => {
 	const path = `/folders/${encodeURIComponent(folderId)}/project`;
+	const response = await sendSubscriptionRequest(token, path, 'GET');
+	if (response.status === 403 || response.status === 404) return null;
+	return readSubscriptionResponse(response);
+};
+
+/**
+ * What a chat folder about to be created starts with: its parent's choice and
+ * the computers it can be on. Null when the person may not use computers (403)
+ * or can't read the parent (404). Other failures throw.
+ */
+export const getNewFolderProject = async (
+	token: string,
+	parentId: string | null
+): Promise<FolderProject | null> => {
+	let path = '/new-folder/project';
+	if (parentId) path = `${path}?parent_id=${encodeURIComponent(parentId)}`;
 	const response = await sendSubscriptionRequest(token, path, 'GET');
 	if (response.status === 403 || response.status === 404) return null;
 	return readSubscriptionResponse(response);
@@ -765,4 +771,20 @@ export const saveComputerSettings = async (
 		'PUT',
 		settings
 	);
+};
+
+export type AgentFileText = { path: string; content: string };
+
+/**
+ * The agent files in a folder on This server, the chat's own folder. Agents on
+ * Buddy app computers are read through the relay instead. Throws the server's
+ * reason when they can't be read.
+ */
+export const getServerAgentFiles = async (
+	token: string,
+	machineId: string,
+	path: string
+): Promise<{ files: AgentFileText[]; left_out: number }> => {
+	const query = new URLSearchParams({ path });
+	return subscriptionRequest(token, `/machines/${encodeURIComponent(machineId)}/agents?${query}`);
 };
