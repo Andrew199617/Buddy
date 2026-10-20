@@ -1415,6 +1415,20 @@ async def authenticate_runner(machine_id, credential) -> dict | None:
     return {**config, 'user_id': _machine_owner(config, await server_owner_id())}
 
 
+async def unenroll_runner(machine_id, credential) -> bool:
+    """A computer removes itself with its own credential, as if its owner removed it.
+
+    The Buddy app does this when it can't keep a credential it was just given, and
+    before it moves to another Buddy server. False when no computer matches, so a
+    removal that was already done reads the same as one that never could be.
+    """
+    machine = await authenticate_runner(machine_id, credential)
+    if machine is None:
+        return False
+    await delete_machine(machine['user_id'], machine['id'])
+    return True
+
+
 async def record_runner_connected(machine_id: str, info: dict) -> None:
     """Save what a connecting computer reports about itself, and when it was seen."""
     async with _machine_lock:
