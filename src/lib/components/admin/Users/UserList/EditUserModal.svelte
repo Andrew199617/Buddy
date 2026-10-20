@@ -6,12 +6,13 @@
 
 	import { goto } from '$app/navigation';
 
-	import { updateUserById, getUserGroupsById } from '$lib/apis/users';
+	import { updateUserById, getUserGroupsById, getSuperUsers, setSuperUser } from '$lib/apis/users';
 
 	import Modal from '$lib/components/common/Modal.svelte';
 	import localizedFormat from 'dayjs/plugin/localizedFormat';
 	import XMark from '$lib/components/icons/XMark.svelte';
 	import SensitiveInput from '$lib/components/common/SensitiveInput.svelte';
+	import Switch from '$lib/components/common/Switch.svelte';
 	import UserProfileImage from '$lib/components/chat/Settings/Account/UserProfileImage.svelte';
 
 	const i18n = getContext('i18n');
@@ -30,6 +31,7 @@
 		if (selectedUser) {
 			_user = { ...selectedUser, password: '' };
 			loadUserGroups();
+			loadSuperUser();
 		}
 	};
 
@@ -43,15 +45,45 @@
 
 	let userGroups: any[] | null = null;
 
+	// Only the server owner sees the Super user switch, and only for other administrators.
+	let isServerOwner = false;
+	let wasSuperUser = false;
+	let superUser = false;
+	$: showSuperUser =
+		isServerOwner && _user.role === 'admin' && selectedUser?.id !== sessionUser?.id;
+
 	const submitHandler = async () => {
 		const res = await updateUserById(localStorage.token, selectedUser.id, _user).catch((error) => {
 			toast.error(`${error}`);
 		});
 
 		if (res) {
+			await saveSuperUser();
 			dispatch('save');
 			show = false;
 		}
+	};
+
+	const loadSuperUser = async () => {
+		isServerOwner = false;
+		wasSuperUser = false;
+		superUser = false;
+		if (sessionUser?.role !== 'admin' || !selectedUser?.id) return;
+		const superUsers = await getSuperUsers(localStorage.token).catch(() => null);
+		if (!superUsers) return;
+		isServerOwner = superUsers.owner_id === sessionUser.id;
+		wasSuperUser = superUsers.user_ids.includes(selectedUser.id);
+		superUser = wasSuperUser;
+	};
+
+	const saveSuperUser = async () => {
+		if (!isServerOwner) return;
+		// Someone who stops being an administrator stops being a super user too.
+		const wanted = superUser && _user.role === 'admin';
+		if (wanted === wasSuperUser) return;
+		await setSuperUser(localStorage.token, selectedUser.id, wanted).catch((error) => {
+			toast.error(`${error}`);
+		});
 	};
 
 	const loadUserGroups = async () => {
@@ -150,6 +182,20 @@
 											</select>
 										</div>
 									</div>
+
+									{#if showSuperUser}
+										<div class="flex w-full items-center justify-between gap-3">
+											<div class="flex flex-col">
+												<div id="edit-user-super-user" class="text-xs text-gray-500">
+													{$i18n.t('Super user')}
+												</div>
+												<div class="text-xs text-gray-400 dark:text-gray-500">
+													{$i18n.t('Can edit other people’s folders.')}
+												</div>
+											</div>
+											<Switch bind:state={superUser} ariaLabelledbyId="edit-user-super-user" />
+										</div>
+									{/if}
 
 									<div class="flex flex-col w-full">
 										<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Name')}</div>
