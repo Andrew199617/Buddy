@@ -3,6 +3,7 @@
 // reaches the web page.
 
 export const ENROLL_PATH = '/api/v1/runners/enroll';
+export const UNENROLL_PATH = '/api/v1/runners/unenroll';
 
 export type HostDetails = { name: string; platform: string; version: string };
 
@@ -44,4 +45,31 @@ export async function enrollComputer(
 	let name = host.name;
 	if (typeof body?.name === 'string' && body.name) name = body.name;
 	return { machineId, credential, name };
+}
+
+/**
+ * Removes this computer from a Buddy server with its own credential. A 404
+ * means it is already gone, which counts as done; anything else throws.
+ */
+export async function unenrollComputer(
+	serverUrl: string,
+	machineId: string,
+	credential: string,
+	fetchImpl: FetchLike
+): Promise<void> {
+	let response: Response;
+	try {
+		response = await fetchImpl(`${serverUrl}${UNENROLL_PATH}`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+			body: JSON.stringify({ machine_id: machineId, credential }),
+			redirect: 'error',
+			signal: AbortSignal.timeout(30000)
+		});
+	} catch {
+		throw new Error('Could not reach Buddy to remove this computer.');
+	}
+	if (response.ok || response.status === 404) return;
+	const body = await response.json().catch(() => null);
+	throw new Error(refusalMessage(body, response.status));
 }

@@ -24,10 +24,17 @@ class MemorySettings {
 
 class MemoryCredentials {
 	value: string | null = null;
+	storable = true;
+	// Secure storage that says it works, then fails to save.
+	failWrite = false;
 	read() {
 		return this.value;
 	}
+	canStore() {
+		return this.storable;
+	}
 	write(credential: string) {
+		if (this.failWrite) throw new Error('The connection file could not be written.');
 		this.value = credential;
 	}
 	delete() {
@@ -66,6 +73,7 @@ type Answers = {
 	folder?: string | null;
 	projectFolder?: string | null;
 	permission?: boolean;
+	unenrollFails?: boolean;
 };
 
 function setUp(answers: Answers = {}, initial: Partial<DesktopSettings> = {}) {
@@ -75,6 +83,7 @@ function setUp(answers: Answers = {}, initial: Partial<DesktopSettings> = {}) {
 	const asked: string[] = [];
 	const openedAt: (string | undefined)[] = [];
 	const enrollments: { token: string; host: HostDetails }[] = [];
+	const unenrollments: { serverUrl: string; machineId: string; credential: string }[] = [];
 	let loginItem = false;
 	const dialogs: Dialogs = {
 		confirmConnect: async () => {
@@ -105,12 +114,16 @@ function setUp(answers: Answers = {}, initial: Partial<DesktopSettings> = {}) {
 			enrollments.push({ token, host });
 			return { machineId: 'machine-1', credential: 'bdr1_secret', name: host.name };
 		},
+		unenroll: async (serverUrl, machineId, credential) => {
+			unenrollments.push({ serverUrl, machineId, credential });
+			if (answers.unenrollFails) throw new Error('Could not reach Buddy to remove this computer.');
+		},
 		platform: 'win32',
 		appVersion: '0.1.0',
 		hostName: 'STUDIO-PC',
 		accountName: 'sam'
 	});
-	return { service, settings, credentials, supervisor, asked, enrollments, openedAt };
+	return { service, settings, credentials, supervisor, asked, enrollments, unenrollments, openedAt };
 }
 
 test('connecting asks first, and a no changes nothing', async () => {
@@ -242,12 +255,43 @@ test('a saved connection without a readable credential asks to connect again', (
 	assert.equal(service.getStatus().state, 'error');
 });
 
-test('changing the Buddy address disconnects this computer first', async () => {
-	const { service, credentials, settings } = setUp();
+test('changing the Buddy address removes this computer from the old server first', async () => {
+	const { service, credentials, settings, unenrollments } = setUp();
+	await service.connectThisPC('bde1_token', 'PC');
+	await service.changeServer('https://other.example.com');
+	assert.deepEqual(unenrollments, [
+		{ serverUrl: 'https://buddy.example.com', machineId: 'machine-1', credential: 'bdr1_secret' }
+	]);
+	assert.equal(credentials.value, null);
+	assert.equal(settings.saved.serverUrl, 'https://other.example.com');
+	assert.equal(service.getStatus().message, undefined);
+});
+
+test('an unreachable old server still lets the address change, and says what is left there', async () => {
+	const { service, credentials, settings } = setUp({ unenrollFails: true });
 	await service.connectThisPC('bde1_token', 'PC');
 	await service.changeServer('https://other.example.com');
 	assert.equal(credentials.value, null);
 	assert.equal(settings.saved.serverUrl, 'https://other.example.com');
+	assert.match(service.getStatus().message ?? '', /buddy\.example\.com could not be reached.*Settings → Machines/);
+});
+
+test('a computer that cannot store the connection is never enrolled', async () => {
+	const { service, credentials, enrollments } = setUp();
+	credentials.storable = false;
+	await assert.rejects(service.connectThisPC('bde1_token', 'PC'), /cannot store the connection securely/);
+	assert.equal(enrollments.length, 0);
+});
+
+test('a credential that fails to save is taken back off Buddy', async () => {
+	const { service, credentials, settings, enrollments, unenrollments } = setUp();
+	credentials.failWrite = true;
+	await assert.rejects(service.connectThisPC('bde1_token', 'PC'), /could not be written/);
+	assert.equal(enrollments.length, 1);
+	assert.deepEqual(unenrollments, [
+		{ serverUrl: 'https://buddy.example.com', machineId: 'machine-1', credential: 'bdr1_secret' }
+	]);
+	assert.equal(settings.saved.machine, null);
 });
 
 test('starting at sign-in is reported back', () => {

@@ -32,6 +32,7 @@ export type DesktopServiceOptions = {
 	dialogs: Dialogs;
 	loginItem: LoginItem;
 	enroll: (serverUrl: string, token: string, host: HostDetails) => Promise<EnrolledComputer>;
+	unenroll: (serverUrl: string, machineId: string, credential: string) => Promise<void>;
 	platform: string;
 	appVersion: string;
 	hostName: string;
@@ -108,6 +109,10 @@ export class DesktopService extends EventEmitter {
 		if (!ENROLLMENT_TOKEN.test(token)) throw new Error('Buddy sent an invalid connection request.');
 		const answer = await this.options.dialogs.confirmConnect(serverUrl, this.options.accountName);
 		if (!answer.connect) return this.getStatus();
+		// Checked first: once Buddy enrolls this computer, a lost credential leaves it unusable there.
+		if (!this.options.credentials.canStore()) {
+			throw new Error('This computer cannot store the connection securely, so it was not connected.');
+		}
 
 		this.connecting = true;
 		this.emitStatus();
@@ -118,7 +123,13 @@ export class DesktopService extends EventEmitter {
 				version: this.options.appVersion
 			};
 			const enrolled = await this.options.enroll(serverUrl, token, host);
-			this.options.credentials.write(enrolled.credential);
+			try {
+				this.options.credentials.write(enrolled.credential);
+			} catch (error) {
+				// Buddy already added this computer; take it back off so it doesn't count against the limit.
+				await this.removeFromServer(serverUrl, enrolled.machineId, enrolled.credential);
+				throw error;
+			}
 			this.settings.machine = { id: enrolled.machineId, name: enrolled.name };
 			this.settings.allowFolderBrowsing = answer.allowFolderBrowsing;
 			this.saveSettings();
@@ -192,12 +203,41 @@ export class DesktopService extends EventEmitter {
 		return this.getStatus();
 	}
 
-	/** A computer's connection belongs to one Buddy server, so changing it disconnects first. */
+	/**
+	 * A computer's connection belongs to one Buddy server, so changing it removes
+	 * this computer from the old server first, while the credential still exists.
+	 */
 	async changeServer(serverUrl: string): Promise<void> {
-		if (serverUrl === this.settings.serverUrl) return;
-		if (this.settings.machine) await this.disconnectThisPC();
+		const oldServer = this.settings.serverUrl;
+		if (serverUrl === oldServer) return;
+		const machine = this.settings.machine;
+		let leftBehind = false;
+		if (machine) {
+			const credential = this.options.credentials.read();
+			if (oldServer && credential) {
+				leftBehind = !(await this.removeFromServer(oldServer, machine.id, credential));
+			}
+			await this.disconnectThisPC();
+		}
 		this.settings.serverUrl = serverUrl;
 		this.saveSettings();
+		if (leftBehind) {
+			this.ending = {
+				state: 'not_connected',
+				message: `${oldServer} could not be reached to remove this computer. Remove it in Settings → Machines there.`
+			};
+			this.emitStatus();
+		}
+	}
+
+	/** Removes this computer from a server; false when that did not happen. */
+	private async removeFromServer(serverUrl: string, machineId: string, credential: string): Promise<boolean> {
+		try {
+			await this.options.unenroll(serverUrl, machineId, credential);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	async shutdown(): Promise<void> {
