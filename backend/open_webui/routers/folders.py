@@ -43,6 +43,7 @@ router = APIRouter()
 
 
 from open_webui.utils.access_control.folders import has_folder_access as _has_folder_access
+from open_webui.utils.super_users import is_super_user
 
 
 async def get_folder_unread_counts(request: Request, user_id: str, db: AsyncSession | None = None) -> dict[str, int]:
@@ -170,7 +171,7 @@ async def create_folder(
         parent = await Folders.get_folder_by_id(form_data.parent_id, db=db)
         if parent and parent.user_id != user.id:
             # Creating subfolder in someone else's shared folder
-            if user.role != 'admin' and not await _has_folder_access(user.id, parent, 'write', db):
+            if not await is_super_user(user) and not await _has_folder_access(user.id, parent, 'write', db):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
@@ -316,7 +317,7 @@ async def get_folder_by_id(
         return FolderResponse(
             **folder.model_dump(),
             access_grants=[g.model_dump() for g in grants],
-            write_access=user.role == 'admin' or await _has_folder_access(user.id, folder, 'write', db),
+            write_access=await is_super_user(user) or await _has_folder_access(user.id, folder, 'write', db),
         )
 
     raise HTTPException(
@@ -343,7 +344,7 @@ async def update_folder_name_by_id(
     if not folder:
         # Check shared write access
         folder = await Folders.get_folder_by_id(id, db=db)
-        if not folder or (user.role != 'admin' and not await _has_folder_access(user.id, folder, 'write', db)):
+        if not folder or (not await is_super_user(user) and not await _has_folder_access(user.id, folder, 'write', db)):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ERROR_MESSAGES.NOT_FOUND,
@@ -524,8 +525,8 @@ async def update_folder_access_by_id(
             detail=ERROR_MESSAGES.NOT_FOUND,
         )
 
-    # Only owner, admin, or write-granted user can update access
-    if user.role != 'admin' and user.id != folder.user_id:
+    # Only the owner, a write-granted user, or a super user can update access
+    if user.id != folder.user_id and not await is_super_user(user):
         if not await _has_folder_access(user.id, folder, 'write', db):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -582,8 +583,7 @@ async def get_shared_folder_chats(
         )
 
     is_owner = user.id == folder.user_id
-    is_admin = user.role == 'admin'
-    has_write = is_owner or is_admin or await _has_folder_access(user.id, folder, 'write', db)
+    has_write = is_owner or await is_super_user(user) or await _has_folder_access(user.id, folder, 'write', db)
     has_read = has_write or await _has_folder_access(user.id, folder, 'read', db)
 
     if not has_read:
@@ -685,14 +685,14 @@ async def delete_folder_by_id(
     folder = await Folders.get_folder_by_id_and_user_id(id, user.id, db=db)
 
     if not folder:
-        # Deletion cascades into the owner's data, so only the owner or an admin may delete
+        # Deletion cascades into the owner's data, so only the owner or a super user may delete
         folder = await Folders.get_folder_by_id(id, db=db)
         if not folder:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ERROR_MESSAGES.NOT_FOUND,
             )
-        if user.role != 'admin':
+        if not await is_super_user(user):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
