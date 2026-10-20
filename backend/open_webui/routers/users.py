@@ -47,6 +47,7 @@ from open_webui.utils.auth import (
 )
 from open_webui.utils.chat_variables import ChatVariablesError, normalize_user_variables, validate_user_variables
 from open_webui.utils.subscriptions import service as subscription_service
+from open_webui.utils import super_users
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -790,6 +791,35 @@ class UserActiveResponse(UserStatus):
 
     is_active: bool
     model_config = ConfigDict(extra='allow')
+
+
+############################
+# Super users
+############################
+
+
+class SuperUserForm(BaseModel):
+    enabled: bool
+
+
+@router.get('/super-users')
+async def get_super_users(user=Depends(get_admin_user)):
+    """The server owner and the administrators the owner named; only they edit others' folders."""
+    return await super_users.describe_super_users()
+
+
+@router.post('/{user_id}/super-user')
+async def set_super_user(
+    user_id: str,
+    form_data: SuperUserForm,
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    target = await Users.get_user_by_id(user_id, db=db)
+    try:
+        return await super_users.set_super_user(user, target, form_data.enabled)
+    except super_users.SuperUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
 
 
 @router.get('/{user_id}', response_model=UserActiveResponse)
