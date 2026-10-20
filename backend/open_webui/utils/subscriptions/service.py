@@ -2829,6 +2829,18 @@ async def forget_user(user_id: str) -> None:
         await HUB.disconnect(machine_id, CLOSE_UNKNOWN_MACHINE, REMOVED_MACHINE_MESSAGE)
 
 
+async def forget_deleted_user(user_id: str) -> None:
+    """forget_user for an account that is already deleted, from any delete route.
+
+    The account is gone either way, so a failed cleanup is only logged: its
+    machines simply stop being usable.
+    """
+    try:
+        await forget_user(user_id)
+    except Exception as error:
+        log.warning('Could not clean up the machines of deleted user %s: %s', user_id, error)
+
+
 # Stored sign-ins and API keys
 
 
