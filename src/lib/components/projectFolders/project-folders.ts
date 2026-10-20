@@ -295,7 +295,10 @@ export function sameDraft(first: ProjectDraft, second: ProjectDraft): boolean {
 /**
  * The whole choice to save. The server replaces the folder's choice, so every
  * field goes, even unchanged ones. A computer that is no longer listed (removed
- * since) is dropped from where new chats start, since saving would be refused.
+ * since) is dropped from where new chats start, since saving would be refused. With
+ * one computer chosen, other computers' folders are dropped too: the dialog hides
+ * them, and the server would check each one, so an offline or set-up-again computer
+ * the person can't see would refuse the whole save.
  */
 export function choiceFromDraft(
 	draft: ProjectDraft,
@@ -309,7 +312,9 @@ export function choiceFromDraft(
 	const paths: Record<string, string> = {};
 	if (mode === 'folder') {
 		for (const [computerId, path] of Object.entries(draft.paths)) {
-			if (stillListed(computers, computerId)) paths[computerId] = path;
+			if (!stillListed(computers, computerId)) continue;
+			if (machineId && computerId !== machineId) continue;
+			paths[computerId] = path;
 		}
 	}
 	const offered: Record<string, string[]> = {};
