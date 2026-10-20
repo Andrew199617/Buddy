@@ -450,9 +450,27 @@ describe('the choice to save', () => {
 			paths: { 'pc-1': 'C:\\site', gone: 'D:\\x', local: '/srv/site' },
 			offered: { gone: ['D:\\y'], local: ['/srv/docs'] }
 		};
-		const saved = choiceFromDraft(removedSince, 'folder', [workPc]);
+		// With Automatic, every computer still listed keeps its folder.
+		const saved = choiceFromDraft({ ...removedSince, machineId: '' }, 'folder', [workPc]);
 		expect(saved.paths).toEqual({ 'pc-1': 'C:\\site', local: '/srv/site' });
 		expect(saved.offered).toEqual({ local: ['/srv/docs'] });
+	});
+
+	it('saves only the chosen computer’s folder', () => {
+		const homePc = { ...workPc, machine_id: 'pc-2', name: 'Home PC' };
+		const both = {
+			...draft,
+			machineId: 'pc-2',
+			paths: { 'pc-1': 'C:\site', 'pc-2': 'D:\site' },
+			offered: { 'pc-1': ['C:\docs'], 'pc-2': ['D:\docs'] }
+		};
+		const saved = choiceFromDraft(both, 'folder', [workPc, homePc]);
+		expect(saved.paths).toEqual({ 'pc-2': 'D:\site' });
+		// Folders to offer are checked on their own computer, and each is shown there.
+		expect(saved.offered).toEqual({ 'pc-1': ['C:\docs'], 'pc-2': ['D:\docs'] });
+		// With Automatic, every computer's folder is kept.
+		const automatic = choiceFromDraft({ ...both, machineId: '' }, 'folder', [workPc, homePc]);
+		expect(Object.keys(automatic.paths)).toEqual(['pc-1', 'pc-2']);
 	});
 
 	it('starts a draft without a computer that was removed since', () => {
