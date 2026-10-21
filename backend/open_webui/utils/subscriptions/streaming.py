@@ -184,6 +184,12 @@ async def stream_events(events, model_id: str):
     except Exception as error:
         log.exception('Subscription model turn failed')
         yield _sse({'error': {'message': f'The subscription model failed: {error}'}})
+    finally:
+        # The chat closes this stream when Stop lands while it is handing on a
+        # chunk. The turn is closed right here, so it ends before Stop returns,
+        # and an Ultra turn stops its workers. Left for Python's garbage
+        # collector to close, it would end later, in a task nobody waits for.
+        await events.aclose()
 
     if workers.unsent():
         yield _sse(workers.snapshot())

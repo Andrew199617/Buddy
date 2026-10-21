@@ -11,6 +11,7 @@ import dataclasses
 import json
 import logging
 import re
+from contextlib import aclosing
 from pathlib import Path
 
 from open_webui.utils.subscriptions.common import (
@@ -1372,14 +1373,19 @@ class ClaudeCodeProvider:
         When Claude Code on that computer can't run Ultra's workers, the reply
         runs again without Ultra, after a status line that says why. That run
         starts a fresh session, since the one resumed is an Ultra session.
+
+        Each run is closed with this, so that a reply the chat stops reading
+        still stops the CLI, and an Ultra turn's workers, at once.
         """
-        async for event in self._run_cli(cli, turn, resume_id, attempt):
-            yield event
+        async with aclosing(self._run_cli(cli, turn, resume_id, attempt)) as events:
+            async for event in events:
+                yield event
         if attempt.ultra_off_reason is None:
             return
         yield StatusUpdate(ultra.OFF_STATUS.format(reason=attempt.ultra_off_reason))
-        async for event in self._run_cli(cli, without_ultra(turn), None, attempt):
-            yield event
+        async with aclosing(self._run_cli(cli, without_ultra(turn), None, attempt)) as events:
+            async for event in events:
+                yield event
 
     async def _run_cli(self, cli: str, turn: TurnRequest, resume_id: str | None, attempt: 'ClaudeAttempt'):
         """Run ``claude -p`` once, yielding events and recording the outcome in ``attempt``.
@@ -1481,8 +1487,10 @@ class ClaudeCodeProvider:
 
         attempt = ClaudeAttempt()
         if resume_id:
-            async for event in self._run_attempt(cli, turn, resume_id, attempt):
-                yield event
+            # Each attempt is closed with this, as _run_attempt closes its runs.
+            async with aclosing(self._run_attempt(cli, turn, resume_id, attempt)) as events:
+                async for event in events:
+                    yield event
             if attempt.ultra_off_reason:
                 # Claude Code there can't run Ultra, so the reply ran without
                 # it, and its session is kept for turns without Ultra.
@@ -1493,8 +1501,9 @@ class ClaudeCodeProvider:
                 attempt = ClaudeAttempt()
 
         if not resume_id:
-            async for event in self._run_attempt(cli, turn, None, attempt):
-                yield event
+            async with aclosing(self._run_attempt(cli, turn, None, attempt)) as events:
+                async for event in events:
+                    yield event
 
         failure = attempt.failure()
         if failure:

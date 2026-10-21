@@ -24,6 +24,7 @@ import secrets
 import sys
 import time
 import uuid
+from contextlib import aclosing
 from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -2839,8 +2840,10 @@ async def _tracked_turn(ref: ProviderRef, provider, turn: TurnRequest, generatio
             yield event
         return
     try:
-        async for event in provider.run_turn(turn):
-            yield event
+        # Closed with this, so the provider has ended the turn before it is untracked.
+        async with aclosing(provider.run_turn(turn)) as turn_events:
+            async for event in turn_events:
+                yield event
     finally:
         _untrack_task(ref, task)
 
@@ -3849,8 +3852,9 @@ def _with_ultra_note(conversation, provider_id: str, access: str, options: Ultra
 async def _after_status(description: str, events):
     """A turn's events, after a status line that starts the reply."""
     yield StatusUpdate(description)
-    async for event in events:
-        yield event
+    async with aclosing(events):
+        async for event in events:
+            yield event
 
 
 # Live Ultra turns
@@ -3914,12 +3918,15 @@ async def _while_live(live_turn: _LiveUltraTurn, events):
     The provider's events end only when the turn really has: all its workers
     have ended and its last result is read, or it failed, or it was stopped,
     in which case the provider has stopped its workers first. However the
-    events end, the turn leaves the registry.
+    events end, the turn leaves the registry. When the chat stops reading
+    them, as when Stop lands while it hands on a chunk, they are closed first,
+    so the provider stops the turn's workers before the turn leaves.
     """
     _live_ultra_turns.setdefault(live_turn.chat_id, []).append(live_turn)
     try:
-        async for event in events:
-            yield event
+        async with aclosing(events):
+            async for event in events:
+                yield event
     finally:
         chat_turns = _live_ultra_turns[live_turn.chat_id]
         chat_turns.remove(live_turn)

@@ -22,6 +22,7 @@ import time
 import types
 import unittest
 import uuid
+from contextlib import aclosing
 from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
@@ -260,6 +261,7 @@ def load_service(config, data_dir):
         'run_targets': run_targets,
         'project_agents': project_agents,
         'asyncio': asyncio,
+        'aclosing': aclosing,
         'hashlib': hashlib,
         'hmac': hmac,
         'ipaddress': ipaddress,

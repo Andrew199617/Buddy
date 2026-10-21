@@ -2,7 +2,7 @@
 
 The person's worker choice resolves on the computer that runs the turn, and
 while the turn runs, the person can stop its workers one by one, through
-the stop route of their own chat.
+the stop route of their own chat. Stopping the chat stops them all.
 
 Run from the repository root:
     python -m unittest discover -s local/tests -p test_ultra_turns.py -v
@@ -10,11 +10,16 @@ Run from the repository root:
 
 import ast
 import asyncio
+import json
 import os
 import re
+import sys
+import tempfile
 import time
 import types
 import unittest
+import uuid
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from test_provider_host_transitions import (
@@ -36,9 +41,11 @@ from test_subscription_machines import (
     machine_config,
     owner_providers,
 )
+import test_ultra_claude as claude_replay
+import test_ultra_codex as codex_replay
 
 # After the test helpers put backend/ on the path.
-from open_webui.utils.subscriptions import ultra  # noqa: E402
+from open_webui.utils.subscriptions import claude_code, codex, streaming, ultra  # noqa: E402
 from open_webui.utils.subscriptions.common import ProviderModel  # noqa: E402
 from open_webui.utils.subscriptions.conversation import parse_messages  # noqa: E402
 from open_webui.utils.subscriptions.events import StatusUpdate, SubscriptionError  # noqa: E402
@@ -724,6 +731,324 @@ class StopWorkerRouteTests(LiveUltraTurnTestCase):
         self.assertEqual(held.running_workers, {CLAUDE_WORKER_ID})
         held.end()
         await reply
+
+
+TASKS_PATH = ROOT / 'backend' / 'open_webui' / 'tasks.py'
+MIDDLEWARE_PATH = ROOT / 'backend' / 'open_webui' / 'utils' / 'middleware.py'
+CHAT_STOPPED = 'All tasks for item chat-1 stopped.'
+
+
+def load_chat_tasks():
+    """tasks.py's own registry of chat tasks and its stop functions, as they run without Redis.
+
+    main.py runs each reply as a task of its chat with create_task. Its stop
+    route for a chat calls stop_item_tasks, which cancels each of the chat's
+    tasks and waits until it has ended.
+    """
+    names = {'cleanup_task', 'create_task', 'list_task_ids_by_item_id', 'stop_task', 'stop_item_tasks'}
+    tree = ast.parse(TASKS_PATH.read_text(encoding='utf-8'))
+    nodes = [node for node in tree.body if getattr(node, 'name', None) in names]
+    if len(nodes) != len(names):
+        raise AssertionError(f'tasks.py no longer defines all of {sorted(names)}')
+    # Its Redis annotations then stay unevaluated.
+    future_annotations = ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0)
+    module = types.ModuleType('chat_tasks_under_test')
+    module.__dict__.update({
+        'asyncio': asyncio,
+        'uuid4': uuid.uuid4,
+        'tasks': {},
+        'item_tasks': {},
+        'response_streams': {},
+    })
+    tree = ast.fix_missing_locations(ast.Module(body=[future_annotations, *nodes], type_ignores=[]))
+    exec(compile(tree, str(TASKS_PATH), 'exec'), module.__dict__)
+    return module
+
+
+def chunk_payload(chunk: str) -> dict:
+    """What a chunk of a streamed reply carries, or {} for the stream's last line."""
+    if not chunk.startswith('data: {'):
+        return {}
+    return json.loads(chunk[len('data: '):])
+
+
+def is_workers_snapshot(chunk: str) -> bool:
+    event = chunk_payload(chunk).get('event') or {}
+    return event.get('type') == streaming.WORKERS_EVENT_TYPE
+
+
+def is_reply_text(chunk: str) -> bool:
+    for choice in chunk_payload(chunk).get('choices') or []:
+        if choice['delta'].get('content'):
+            return True
+    return False
+
+
+class ChatReader:
+    """Stands in for middleware.py's reader of a streamed reply, which runs as the chat's task.
+
+    It hands each chunk on, to the chat page and the chat's saved copy, before
+    it reads the next, and the reply waits meanwhile. When Stop cancels the
+    task, it closes the reply's stream and ends, as middleware.py does.
+    """
+
+    def __init__(self, response, hold_when=None):
+        self.body = response.body_iterator
+        self.chunks = []
+        # Which chunk the chat is slow to hand on, until Stop lands.
+        self.hold_when = hold_when
+        self.holding = asyncio.Event()
+
+    async def read(self):
+        try:
+            async for chunk in self.body:
+                self.chunks.append(chunk)
+                await self.hand_on(chunk)
+        except asyncio.CancelledError:
+            await asyncio.shield(self.body.aclose())
+            raise
+
+    async def hand_on(self, chunk: str) -> None:
+        if self.hold_when is None or not self.hold_when(chunk):
+            return
+        self.holding.set()
+        # Until Stop cancels the chat's task.
+        await asyncio.Event().wait()
+
+    def reply(self) -> str:
+        texts = []
+        for chunk in self.chunks:
+            for choice in chunk_payload(chunk).get('choices') or []:
+                texts.append(choice['delta'].get('content') or '')
+        return ''.join(texts)
+
+    def last_workers_snapshot(self) -> dict:
+        snapshots = []
+        for chunk in self.chunks:
+            if is_workers_snapshot(chunk):
+                snapshots.append(chunk_payload(chunk)['event']['data'])
+        return snapshots[-1]
+
+    def activities(self) -> dict[str, str | None]:
+        """What each worker was doing, by its id, as the last snapshot that reached the chat says."""
+        activities = {}
+        for item in self.last_workers_snapshot()['items']:
+            activities[item['id']] = item['activity']
+        return activities
+
+
+class ReplayComputer(ProcessMachine):
+    """The person's computer, with Claude Code and Codex installed."""
+
+    async def find_tool(self, tool, configured_path=''):
+        return tool
+
+
+class ClaudeCodeReplay(claude_replay.ReplayProcess):
+    """A replayed ``claude -p`` that can say more while its turn waits."""
+
+    def say(self, *messages: dict) -> None:
+        self._say(list(messages))
+
+
+class CodexReplay(codex_replay.InterruptibleProcess):
+    """A replayed, interruptible ``codex app-server`` that can say more while its turn waits."""
+
+    def say(self, *messages: dict) -> None:
+        for message in messages:
+            self._lines.put_nowait(json.dumps(message))
+
+
+def claude_worker_step(task_started: dict, description: str) -> dict:
+    """What Claude Code says when a worker takes a step.
+
+    It has the fields of the recorded task_progress messages that Buddy reads.
+    """
+    return {
+        'type': 'system',
+        'subtype': 'task_progress',
+        'task_id': task_started['task_id'],
+        'tool_use_id': task_started['tool_use_id'],
+        'description': description,
+        'usage': {'total_tokens': 2048, 'tool_uses': 0, 'duration_ms': 20000},
+    }
+
+
+def codex_turn_id(messages: list[dict], thread_id: str) -> str:
+    """The id of a thread's recorded turn."""
+    return codex_replay.turn_start(messages, thread_id)['params']['turn']['id']
+
+
+def codex_worker_step(messages: list[dict], thread_id: str) -> dict:
+    """What a worker's own thread says when it starts to think again, shaped like the recorded item/started messages."""
+    item = {'type': 'reasoning', 'id': 'rs_fixture_step', 'summary': [], 'content': []}
+    params = {'threadId': thread_id, 'turnId': codex_turn_id(messages, thread_id), 'item': item}
+    return {'method': 'item/started', 'params': params}
+
+
+class ChatStopTests(UltraServiceTestCase):
+    """Stopping a chat ends its reply before Stop returns: every worker of an Ultra reply, and the CLI of any reply.
+
+    The reply runs on the real Claude and Codex providers, against Claude Code
+    and Codex answering as they did in recorded Ultra turns (see
+    test_ultra_claude.py and test_ultra_codex.py), and streams through the real
+    stream_events. It runs as the chat's task under tasks.py's own code, read
+    by a stand-in for middleware.py's reader, and the chat is stopped with
+    tasks.py's stop_item_tasks, as main.py's stop route stops it.
+
+    Each Ultra reply has answered and waits while its workers write on. Stop
+    may land while the reply waits for its CLI, or while the chat hands on a
+    chunk, such as a worker's latest step, and the reply waits for the chat.
+    """
+
+    def setUp(self):
+        super().setUp()
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.claude = claude_code.ClaudeCodeProvider(Path(directory.name))
+        self.codex = codex.CodexProvider()
+        # Ends a replayed app-server, and so its reader.
+        self.addCleanup(self.codex.stop)
+        self.service._providers = owner_providers(self.service, {'claude': self.claude, 'codex': self.codex})
+        self.computer = ReplayComputer(self.config.values['subscriptions.machines'][0])
+        self.service._remote_machines['runner-a'] = self.computer
+        self.service.stream_events = streaming.stream_events
+        self.chat_tasks = load_chat_tasks()
+        # A worker's step goes out to the chat at once, rather than at most once a second.
+        snapshot_interval = patch.object(streaming, 'WORKER_SNAPSHOT_INTERVAL', 0)
+        snapshot_interval.start()
+        self.addCleanup(snapshot_interval.stop)
+
+    async def start_reply(self, process, model, hold_when=None):
+        """Send a message in the chat. Its streamed reply runs as the chat's task, with ``process`` as its CLI."""
+        self.computer.process_factory = lambda: process
+        await self.bind()
+        # Python closes an async generator that was left unclosed once nothing
+        # refers to it, later and in a task of its own. Stop must not rely on
+        # that, so here each one is kept, unclosed, where stop_chat() sees it.
+        # The loop puts its own hook back when the test ends.
+        self.left_unclosed = []
+        sys.set_asyncgen_hooks(finalizer=self.left_unclosed.append)
+        response = await self.chat(model=model, stream=True, message_id='message-1')
+        self.reader = ChatReader(response, hold_when)
+        _, task = await self.chat_tasks.create_task(None, self.reader.read(), id='chat-1')
+        self.addAsyncCleanup(self.finish, task)
+
+    async def finish(self, task):
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def stop_chat(self):
+        """Stop the chat as main.py's stop route does, and return when that would.
+
+        Each step of the reply, from its stream down to the provider's run of
+        the CLI, has been closed by the step that reads it.
+        """
+        result = await asyncio.wait_for(self.chat_tasks.stop_item_tasks(None, 'chat-1'), 10)
+        self.assertEqual(result['message'], CHAT_STOPPED)
+        self.assertEqual(self.left_unclosed, [])
+
+    async def claude_reply_with_a_worker_running(self):
+        """A Claude reply that has answered twice while its essay worker writes on, as recorded.
+
+        Returns the replayed Claude Code and the essay worker's task_started message.
+        """
+        answer, turn_output = claude_replay.recorded_turn('claude-background.jsonl')
+        process = ClaudeCodeReplay(answer, turn_output, silent=True)
+        await self.start_reply(process, CHAT_MODEL_ID)
+        await asyncio.wait_for(process.idle.wait(), 5)
+        last_result = claude_replay.results(turn_output)[-1]
+        self.assertTrue(self.reader.reply().endswith(last_result['result']))
+        self.assertEqual(self.reader.last_workers_snapshot()['running'], 1)
+        essay = claude_replay.system_messages(turn_output, 'task_started')[0]
+        return process, essay
+
+    def assert_claude_workers_stopped(self, process, essay):
+        """Claude Code was asked to stop the essay worker and said it had, and then the CLI ended."""
+        self.assertEqual(claude_replay.stop_requests(process), [essay['task_id']])
+        self.assertEqual(process.calls, ['initialize', 'user', 'stop_task', 'close_stdin', 'kill'])
+        self.assertEqual(process.unread_lines(), 0)
+        self.assertEqual(self.service._live_ultra_turns, {})
+
+    async def codex_reply_with_workers_running(self):
+        """A Codex reply whose orchestrator's turn has ended while its two essay workers write on, as recorded.
+
+        Returns the replayed app-server, the recording, the workers' threads and the live turn.
+        """
+        messages = codex_replay.recorded('codex-stop-children.jsonl')
+        workers = list(codex_replay.recorded_workers(messages).values())
+        process = CodexReplay(messages, waiting=workers)
+        await self.start_reply(process, CODEX_MODEL_ID)
+        await asyncio.wait_for(claude_replay.until(lambda: self.codex_handled(process)), 5)
+        [run] = self.codex._ultra_runs
+        self.assertTrue(run.parser.finished)
+        self.assertEqual(self.reader.last_workers_snapshot()['running'], 2)
+        return process, messages, workers, run
+
+    def codex_handled(self, process) -> bool:
+        """Whether Buddy has read and handled all that the replayed app-server wrote once the turn started."""
+        server = self.codex._servers.get('runner-a')
+        if server is None or not process.sent('turn/start') or not process.drained():
+            return False
+        return all(queue.empty() for queue in server._thread_queues.values())
+
+    def assert_codex_workers_stopped(self, process, messages, workers, run):
+        """Each worker's turn was interrupted on its own thread, and Codex said it had ended."""
+        interrupts = []
+        for thread_id in workers:
+            interrupts.append({'threadId': thread_id, 'turnId': codex_turn_id(messages, thread_id)})
+        # The orchestrator's turn had ended, so only the workers' turns were interrupted.
+        self.assertEqual(process.sent('turn/interrupt'), interrupts)
+        self.assertFalse(run.parser.workers.running())
+        self.assertEqual(self.codex._ultra_runs, [])
+        self.assertEqual(self.service._live_ultra_turns, {})
+
+    def test_the_chats_own_reader_closes_the_reply_when_stopped_as_the_stand_in_does(self):
+        # ChatReader stands in for it in the other tests.
+        middleware = MIDDLEWARE_PATH.read_text(encoding='utf-8')
+        self.assertIn('await asyncio.shield(response.body_iterator.aclose())', middleware)
+
+    async def test_stopping_the_chat_stops_a_claude_replys_workers(self):
+        process, essay = await self.claude_reply_with_a_worker_running()
+        await self.stop_chat()
+        self.assert_claude_workers_stopped(process, essay)
+
+    async def test_a_stop_while_the_chat_hands_on_a_claude_workers_step_stops_the_workers_too(self):
+        process, essay = await self.claude_reply_with_a_worker_running()
+        self.reader.hold_when = is_workers_snapshot
+        # The essay worker takes a step, and Stop lands while the chat hands it on.
+        process.say(claude_worker_step(essay, 'Writing about suspension bridges'))
+        await asyncio.wait_for(self.reader.holding.wait(), 5)
+        self.assertEqual(self.reader.activities()[essay['task_id']], 'Writing about suspension bridges')
+        await self.stop_chat()
+        self.assert_claude_workers_stopped(process, essay)
+
+    async def test_stopping_the_chat_stops_a_codex_replys_workers(self):
+        process, messages, workers, run = await self.codex_reply_with_workers_running()
+        await self.stop_chat()
+        self.assert_codex_workers_stopped(process, messages, workers, run)
+
+    async def test_a_stop_while_the_chat_hands_on_a_codex_workers_step_stops_the_workers_too(self):
+        process, messages, workers, run = await self.codex_reply_with_workers_running()
+        self.reader.hold_when = is_workers_snapshot
+        # The first worker starts to think again, and Stop lands while the chat hands that on.
+        process.say(codex_worker_step(messages, workers[0]))
+        await asyncio.wait_for(self.reader.holding.wait(), 5)
+        self.assertEqual(self.reader.activities()[workers[0]], 'Thinking')
+        await self.stop_chat()
+        self.assert_codex_workers_stopped(process, messages, workers, run)
+
+    async def test_a_stop_while_the_chat_hands_on_text_ends_the_cli_of_a_reply_without_ultra(self):
+        # Ultra is off for this reply, which starts by saying why.
+        self.claude_models[0].ultra = False
+        process = ClaudeCodeReplay(turn_output=claude_replay.plain_reply('Working on it')[:2], silent=True)
+        await self.start_reply(process, CHAT_MODEL_ID, hold_when=is_reply_text)
+        await asyncio.wait_for(self.reader.holding.wait(), 5)
+        first_status = chunk_payload(self.reader.chunks[0])['event']['data']
+        self.assertEqual(first_status['description'], OFF_FOR_CHAT_MODEL)
+        self.assertEqual(self.reader.reply(), 'Working on it')
+        await self.stop_chat()
+        self.assertEqual(process.calls, ['user', 'close_stdin', 'kill'])
 
 
 if __name__ == '__main__':
