@@ -4153,6 +4153,40 @@ async function checkUltraSaves(session, fixtures) {
 	);
 }
 
+const ultraOnLabel = 'Ultra: on. Workers use Claude Synthetic Haiku. Thinking: Medium.';
+
+/** Opened again, the chat reads its saved choice: Ultra on, with the workers' model and thinking. */
+async function checkUltraReopens(page) {
+	const composer = page.locator('.buddy-composer');
+	const trigger = page.locator(ultraTrigger);
+	// Without a draft to bring back, the reopened composer is at rest.
+	await page.locator('#chat-input').fill('');
+	await waitUntil(
+		() =>
+			page.evaluate(() => {
+				const saved = JSON.parse(sessionStorage.getItem('chat-input-buddy-design-chat') ?? '{}');
+				return !saved.prompt;
+			}),
+		'The emptied draft is saved'
+	);
+	await page.reload({ waitUntil: 'domcontentloaded' });
+	await page.locator('#chat-input').waitFor();
+	await waitUntil(
+		async () => (await trigger.getAttribute('aria-label')) === ultraOnLabel,
+		'The reopened chat reads its saved Ultra choice'
+	);
+	await waitUntil(
+		async () => (await composer.getAttribute('data-expanded')) === 'false',
+		'The reopened chat’s composer is at rest'
+	);
+	assert.equal(
+		await composer.getAttribute('data-ultra'),
+		'true',
+		'Its resting edge says Ultra is on'
+	);
+	assert.equal(await trigger.getAttribute('data-on'), 'true');
+}
+
 /** At rest with Ultra on, the composer says so without growing. */
 async function checkRestingUltraComposer(page, profile, restingHeight) {
 	const composer = page.locator('.buddy-composer');
@@ -4466,6 +4500,15 @@ async function checkLandscapeUltraMenu(page) {
 	await assertMenuInView(menu);
 	await assertTouchRows(menu);
 	assert.equal(await draftHasFocus(page), true, 'The landscape menu keeps the keyboard');
+	// Reopened after Ultra was turned off, the chat keeps the workers' choices.
+	assert.equal(await page.locator(ultraTrigger).getAttribute('aria-label'), 'Ultra: off');
+	const modelRow = menu.locator('button[data-opens="model"]');
+	const effortRow = menu.locator('button[data-opens="effort"]');
+	assert.ok(
+		(await modelRow.innerText()).includes(ultraWorkerModel.name),
+		'The reopened chat keeps its worker model'
+	);
+	assert.ok((await effortRow.innerText()).includes('Medium'), 'It keeps its worker thinking');
 	const scroller = menu.locator('.buddy-ultra-menu');
 	const fitsWhole = await scroller.evaluate(
 		(element) => element.scrollHeight <= element.clientHeight + 1
@@ -4529,6 +4572,7 @@ async function ultraCase(browser, profile) {
 		await checkUltraUnavailable(page, profile);
 		await checkUltraMenu(page, profile);
 		await checkUltraSaves(session, fixtures);
+		await checkUltraReopens(page);
 		await checkRestingUltraComposer(page, profile, restingHeight);
 		const replyId = await sendUltraMessage(session, profile);
 		await checkWorkersCard(page, profile, fixtures, replyId);
