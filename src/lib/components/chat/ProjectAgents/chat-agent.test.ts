@@ -5,6 +5,7 @@ import {
 	ownAgent,
 	savedAgent,
 	systemWithAgent,
+	withoutAgent,
 	type ChatAgent
 } from './chat-agent';
 
@@ -117,5 +118,22 @@ describe('systemWithAgent', () => {
 
 	it('adds nothing for an agent without instructions', () => {
 		expect(systemWithAgent('Be brief.', { ...reviewer, instructions: ' \n' })).toBe('Be brief.');
+	});
+});
+
+describe('withoutAgent', () => {
+	it('leaves out the agent and keeps everything else', () => {
+		const contents = { title: 'Plan', models: ['claude'], agent: reviewer };
+		expect(withoutAgent(contents)).toEqual({ title: 'Plan', models: ['claude'] });
+	});
+
+	it('does not change the chat it was given', () => {
+		const contents = { title: 'Plan', agent: reviewer };
+		withoutAgent(contents);
+		expect(contents.agent).toBe(reviewer);
+	});
+
+	it('returns an equal copy of a chat without an agent', () => {
+		expect(withoutAgent({ title: 'Plan' })).toEqual({ title: 'Plan' });
 	});
 });
