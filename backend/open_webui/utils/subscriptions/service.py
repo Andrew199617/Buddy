@@ -3338,6 +3338,9 @@ def _model_entry(provider_id: str, model: ProviderModel, credential_mode: str = 
             'efforts': model.efforts,
             # Whether the CLI can run Ultra with this model; the composer offers Ultra only then.
             'ultra': model.ultra,
+            # The admin's cap on Ultra workers at once, or None for no limit. The Ultra
+            # menu tells the person which.
+            'ultra_max_workers': ultra.max_workers(),
         },
     }
 

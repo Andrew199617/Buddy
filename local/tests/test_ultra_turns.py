@@ -328,6 +328,17 @@ class UltraTurnTests(UltraServiceTestCase):
         flags = {model['id']: model['subscription']['ultra'] for model in models}
         self.assertEqual(flags, {CHAT_MODEL_ID: True, WORKER_MODEL_ID: False, CODEX_MODEL_ID: True})
 
+    async def test_the_model_list_carries_the_admins_worker_limit(self):
+        # The Ultra menu says how many workers may run at once from this.
+        models = await self.service.get_user_subscription_models(OWNER_USER)
+        limits = {model['id']: model['subscription']['ultra_max_workers'] for model in models}
+        self.assertEqual(limits, {CHAT_MODEL_ID: None, WORKER_MODEL_ID: None, CODEX_MODEL_ID: None})
+
+        os.environ[ultra.MAX_WORKERS_ENV] = '3'
+        models = await self.service.get_user_subscription_models(OWNER_USER)
+        limits = {model['id']: model['subscription']['ultra_max_workers'] for model in models}
+        self.assertEqual(limits, {CHAT_MODEL_ID: 3, WORKER_MODEL_ID: 3, CODEX_MODEL_ID: 3})
+
     async def test_a_chat_model_without_ultra_runs_normally_and_says_why(self):
         await self.bind()
         self.claude_models[0].ultra = False
