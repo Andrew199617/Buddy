@@ -764,6 +764,10 @@
 	// expands the composer: that would move the bar out from under the pointer.
 	let runTargetMenuOpen = false;
 	let composerControlActive = false;
+	// While a phone tap in the conversation is under way. A tap on a button there focuses the
+	// button before its click; the composer goes to rest on the click instead, so the button
+	// doesn't move out from under the finger and lose the click.
+	let conversationTapActive = false;
 	let coarsePointer = false;
 	$: mobileComposer = $mobile || coarsePointer;
 	$: composerExpanded =
@@ -984,6 +988,23 @@
 			composerFocused = false;
 		}
 
+		function noteConversationPointerDown(event: PointerEvent): void {
+			const target = event.target;
+			let inConversation = false;
+			if (target instanceof Element) {
+				inConversation = Boolean(target.closest('.buddy-chat #messages-container'));
+			}
+			conversationTapActive = mobileComposer && !embedded && event.isPrimary && inConversation;
+		}
+
+		function finishConversationTap(): void {
+			if (!conversationTapActive) {
+				return;
+			}
+			conversationTapActive = false;
+			reconcileComposerFocus();
+		}
+
 		function updateComposerMenus(): void {
 			composerMenuOpen = Boolean(
 				form.querySelector(
@@ -1007,6 +1028,10 @@
 		form.addEventListener('click', handleComposerClick, true);
 		document.addEventListener('pointerup', handleConversationInteraction, true);
 		document.addEventListener('click', handleConversationInteraction);
+		document.addEventListener('pointerdown', noteConversationPointerDown, true);
+		// Capture, so a click that stops propagation still ends the tap.
+		document.addEventListener('click', finishConversationTap, true);
+		document.addEventListener('pointercancel', finishConversationTap, true);
 		updateComposerMenus();
 		return {
 			destroy() {
@@ -1016,6 +1041,10 @@
 				form.removeEventListener('click', handleComposerClick, true);
 				document.removeEventListener('pointerup', handleConversationInteraction, true);
 				document.removeEventListener('click', handleConversationInteraction);
+				document.removeEventListener('pointerdown', noteConversationPointerDown, true);
+				document.removeEventListener('click', finishConversationTap, true);
+				document.removeEventListener('pointercancel', finishConversationTap, true);
+				conversationTapActive = false;
 				cancelComposerPointer();
 				menuObserver.disconnect();
 				disposeControlInteractions();
@@ -1026,6 +1055,11 @@
 	function handleComposerFocusOut(event: FocusEvent): void {
 		// Composer controls own focus until their menu action has finished.
 		if (mobileComposer && (composerControlActive || composerMenuOpen || runTargetMenuOpen)) {
+			return;
+		}
+		// A tap on a button in the conversation focuses the button before its click; the
+		// composer goes to rest when the click comes (see finishConversationTap).
+		if (mobileComposer && conversationTapActive) {
 			return;
 		}
 		const container = event.currentTarget as HTMLElement;
