@@ -5,7 +5,8 @@ with every message, where a Full-access plan follows them on the owner's compute
 agent stays with the person who chose it:
 
 - a chat copied from someone else, or brought in from a file, starts without one, since
-  its new owner never chose those instructions;
+  its new owner never chose those instructions. It also loses its hidden system prompt
+  ('params.system', and the older top-level 'system'), which the page sends the same way;
 - share links and other people reading the chat never see it, since the instructions
   come from the owner's private project files.
 """
@@ -20,12 +21,23 @@ def without_agent(chat):
     return {key: value for key, value in chat.items() if key != AGENT_KEY}
 
 
+def without_hidden_instructions(chat):
+    """The chat's contents without its custom agent or system prompt; anything that isn't a dict is returned as is."""
+    if not isinstance(chat, dict):
+        return chat
+    contents = {key: value for key, value in without_agent(chat).items() if key != 'system'}
+    params = contents.get('params')
+    if isinstance(params, dict):
+        contents['params'] = {key: value for key, value in params.items() if key != 'system'}
+    return contents
+
+
 def contents_for_owner(chat: dict, source_owner_id: str | None, owner_id: str) -> dict:
     """The chat's contents for a copy that owner_id will own.
 
     source_owner_id is who owned the chat it was copied from, or None for a chat
-    brought in from a file. Only a copy of one's own chat keeps its agent.
+    brought in from a file. Only a copy of one's own chat keeps its agent and system prompt.
     """
     if source_owner_id is not None and source_owner_id == owner_id:
         return chat
-    return without_agent(chat)
+    return without_hidden_instructions(chat)
