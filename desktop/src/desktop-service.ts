@@ -111,7 +111,9 @@ export class DesktopService extends EventEmitter {
 		if (!answer.connect) return this.getStatus();
 		// Checked first: once Buddy enrolls this computer, a lost credential leaves it unusable there.
 		if (!this.options.credentials.canStore()) {
-			throw new Error('This computer cannot store the connection securely, so it was not connected.');
+			throw new Error(
+				'This computer cannot store the connection securely, so it was not connected.'
+			);
 		}
 
 		this.connecting = true;
@@ -127,7 +129,17 @@ export class DesktopService extends EventEmitter {
 				this.options.credentials.write(enrolled.credential);
 			} catch (error) {
 				// Buddy already added this computer; take it back off so it doesn't count against the limit.
-				await this.removeFromServer(serverUrl, enrolled.machineId, enrolled.credential);
+				const removed = await this.removeFromServer(
+					serverUrl,
+					enrolled.machineId,
+					enrolled.credential
+				);
+				if (!removed) {
+					throw new Error(
+						'This computer could not save its connection, and Buddy did not remove it again. Remove it in Settings → Machines.',
+						{ cause: error }
+					);
+				}
 				throw error;
 			}
 			this.settings.machine = { id: enrolled.machineId, name: enrolled.name };
@@ -224,14 +236,18 @@ export class DesktopService extends EventEmitter {
 		if (leftBehind) {
 			this.ending = {
 				state: 'not_connected',
-				message: `${oldServer} could not be reached to remove this computer. Remove it in Settings → Machines there.`
+				message: `${oldServer} did not remove this computer. Remove it in Settings → Machines there.`
 			};
 			this.emitStatus();
 		}
 	}
 
 	/** Removes this computer from a server; false when that did not happen. */
-	private async removeFromServer(serverUrl: string, machineId: string, credential: string): Promise<boolean> {
+	private async removeFromServer(
+		serverUrl: string,
+		machineId: string,
+		credential: string
+	): Promise<boolean> {
 		try {
 			await this.options.unenroll(serverUrl, machineId, credential);
 			return true;

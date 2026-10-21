@@ -273,7 +273,7 @@ test('an unreachable old server still lets the address change, and says what is 
 	await service.changeServer('https://other.example.com');
 	assert.equal(credentials.value, null);
 	assert.equal(settings.saved.serverUrl, 'https://other.example.com');
-	assert.match(service.getStatus().message ?? '', /buddy\.example\.com could not be reached.*Settings → Machines/);
+	assert.match(service.getStatus().message ?? '', /buddy\.example\.com did not remove this computer.*Settings → Machines/);
 });
 
 test('a computer that cannot store the connection is never enrolled', async () => {
@@ -292,6 +292,19 @@ test('a credential that fails to save is taken back off Buddy', async () => {
 		{ serverUrl: 'https://buddy.example.com', machineId: 'machine-1', credential: 'bdr1_secret' }
 	]);
 	assert.equal(settings.saved.machine, null);
+});
+
+test('a credential that fails to save and cannot be taken back off says to remove it', async () => {
+	const { service, credentials, settings, unenrollments } = setUp({ unenrollFails: true });
+	credentials.failWrite = true;
+	await assert.rejects(
+		service.connectThisPC('bde1_token', 'PC'),
+		/Buddy did not remove it again\. Remove it in Settings → Machines\./
+	);
+	assert.equal(unenrollments.length, 1);
+	assert.equal(credentials.value, null);
+	assert.equal(settings.saved.machine, null);
+	assert.equal(service.getStatus().state, 'not_connected');
 });
 
 test('starting at sign-in is reported back', () => {
