@@ -132,10 +132,11 @@
 		if (compact) void showView('main');
 	}
 
+	// On, the chip is tinted. Its text keeps at least 4.5:1 against the tint in both themes.
 	let triggerClass = '';
 	$: if (active) {
 		triggerClass =
-			'border-sky-200/40 bg-sky-50 text-sky-500 hover:bg-sky-100 dark:border-sky-500/20 dark:bg-sky-400/10 dark:text-sky-300 dark:hover:bg-sky-600/10';
+			'border-sky-200/40 bg-sky-50 text-sky-700 hover:bg-sky-100 dark:border-sky-500/20 dark:bg-sky-400/10 dark:text-sky-300 dark:hover:bg-sky-600/10';
 	} else {
 		triggerClass =
 			'border-transparent bg-transparent text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800';

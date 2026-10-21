@@ -3484,6 +3484,58 @@ function assertComposerOrder(order, profile) {
 	}
 }
 
+/**
+ * The contrast ratio of an element's text against what shows behind it: its own
+ * background, over its ancestors' where it is see-through.
+ */
+async function textContrast(locator) {
+	return locator.evaluate(async (element) => {
+		// A color change may still be easing in.
+		await Promise.all(element.getAnimations().map((animation) => animation.finished));
+		const canvas = document.createElement('canvas');
+		canvas.width = 1;
+		canvas.height = 1;
+		const context = canvas.getContext('2d', { willReadFrequently: true });
+		function pixel() {
+			return Array.from(context.getImageData(0, 0, 1, 1).data);
+		}
+		function opaque(color) {
+			context.clearRect(0, 0, 1, 1);
+			context.fillStyle = color;
+			context.fillRect(0, 0, 1, 1);
+			return pixel()[3] === 255;
+		}
+		// The backgrounds from the element out to the first opaque one, painted back to front.
+		const backgrounds = [];
+		for (let node = element; node; node = node.parentElement) {
+			const color = getComputedStyle(node).backgroundColor;
+			backgrounds.push(color);
+			if (opaque(color)) break;
+		}
+		context.fillStyle = '#ffffff';
+		context.fillRect(0, 0, 1, 1);
+		for (const color of backgrounds.reverse()) {
+			context.fillStyle = color;
+			context.fillRect(0, 0, 1, 1);
+		}
+		const background = pixel().slice(0, 3);
+		context.fillStyle = getComputedStyle(element).color;
+		context.fillRect(0, 0, 1, 1);
+		const text = pixel().slice(0, 3);
+		function luminance(channels) {
+			const linear = channels.map((channel) => {
+				const value = channel / 255;
+				if (value <= 0.04045) return value / 12.92;
+				return ((value + 0.055) / 1.055) ** 2.4;
+			});
+			return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+		}
+		const lighter = Math.max(luminance(text), luminance(background));
+		const darker = Math.min(luminance(text), luminance(background));
+		return (lighter + 0.05) / (darker + 0.05);
+	});
+}
+
 /** Closes the Ultra menu as a person would: its button again, or Escape when the menu covers it. */
 async function closeUltraMenu(page, profile) {
 	const triggerReceivesTap = await page.locator(ultraTrigger).evaluate((button) => {
@@ -3878,6 +3930,8 @@ async function checkUltraMenu(page, profile) {
 	);
 	assert.equal(await menu.isVisible(), true, 'The switch leaves the menu open');
 	assert.equal(await trigger.getAttribute('data-on'), 'true');
+	const onContrast = await textContrast(trigger);
+	assert.ok(onContrast >= 4.5, 'The tinted Ultra chip keeps its label readable: ' + onContrast);
 
 	if (profile.mobile) {
 		await chooseWorkersOnPhone(page, menu);
