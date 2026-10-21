@@ -64,6 +64,7 @@
 	import { flyAndScale } from '$lib/utils/transitions';
 	import RegenerateMenu from './ResponseMessage/RegenerateMenu.svelte';
 	import StatusHistory from './ResponseMessage/StatusHistory.svelte';
+	import UltraWorkers from './UltraWorkers.svelte';
 	import FullHeightIframe from '$lib/components/common/FullHeightIframe.svelte';
 	import { createLazyComponent } from '$lib/utils/lazy-component';
 	import LazyFeatureStatus from '$lib/components/common/LazyFeatureStatus.svelte';
@@ -125,6 +126,8 @@
 			usage?: unknown;
 		};
 		annotation?: { type: string; rating: number };
+		// An Ultra reply's latest workers snapshot; UltraWorkers reads it.
+		workers?: unknown;
 	}
 
 	export let chatId = '';
@@ -703,6 +706,17 @@
 					<div>
 						{#if model?.info?.meta?.capabilities?.status_updates ?? true}
 							<StatusHistory statusHistory={message?.statusHistory} />
+						{/if}
+
+						{#if message?.workers}
+							<UltraWorkers
+								workers={message.workers}
+								replyDone={message.done}
+								{chatId}
+								messageId={message.id}
+								ownChat={!readOnly}
+								chatModelName={model ? localizedModelName : null}
+							/>
 						{/if}
 
 						{#if message?.files && message.files?.filter( (f) => ['image', 'file'].includes(f.type) ).length > 0}

@@ -295,6 +295,8 @@ type Settings = {
 	recentEmojis?: string[];
 	pinnedMenuItems?: string[];
 	pinnedNotesOrder?: string[];
+	// The last worker choices in the composer's Ultra menu, which new chats start with.
+	ultra?: { worker_model: string | null; worker_effort: string | null };
 
 	defaultUploadContext?: 'full' | 'focused';
 

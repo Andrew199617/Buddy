@@ -1,5 +1,6 @@
 <script lang="ts">
-	// A bottom sheet for the bar on phones. It sits above the safe area and the on-screen keyboard,
+	// A bottom sheet on phones, for the bar and for a row of an Ultra reply's workers card
+	// (Messages/UltraWorkers.svelte). It sits above the safe area and the on-screen keyboard,
 	// drops the keyboard when it opens, keeps focus inside while open, and gives focus back after.
 	import { getContext, onDestroy, tick } from 'svelte';
 	import * as FocusTrap from 'focus-trap';

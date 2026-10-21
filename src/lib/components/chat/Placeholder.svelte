@@ -20,6 +20,7 @@
 	import EyeSlash from '$lib/components/icons/EyeSlash.svelte';
 	import MessageInput from './MessageInput.svelte';
 	import type { ChatAgent } from './ProjectAgents/chat-agent';
+	import { startingUltra, type UltraChange, type UltraState } from './Ultra/ultra';
 	import FolderPlaceholder from './Placeholder/FolderPlaceholder.svelte';
 	import type { RunTargetOptions } from '$lib/apis/subscriptions';
 	import type { RunTargetDraft } from './RunTarget/run-target';
@@ -51,6 +52,9 @@
 	export let agentChatTarget: ProjectTarget | null = null;
 	export let selectedAgent: ChatAgent | null = null;
 	export let onAgentChange: (agent: ChatAgent | null) => void = () => {};
+
+	export let ultra: UltraState = startingUltra(null);
+	export let onUltraChange: (change: UltraChange) => void = () => {};
 
 	export let showCommands = false;
 
@@ -186,6 +190,8 @@
 				{agentChatTarget}
 				{selectedAgent}
 				{onAgentChange}
+				{ultra}
+				{onUltraChange}
 				bind:imageGenerationEnabled
 				bind:webSearchEnabled
 				bind:atSelectedModel

@@ -67,6 +67,23 @@ class ProviderModel:
     description: str = ''
     efforts: list[str] = field(default_factory=list)
     vision: bool = True
+    # The CLI on this computer can run Ultra turns with this model.
+    ultra: bool = False
+
+
+@dataclass(frozen=True)
+class UltraOptions:
+    """The person's Ultra choices for one turn, where the plan turn orchestrates workers.
+
+    None for the model or effort means the workers use the chat's own.
+    """
+
+    worker_model: str | None = None
+    # The worker model's display name, for the orchestrator's instructions.
+    worker_label: str | None = None
+    worker_effort: str | None = None
+    # The admin's cap on workers at once; None means no limit.
+    max_workers: int | None = None
 
 
 @dataclass
@@ -82,12 +99,21 @@ class TurnRequest:
     # Model-entry reasoning levels travel with the request. Providers verify
     # them against the executing app-server before resolving the user's effort.
     efforts: list[str] = field(default_factory=list)
+    # Set while the person has Ultra on. Providers read ``ultra``, not this field.
+    ultra_options: UltraOptions | None = None
 
     @property
     def access(self) -> str:
         if self.is_task:
             return ACCESS_CHAT
         return self.settings.access
+
+    @property
+    def ultra(self) -> UltraOptions | None:
+        # Background tasks, such as titles and follow-ups, never start workers.
+        if self.is_task:
+            return None
+        return self.ultra_options
 
 
 def model_key(text: str) -> str:

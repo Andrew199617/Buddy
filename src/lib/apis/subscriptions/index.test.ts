@@ -8,8 +8,10 @@ import {
 	getSubscriptionLogin,
 	logoutSubscription,
 	startSubscriptionLogin,
+	stopChatWorker,
 	submitSubscriptionLoginCode,
-	updateSubscriptionConfig
+	updateSubscriptionConfig,
+	WorkerNotRunningError
 } from './index';
 
 const fetchMock = vi.fn();
@@ -349,5 +351,70 @@ describe('per-user machines and sign-ins', () => {
 		const { url, options } = request();
 		expect(options.method).toBe('DELETE');
 		expect(url.pathname).toBe('/api/v1/subscriptions/admin/machines/machine%20%2F%20A');
+	});
+});
+
+describe('Ultra workers', () => {
+	it('stops one worker by its chat’s and its own encoded IDs', async () => {
+		fetchMock.mockResolvedValueOnce({
+			ok: true,
+			status: 200,
+			json: async () => ({ stopped: true })
+		});
+		await expect(stopChatWorker('fixture-token', 'chat / 1', 'task / 7')).resolves.toEqual({
+			stopped: true
+		});
+		const { url, options } = request();
+		expect(options.method).toBe('POST');
+		expect(url.pathname).toBe(
+			'/api/v1/subscriptions/chats/chat%20%2F%201/workers/task%20%2F%207/stop'
+		);
+		expect(url.search).toBe('');
+		expect(options.body).toBeUndefined();
+		expect(options.headers.Authorization).toBe('Bearer fixture-token');
+	});
+
+	it('tells a worker that already ended apart from other failures', async () => {
+		fetchMock.mockResolvedValueOnce({
+			ok: false,
+			status: 404,
+			json: async () => ({ detail: "That worker isn't running any more." })
+		});
+		const ended = stopChatWorker('fixture-token', 'chat-1', 'task-7');
+		await expect(ended).rejects.toBeInstanceOf(WorkerNotRunningError);
+		await expect(ended).rejects.toThrow("That worker isn't running any more.");
+
+		fetchMock.mockResolvedValueOnce({
+			ok: false,
+			status: 404,
+			json: async () => ({ detail: 'That chat no longer exists.' })
+		});
+		const gone = stopChatWorker('fixture-token', 'chat-1', 'task-7');
+		await expect(gone).rejects.toBeInstanceOf(WorkerNotRunningError);
+		await expect(gone).rejects.toThrow('That chat no longer exists.');
+	});
+
+	it('says the worker is not running when the 404 has no reason', async () => {
+		fetchMock.mockResolvedValueOnce({
+			ok: false,
+			status: 404,
+			json: async () => {
+				throw new SyntaxError('Unexpected end of JSON input');
+			}
+		});
+		await expect(stopChatWorker('fixture-token', 'chat-1', 'task-7')).rejects.toThrow(
+			"That worker isn't running any more."
+		);
+	});
+
+	it('throws the server’s reason for other failures', async () => {
+		fetchMock.mockResolvedValueOnce({
+			ok: false,
+			status: 403,
+			json: async () => ({ detail: 'Sign in to Buddy to stop workers.' })
+		});
+		await expect(stopChatWorker('fixture-token', 'chat-1', 'task-7')).rejects.toBe(
+			'Sign in to Buddy to stop workers.'
+		);
 	});
 });

@@ -42,6 +42,8 @@ class OfflineAppServer:
 
     generation = 1
     running = True
+    # These tests never run Ultra, so Codex's version stays unknown.
+    version = ''
 
     def __init__(self, efforts=('low', 'medium', 'high', 'xhigh')):
         self.efforts = list(efforts)

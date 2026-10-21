@@ -1222,6 +1222,19 @@ async def get_event_emitter(request_info, update_db=True):
                     touch=False,
                 )
 
+            elif event_type == 'chat:message:workers':
+                # Each snapshot lists every Ultra worker in the reply, so it replaces the saved one.
+                workers = event_data.get('data', {})
+                if isinstance(workers, dict) and isinstance(workers.get('items'), list):
+                    await Chats.upsert_message_to_chat_by_id_and_message_id(
+                        chat_id,
+                        message_id,
+                        {
+                            'workers': workers,
+                        },
+                        touch=False,
+                    )
+
             elif event_type == 'files':
                 files = event_data.get('data', {}).get('files', [])
                 existing_files = await Chats.get_message_metadata(chat_id, message_id, 'files')

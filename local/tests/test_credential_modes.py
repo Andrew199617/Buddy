@@ -143,7 +143,7 @@ class ServiceCredentialTests(unittest.IsolatedAsyncioTestCase):
             await self.service._tracked(self.ref('claude'), settings)
 
     async def test_model_tags_name_the_sign_in(self):
-        model = types.SimpleNamespace(key='opus', value='opus', name='Opus', description='', efforts=[])
+        model = types.SimpleNamespace(key='opus', value='opus', name='Opus', description='', efforts=[], ultra=False)
         self.assertEqual(self.service._model_entry('claude', model)['tags'], [{'name': 'Claude plan'}])
         self.assertEqual(self.service._model_entry('claude', model, CREDENTIAL_API_KEY)['tags'],
                          [{'name': 'Anthropic API key'}])

@@ -205,7 +205,7 @@ async def fixture_collect_events(events, model_id):
     return [event async for event in events]
 
 
-async def fixture_stream_events(events, model_id):
+async def fixture_stream_events(events, model_id, emit_when_stopped=None):
     async for event in events:
         yield event
 
@@ -469,7 +469,8 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
             {'installed': True, 'signed_in': True, 'api_billing': False}, time.monotonic() + 60
         )
         model = types.SimpleNamespace(
-            key='fixture-model', value='fixture-model', name='Fixture model', description='', efforts=[]
+            key='fixture-model', value='fixture-model', name='Fixture model', description='', efforts=[],
+            ultra=False,
         )
         self.service.models_cache._entries[self.on_plan('claude')] = self.service._CacheEntry([model], time.monotonic() + 60)
 
@@ -618,7 +619,8 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
             wrapper = self.service._tracking_machine(self.service.ProviderRef(OWNER, 'claude'), self.machines['runner-a'])
             await wrapper.start_process(['fixture-models'], 'fixture-cwd')
             return [types.SimpleNamespace(
-                key='fixture-model', value='fixture-model', name='Fixture model', description='', efforts=[]
+                key='fixture-model', value='fixture-model', name='Fixture model', description='', efforts=[],
+                ultra=False,
             )]
 
         async def verified_turn(turn):
@@ -660,7 +662,8 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_one_failing_provider_leaves_the_other_providers_models_listed(self):
         model = types.SimpleNamespace(
-            key='fixture-model', value='fixture-model', name='Fixture model', description='', efforts=[]
+            key='fixture-model', value='fixture-model', name='Fixture model', description='', efforts=[],
+            ultra=False,
         )
         self.providers['codex'].models_hook = AsyncMock(return_value=[model])
         list_provider_models = self.service._provider_models
@@ -1532,7 +1535,9 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
             {'installed': True, 'signed_in': signed_in, 'api_billing': False}, time.monotonic() + 60
         )
         models = [
-            types.SimpleNamespace(key=key, value=key, name=f'Fixture {key} on {machine_id}', description='', efforts=[])
+            types.SimpleNamespace(
+                key=key, value=key, name=f'Fixture {key} on {machine_id}', description='', efforts=[], ultra=False
+            )
             for key in keys
         ]
         self.service.models_cache._entries[on_computer] = self.service._CacheEntry(models, time.monotonic() + 60)

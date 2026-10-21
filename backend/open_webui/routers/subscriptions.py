@@ -21,6 +21,7 @@ Routes:
   GET    /run-target/options       — what the composer's bar offers for a new chat (?folder_id=, this_machine_id=)
   GET    /run-target/readiness     — check one plan on one computer again (?provider=, machine_id=)
   GET    /chats/{chat}/run-target  — where the person's chat runs; only its owner sees it
+  POST   /chats/{chat}/workers/{worker}/stop — stop one worker of the person's Ultra reply in their own chat
   GET    /machines/{machine}/settings — where plans start there, and which CLIs they run
   PUT    /machines/{machine}/settings — save those, checked on that computer
   GET    /folders/{folder}/project — the user's project folder for a chat folder, and their computers
@@ -44,11 +45,13 @@ Stored tokens and keys never come back: responses show a fingerprint and expiry.
 
 import asyncio
 import logging
+import re
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
+from open_webui.models.chats import Chats
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.subscriptions import service
 from open_webui.utils.subscriptions.events import SubscriptionError
@@ -330,6 +333,32 @@ async def get_run_target_readiness(provider: str, machine_id: str, user=Depends(
 @router.get('/chats/{chat_id}/run-target')
 async def get_chat_run_target(chat_id: str, user=Depends(get_verified_user)):
     return await service.describe_chat_run_target(user, chat_id)
+
+
+def _is_plain_id(value: str) -> bool:
+    """Whether an id from the path has the shape of an id Buddy, Claude Code or Codex makes.
+
+    Saved chats have UUIDs, Claude Code names its workers by task id, and
+    Codex by thread id: letters, digits, '-' and '_'. Temporary and channel
+    chats, whose ids start with a prefix and a colon, never match, as they
+    have no saved owner.
+    """
+    return re.fullmatch(r'[A-Za-z0-9_-]{1,128}', value) is not None
+
+
+@router.post('/chats/{chat_id}/workers/{worker_id}/stop')
+async def stop_chat_worker(chat_id: str, worker_id: str, user=Depends(get_machine_session_user)):
+    """Stop one worker of the person's Ultra reply in their own chat.
+
+    Only the chat's owner may, in a signed-in session. Someone else's chat is
+    answered as if it didn't exist. The provider then reports the worker
+    stopped in the reply's own events.
+    """
+    if not _is_plain_id(chat_id) or not await Chats.is_chat_owner(chat_id, user.id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='That chat no longer exists.')
+    if not _is_plain_id(worker_id) or not await service.stop_worker(user, chat_id, worker_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That worker isn't running any more.")
+    return {'stopped': True}
 
 
 @router.get('/machines/{machine_id}/settings')

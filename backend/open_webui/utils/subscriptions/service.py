@@ -24,6 +24,7 @@ import secrets
 import sys
 import time
 import uuid
+from contextlib import aclosing
 from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -46,6 +47,7 @@ from open_webui.models.chat_run_targets import (
 from open_webui.models.chats import Chats
 from open_webui.models.subscription_credentials import KIND_API_KEY, KIND_PLAN_TOKEN, SubscriptionCredentials
 from open_webui.models.users import Users
+from open_webui.socket.main import get_event_emitter
 from open_webui.utils.chat_id import CHANNEL_CHAT_ID_PREFIX, is_saved_chat_id, is_temporary_chat_id
 from open_webui.utils.payload import apply_model_params_to_body_openai, apply_system_prompt_to_body
 from open_webui.utils.subscriptions.claude_code import ClaudeCodeProvider
@@ -62,13 +64,14 @@ from open_webui.utils.subscriptions.common import (
     ProviderModel,
     ProviderSettings,
     TurnRequest,
+    UltraOptions,
     requested_effort,
 )
 from open_webui.utils.subscriptions.conversation import parse_messages
 from open_webui.utils.subscriptions import (
-    computer_settings, folder_listing, project_agents, project_folders, run_targets,
+    computer_settings, folder_listing, project_agents, project_folders, run_targets, ultra,
 )
-from open_webui.utils.subscriptions.events import SubscriptionError
+from open_webui.utils.subscriptions.events import StatusUpdate, SubscriptionError
 from open_webui.utils.subscriptions.machines import (
     LOCAL_MACHINE_ID, LocalMachine, RemoteMachine, StartupCleanupUnconfirmedError, TunnelMachine,
 )
@@ -2851,8 +2854,10 @@ async def _tracked_turn(ref: ProviderRef, provider, turn: TurnRequest, generatio
             yield event
         return
     try:
-        async for event in provider.run_turn(turn):
-            yield event
+        # Closed with this, so the provider has ended the turn before it is untracked.
+        async with aclosing(provider.run_turn(turn)) as turn_events:
+            async for event in turn_events:
+                yield event
     finally:
         _untrack_task(ref, task)
 
@@ -3331,6 +3336,11 @@ def _model_entry(provider_id: str, model: ProviderModel, credential_mode: str = 
             'model': model.value,
             'description': model.description,
             'efforts': model.efforts,
+            # Whether the CLI can run Ultra with this model; the composer offers Ultra only then.
+            'ultra': model.ultra,
+            # The admin's cap on Ultra workers at once, or None for no limit. The Ultra
+            # menu tells the person which.
+            'ultra_max_workers': ultra.max_workers(),
         },
     }
 
@@ -3613,14 +3623,103 @@ def _turn_model(machine_ref: MachineRef, model_id: str, subscription: dict) -> t
     if own_models is not None:
         for model in own_models:
             if _model_id(provider_id, model) == model_id:
-                return model.value, [effort for effort in model.efforts if isinstance(effort, str) and effort]
+                return model.value, _effort_names(model.efforts)
         raise SubscriptionError(
             f'{PROVIDER_LABELS[provider_id]} on your computer does not offer this model. Choose another model.'
         )
-    efforts = subscription.get('efforts')
+    return subscription['model'], _effort_names(subscription.get('efforts'))
+
+
+def _effort_names(efforts) -> list[str]:
+    """A model's reasoning levels, leaving out anything that is not a level's name."""
     if not isinstance(efforts, list):
-        efforts = []
-    return subscription['model'], [effort for effort in efforts if isinstance(effort, str) and effort]
+        return []
+    return [effort for effort in efforts if isinstance(effort, str) and effort]
+
+
+ULTRA_UNSUPPORTED_REASON = "{label} on your computer can't run workers with {model}."
+ULTRA_UNLISTED_REASON = "{label} on your computer hasn't listed this chat's model yet."
+ULTRA_WORKER_PROVIDER_MESSAGE = "Ultra's workers run on this chat's {label} plan. Choose one of its models for them."
+ULTRA_WORKER_MISSING_MESSAGE = "{label} on your computer does not offer the workers' model. Choose another worker model."
+
+
+async def _ultra_models(machine_ref: MachineRef) -> dict[str, dict]:
+    """The models an Ultra turn may use, as model list entries by model ID.
+
+    Ultra writes the workers' model and its name into the turn's
+    instructions, so they come only from the person's own model lists, never
+    from the shared model registry: it holds what any user's computer last
+    reported under the same model IDs. As in _turn_model, the computer running
+    the turn decides once its list is loaded. Until then, for example right
+    after a restart or on a computer other than the plan's own, which model
+    lists never ask, the person's model list stands in: the models their plan
+    offers on their computers.
+    """
+    provider_id = machine_ref.provider_id
+    own_models = models_cache.cached(machine_ref)
+    if own_models is not None:
+        entries = [_model_entry(provider_id, model) for model in own_models]
+    else:
+        entries = await _listed_models(machine_ref.ref)
+    return {entry['id']: entry for entry in entries}
+
+
+def _runs_ultra(entry: dict) -> bool:
+    return entry['subscription'].get('ultra') is True
+
+
+async def _turn_ultra(machine_ref: MachineRef, metadata: dict, model_id: str) -> tuple[UltraOptions | None, str | None]:
+    """The person's Ultra choice for this turn, resolved on the computer that runs it.
+
+    Returns the options, or None when the turn runs without Ultra, and the
+    reason when the person turned Ultra on but the CLI can't run it with the
+    chosen models. Then the reply runs normally and says why.
+
+    A worker model from another provider, or one the computer does not offer,
+    is refused. A worker thinking level the workers' model does not offer is
+    dropped. None for the model or the level means the workers use the chat's own.
+    The models, their levels and their names come from _ultra_models.
+    """
+    choice = metadata.get('ultra')
+    if metadata.get('task') or not isinstance(choice, dict):
+        # Titles, tags and follow-up suggestions never start workers.
+        return None, None
+    provider_id = machine_ref.provider_id
+    label = PROVIDER_LABELS[provider_id]
+    models = await _ultra_models(machine_ref)
+    chat_entry = models.get(model_id)
+    if chat_entry is None:
+        return None, ULTRA_UNLISTED_REASON.format(label=label)
+    if not _runs_ultra(chat_entry):
+        return None, ULTRA_UNSUPPORTED_REASON.format(label=label, model=chat_entry['name'])
+
+    worker_model = None
+    worker_label = None
+    worker_efforts = _effort_names(chat_entry['subscription'].get('efforts'))
+    worker_model_id = choice.get('worker_model')
+    if worker_model_id:
+        if _provider_for_model_id(worker_model_id) != provider_id:
+            raise SubscriptionError(ULTRA_WORKER_PROVIDER_MESSAGE.format(label=label))
+        worker_entry = models.get(worker_model_id)
+        if worker_entry is None:
+            raise SubscriptionError(ULTRA_WORKER_MISSING_MESSAGE.format(label=label))
+        worker_label = worker_entry['name']
+        if not _runs_ultra(worker_entry):
+            return None, ULTRA_UNSUPPORTED_REASON.format(label=label, model=worker_label)
+        worker_model = worker_entry['subscription']['model']
+        worker_efforts = _effort_names(worker_entry['subscription'].get('efforts'))
+
+    worker_effort = choice.get('worker_effort')
+    if worker_effort not in worker_efforts:
+        # Not a level the workers' model offers, so they use the chat's own.
+        worker_effort = None
+    options = UltraOptions(
+        worker_model=worker_model,
+        worker_label=worker_label,
+        worker_effort=worker_effort,
+        max_workers=ultra.max_workers(),
+    )
+    return options, None
 
 
 @dataclass(frozen=True)
@@ -3761,6 +3860,131 @@ def _with_start_note(conversation, cwd: str):
     return replace(conversation, system=system)
 
 
+def _with_ultra_note(conversation, provider_id: str, access: str, options: UltraOptions):
+    """Tell an Ultra turn to orchestrate workers, ahead of the rest of its instructions."""
+    system = ultra.with_orchestrator_note(conversation.system, provider_id, access, options)
+    return replace(conversation, system=system)
+
+
+async def _after_status(status: StatusUpdate, events):
+    """A turn's events, after a status line that starts the reply."""
+    yield status
+    async with aclosing(events):
+        async for event in events:
+            yield event
+
+
+# Live Ultra turns
+
+
+# Entries compare by identity, as providers find a turn by its very request:
+# two turns with equal requests are still two turns.
+@dataclass(eq=False)
+class _LiveUltraTurn:
+    """An Ultra turn in a chat that is still running, so the person can stop its workers one by one."""
+
+    chat_id: str
+    # The reply's message, or None when the request named none.
+    message_id: str | None
+    owner_id: str
+    provider_id: str
+    # The provider that runs the turn, which stops its workers.
+    provider: Any
+    # The request passed to the provider's run_turn. The provider finds the
+    # turn's workers by this very object.
+    turn: TurnRequest
+
+
+# Each chat's live Ultra turns, by chat id. Buddy runs one backend worker
+# (see _require_single_worker), so every turn runs in this process.
+#
+# The chat page sends one turn per chat at a time. By default a message sent
+# while a reply runs waits in the composer's queue until the reply is done,
+# and an Ultra reply is done only once its workers have ended; otherwise the
+# page stops the reply first. The server doesn't refuse a second turn,
+# though. A request that names several models runs one turn per model, each
+# with its own message id, and a second tab can send meanwhile. A Stop that
+# goes through Redis returns before the stopped turn has stopped its workers,
+# so the next message may start while it does. So a chat holds a list, and
+# stopping a worker asks each of the chat's turns.
+_live_ultra_turns: dict[str, list[_LiveUltraTurn]] = {}
+
+
+def _live_ultra_turn(user, ref: ProviderRef, provider, turn: TurnRequest, metadata: dict) -> _LiveUltraTurn | None:
+    """The registry entry for an Ultra turn in a chat, or None for any other turn.
+
+    A turn outside a chat has no chat to stop its workers from; stopping the
+    reply still stops them all.
+    """
+    chat_id = metadata.get('chat_id')
+    if turn.ultra is None or not chat_id:
+        return None
+    return _LiveUltraTurn(
+        chat_id=chat_id,
+        message_id=metadata.get('message_id'),
+        owner_id=user.id,
+        provider_id=ref.provider_id,
+        provider=provider,
+        turn=turn,
+    )
+
+
+async def _while_live(live_turn: _LiveUltraTurn, events):
+    """An Ultra turn's events, with the turn in the registry from its start until they end.
+
+    The provider's events end only when the turn really has: all its workers
+    have ended and its last result is read, or it failed, or it was stopped,
+    in which case the provider has stopped its workers first. However the
+    events end, the turn leaves the registry. When the chat stops reading
+    them, as when Stop lands while it hands on a chunk, they are closed first,
+    so the provider stops the turn's workers before the turn leaves.
+    """
+    _live_ultra_turns.setdefault(live_turn.chat_id, []).append(live_turn)
+    try:
+        async with aclosing(events):
+            async for event in events:
+                yield event
+    finally:
+        chat_turns = _live_ultra_turns[live_turn.chat_id]
+        chat_turns.remove(live_turn)
+        if not chat_turns:
+            del _live_ultra_turns[live_turn.chat_id]
+
+
+async def stop_worker(user, chat_id: str, worker_id: str) -> bool:
+    """Stop one running worker of the person's live Ultra turn in a chat.
+
+    Asks the provider that runs the turn to stop it; the provider then
+    reports the worker stopped in the turn's own events. Returns False when
+    the person runs no Ultra turn in the chat, or none of theirs has that
+    worker running, so the stop route can answer that it isn't running.
+    """
+    # A copy, since a turn may end while its provider is asked.
+    for live_turn in list(_live_ultra_turns.get(chat_id, [])):
+        if live_turn.owner_id != user.id:
+            continue
+        if await live_turn.provider.stop_worker(live_turn.turn, worker_id):
+            return True
+    return False
+
+
+def _stopped_reply_emitter(metadata: dict):
+    """What sends a stopped reply's last Ultra workers snapshot to its chat, or None outside a chat.
+
+    The chat stops reading a reply's stream when it stops the reply, so that
+    snapshot goes through the chat's event emitter instead, which saves it as
+    the message's workers, as it does each snapshot the chat reads.
+    """
+    if not metadata.get('chat_id') or not metadata.get('message_id'):
+        return None
+
+    async def emit_to_chat(event: dict) -> None:
+        event_emitter = await get_event_emitter(metadata)
+        await event_emitter(event)
+
+    return emit_to_chat
+
+
 async def generate_subscription_chat_completion(request, form_data: dict, user, models):
     if not await may_use_machines(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=NOT_ALLOWED_MESSAGE)
@@ -3795,6 +4019,7 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
         _require_plan(ref.provider_id, await status_cache.get(on_computer, serve_expired=False))
         cli_model, model_efforts = _turn_model(on_computer, model_id, subscription)
         access = await _turn_access(user, target, metadata, foreign_preset)
+        ultra_options, ultra_off_reason = await _turn_ultra(on_computer, metadata, model_id)
         async with _provider_lock(ref):
             if generation != _provider_generations.get(ref, 0):
                 raise SubscriptionError('The provider machine changed; refresh before starting another turn.')
@@ -3812,6 +4037,9 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
             )
             if access == ACCESS_FULL and lets_ai_choose:
                 conversation = _with_start_note(conversation, cwd)
+            if ultra_options is not None:
+                # Added on the server for this turn only, so it is never saved with the chat.
+                conversation = _with_ultra_note(conversation, ref.provider_id, access, ultra_options)
             turn = TurnRequest(
                 model=cli_model,
                 conversation=conversation,
@@ -3821,6 +4049,7 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
                 is_task=is_task,
                 machine=machine,
                 efforts=model_efforts,
+                ultra_options=ultra_options,
             )
         # Checked outside the provider lock, so a slow computer never holds it.
         if project_path:
@@ -3829,8 +4058,14 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
         events = failure_events(str(error))
     else:
         events = _tracked_turn(ref, provider, turn, generation)
+        live_turn = _live_ultra_turn(user, ref, provider, turn, metadata)
+        if live_turn is not None:
+            events = _while_live(live_turn, events)
+        if ultra_off_reason:
+            events = _after_status(ultra.off_status(ultra_off_reason), events)
 
     response_model_id = form_data.get('model') or model_id
     if payload.get('stream'):
-        return StreamingResponse(stream_events(events, response_model_id), media_type='text/event-stream')
+        body = stream_events(events, response_model_id, emit_when_stopped=_stopped_reply_emitter(metadata))
+        return StreamingResponse(body, media_type='text/event-stream')
     return await collect_events(events, response_model_id)

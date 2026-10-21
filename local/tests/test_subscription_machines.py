@@ -22,6 +22,7 @@ import time
 import types
 import unittest
 import uuid
+from contextlib import aclosing
 from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
@@ -35,10 +36,10 @@ sys.path.insert(0, str(ROOT / 'backend'))
 
 from open_webui.utils.subscriptions.runner_transport import normalize_runner_url  # noqa: E402
 from open_webui.utils.subscriptions import project_agents  # noqa: E402
-from open_webui.utils.subscriptions.events import SubscriptionError  # noqa: E402
+from open_webui.utils.subscriptions.events import StatusUpdate, SubscriptionError  # noqa: E402
 from open_webui.utils.subscriptions.machines import TunnelMachine  # noqa: E402
 from open_webui.utils.subscriptions.tunnel_hub import RunnerCallError, RunnerHub  # noqa: E402
-from open_webui.utils.subscriptions import computer_settings, folder_listing, run_targets  # noqa: E402
+from open_webui.utils.subscriptions import computer_settings, folder_listing, run_targets, ultra  # noqa: E402
 from open_webui.utils.super_users import without_server_identity  # noqa: E402
 from open_webui.utils.chat_id import is_saved_chat_id, is_temporary_chat_id  # noqa: E402
 from test_project_folders import FakeChats, FakeFolders, load_project_folders  # noqa: E402
@@ -260,6 +261,7 @@ def load_service(config, data_dir):
         'run_targets': run_targets,
         'project_agents': project_agents,
         'asyncio': asyncio,
+        'aclosing': aclosing,
         'hashlib': hashlib,
         'hmac': hmac,
         'ipaddress': ipaddress,
@@ -280,6 +282,8 @@ def load_service(config, data_dir):
         'uuid': uuid,
         'normalize_runner_url': normalize_runner_url,
         'SubscriptionError': SubscriptionError,
+        'StatusUpdate': StatusUpdate,
+        'ultra': ultra,
         'HTTPException': FakeHTTPException,
         'status': types.SimpleNamespace(HTTP_404_NOT_FOUND=404, HTTP_403_FORBIDDEN=403),
         'DATA_DIR': data_dir,
@@ -309,7 +313,7 @@ def load_service(config, data_dir):
     common_tree = ast.parse((SUBSCRIPTIONS / 'common.py').read_text(encoding='utf-8'))
     common_nodes = []
     for node in common_tree.body:
-        if isinstance(node, ast.ClassDef) and node.name in ('ProviderSettings', 'TurnRequest'):
+        if isinstance(node, ast.ClassDef) and node.name in ('ProviderSettings', 'TurnRequest', 'UltraOptions'):
             common_nodes.append(node)
         if isinstance(node, ast.FunctionDef) and node.name == 'requested_effort':
             common_nodes.append(node)

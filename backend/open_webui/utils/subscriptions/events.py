@@ -19,10 +19,43 @@ class ReasoningDelta:
 
 @dataclass
 class StatusUpdate:
-    """A short progress line shown above the reply."""
+    """A short progress line shown above the reply.
+
+    The chat hides a reply's lines once it ends, unless one is marked keep:
+    the latest such line then stays shown.
+    """
 
     description: str
     done: bool = False
+    keep: bool = False
+
+
+WORKER_RUNNING = 'running'
+WORKER_DONE = 'done'
+WORKER_FAILED = 'failed'
+WORKER_STOPPED = 'stopped'
+WORKER_STATES = (WORKER_RUNNING, WORKER_DONE, WORKER_FAILED, WORKER_STOPPED)
+
+
+@dataclass
+class WorkerUpdate:
+    """The latest state of one Ultra worker, listed under its chat with its own Stop."""
+
+    worker_id: str
+    # The worker that started this one; None for the orchestrator's own workers.
+    parent_id: str | None
+    # 1 for the orchestrator's workers, 2 for the sub-workers they start.
+    depth: int
+    label: str
+    # One of WORKER_STATES.
+    state: str
+    model: str | None = None
+    effort: str | None = None
+    # What the worker is doing now, in one short line.
+    activity: str | None = None
+    # The worker's report once it ends.
+    summary: str | None = None
+    tokens: int | None = None
 
 
 @dataclass

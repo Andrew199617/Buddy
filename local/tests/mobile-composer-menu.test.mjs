@@ -14,7 +14,12 @@ const compiled = ts.transpileModule(source, {
 });
 const moduleUrl =
 	'data:text/javascript;base64,' + Buffer.from(compiled.outputText).toString('base64');
-const { getMobileComposerMenuMaxHeight, getMobileComposerMenuPosition } = await import(moduleUrl);
+const {
+	getComposerMenuRoom,
+	getComposerMenuTop,
+	getMobileComposerMenuMaxHeight,
+	getMobileComposerMenuPosition
+} = await import(moduleUrl);
 
 const keyboardViewport = { left: 0, top: 0, width: 390, height: 464 };
 const anchor = { left: 20, right: 56, top: 392, height: 36 };
@@ -235,4 +240,57 @@ test('zero-size viewport and menu fixtures produce finite nonnegative values', (
 	assert.deepEqual(position, { top: 8, left: 8 });
 	assert.ok(Number.isFinite(position.top));
 	assert.ok(Number.isFinite(position.left));
+});
+
+// Ultra's menu needs this much room above the composer before it covers the composer.
+const smallestRoom = 132;
+
+test('a composer menu opens between the chat header and the composer when it fits', () => {
+	const space = { visibleTop: 56, visibleBottom: 464, composerTop: 330, composerBottom: 450 };
+	const room = getComposerMenuRoom(space, smallestRoom);
+	assert.deepEqual(room, { coversComposer: false, maxHeight: 260 });
+	assert.equal(getComposerMenuTop(space, room, 200), 124);
+	assert.equal(getComposerMenuTop(space, room, 260), 64);
+});
+
+test('a composer menu covers the composer only below its smallest room', () => {
+	const atMinimum = { visibleTop: 56, visibleBottom: 464, composerTop: 202, composerBottom: 330 };
+	assert.deepEqual(getComposerMenuRoom(atMinimum, smallestRoom), {
+		coversComposer: false,
+		maxHeight: 132
+	});
+	const belowMinimum = { ...atMinimum, composerTop: 201 };
+	assert.equal(getComposerMenuRoom(belowMinimum, smallestRoom).coversComposer, true);
+});
+
+test('a short landscape keyboard puts the composer menu over the composer below the header', () => {
+	// 844x390 with a 240px visual viewport: only 33px is left above the composer.
+	const space = { visibleTop: 48, visibleBottom: 240, composerTop: 95, composerBottom: 229 };
+	const room = getComposerMenuRoom(space, smallestRoom);
+	assert.deepEqual(room, { coversComposer: true, maxHeight: 173 });
+	assert.equal(getComposerMenuTop(space, room, 173), 56);
+	assert.equal(getComposerMenuTop(space, room, 100), 56);
+});
+
+test('a composer at the top of a panned landscape viewport still leaves the menu visible', () => {
+	// iOS pans the page: the header sits above the visible area and the composer fills it.
+	const space = { visibleTop: 210, visibleBottom: 380, composerTop: 214, composerBottom: 370 };
+	const room = getComposerMenuRoom(space, smallestRoom);
+	assert.deepEqual(room, { coversComposer: true, maxHeight: 152 });
+	assert.equal(getComposerMenuTop(space, room, 152), 218);
+});
+
+test('a covering composer menu keeps the gutter above the keyboard', () => {
+	const space = { visibleTop: 48, visibleBottom: 240, composerTop: 95, composerBottom: 240 };
+	assert.deepEqual(getComposerMenuRoom(space, smallestRoom), {
+		coversComposer: true,
+		maxHeight: 176
+	});
+});
+
+test('without a minimum the composer menu always opens above the composer', () => {
+	const space = { visibleTop: 48, visibleBottom: 240, composerTop: 95, composerBottom: 229 };
+	const room = getComposerMenuRoom(space, 0);
+	assert.deepEqual(room, { coversComposer: false, maxHeight: 33 });
+	assert.equal(getComposerMenuTop(space, room, 33), 56);
 });

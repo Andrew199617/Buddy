@@ -281,6 +281,7 @@ from open_webui.utils.subscriptions.service import (
     is_conflicting_preset_row,
     mark_run_targets_started,
 )
+from open_webui.utils.subscriptions.streaming import WORKERS_EVENT_TYPE, stopped_saved_workers
 from open_webui.utils.super_users import may_change_others_chat
 from open_webui.utils.tool_approval import (
     ResolveToolCallForm,
@@ -1108,6 +1109,33 @@ async def _set_direct_model(request: Request, model_item: dict, user) -> None:
     request.state.model = model_item
 
 
+def _pop_ultra(form_data: dict, request: Request) -> dict | None:
+    """Take the composer's Ultra choice out of a chat request.
+
+    The field is always removed, so it never reaches the provider. A choice is
+    exactly {worker_model, worker_effort}, each a string or None for the chat's
+    own; any other value is dropped. API keys can't turn Ultra on, the same way
+    they can't choose where a chat runs.
+    """
+    ultra = form_data.pop('ultra', None)
+    if not isinstance(ultra, dict) or set(ultra) != {'worker_model', 'worker_effort'}:
+        return None
+
+    worker_model = ultra['worker_model']
+    if worker_model is not None and not isinstance(worker_model, str):
+        return None
+    worker_effort = ultra['worker_effort']
+    if worker_effort is not None and not isinstance(worker_effort, str):
+        return None
+
+    if getattr(request.state, 'auth_type', None) == 'api_key':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Sign in to Buddy to use Ultra; API keys can't.",
+        )
+    return {'worker_model': worker_model, 'worker_effort': worker_effort}
+
+
 @app.post('/api/chat/completions')
 @app.post('/api/v1/chat/completions')  # Experimental: Compatibility with OpenAI API
 async def chat_completion(
@@ -1319,6 +1347,15 @@ async def chat_completion(
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=API_KEY_TARGET_MESSAGE)
             if is_temporary_chat_id(metadata['chat_id']):
                 metadata[REQUESTED_RUN_TARGET_KEY] = run_target
+
+        # Ultra, from the composer's button. It goes in metadata only: params are
+        # forwarded to providers, and features are copied into child runs.
+        ultra = _pop_ultra(form_data, request)
+        # A request that names several models runs one turn per model, even
+        # for the same model twice side by side. One chat must never run
+        # several Ultra turns at once, so those replies run without Ultra.
+        if ultra is not None and len(message_ids) == 1:
+            metadata['ultra'] = ultra
 
         initial_title_generation = None
         if is_new_chat and tasks and TASKS.TITLE_GENERATION in tasks:
@@ -2210,6 +2247,8 @@ async def stop_tasks_by_chat_id_endpoint(request: Request, chat_id: str, user=De
 
     if not socket_id and str(result.get('message', '')).startswith('No tasks found'):
         messages_map = await Chats.get_messages_map_by_chat_id(chat_id) or {}
+        # Only the chat's own copy of each message keeps its Ultra workers.
+        saved_messages = ((chat.chat or {}).get('history') or {}).get('messages') or {}
         for message_id, message in messages_map.items():
             if message.get('role') != 'assistant' or message.get('done') is not False:
                 continue
@@ -2225,10 +2264,19 @@ async def stop_tasks_by_chat_id_endpoint(request: Request, chat_id: str, user=De
                         item['status'] = 'rejected'
                         item.pop('approved', None)
 
+            # The reply's task is gone, as after a server restart, and its workers with it.
+            saved_workers = (saved_messages.get(message_id) or {}).get('workers')
+            workers = stopped_saved_workers(saved_workers, int(time.time()))
+
+            finished = {'done': True}
+            if isinstance(output, list):
+                finished['output'] = output
+            if workers is not None:
+                finished['workers'] = workers
             await Chats.upsert_message_to_chat_by_id_and_message_id(
                 chat_id,
                 message_id,
-                {'done': True, **({'output': output} if isinstance(output, list) else {})},
+                finished,
                 touch=False,
             )
             result = {
@@ -2246,6 +2294,8 @@ async def stop_tasks_by_chat_id_endpoint(request: Request, chat_id: str, user=De
             )
             if event_emitter:
                 await event_emitter({'type': 'chat:completion', 'data': {'done': True, 'output': output}})
+                if workers is not None:
+                    await event_emitter({'type': WORKERS_EVENT_TYPE, 'data': workers})
                 await event_emitter({'type': 'chat:tasks:cancel'})
 
     return result

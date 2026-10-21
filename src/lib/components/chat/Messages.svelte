@@ -8,6 +8,7 @@
 	import { toast } from 'svelte-sonner';
 	import { deleteChatMessageById, updateChatById } from '$lib/apis/chats';
 	import { copyToClipboard, extractCurlyBraceWords, getDeepestChildId } from '$lib/utils';
+	import { withCurrentWorkers } from './Ultra/ultra';
 
 	import Message from './Messages/Message.svelte';
 	import Loader from '../common/Loader.svelte';
@@ -411,7 +412,8 @@
 			return;
 		}
 
-		history.messages[messageId] = message;
+		// A rating saves a copy of the message, which misses worker snapshots that came after it.
+		history.messages[messageId] = withCurrentWorkers(message, history.messages[messageId]);
 		await updateChat();
 	};
 

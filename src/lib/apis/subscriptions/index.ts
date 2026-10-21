@@ -736,6 +736,37 @@ export const getChatRunTarget = async (
 	return readSubscriptionResponse(response);
 };
 
+// --- Ultra workers ------------------------------------------------------------------
+
+/** The worker isn't running any more, or its chat is gone; the message is Buddy's own. */
+export class WorkerNotRunningError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'WorkerNotRunningError';
+	}
+}
+
+/**
+ * Stops one worker of an Ultra reply in the person's own chat. The reply then
+ * reports it stopped. Throws WorkerNotRunningError when it has already ended,
+ * and the server's reason for other failures.
+ */
+export const stopChatWorker = async (
+	token: string,
+	chatId: string,
+	workerId: string
+): Promise<{ stopped: boolean }> => {
+	const path = `/chats/${encodeURIComponent(chatId)}/workers/${encodeURIComponent(workerId)}/stop`;
+	const response = await sendSubscriptionRequest(token, path, 'POST');
+	if (response.status === 404) {
+		const data = await response.json().catch(() => null);
+		let message = "That worker isn't running any more.";
+		if (typeof data?.detail === 'string') message = data.detail;
+		throw new WorkerNotRunningError(message);
+	}
+	return readSubscriptionResponse(response);
+};
+
 // --- Each computer's own start folder and CLI paths -------------------------------
 
 export type ComputerSettings = {

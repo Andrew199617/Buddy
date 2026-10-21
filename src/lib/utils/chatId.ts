@@ -10,5 +10,8 @@ export const isTemporaryChatId = (chatId: string | null | undefined) =>
 	(chatId.startsWith(TEMPORARY_CHAT_ID_PREFIX) ||
 		chatId.startsWith(LEGACY_TEMPORARY_CHAT_ID_PREFIX));
 
+export const isChannelChatId = (chatId: string | null | undefined) =>
+	!!chatId && chatId.startsWith(CHANNEL_CHAT_ID_PREFIX);
+
 export const isSavedChatId = (chatId: string | null | undefined) =>
 	!!chatId && !isTemporaryChatId(chatId) && !chatId.startsWith(CHANNEL_CHAT_ID_PREFIX);

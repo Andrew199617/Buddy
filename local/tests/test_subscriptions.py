@@ -12,6 +12,7 @@ import sys
 import tempfile
 import types
 import unittest
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,8 +24,10 @@ from test_subscription_machines import OWNER, FakeGroups, FakeUsers, MemoryCrede
 from buddy_runner import runner  # noqa: E402
 from open_webui.utils.subscriptions import claude_code, codex, streaming  # noqa: E402
 from open_webui.utils.subscriptions.common import (  # noqa: E402
+    ProviderModel,
     ProviderSettings,
     TurnRequest,
+    UltraOptions,
     requested_effort,
 )
 from open_webui.utils.subscriptions.conversation import (  # noqa: E402
@@ -35,12 +38,15 @@ from open_webui.utils.subscriptions.conversation import (  # noqa: E402
     parse_messages,
 )
 from open_webui.utils.subscriptions.events import (  # noqa: E402
+    WORKER_RUNNING,
+    WORKER_STATES,
     ReasoningDelta,
     StatusUpdate,
     SubscriptionError,
     TextDelta,
     TokenUsage,
     TurnFailed,
+    WorkerUpdate,
 )
 from open_webui.utils.subscriptions.machines import (  # noqa: E402
     AiohttpProcessChannel,
@@ -173,6 +179,41 @@ class CommonTests(unittest.TestCase):
         first_url = [ChatTurn('user', 'Look', ['https://example.invalid/first.png'])]
         edited_url = [ChatTurn('user', 'Look', ['https://example.invalid/edited.png'])]
         self.assertNotEqual(conversation_key(first_url), conversation_key(edited_url))
+
+    def test_ultra_reaches_chat_turns_but_never_task_turns(self):
+        conversation = parse_messages([{'role': 'user', 'content': 'Fix the tests'}])
+        options = UltraOptions(worker_model='sonnet', worker_label='Claude Sonnet', worker_effort='high')
+
+        chat_turn = TurnRequest('opus', conversation, ProviderSettings(), '.', ultra_options=options)
+        self.assertIs(chat_turn.ultra, options)
+
+        # A title or follow-up request carries the chat's choices but must not start workers.
+        task_turn = TurnRequest('opus', conversation, ProviderSettings(), '.', is_task=True, ultra_options=options)
+        self.assertIsNone(task_turn.ultra)
+
+        plain_turn = TurnRequest('opus', conversation, ProviderSettings(), '.')
+        self.assertIsNone(plain_turn.ultra)
+
+    def test_ultra_options_cannot_change_during_a_turn(self):
+        options = UltraOptions()
+        self.assertIsNone(options.worker_model)
+        self.assertIsNone(options.worker_effort)
+        # No cap unless the admin sets one.
+        self.assertIsNone(options.max_workers)
+        with self.assertRaises(FrozenInstanceError):
+            options.max_workers = 3
+
+    def test_models_lack_ultra_until_a_provider_turns_it_on(self):
+        self.assertFalse(ProviderModel(key='opus', value='opus', name='Claude Opus').ultra)
+
+    def test_worker_update_starts_with_only_what_a_launch_reports(self):
+        update = WorkerUpdate('task-1', None, 1, 'Research the parser', WORKER_RUNNING)
+        self.assertIn(update.state, WORKER_STATES)
+        self.assertIsNone(update.model)
+        self.assertIsNone(update.effort)
+        self.assertIsNone(update.activity)
+        self.assertIsNone(update.summary)
+        self.assertIsNone(update.tokens)
 
 
 class ClaudeStreamTests(unittest.TestCase):
@@ -309,6 +350,190 @@ class ClaudeStreamTests(unittest.TestCase):
             resume_args = turn_args('chat', resume_id='session-1')
             resume_index = resume_args.index('--resume')
             self.assertEqual(resume_args[resume_index + 1 : resume_index + 3], ['session-1', '--fork-session'])
+
+    def test_ultra_turns_add_the_agent_tool_at_their_access_level(self):
+        """Ultra adds only the Agent tool, which starts workers; everything else stays as the access level sets it."""
+        with tempfile.TemporaryDirectory() as directory:
+            provider = claude_code.ClaudeCodeProvider(Path(directory))
+            conversation = parse_messages([{'role': 'user', 'content': 'Fix the tests'}])
+            options = UltraOptions(worker_model='haiku', worker_label='Claude Haiku', worker_effort='low')
+
+            def turn_args(access, **turn_options):
+                turn = TurnRequest(
+                    model='opus',
+                    conversation=conversation,
+                    settings=ProviderSettings(enable=True, access=access),
+                    cwd=directory,
+                    **turn_options,
+                )
+                return provider._turn_args('claude', turn, None, 'instructions.md')
+
+            # Chat: Agent is the only tool, so workers can only think.
+            chat_args = turn_args('chat', ultra_options=options)
+            self.assertEqual(chat_args[chat_args.index('--tools') + 1], 'Agent')
+            self.assertEqual(chat_args[chat_args.index('--system-prompt-file') + 1], 'instructions.md')
+            self.assertEqual(chat_args[chat_args.index('--setting-sources') + 1], '')
+            self.assertIn('--strict-mcp-config', chat_args)
+            self.assertIn('--disable-slash-commands', chat_args)
+            self.assertNotIn('--allowedTools', chat_args)
+            expected_chat_args = turn_args('chat')
+            expected_chat_args[expected_chat_args.index('--tools') + 1] = 'Agent'
+            self.assertEqual(chat_args, expected_chat_args)
+
+            # Read: the read tools plus Agent, still restricted to the folder and without WebFetch.
+            read_args = turn_args('read', ultra_options=options)
+            self.assertEqual(read_args[read_args.index('--tools') + 1], 'Read,Grep,Glob,WebSearch,Agent')
+            self.assertEqual(read_args[read_args.index('--allowedTools') + 1], 'WebSearch,Agent')
+            self.assertIn('--restricted', read_args)
+            self.assertIn('--strict-mcp-config', read_args)
+            self.assertEqual(read_args[read_args.index('--setting-sources') + 1], '')
+            self.assertNotIn('WebFetch', read_args[read_args.index('--tools') + 1])
+            expected_read_args = turn_args('read')
+            expected_read_args[expected_read_args.index('--tools') + 1] = 'Read,Grep,Glob,WebSearch,Agent'
+            expected_read_args[expected_read_args.index('--allowedTools') + 1] = 'WebSearch,Agent'
+            self.assertEqual(read_args, expected_read_args)
+
+            # Full: Agent is already among Claude Code's default tools.
+            full_args = turn_args('full', ultra_options=options)
+            self.assertEqual(full_args, turn_args('full'))
+            self.assertNotIn('--tools', full_args)
+            self.assertEqual(full_args[full_args.index('--setting-sources') + 1], 'project,local')
+
+            # Titles and follow-ups never start workers, even while Ultra is on.
+            task_args = turn_args('full', is_task=True, ultra_options=options)
+            self.assertEqual(task_args[task_args.index('--tools') + 1], '')
+
+    def test_only_ultra_turns_may_leave_agents_running_in_the_background(self):
+        """A normal turn ends the CLI at its first result, so a background agent would be stopped unseen."""
+        with tempfile.TemporaryDirectory() as directory:
+            provider = claude_code.ClaudeCodeProvider(Path(directory))
+            conversation = parse_messages([{'role': 'user', 'content': 'Fix the tests'}])
+
+            def turn_env(access, **turn_options):
+                turn = TurnRequest(
+                    model='opus',
+                    conversation=conversation,
+                    settings=ProviderSettings(enable=True, access=access),
+                    cwd=directory,
+                    **turn_options,
+                )
+                return provider._turn_env(turn)
+
+            for access in ('chat', 'read', 'full'):
+                with self.subTest(access=access):
+                    self.assertEqual(turn_env(access), {'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS': '1'})
+                    # Ultra turns read on past the first result and list every
+                    # worker, until Claude Code reports its session idle.
+                    ultra_env = turn_env(access, ultra_options=UltraOptions())
+                    self.assertNotIn('CLAUDE_CODE_DISABLE_BACKGROUND_TASKS', ultra_env)
+                    self.assertEqual(ultra_env['CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS'], '1')
+                    self.assertNotIn('CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS', turn_env(access))
+
+            # Titles and follow-ups run with no tools, so they cannot start agents.
+            self.assertEqual(turn_env('full', is_task=True), {})
+            self.assertEqual(turn_env('full', is_task=True, ultra_options=UltraOptions()), {})
+
+    def test_ultra_turns_set_the_workers_depth_model_and_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            provider = claude_code.ClaudeCodeProvider(Path(directory))
+            conversation = parse_messages([{'role': 'user', 'content': 'Fix the tests'}])
+
+            def turn_env(access, options):
+                turn = TurnRequest(
+                    model='opus',
+                    conversation=conversation,
+                    settings=ProviderSettings(enable=True, access=access),
+                    cwd=directory,
+                    ultra_options=options,
+                )
+                return provider._turn_env(turn)
+
+            chosen = UltraOptions(worker_model='claude-fable-5-1[1m]', worker_label='Claude Fable', worker_effort='low')
+            capped = UltraOptions(max_workers=3)
+            for access in ('chat', 'read', 'full'):
+                with self.subTest(access=access):
+                    # Workers may start sub-workers, and those may not start any.
+                    # Claude Code also reports when its session goes idle.
+                    self.assertEqual(
+                        turn_env(access, UltraOptions()),
+                        {
+                            'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH': '2',
+                            'CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS': '1',
+                        },
+                    )
+                    # Every worker, Buddy's types and Claude Code's own, uses the chosen model.
+                    # The chosen level is not set as CLAUDE_CODE_EFFORT_LEVEL, which would
+                    # change the orchestrator's own too.
+                    self.assertEqual(
+                        turn_env(access, chosen),
+                        {
+                            'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH': '2',
+                            'CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS': '1',
+                            'CLAUDE_CODE_SUBAGENT_MODEL': 'claude-fable-5-1[1m]',
+                            'CLAUDE_CODE_SUBAGENT_MODEL_FORCE': '1',
+                        },
+                    )
+                    # Only the admin's cap limits workers at once.
+                    self.assertEqual(
+                        turn_env(access, capped),
+                        {
+                            'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH': '2',
+                            'CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS': '1',
+                            'CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS': '3',
+                        },
+                    )
+
+    def test_the_turn_environment_reaches_the_cli(self):
+        started_env = []
+
+        class AnsweredProcess:
+            def __init__(self):
+                self._lines = [
+                    json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'Done.'}]}}),
+                    json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'session_id': 'new-id'}),
+                ]
+
+            async def write(self, text):
+                pass
+
+            async def read_line(self):
+                if self._lines:
+                    return self._lines.pop(0)
+                return None
+
+            async def finish_output(self, timeout):
+                return None
+
+            def stderr_text(self):
+                return ''
+
+            def close_stdin(self):
+                pass
+
+            def kill(self):
+                pass
+
+        class FakeMachine:
+            id = 'fake'
+            name = 'Fake machine'
+
+            async def find_tool(self, tool, configured_path=''):
+                return 'claude'
+
+            async def start_process(self, args, cwd, extra_env=None, temp_files=None):
+                started_env.append(extra_env)
+                return AnsweredProcess()
+
+        async def run():
+            with tempfile.TemporaryDirectory() as directory:
+                provider = claude_code.ClaudeCodeProvider(Path(directory))
+                conversation = parse_messages([{'role': 'user', 'content': 'Run the tests'}])
+                settings = ProviderSettings(enable=True, access='full')
+                turn = TurnRequest('opus', conversation, settings, directory, machine=FakeMachine())
+                return await collect(provider.run_turn(turn))
+
+        self.assertEqual(asyncio.run(run()), [TextDelta('Done.')])
+        self.assertEqual(started_env, [{'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS': '1'}])
 
     def test_rebuilt_session_resends_earlier_images(self):
         history = [ChatTurn('user', 'Remember this chart', [PNG_DATA_URL]), ChatTurn('assistant', 'Got it.')]
@@ -795,12 +1020,14 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(chat_config['mcp_servers'], {'node_repl': {'enabled': False}})
         self.assertFalse(chat_config['features.shell_tool'])
         self.assertFalse(chat_config['features.unified_exec'])
+        self.assertIs(chat_config['features.multi_agent'], False)
 
         read_config = thread_config('read')
         # The folder's AGENTS.md files and skills could steer reads, so neither loads.
         self.assertEqual(
             read_config,
             {
+                'features.multi_agent': False,
                 'mcp_servers': {'node_repl': {'enabled': False}},
                 'project_doc_max_bytes': 0,
                 'skills.include_instructions': False,
@@ -809,9 +1036,34 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(chat_config['project_doc_max_bytes'], 0)
         self.assertFalse(chat_config['skills.include_instructions'])
 
-        self.assertIsNone(thread_config('full'))
+        # Full threads keep the user's tools; only Codex's own workers are off.
+        self.assertEqual(thread_config('full'), {'features.multi_agent': False})
         # Chat and read threads read the effective config; full threads skip it.
         self.assertEqual(server.methods, ['config/read', 'config/read'])
+
+    def test_codex_threads_start_with_workers_off_at_every_access_level(self):
+        # Buddy lists no Codex workers on these turns, so none may start unseen.
+        class FakeServer:
+            def __init__(self):
+                self.thread_starts = []
+
+            async def request(self, method, params=None, timeout=None):
+                if method == 'thread/start':
+                    self.thread_starts.append(params)
+                    return {'thread': {'id': 'thread-1'}}
+                return {'config': {'mcp_servers': {}}}
+
+        provider = codex.CodexProvider()
+        conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
+        for access in ('chat', 'read', 'full'):
+            with self.subTest(access=access):
+                server = FakeServer()
+                turn = TurnRequest('gpt-x', conversation, ProviderSettings(access=access), '.')
+                asyncio.run(provider._start_thread(server, turn))
+                config = server.thread_starts[0]['config']
+                self.assertIs(config['features.multi_agent'], False)
+                # A whole features table would turn back on what the app-server disabled at start.
+                self.assertNotIn('features', config)
 
     def test_hooks_are_a_disabled_feature(self):
         # Hooks run commands outside the read-only sandbox.
@@ -1403,6 +1655,25 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual(payloads[6]['choices'][0]['finish_reason'], 'stop')
         self.assertEqual(lines[-1], 'data: [DONE]\n\n')
 
+    def test_a_status_line_marked_keep_says_so_and_the_others_do_not(self):
+        async def events():
+            yield StatusUpdate('Ultra is off for this reply: Fixture is too old.', keep=True)
+            yield StatusUpdate('Running `ls`')
+            yield TextDelta('Hello')
+
+        lines = asyncio.run(collect(streaming.stream_events(events(), 'claude-code.opus')))
+        payloads = [json.loads(line[6:]) for line in lines if line.startswith('data: {')]
+        statuses = [payload['event']['data'] for payload in payloads if 'event' in payload]
+        self.assertEqual(
+            statuses,
+            [
+                {'description': 'Ultra is off for this reply: Fixture is too old.', 'done': False, 'keep': True},
+                {'description': 'Running `ls`', 'done': False},
+                # The line that ends the reply is hidden as before; the chat keeps showing the kept one.
+                {'description': 'Done', 'done': True, 'hidden': True},
+            ],
+        )
+
     def test_collect_events_builds_a_completion(self):
         async def events():
             yield TextDelta('Hi ')
@@ -1476,6 +1747,8 @@ def load_subscription_service(data_dir: Path, config: StandInConfig):
         'open_webui.models.chats': types.SimpleNamespace(Chats=None),
         'open_webui.models.folders': types.SimpleNamespace(Folders=None),
         'open_webui.utils.access_control.folders': types.SimpleNamespace(has_folder_access=None),
+        # Where a stopped reply's Ultra workers go; these tests stop no replies.
+        'open_webui.socket.main': types.SimpleNamespace(get_event_emitter=None),
     }
     service_path = ROOT_DIR / 'backend' / 'open_webui' / 'utils' / 'subscriptions' / 'service.py'
     spec = importlib.util.spec_from_file_location('subscription_service_under_test', service_path)
