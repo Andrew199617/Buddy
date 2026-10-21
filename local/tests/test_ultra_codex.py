@@ -48,6 +48,7 @@ from open_webui.utils.subscriptions.events import (  # noqa: E402
     WORKER_DONE,
     WORKER_RUNNING,
     WORKER_STOPPED,
+    StatusUpdate,
     SubscriptionError,
     TextDelta,
     TokenUsage,
@@ -624,6 +625,29 @@ class UltraThreadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(worker_threads), 2)
         for worker_thread in worker_threads:
             self.assertNotIn(final_answer(messages, worker_thread), text)
+        self.assertEqual(failures(events), [])
+
+    async def test_an_ultra_turn_on_an_older_codex_runs_without_ultra(self):
+        # The server judged Ultra by a model list from another computer, whose Codex is newer.
+        messages = with_user_agent(recorded('codex-p.jsonl'), OLDER_USER_AGENT)
+        process = ReplayProcess(messages)
+        events = await self.run_turn(ultra_turn(ReplayMachine(process)))
+
+        reason = codex.ULTRA_TOO_OLD_REASON.format(computer=ReplayMachine.name)
+        self.assertEqual(events[0], StatusUpdate(ultra.OFF_STATUS.format(reason=reason)))
+        # Its thread is an ordinary one, with workers off, and nothing asks for workers.
+        [thread_start] = process.sent('thread/start')
+        self.assertIs(thread_start['ephemeral'], True)
+        self.assertIs(thread_start['config']['features.multi_agent'], False)
+        self.assertNotIn('agents.default_subagent_model', thread_start['config'])
+        self.assertEqual(thread_start['developerInstructions'], FOLDER_INSTRUCTIONS)
+        [turn_start] = process.sent('turn/start')
+        self.assertEqual(turn_start['input'], [text_input(PROMPT)])
+        # Only the orchestrator's thread is read, and kept for turns without Ultra.
+        self.assertFalse(any(isinstance(event, WorkerUpdate) for event in events))
+        self.assertEqual(self.provider._servers[ReplayMachine.id]._worker_routes, {})
+        [live] = self.provider._live_threads.values()
+        self.assertIsNone(live.ultra)
         self.assertEqual(failures(events), [])
 
     async def test_workers_are_on_at_every_access_level_with_that_levels_keys(self):

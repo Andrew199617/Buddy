@@ -109,6 +109,8 @@ ULTRA_MULTI_AGENT_VERSION = 'v2'
 USER_AGENT_VERSION = re.compile(r'^[^/\s]+/(\d+(?:\.\d+)+(?:-[0-9A-Za-z.-]+)?)')
 # A version as codex_version() returns it: its numbers, and the suffix of a pre-release.
 VERSION_PARTS = re.compile(r'^(\d+(?:\.\d+)+)(-[0-9A-Za-z.-]+)?$')
+# Why an Ultra reply runs without Ultra on a computer whose Codex is older than ULTRA_MIN_VERSION.
+ULTRA_TOO_OLD_REASON = 'Codex on {computer} is too old for Ultra.'
 
 
 class CodexRpcError(SubscriptionError):
@@ -249,6 +251,13 @@ def turn_input(turn: TurnRequest) -> list[dict]:
     if turn.ultra is not None:
         inputs.append({'type': 'text', 'text': ultra.ULTRA_TURN_NOTE, 'text_elements': []})
     return inputs
+
+
+def without_ultra(turn: TurnRequest) -> TurnRequest:
+    """The same turn without Ultra: no workers, and no note that asks for them."""
+    system = ultra.without_orchestrator_note(turn.conversation.system, PROVIDER_ID, turn.access, turn.ultra)
+    conversation = dataclasses.replace(turn.conversation, system=system)
+    return dataclasses.replace(turn, conversation=conversation, ultra_options=None)
 
 
 def _sends_effort(turn: TurnRequest) -> bool:
@@ -1610,9 +1619,17 @@ class CodexProvider:
         Meanwhile stop_worker() can stop an Ultra turn's workers one by one.
         When an Ultra turn ends before it is over, as when the person stops the
         reply or at its time limit, Buddy stops the workers still running.
+
+        An Ultra turn on a Codex older than ULTRA_MIN_VERSION runs without
+        Ultra, after a status line that says why. The server may have judged
+        Ultra by another computer's model list, and that Codex may report or
+        stop workers in ways Buddy can't follow.
         """
         machine = turn.machine
         server = await self._server_for(turn.settings, machine)
+        if turn.ultra is not None and not version_runs_ultra(server.version):
+            yield StatusUpdate(ultra.OFF_STATUS.format(reason=ULTRA_TOO_OLD_REASON.format(computer=machine.name)))
+            turn = without_ultra(turn)
         await self._ensure_effort_models(server, turn)
         conversation = turn.conversation
         history_key = f'{machine.id}|{conversation_key(conversation.history, conversation.system)}'
