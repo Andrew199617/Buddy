@@ -388,12 +388,23 @@ def _usage_from_result(usage: dict) -> TokenUsage:
     )
 
 
-def _usage_sum(first: TokenUsage, second: TokenUsage) -> TokenUsage:
+def _usage_from_model_usage(model_usage: dict) -> TokenUsage:
+    """The tokens in a result's modelUsage, which counts each model on its own, summed across models."""
+    uncached = 0
+    cache_read = 0
+    cache_write = 0
+    output = 0
+    for usage in model_usage.values():
+        if not isinstance(usage, dict):
+            continue
+        uncached += int(usage.get('inputTokens') or 0)
+        cache_read += int(usage.get('cacheReadInputTokens') or 0)
+        cache_write += int(usage.get('cacheCreationInputTokens') or 0)
+        output += int(usage.get('outputTokens') or 0)
     return TokenUsage(
-        input_tokens=first.input_tokens + second.input_tokens,
-        output_tokens=first.output_tokens + second.output_tokens,
-        cached_input_tokens=first.cached_input_tokens + second.cached_input_tokens,
-        reasoning_tokens=first.reasoning_tokens + second.reasoning_tokens,
+        input_tokens=uncached + cache_read + cache_write,
+        output_tokens=output,
+        cached_input_tokens=cache_read,
     )
 
 
@@ -786,8 +797,6 @@ class ClaudeStreamParser:
         # that arrives too late for the orchestrator's turn gets a turn of its
         # own, which starts with init.
         self._turn_answered = False
-        # The usage of an Ultra turn's results so far.
-        self._ultra_usage = TokenUsage()
         self._text_block_started = False
         self._reasoning_text = ''
         self._reasoning_block_started = False
@@ -933,18 +942,31 @@ class ClaudeStreamParser:
                 self.error = _readable_error(str(result_text))
         self._turn_answered = True
         self.finished = self._result_ends_turn()
-        usage = message.get('usage')
-        if not isinstance(usage, dict):
+        token_usage = self._result_usage(message)
+        if token_usage is None:
             return []
-        token_usage = _usage_from_result(usage)
-        if self.workers is not None:
-            # Each result of an Ultra turn reports only its own part, and the
-            # last usage a turn reports is the one that counts.
-            self._ultra_usage = _usage_sum(self._ultra_usage, token_usage)
-            token_usage = self._ultra_usage
         if token_usage.input_tokens == 0 and token_usage.output_tokens == 0:
             return []
         return [token_usage]
+
+    def _result_usage(self, message: dict) -> TokenUsage | None:
+        """The reply's usage as of this result, or None when the result reports none.
+
+        A normal turn counts its result's usage. That counts only the
+        orchestrator's own calls, so an Ultra turn counts modelUsage instead,
+        which adds its workers' calls, model by model. modelUsage is a running
+        total for this run of the CLI, so each result's replaces the one
+        before, and the last usage a turn reports is the one that counts.
+        """
+        if self.workers is None:
+            usage = message.get('usage')
+            if not isinstance(usage, dict):
+                return None
+            return _usage_from_result(usage)
+        model_usage = message.get('modelUsage')
+        if not isinstance(model_usage, dict):
+            return None
+        return _usage_from_model_usage(model_usage)
 
     def _result_ends_turn(self) -> bool:
         """Whether the result just read ends the turn.

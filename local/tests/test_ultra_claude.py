@@ -373,7 +373,8 @@ def background_essay_stopped(turn_output: list[dict]) -> list[dict]:
 
     Not recorded: the recording ends while the essay worker still runs. This
     follows the shape of the recorded task_notification, background list and
-    result messages.
+    result messages. The third result's modelUsage is the second's running
+    total plus its own usage.
     """
     essay = system_messages(turn_output, 'task_started')[0]
     session_id = results(turn_output)[-1]['session_id']
@@ -407,6 +408,14 @@ def background_essay_stopped(turn_output: list[dict]) -> list[dict]:
                 'cache_read_input_tokens': 5000,
                 'cache_creation_input_tokens': 40,
                 'output_tokens': 12,
+            },
+            'modelUsage': {
+                'claude-haiku-5-5': {
+                    'inputTokens': 13,
+                    'outputTokens': 714,
+                    'cacheReadInputTokens': 12629,
+                    'cacheCreationInputTokens': 6028,
+                },
             },
         },
     ]
@@ -713,6 +722,32 @@ class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reply(events), results(turn_output)[0]['result'])
         self.assertEqual(failures(events), [])
 
+    async def test_an_ultra_reply_counts_its_workers_tokens(self):
+        # Each recording's last modelUsage, which counts the orchestrator and
+        # its workers. Its usage counts only the orchestrator: for the Chat
+        # turn, 7219 tokens in and 363 out.
+        totals = {
+            'claude-chat.jsonl': TokenUsage(input_tokens=9438, output_tokens=423, cached_input_tokens=3209),
+            'claude-read.jsonl': TokenUsage(input_tokens=32218, output_tokens=1221, cached_input_tokens=15255),
+            'claude-depth.jsonl': TokenUsage(input_tokens=15960, output_tokens=1794, cached_input_tokens=9597),
+        }
+        for name, total in totals.items():
+            with self.subTest(name):
+                events, _, _ = await self.replay(name)
+                self.assertEqual(last_usage(events), total)
+
+    async def test_each_result_of_an_ultra_reply_reports_the_running_total(self):
+        _, turn_output = recorded_turn('claude-background.jsonl')
+        events, _, _ = await self.replay('claude-background.jsonl', extra_output=background_essay_finished(turn_output))
+        # modelUsage adds up over the run, so the second result's replaces the first's.
+        self.assertEqual(
+            [event for event in events if isinstance(event, TokenUsage)],
+            [
+                TokenUsage(input_tokens=8719, output_tokens=680, cached_input_tokens=3329),
+                TokenUsage(input_tokens=13627, output_tokens=702, cached_input_tokens=7629),
+            ],
+        )
+
     async def test_a_worker_started_by_a_worker_is_listed_under_it(self):
         events, _, turn_output = await self.replay('claude-depth.jsonl')
         level1, level2 = system_messages(turn_output, 'task_started')
@@ -761,11 +796,10 @@ class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):
         [math_report] = system_messages(turn_output, 'task_notification')
         self.assertEqual(math_report['task_id'], math['task_id'])
         self.assert_worker_ended(events, math_report)
-        # The reply's usage counts all three results, since only the last usage reported counts.
-        usage = TokenUsage()
-        for result in (first, second, third):
-            usage = claude_code._usage_sum(usage, claude_code._usage_from_result(result['usage']))
-        self.assertEqual(last_usage(events), usage)
+        # The reply's usage is the third result's running total, workers included.
+        self.assertEqual(
+            last_usage(events), TokenUsage(input_tokens=18670, output_tokens=714, cached_input_tokens=12629)
+        )
 
     async def test_a_report_that_arrives_while_the_orchestrator_writes_gets_a_turn_of_its_own(self):
         answer, turn_output = recorded_turn('claude-background.jsonl')
@@ -892,6 +926,10 @@ class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(reply(events), turn_output[first_result]['result'])
         self.assertFalse(any(isinstance(event, WorkerUpdate) for event in events))
+        # The result's own usage, as before Ultra.
+        self.assertEqual(
+            last_usage(events), TokenUsage(input_tokens=7633, output_tokens=677, cached_input_tokens=3329)
+        )
         self.assertIn('Starting a subagent: Compute 6 times 7', statuses(events))
         self.assertEqual(process.unread_lines(), len(turn_output) - first_result - 1)
         self.assertEqual(failures(events), [])
@@ -1149,6 +1187,24 @@ class WorkerStateTests(unittest.TestCase):
         self.assertEqual((update.state, update.label), (WORKER_RUNNING, 'Essay'))
         parser.handle(SUCCESS_RESULT)
         self.assertFalse(parser.waiting_for_turn_over())
+
+    def test_workers_on_another_model_are_counted_in_the_usage(self):
+        parser = ultra_parser()
+        result = {
+            **SUCCESS_RESULT,
+            'usage': {'input_tokens': 4, 'output_tokens': 300, 'cache_read_input_tokens': 2000},
+            'modelUsage': {
+                'claude-opus-5-5': {'inputTokens': 4, 'outputTokens': 300, 'cacheReadInputTokens': 2000},
+                'claude-haiku-5-5': {
+                    'inputTokens': 6,
+                    'outputTokens': 900,
+                    'cacheReadInputTokens': 5000,
+                    'cacheCreationInputTokens': 1000,
+                },
+            },
+        }
+        [usage] = parser.handle(result)
+        self.assertEqual(usage, TokenUsage(input_tokens=8010, output_tokens=1200, cached_input_tokens=7000))
 
     def test_a_worker_without_a_description_is_named_by_its_type(self):
         parser = ultra_parser()
