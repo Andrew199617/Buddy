@@ -39,7 +39,7 @@ sys.path.insert(0, str(ROOT_DIR / 'backend'))
 from buddy_runner.process import ProcessClosedError  # noqa: E402
 from open_webui.utils.subscriptions import claude_code, ultra  # noqa: E402
 from open_webui.utils.subscriptions.common import ProviderSettings, TurnRequest, UltraOptions  # noqa: E402
-from open_webui.utils.subscriptions.conversation import parse_messages  # noqa: E402
+from open_webui.utils.subscriptions.conversation import ChatTurn, parse_messages  # noqa: E402
 from open_webui.utils.subscriptions.events import (  # noqa: E402
     WORKER_DONE,
     WORKER_FAILED,
@@ -96,14 +96,6 @@ def plain_reply(text: str, session_id: str = 'plain-session') -> list[dict]:
         {'type': 'result', 'subtype': 'success', 'is_error': False, 'session_id': session_id, 'usage': {}},
     ]
 
-
-MISSING_SESSION_RESULT = {
-    'type': 'result',
-    'subtype': 'error_during_execution',
-    'is_error': True,
-    'session_id': 'unused',
-    'usage': {},
-}
 
 # What Claude Code says once an Ultra turn is over: its last turn has ended,
 # every background worker has ended, and no report waits for a turn of its own.
@@ -274,6 +266,13 @@ def ultra_turn(
         machine=machine,
         ultra_options=options,
     )
+
+
+def chat_turn(directory, machine, earlier=()):
+    """A Chat turn without Ultra, in the same chat as ultra_turn()."""
+    messages = [{'role': 'system', 'content': FOLDER_INSTRUCTIONS}, *earlier, {'role': 'user', 'content': PROMPT}]
+    settings = ProviderSettings(enable=True, access='chat')
+    return TurnRequest('opus', parse_messages(messages), settings, directory, machine=machine)
 
 
 def texts(message: dict) -> list[str]:
@@ -612,18 +611,18 @@ class UltraHandshakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fresh.tool_list(), claude_code.ULTRA_CHAT_TOOLS)
         self.assertEqual(reply(events), turn_output[-1]['result'])
 
-    async def test_a_reply_that_ran_without_ultra_starts_a_fresh_session_without_it(self):
+    async def test_a_reply_that_runs_without_ultra_does_not_resume_the_ultra_session(self):
+        # The Ultra session holds Agent calls, and a Chat reply without Ultra has no tools.
         answer, _ = recorded_chat()
         older = ReplayProcess(without_buddys_workers(answer))
-        gone = ReplayProcess(turn_output=[MISSING_SESSION_RESULT], stderr=MISSING_SESSION)
         fresh = ReplayProcess(turn_output=plain_reply('Fresh reply.'))
-        machine = ReplayMachine(older, gone, fresh)
+        machine = ReplayMachine(older, fresh)
         turn = ultra_turn(self.directory, machine)
-        self.provider._sessions.put(self.provider._session_key(turn, turn.conversation.history), 'old-session')
+        self.provider._sessions.put(self.provider._session_key(turn, turn.conversation.history), 'ultra-session')
         events = await self.run_turn(turn)
 
-        self.assertEqual(machine.started, [older, gone, fresh])
-        self.assertIn('--resume', gone.args)
+        self.assertEqual(machine.started, [older, fresh])
+        self.assertIn('--resume', older.args)
         self.assertNotIn('--resume', fresh.args)
         # Said once, and the fresh session doesn't ask the older CLI again.
         self.assertEqual(statuses(events), [TOO_OLD_STATUS])
@@ -631,6 +630,42 @@ class UltraHandshakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(texts(fresh.written[0]), [PROMPT])
         self.assertEqual(fresh.tool_list(), '')
         self.assertEqual(reply(events), 'Fresh reply.')
+        # The new session is kept for the chat's turns without Ultra.
+        answered = [turn.conversation.prompt, ChatTurn('assistant', 'Fresh reply.')]
+        plain_key = self.provider._session_key(claude_code.without_ultra(turn), answered)
+        self.assertEqual(self.provider._sessions.get(plain_key), 'plain-session')
+        self.assertIsNone(self.provider._sessions.get(self.provider._session_key(turn, answered)))
+
+    async def test_turning_ultra_on_or_off_starts_a_fresh_session(self):
+        """An Ultra session holds the orchestrator's Agent calls, and a Chat turn without Ultra has no tools."""
+        answer, turn_output = recorded_chat()
+        session_id = results(turn_output)[0]['session_id']
+        first = ReplayProcess(answer, until_idle(turn_output))
+        events = await self.run_turn(ultra_turn(self.directory, ReplayMachine(first)))
+        after_ultra = [{'role': 'user', 'content': PROMPT}, {'role': 'assistant', 'content': reply(events)}]
+
+        # The next message with Ultra still on resumes the Ultra session.
+        again = ReplayProcess(answer, until_idle(turn_output))
+        await self.run_turn(ultra_turn(self.directory, ReplayMachine(again), earlier=after_ultra))
+        self.assertEqual(again.args[again.args.index('--resume') + 1], session_id)
+
+        # With Ultra off, it starts a fresh session from the chat's text instead.
+        plain = ReplayProcess(turn_output=plain_reply('Plain reply.'))
+        events = await self.run_turn(chat_turn(self.directory, ReplayMachine(plain), earlier=after_ultra))
+        self.assertNotIn('--resume', plain.args)
+        self.assertEqual(plain.tool_list(), '')
+        self.assertIn('<conversation>', texts(plain.written[0])[0])
+        self.assertEqual(failures(events), [])
+
+        # And turned on again, it doesn't resume that session either.
+        after_plain = [
+            *after_ultra,
+            {'role': 'user', 'content': PROMPT},
+            {'role': 'assistant', 'content': 'Plain reply.'},
+        ]
+        on_again = ReplayProcess(answer, until_idle(turn_output))
+        await self.run_turn(ultra_turn(self.directory, ReplayMachine(on_again), earlier=after_plain))
+        self.assertNotIn('--resume', on_again.args)
 
 
 class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):

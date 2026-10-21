@@ -1331,7 +1331,14 @@ class ClaudeCodeProvider:
     def _session_key(self, turn: TurnRequest, turns: list[ChatTurn]) -> str:
         # Claude Code keeps sessions per machine and working folder, so a
         # session can only be resumed where it was created.
-        return f'{turn.machine.id}|{turn.cwd}|{conversation_key(turns)}'
+        place = f'{turn.machine.id}|{turn.cwd}'
+        if turn.ultra is not None:
+            # An Ultra session holds the orchestrator's Agent calls and their
+            # results, and a Chat turn without Ultra runs with no tools at
+            # all. So turning Ultra on or off starts a fresh session from the
+            # chat's text, as it starts a fresh thread for Codex.
+            place = f'{place}|ultra'
+        return f'{place}|{conversation_key(turns)}'
 
     async def _define_workers(self, process, turn: TurnRequest) -> list[str] | None:
         """Define Buddy's worker types for an Ultra turn, before its prompt is sent.
@@ -1363,14 +1370,15 @@ class ClaudeCodeProvider:
         """Run the reply once, yielding events and recording the outcome in ``attempt``.
 
         When Claude Code on that computer can't run Ultra's workers, the reply
-        runs again without Ultra, after a status line that says why.
+        runs again without Ultra, after a status line that says why. That run
+        starts a fresh session, since the one resumed is an Ultra session.
         """
         async for event in self._run_cli(cli, turn, resume_id, attempt):
             yield event
         if attempt.ultra_off_reason is None:
             return
         yield StatusUpdate(ultra.OFF_STATUS.format(reason=attempt.ultra_off_reason))
-        async for event in self._run_cli(cli, without_ultra(turn), resume_id, attempt):
+        async for event in self._run_cli(cli, without_ultra(turn), None, attempt):
             yield event
 
     async def _run_cli(self, cli: str, turn: TurnRequest, resume_id: str | None, attempt: 'ClaudeAttempt'):
@@ -1476,7 +1484,8 @@ class ClaudeCodeProvider:
             async for event in self._run_attempt(cli, turn, resume_id, attempt):
                 yield event
             if attempt.ultra_off_reason:
-                # Claude Code there can't run Ultra, so a fresh session runs without it too.
+                # Claude Code there can't run Ultra, so the reply ran without
+                # it, and its session is kept for turns without Ultra.
                 turn = without_ultra(turn)
             if attempt.session_missing():
                 log.info('Claude session %s no longer exists; starting from the chat text', resume_id)
