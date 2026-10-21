@@ -894,12 +894,19 @@
 		return { run_target: requestFromDraft(runTargetDraft) };
 	}
 
-	/** The reply's Ultra choice, sent only while Ultra is on and the reply can use it. */
-	function ultraBody(modelIds: string[], chatIdForTurn: string) {
+	/**
+	 * The reply's Ultra choice, sent only while the composer shows Ultra on and the
+	 * reply's models can use it.
+	 */
+	function ultraBody(replyModelIds: string[], chatIdForTurn: string) {
 		// The Notes side chat offers no Ultra button, so its replies never start workers.
 		if (embedded) return {};
+		// The composer's selection, as MessageInput reads it for its Ultra button.
+		let composerModelIds = selectedModels;
+		if (atSelectedModel !== undefined) composerModelIds = [atSelectedModel.id];
+		const replyModels = { selected: composerModelIds, reply: replyModelIds };
 		const chatForTurn = { id: chatIdForTurn, temporary: $temporaryChatEnabled };
-		const ultra = ultraForReply(chatUltra, modelIds, $models, chatForTurn);
+		const ultra = ultraForReply(chatUltra, replyModels, $models, chatForTurn);
 		if (!ultra) return {};
 		return { ultra };
 	}
@@ -3822,7 +3829,8 @@
 		const terminalEnabled = model.info?.meta?.capabilities?.terminal ?? true;
 		const useChatVariablesFallback =
 			!_chatId || $temporaryChatEnabled || isTemporaryChatId(_chatId);
-		// The models this request runs, which decide whether it may carry Ultra.
+		// The models this request runs. With the composer's selection, they decide
+		// whether it may carry Ultra.
 		const replyModelIds = messageIdsList?.map((entry) => entry.model_id) ?? [model.id];
 
 		const res = await generateOpenAIChatCompletion(

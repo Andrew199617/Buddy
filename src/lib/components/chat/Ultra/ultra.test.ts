@@ -367,13 +367,18 @@ describe('requestUltra', () => {
 });
 
 describe('ultraForReply', () => {
+	// A new message runs the models the composer has selected.
+	function newMessage(modelIds: string[]) {
+		return { selected: modelIds, reply: modelIds };
+	}
+
 	it('sends the choice while Ultra is on and the reply can use it', () => {
 		const choice = ultra({ worker_model: sonnet.id, worker_effort: 'high' });
-		expect(ultraForReply(choice, [opus.id], models, savedChat)).toEqual({
+		expect(ultraForReply(choice, newMessage([opus.id]), models, savedChat)).toEqual({
 			worker_model: sonnet.id,
 			worker_effort: 'high'
 		});
-		expect(ultraForReply(ultra(), [codex.id], models, savedChat)).toEqual({
+		expect(ultraForReply(ultra(), newMessage([codex.id]), models, savedChat)).toEqual({
 			worker_model: null,
 			worker_effort: null
 		});
@@ -381,29 +386,55 @@ describe('ultraForReply', () => {
 
 	it('leaves the field out while Ultra is off', () => {
 		const off = ultra({ on: false, worker_model: sonnet.id });
-		expect(ultraForReply(off, [opus.id], models, savedChat)).toBeUndefined();
+		expect(ultraForReply(off, newMessage([opus.id]), models, savedChat)).toBeUndefined();
 	});
 
 	it('leaves the field out for a reply that cannot use Ultra', () => {
 		const on = ultra({ worker_model: sonnet.id });
-		expect(ultraForReply(on, [opus.id, sonnet.id], models, savedChat)).toBeUndefined();
-		expect(ultraForReply(on, [haiku.id], models, savedChat)).toBeUndefined();
-		expect(ultraForReply(on, [llama.id], models, savedChat)).toBeUndefined();
-		expect(ultraForReply(on, [], models, savedChat)).toBeUndefined();
+		expect(ultraForReply(on, newMessage([opus.id, sonnet.id]), models, savedChat)).toBeUndefined();
+		expect(ultraForReply(on, newMessage([haiku.id]), models, savedChat)).toBeUndefined();
+		expect(ultraForReply(on, newMessage([llama.id]), models, savedChat)).toBeUndefined();
+		expect(ultraForReply(on, newMessage([]), models, savedChat)).toBeUndefined();
 		const temporary = { id: '', temporary: true };
-		expect(ultraForReply(on, [opus.id], models, temporary)).toBeUndefined();
+		expect(ultraForReply(on, newMessage([opus.id]), models, temporary)).toBeUndefined();
 		const channel = { id: 'channel:general', temporary: false };
-		expect(ultraForReply(on, [opus.id], models, channel)).toBeUndefined();
+		expect(ultraForReply(on, newMessage([opus.id]), models, channel)).toBeUndefined();
+	});
+
+	it('leaves the field out while the composer shows Ultra off', () => {
+		const on = ultra();
+		// Regenerating the Opus column after a second model joined the chat.
+		const oneColumn = { selected: [opus.id, codex.id], reply: [opus.id] };
+		expect(ultraForReply(on, oneColumn, models, savedChat)).toBeUndefined();
+		// Continuing an Opus reply after the composer moved to models without Ultra.
+		const afterLlama = { selected: [llama.id], reply: [opus.id] };
+		expect(ultraForReply(on, afterLlama, models, savedChat)).toBeUndefined();
+		const afterHaiku = { selected: [haiku.id], reply: [opus.id] };
+		expect(ultraForReply(on, afterHaiku, models, savedChat)).toBeUndefined();
+	});
+
+	it('leaves the field out for a single reply whose model cannot use Ultra', () => {
+		const onHaiku = { selected: [opus.id], reply: [haiku.id] };
+		expect(ultraForReply(ultra(), onHaiku, models, savedChat)).toBeUndefined();
+	});
+
+	it('sends a regenerated or continued reply’s choice while the composer shows Ultra on', () => {
+		const choice = ultra({ worker_model: sonnet.id, worker_effort: 'max' });
+		const opusReply = { selected: [sonnet.id], reply: [opus.id] };
+		expect(ultraForReply(choice, opusReply, models, savedChat)).toEqual({
+			worker_model: sonnet.id,
+			worker_effort: null
+		});
 	});
 
 	it('fits the choice to the reply’s model', () => {
 		const levelCodexLacks = ultra({ worker_model: sonnet.id, worker_effort: 'max' });
-		expect(ultraForReply(levelCodexLacks, [codex.id], models, savedChat)).toEqual({
+		expect(ultraForReply(levelCodexLacks, newMessage([codex.id]), models, savedChat)).toEqual({
 			worker_model: null,
 			worker_effort: null
 		});
 		const levelCodexHas = ultra({ worker_model: sonnet.id, worker_effort: 'high' });
-		expect(ultraForReply(levelCodexHas, ['', codex.id], models, savedChat)).toEqual({
+		expect(ultraForReply(levelCodexHas, newMessage(['', codex.id]), models, savedChat)).toEqual({
 			worker_model: null,
 			worker_effort: 'high'
 		});

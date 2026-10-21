@@ -328,19 +328,38 @@ export function requestUltra(state: UltraState): UltraRequest | undefined {
 }
 
 /**
- * The `ultra` field for a reply on these models, or undefined to leave it out:
- * Ultra is off, or the reply can't use it (see availability). The choice is
- * fitted to the reply's model first, so it never names a model the server would
- * refuse.
+ * The models a chat request runs, and the models the composer has selected. They
+ * differ when a reply is regenerated in one column of a side-by-side chat, which
+ * runs only that column's model, and when a reply is continued, which runs the
+ * reply's own model.
+ */
+export type UltraReplyModels = {
+	// The composer's selection, which decides whether its Ultra button shows Ultra on.
+	selected: string[];
+	// The models this request runs.
+	reply: string[];
+};
+
+/**
+ * The `ultra` field for a reply, or undefined to leave it out: Ultra is off, the
+ * composer shows it off because its own selection can't use it, or the reply's
+ * models can't use it (see availability). The choice is fitted to the reply's
+ * model first, so it never names a model the server would refuse.
  */
 export function ultraForReply(
 	state: UltraState,
-	modelIds: string[],
+	replyModels: UltraReplyModels,
 	models: UltraModel[],
 	chat: UltraChat
 ): UltraRequest | undefined {
-	if (!availability(UNTRANSLATED, modelIds, models, chat).available) return undefined;
-	const chatModel = firstSelectedModel(modelIds, models);
+	// A reply never starts workers while the composer says Ultra is off, even a
+	// regenerated or continued reply that runs a single model.
+	const composerShowsUltra = availability(UNTRANSLATED, replyModels.selected, models, chat);
+	if (!composerShowsUltra.available) return undefined;
+	const replyCanUseUltra = availability(UNTRANSLATED, replyModels.reply, models, chat);
+	if (!replyCanUseUltra.available) return undefined;
+
+	const chatModel = firstSelectedModel(replyModels.reply, models);
 	return requestUltra(fitUltra(state, chatModel, models));
 }
 
