@@ -17,6 +17,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+import re
 from collections import OrderedDict
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -93,6 +94,16 @@ WORKER_TOO_DEEP = "Stopped: workers can start sub-workers, but sub-workers can't
 # Seconds Buddy waits, when it stops an Ultra turn before it is over, for Codex
 # to report the turns it interrupted ended.
 STOP_WORKERS_GRACE = 5
+# The first Codex that runs Ultra turns: it starts workers from a persistent
+# thread, reports each one from the thread that starts it, and stops one with
+# turn/interrupt on the worker's own thread.
+ULTRA_MIN_VERSION = (0, 153, 4)
+# The Codex version at the start of the userAgent that initialize returns,
+# after the client's name, as in "buddy/0.153.4 (Windows 10.0.26200; x86_64) ...".
+# A pre-release keeps its suffix, as in "0.154.0-alpha.3".
+USER_AGENT_VERSION = re.compile(r'^[^/\s]+/(\d+(?:\.\d+)+(?:-[0-9A-Za-z.-]+)?)')
+# A version as codex_version() returns it: its numbers, and the suffix of a pre-release.
+VERSION_PARTS = re.compile(r'^(\d+(?:\.\d+)+)(-[0-9A-Za-z.-]+)?$')
 
 
 class CodexRpcError(SubscriptionError):
@@ -173,6 +184,32 @@ def is_chatgpt_sign_in_url(url) -> bool:
         if host == allowed_host or host.endswith('.' + allowed_host):
             return True
     return False
+
+
+def codex_version(user_agent) -> str:
+    """The Codex version in the userAgent that initialize returns, such as '0.153.4', or '' when it names none."""
+    if not isinstance(user_agent, str):
+        return ''
+    match = USER_AGENT_VERSION.match(user_agent)
+    if match is None:
+        return ''
+    return match.group(1)
+
+
+def version_runs_ultra(version: str | None) -> bool:
+    """Whether this Codex version can run Ultra turns. An unknown version can't.
+
+    The numbers are compared as numbers, and a pre-release comes before its
+    release, so 0.153.4-alpha.1 is too old.
+    """
+    match = VERSION_PARTS.match(version or '')
+    if match is None:
+        return False
+    numbers = tuple(int(part) for part in match.group(1).split('.'))
+    if numbers == ULTRA_MIN_VERSION:
+        is_pre_release = match.group(2) is not None
+        return not is_pre_release
+    return numbers > ULTRA_MIN_VERSION
 
 
 def history_items(history: list[ChatTurn]) -> list[dict]:
@@ -838,6 +875,8 @@ class CodexAppServer:
         self._next_id = 0
         self._start_lock = asyncio.Lock()
         self.generation = 0
+        # The Codex version that the running app-server reported at initialize, or '' when unknown.
+        self.version = ''
 
     @property
     def running(self) -> bool:
@@ -858,10 +897,13 @@ class CodexAppServer:
                 args.extend(['-c', 'cli_auth_credentials_store="ephemeral"'])
             self._process = await self.machine.start_process(args, self._cwd)
             self.generation += 1
+            # Known again once this app-server answers initialize.
+            self.version = ''
             self._reader = asyncio.create_task(self._read_messages(self._process))
             client_info = {'name': 'buddy', 'title': 'Buddy', 'version': '1.0'}
             try:
-                await self._send_request('initialize', {'clientInfo': client_info}, REQUEST_TIMEOUT)
+                initialized = await self._send_request('initialize', {'clientInfo': client_info}, REQUEST_TIMEOUT)
+                self.version = codex_version(initialized.get('userAgent'))
                 await self._send({'method': 'initialized'})
                 if self.api_key:
                     await self._send_request(
@@ -1253,6 +1295,9 @@ class CodexProvider:
         result = await server.request('model/list', {}, timeout=30)
         if server.generation != generation:
             raise SubscriptionError('Codex restarted while loading model metadata. Try again.')
+        # Ultra depends on Codex, not the model: a recent enough app-server runs
+        # it with every model it lists.
+        codex_runs_ultra = version_runs_ultra(server.version)
         models = []
         model_efforts = {}
         for entry in result.get('data') or []:
@@ -1272,6 +1317,7 @@ class CodexProvider:
                     description=entry.get('description') or '',
                     efforts=efforts,
                     vision='image' in (entry.get('inputModalities') or ['image']),
+                    ultra=codex_runs_ultra,
                 )
             )
         self._model_efforts = model_efforts

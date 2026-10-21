@@ -69,6 +69,10 @@ SAME_AS_CHAT = UltraOptions()
 # What each recorded answer's result holds, which says the request it answers.
 # The recordings number their requests differently.
 ANSWER_KEYS = {'initialize': 'userAgent', 'model/list': 'data', 'thread/start': 'thread', 'turn/start': 'turn'}
+# The Codex version that the recordings' app-server reported at initialize.
+CODEX_VERSION = '0.153.4'
+# The recordings' userAgent, as Codex 0.153.3 would have reported it.
+OLDER_USER_AGENT = 'buddy/0.153.3 (Windows 10.0.26200; x86_64) xterm-256color (buddy; 1.0)'
 
 
 def recorded(name: str) -> list[dict]:
@@ -84,6 +88,13 @@ def recorded_answer(messages: list[dict], method: str) -> dict:
         if 'method' not in message and key in (message.get('result') or {}):
             return message
     raise AssertionError(f'The recording has no answer to {method}')
+
+
+def with_user_agent(messages: list[dict], user_agent: str | None) -> list[dict]:
+    """A copy of a recording whose initialize answer reports another userAgent, or a null one."""
+    messages = copy.deepcopy(messages)
+    recorded_answer(messages, 'initialize')['result']['userAgent'] = user_agent
+    return messages
 
 
 def orchestrator_thread(messages: list[dict]) -> str:
@@ -297,11 +308,12 @@ class ReplayMachine:
 class CountingAppServer:
     """An app-server that numbers its threads and answers each turn with one message.
 
-    Its model list is the recording's.
+    Its model list and version are the recording's.
     """
 
     generation = 1
     running = True
+    version = CODEX_VERSION
 
     def __init__(self):
         self.requests = []
@@ -1267,6 +1279,89 @@ class WorkerInterruptTests(unittest.TestCase):
         # Each turn is handed over once, however often Buddy is asked.
         self.assertTrue(parser.workers.interrupt(level2))
         self.assertEqual(parser.take_interrupts(), [])
+
+
+class UltraVersionTests(unittest.TestCase):
+    def test_the_version_is_read_from_the_start_of_the_user_agent(self):
+        user_agents = {
+            recorded_answer(recorded('codex-p.jsonl'), 'initialize')['result']['userAgent']: CODEX_VERSION,
+            'codex_vscode/0.160.0 (Mac OS 15.1.0; arm64) vscode/1.99.0': '0.160.0',
+            'buddy/0.154.0-alpha.3 (Ubuntu 24.4.0; x86_64) xterm-256color (buddy; 1.0)': '0.154.0-alpha.3',
+            # The operating system's version is not Codex's.
+            'buddy (Windows 10.0.26200; x86_64)': '',
+            'Windows 10.0.26200': '',
+            'buddy/unknown (Windows 10.0.26200; x86_64)': '',
+            '': '',
+            None: '',
+            42: '',
+        }
+        for user_agent, version in user_agents.items():
+            with self.subTest(user_agent=user_agent):
+                self.assertEqual(codex.codex_version(user_agent), version)
+
+    def test_ultra_needs_codex_0_153_4_or_newer(self):
+        # Compared as numbers, so 0.153.10 is newer and 0.15.4 older.
+        for version in ('0.153.4', '0.153.5', '0.153.10', '0.154.0', '0.154.0-alpha.3', '0.1000.0', '1.0.0'):
+            with self.subTest(version=version):
+                self.assertTrue(codex.version_runs_ultra(version))
+        # A pre-release comes before its release, and a version that can't be read can't run it either.
+        for version in ('0.153.3', '0.153.4-alpha.2', '0.153', '0.15.4', '0.99.999', '0.0.0', 'unknown', '', None):
+            with self.subTest(version=version):
+                self.assertFalse(codex.version_runs_ultra(version))
+
+
+class UltraModelListTests(unittest.IsolatedAsyncioTestCase):
+    """Whether Codex runs Ultra with its models, judged by the version its app-server reports."""
+
+    def setUp(self):
+        self.messages = recorded('codex-p.jsonl')
+        listed = recorded_answer(self.messages, 'model/list')['result']['data']
+        self.model_ids = [entry['id'] for entry in listed]
+
+    def provider(self) -> codex.CodexProvider:
+        provider = codex.CodexProvider()
+        # Ends a replayed app-server, and so its reader.
+        self.addCleanup(provider.stop)
+        return provider
+
+    async def test_the_recorded_codex_runs_ultra_with_every_model(self):
+        provider = self.provider()
+        machine = ReplayMachine(ReplayProcess(self.messages))
+        models = await provider.list_models(ProviderSettings(enable=True), machine)
+        self.assertEqual([model.value for model in models], self.model_ids)
+        self.assertTrue(all(model.ultra for model in models))
+        self.assertEqual(provider._servers[machine.id].version, CODEX_VERSION)
+
+    async def test_an_older_or_unknown_codex_runs_ultra_with_no_model(self):
+        user_agents = [
+            OLDER_USER_AGENT,
+            'buddy/0.153.4-alpha.2 (Windows 10.0.26200; x86_64) xterm-256color (buddy; 1.0)',
+            'buddy (Windows 10.0.26200; x86_64) xterm-256color (buddy; 1.0)',
+            None,
+        ]
+        for user_agent in user_agents:
+            with self.subTest(user_agent=user_agent):
+                process = ReplayProcess(with_user_agent(self.messages, user_agent))
+                models = await self.provider().list_models(ProviderSettings(enable=True), ReplayMachine(process))
+                self.assertEqual([model.value for model in models], self.model_ids)
+                self.assertFalse(any(model.ultra for model in models))
+
+    async def test_a_restarted_app_server_is_judged_by_its_own_version(self):
+        provider = self.provider()
+        settings = ProviderSettings(enable=True)
+        machine = ReplayMachine(ReplayProcess(with_user_agent(self.messages, OLDER_USER_AGENT)))
+        older = await provider.list_models(settings, machine)
+        self.assertFalse(any(model.ultra for model in older))
+
+        # Codex is updated, and its app-server ends. Its reader sees the output end.
+        server = provider._servers[machine.id]
+        machine.process.kill()
+        await until(server._reader.done)
+        machine.process = ReplayProcess(self.messages)
+        newer = await provider.list_models(settings, machine)
+        self.assertIs(provider._servers[machine.id], server)
+        self.assertEqual(server.version, CODEX_VERSION)
+        self.assertTrue(all(model.ultra for model in newer))
 
 
 if __name__ == '__main__':
