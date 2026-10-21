@@ -186,14 +186,21 @@ class ReplayProcess:
         self._lines.put_nowait(json.dumps({'id': request_id, 'result': result}))
 
     def _write_turn(self, request_id) -> None:
-        start = self.messages.index(recorded_answer(self.messages, 'thread/start')) + 1
-        turn_answer = recorded_answer(self.messages, 'turn/start')
-        for message in self.messages[start:]:
-            if message is turn_answer:
-                message = {**message, 'id': request_id}
+        for message in self._turn_messages(request_id):
             self._lines.put_nowait(json.dumps(message))
         if self.exits:
             self._lines.put_nowait(None)
+
+    def _turn_messages(self, request_id) -> list[dict]:
+        """Everything the recording has after its thread/start answer, with the turn/start answer under Buddy's id."""
+        start = self.messages.index(recorded_answer(self.messages, 'thread/start')) + 1
+        turn_answer = recorded_answer(self.messages, 'turn/start')
+        messages = []
+        for message in self.messages[start:]:
+            if message is turn_answer:
+                message = {**message, 'id': request_id}
+            messages.append(message)
+        return messages
 
     async def write(self, text):
         message = json.loads(text)
@@ -317,6 +324,29 @@ class SlowInterruptProcess(InterruptibleProcess):
         self._unanswered = []
         for request_id, params in unanswered:
             super()._interrupted(request_id, params)
+
+
+class PausedProcess(InterruptibleProcess):
+    """An interruptible app-server that writes its recorded turn up to ``pause_after``, and the rest on resume()."""
+
+    def __init__(self, messages: list[dict], waiting, pause_after: dict):
+        super().__init__(messages, waiting=waiting)
+        self.pause_after = pause_after
+        # What the turn has still to write, until resume() writes it.
+        self._rest = []
+
+    def _write_turn(self, request_id) -> None:
+        messages = self._turn_messages(request_id)
+        cut = messages.index(self.pause_after) + 1
+        for message in messages[:cut]:
+            self._lines.put_nowait(json.dumps(message))
+        self._rest = messages[cut:]
+
+    def resume(self) -> None:
+        rest = self._rest
+        self._rest = []
+        for message in rest:
+            self._lines.put_nowait(json.dumps(message))
 
 
 class ReplayMachine:
@@ -1241,6 +1271,30 @@ class UltraStopTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         self.assertEqual(process.sent('turn/interrupt')[3:], [self.interrupt_of(self.orchestrator)])
         process.release()
+
+    async def test_a_worker_whose_turn_starts_while_the_reply_stops_is_interrupted_too(self):
+        waiting = [self.orchestrator, self.rivers, self.mountains]
+        # The orchestrator has reported the mountains worker, but that worker's thread hasn't named its turn yet.
+        reported = start_report(self.messages, self.mountains)
+        self.assertLess(self.messages.index(reported), self.messages.index(turn_start(self.messages, self.mountains)))
+        process = PausedProcess(self.messages, waiting=waiting, pause_after=reported)
+        _, task, _ = await self.start(process)
+        [run] = self.provider._ultra_runs
+
+        with patch.object(codex, 'STOP_WORKERS_GRACE', 1):
+            task.cancel()
+            # The orchestrator's turn and the rivers worker's are interrupted at once.
+            await self.eventually(lambda: len(process.sent('turn/interrupt')) == 2)
+            # Then the mountains worker's thread names its turn, while Buddy waits for the turns to end.
+            process.resume()
+            with self.assertNoLogs(codex.log, level='WARNING'):
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 5)
+
+        # Its turn was interrupted as soon as it was named, so it ended within the grace, as stopped.
+        self.assertEqual(process.sent('turn/interrupt'), [self.interrupt_of(thread) for thread in waiting])
+        self.assertEqual(run.parser.workers._workers[self.mountains].state, WORKER_STOPPED)
+        self.assertTrue(run.parser.turn_over())
 
     async def test_the_reply_ends_soon_when_codex_does_not_report_its_workers_stopped(self):
         # Here Codex only answers the interrupts.
