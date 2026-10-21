@@ -4287,6 +4287,7 @@ async function stopWorkerOnPhone(page, card, fixtures) {
 	await card.scrollIntoViewIfNeeded();
 	await captureScreenshot(page, 'phone-ultra-workers');
 	// The keyboard is still up from sending; the first tap opens the row.
+	await setVisibleHeight(page, 464);
 	assert.equal(await draftHasFocus(page), true, 'The draft still has the keyboard');
 	const row = card
 		.locator('button[aria-haspopup="dialog"]')
@@ -4294,6 +4295,21 @@ async function stopWorkerOnPhone(page, card, fixtures) {
 	await row.tap();
 	const sheet = page.getByRole('dialog', { name: 'Write a failing test', exact: true });
 	await sheet.waitFor();
+	const placement = await sheet.evaluate((panel) => {
+		const rect = panel.getBoundingClientRect();
+		return {
+			top: rect.top,
+			bottom: rect.bottom,
+			visibleTop: visualViewport.offsetTop,
+			visibleBottom: visualViewport.offsetTop + visualViewport.height
+		};
+	});
+	assert.ok(
+		Math.abs(placement.bottom - placement.visibleBottom) <= 1,
+		'The sheet sits on the keyboard: ' + JSON.stringify(placement)
+	);
+	assert.ok(placement.top >= placement.visibleTop, 'The sheet starts inside the visible area');
+	assert.equal(await draftHasFocus(page), false, 'The sheet drops the keyboard');
 	await sheet.getByText('Running npm test', { exact: true }).waitFor();
 	await sheet.getByText('Synthetic Haiku · medium', { exact: true }).waitFor();
 	const sheetStop = sheet.getByRole('button', { name: 'Stop worker', exact: true });
@@ -4311,7 +4327,11 @@ async function stopWorkerOnPhone(page, card, fixtures) {
 	);
 	await sheet.getByRole('button', { name: 'Done', exact: true }).tap();
 	await sheet.waitFor({ state: 'hidden' });
+	const rowHasFocus = await row.evaluate((button) => button === document.activeElement);
+	assert.equal(rowHasFocus, true, 'Done gives focus back to the row that opened the sheet');
+	assert.equal(await draftHasFocus(page), false, 'The keyboard stays down after the sheet');
 	await row.getByText('Stopping…', { exact: true }).waitFor();
+	await setVisibleHeight(page, null);
 }
 
 /** A desktop row opens in place to show its worker's report; Stop sits on the row. */
