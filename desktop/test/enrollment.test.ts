@@ -56,8 +56,26 @@ test('removes this computer with its own credential, in the body', async () => {
 });
 
 test('a computer the server no longer has counts as removed', async () => {
-	const gone = async () => reply(404, { detail: 'This computer was removed from Buddy.' });
+	const gone = async () => reply(200, { removed: false });
 	await unenrollComputer('https://buddy.example.com', 'machine-1', 'bdr1_secret', gone);
+});
+
+test('a server without the remove route still has the computer', async () => {
+	const missing = async () => reply(404, { detail: 'Not Found' });
+	await assert.rejects(unenrollComputer('https://buddy.example.com', 'machine-1', 'bdr1_secret', missing), /Not Found/);
+	const notAllowed = async () => reply(405, { detail: 'Method Not Allowed' });
+	await assert.rejects(
+		unenrollComputer('https://buddy.example.com', 'machine-1', 'bdr1_secret', notAllowed),
+		/Method Not Allowed/
+	);
+});
+
+test('a success without the removed answer is not trusted', async () => {
+	const page = async () => new Response('<html></html>', { status: 200, headers: { 'Content-Type': 'text/html' } });
+	await assert.rejects(
+		unenrollComputer('https://buddy.example.com', 'machine-1', 'bdr1_secret', page),
+		/did not remove this computer \(HTTP 200\)/
+	);
 });
 
 test('other failures to remove are reported', async () => {

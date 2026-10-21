@@ -11,10 +11,10 @@ export type EnrolledComputer = { machineId: string; credential: string; name: st
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
-function refusalMessage(body: unknown, status: number): string {
+function refusalMessage(body: unknown, status: number, refused = 'Buddy did not connect this computer'): string {
 	const detail = (body as { detail?: unknown } | null)?.detail;
 	if (typeof detail === 'string' && detail) return detail;
-	return `Buddy did not connect this computer (HTTP ${status}).`;
+	return `${refused} (HTTP ${status}).`;
 }
 
 export async function enrollComputer(
@@ -48,8 +48,10 @@ export async function enrollComputer(
 }
 
 /**
- * Removes this computer from a Buddy server with its own credential. A 404
- * means it is already gone, which counts as done; anything else throws.
+ * Removes this computer from a Buddy server with its own credential. The server
+ * answers {"removed": true or false}; false means it was already gone, which
+ * counts as done. Anything else throws, including the 404 or 405 of a server
+ * too old to have this route, which still has the computer.
  */
 export async function unenrollComputer(
 	serverUrl: string,
@@ -69,7 +71,7 @@ export async function unenrollComputer(
 	} catch {
 		throw new Error('Could not reach Buddy to remove this computer.');
 	}
-	if (response.ok || response.status === 404) return;
 	const body = await response.json().catch(() => null);
-	throw new Error(refusalMessage(body, response.status));
+	if (response.ok && typeof body?.removed === 'boolean') return;
+	throw new Error(refusalMessage(body, response.status, 'Buddy did not remove this computer'));
 }

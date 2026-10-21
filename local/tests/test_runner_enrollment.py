@@ -213,14 +213,13 @@ class RunnerEnrollmentTests(unittest.IsolatedAsyncioTestCase):
         # Asking again finds nothing, the same as a wrong credential.
         self.assertFalse(await self.service.unenroll_runner(enrollment['machine_id'], enrollment['credential']))
 
-    async def test_the_unenroll_route_answers_not_found_for_an_unknown_computer(self):
+    async def test_the_unenroll_route_says_when_nothing_was_removed(self):
         enrollment = await self.enroll()
         request = types.SimpleNamespace(client=types.SimpleNamespace(host='198.51.100.7'))
         form = self.router.UnenrollForm(machine_id=enrollment['machine_id'], credential=enrollment['credential'])
         self.assertEqual(await self.router.unenroll(form, request), {'removed': True})
-        with self.assertRaises(self.router.HTTPException) as refused:
-            await self.router.unenroll(form, request)
-        self.assertEqual(refused.exception.status_code, 404)
+        # Not a 404, which an older server without this route also answers.
+        self.assertEqual(await self.router.unenroll(form, request), {'removed': False})
 
     async def test_a_policy_change_disconnects_users_it_no_longer_allows(self):
         enrollment = await self.enroll()
