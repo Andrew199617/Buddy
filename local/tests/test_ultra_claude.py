@@ -1069,7 +1069,15 @@ def ultra_parser() -> claude_code.ClaudeStreamParser:
 
 
 def task_message(subtype: str, **fields) -> dict:
-    return {'type': 'system', 'subtype': subtype, 'task_id': 'task-1', **fields}
+    """A task message about a worker's task, unless ``fields`` say otherwise."""
+    return {'type': 'system', 'subtype': subtype, 'task_id': 'task-1', 'task_type': 'local_agent', **fields}
+
+
+def background_list(*tasks: dict) -> dict:
+    return {'type': 'system', 'subtype': 'background_tasks_changed', 'tasks': list(tasks)}
+
+
+SUCCESS_RESULT = {'type': 'result', 'subtype': 'success', 'is_error': False, 'usage': {}}
 
 
 class WorkerStateTests(unittest.TestCase):
@@ -1107,6 +1115,40 @@ class WorkerStateTests(unittest.TestCase):
         self.assertEqual(len(update.summary), claude_code.WORKER_SUMMARY_LIMIT)
         self.assertTrue(update.summary.startswith('Bridges.\nBridges.\n'))
         self.assertTrue(update.summary.endswith('…'))
+
+    def test_shell_commands_and_housekeeping_are_not_workers(self):
+        not_workers = {
+            # A shell command that has run for two seconds, and one left running in the background.
+            'command': {'task_type': 'local_bash', 'description': 'Run the tests', 'is_backgrounded': False},
+            'background command': {
+                'task_type': 'local_bash',
+                'description': 'Start the dev server',
+                'is_backgrounded': True,
+            },
+            # Claude Code's own housekeeping.
+            'dream': {'task_type': 'dream', 'description': 'Consolidating memories'},
+            'ambient': {'task_type': 'local_agent', 'description': 'Scanning', 'ambient': True},
+            'kept out of the transcript': {'task_type': 'local_agent', 'description': 'Recap', 'skip_transcript': True},
+        }
+        for name, fields in not_workers.items():
+            with self.subTest(name):
+                parser = ultra_parser()
+                self.assertEqual(parser.handle(task_message('task_started', **fields)), [])
+                self.assertEqual(parser.handle(background_list({'task_id': 'task-1', **fields})), [])
+                self.assertEqual(parser.handle(task_message('task_progress', description='Still going')), [])
+                self.assertFalse(parser.workers.running())
+                # It doesn't keep the reply open past its result.
+                parser.handle(SUCCESS_RESULT)
+                self.assertTrue(parser.waiting_for_turn_over())
+
+    def test_a_worker_listed_in_the_background_is_shown_before_it_starts(self):
+        parser = ultra_parser()
+        [update] = parser.handle(
+            background_list({'task_id': 'task-1', 'task_type': 'local_agent', 'description': 'Essay'})
+        )
+        self.assertEqual((update.state, update.label), (WORKER_RUNNING, 'Essay'))
+        parser.handle(SUCCESS_RESULT)
+        self.assertFalse(parser.waiting_for_turn_over())
 
     def test_a_worker_without_a_description_is_named_by_its_type(self):
         parser = ultra_parser()

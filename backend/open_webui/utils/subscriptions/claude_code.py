@@ -107,6 +107,9 @@ WORKER_ENDED_WITH_TURN = 'Stopped when the reply ended.'
 WORKER_SUMMARY_LIMIT = 4000
 # The task_updated statuses of a task that has not ended.
 TASK_LIVE_STATUSES = ('pending', 'running')
+# The task type of a worker, which an Agent call starts. Claude Code runs shell
+# commands and its own housekeeping as tasks too.
+WORKER_TASK_TYPE = 'local_agent'
 # Buddy stops a worker with a stop_task control request; each one's id starts with this.
 STOP_REQUEST_ID = 'buddy-stop'
 # Seconds Buddy waits for Claude Code to report its workers stopped, before it
@@ -466,6 +469,21 @@ def _worker_state(status) -> str:
     return WORKER_FAILED
 
 
+def _is_worker_task(task: dict) -> bool:
+    """Whether a task that Claude Code reports is a worker that an Agent call started.
+
+    Claude Code reports every task it runs: a shell command once it has run
+    for two seconds, a command left running in the background, and its own
+    housekeeping, which it marks ambient or keeps out of the transcript.
+    None of those is a worker, so none is listed or keeps the reply open.
+    """
+    if task.get('task_type') != WORKER_TASK_TYPE:
+        return False
+    if task.get('ambient') or task.get('skip_transcript'):
+        return False
+    return True
+
+
 def _worker_label(task: dict) -> str:
     """A worker's name in the list: the description its Agent call gave the task."""
     label = _shorten(task.get('description'), 100)
@@ -492,6 +510,8 @@ class ClaudeWorkers:
     starts, task_progress while it works, task_updated and task_notification
     when it ends, and background_tasks_changed with every task still running
     in the background. A worker's id is its task id, which stop_task takes.
+    Only an Agent call's task is a worker: the shell commands and housekeeping
+    that Claude Code also runs as tasks are left out.
 
     A task that the orchestrator's own Agent call started is depth 1; one that
     a worker's Agent call started is depth 2, under that worker.
@@ -604,7 +624,7 @@ class ClaudeWorkers:
 
     def _started(self, message: dict) -> list:
         task_id = message.get('task_id')
-        if not task_id:
+        if not task_id or not _is_worker_task(message):
             return []
         call_id = message.get('tool_use_id')
         if call_id:
@@ -656,14 +676,14 @@ class ClaudeWorkers:
         return self._change(task_id, **changes)
 
     def _listed_in_background(self, message: dict) -> list:
-        """Add any task listed as running in the background that hasn't started here yet.
+        """Add any worker listed as running in the background that hasn't started here yet.
 
-        Claude Code may list a background task just before its task_started,
-        and a task it lists as running is shown, so nothing runs unseen.
+        Claude Code may list a background worker just before its task_started,
+        and a worker it lists as running is shown, so nothing runs unseen.
         """
         events = []
         for task in message.get('tasks') or []:
-            if not isinstance(task, dict):
+            if not isinstance(task, dict) or not _is_worker_task(task):
                 continue
             task_id = task.get('task_id')
             if task_id and task_id not in self._workers:
