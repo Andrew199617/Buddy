@@ -9,6 +9,16 @@ and someone who stops being an administrator stops being one too.
 """
 
 SUPER_USERS_CONFIG_KEY = 'users.super_user_ids'
+# The same key as subscriptions.service.SERVER_OWNER_CONFIG_KEY.
+SERVER_OWNER_CONFIG_KEY = 'subscriptions.owner'
+
+# Who owns this server and who its super users are. Config import and export leave them out:
+# only the owner names super users, and a file from another server would name its own people.
+SERVER_IDENTITY_KEYS = frozenset({SUPER_USERS_CONFIG_KEY, SERVER_OWNER_CONFIG_KEY})
+
+
+def without_server_identity(config: dict) -> dict:
+    return {key: value for key, value in config.items() if key not in SERVER_IDENTITY_KEYS}
 
 
 class SuperUserError(Exception):

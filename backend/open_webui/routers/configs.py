@@ -26,6 +26,7 @@ from open_webui.utils.oauth import (
     resolve_oauth_client_info,
 )
 from open_webui.utils.subscriptions.service import keep_runner_keys, redact_runner_keys
+from open_webui.utils.super_users import without_server_identity
 from open_webui.utils.tools import (
     get_tool_server_data,
     get_tool_server_url,
@@ -100,14 +101,16 @@ class ImportConfigForm(BaseModel):
 
 @router.post('/import', response_model=dict)
 async def import_config(request: Request, form_data: ImportConfigForm, user=Depends(get_admin_user)):
+    # The server owner and super users are never imported; the saved ones stay.
+    imported = without_server_identity(form_data.config)
     # Exports leave Buddy Runner keys out, so importing one keeps the saved keys.
-    await Config.upsert(await keep_runner_keys(form_data.config))
+    await Config.upsert(await keep_runner_keys(imported))
     await publish_event(
         request,
         EVENTS.CONFIG_IMPORTED,
         actor=user,
         subject_id='import',
-        data={'keys': list(form_data.config.keys())},
+        data={'keys': list(imported.keys())},
     )
     return redact_runner_keys(await Config.get_all())
 
@@ -120,7 +123,7 @@ async def import_config(request: Request, form_data: ImportConfigForm, user=Depe
 @router.get('/export', response_model=dict)
 async def export_config(user=Depends(get_admin_user)):
     # A runner key can start processes on its computer; it never leaves the server.
-    return redact_runner_keys(await Config.get_all())
+    return without_server_identity(redact_runner_keys(await Config.get_all()))
 
 
 @router.get('/namespace/{namespace}', response_model=dict)

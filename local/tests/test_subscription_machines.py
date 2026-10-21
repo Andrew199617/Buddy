@@ -38,6 +38,7 @@ from open_webui.utils.subscriptions.events import SubscriptionError  # noqa: E40
 from open_webui.utils.subscriptions.machines import TunnelMachine  # noqa: E402
 from open_webui.utils.subscriptions.tunnel_hub import RunnerCallError, RunnerHub  # noqa: E402
 from open_webui.utils.subscriptions import computer_settings, folder_listing, run_targets  # noqa: E402
+from open_webui.utils.super_users import without_server_identity  # noqa: E402
 from open_webui.utils.chat_id import is_saved_chat_id, is_temporary_chat_id  # noqa: E402
 from test_project_folders import FakeChats, FakeFolders, load_project_folders  # noqa: E402
 
@@ -399,6 +400,7 @@ def load_config_router(service, config):
         'publish_event': AsyncMock(),
         'keep_runner_keys': service.keep_runner_keys,
         'redact_runner_keys': service.redact_runner_keys,
+        'without_server_identity': without_server_identity,
     })
     tree = ast.fix_missing_locations(ast.Module(body=[future_annotations, *nodes], type_ignores=[]))
     with patch.dict(sys.modules, {module.__name__: module}):
@@ -954,6 +956,22 @@ class RunnerKeyConfigExportTests(unittest.IsolatedAsyncioTestCase):
         stored = self.config.values['subscriptions.machines']
         self.assertEqual(stored[0]['key'], 'fixture-key-runner-a')
         self.assertEqual(stored[1]['key'], 'fixture-key-runner-b')
+
+    async def test_config_files_never_change_the_owner_or_super_users(self):
+        self.config.values['subscriptions.owner'] = OWNER
+        self.config.values['users.super_user_ids'] = ['admin-b']
+        exported = await self.router.export_config(user=object())
+        self.assertNotIn('subscriptions.owner', exported)
+        self.assertNotIn('users.super_user_ids', exported)
+        form = self.router.ImportConfigForm(config={
+            'subscriptions.owner': 'intruder',
+            'users.super_user_ids': ['intruder'],
+            'ui.default_models': 'imported-model',
+        })
+        await self.router.import_config(object(), form, user=object())
+        self.assertEqual(self.config.values['subscriptions.owner'], OWNER)
+        self.assertEqual(self.config.values['users.super_user_ids'], ['admin-b'])
+        self.assertEqual(self.config.values['ui.default_models'], 'imported-model')
 
     async def test_import_keeps_a_key_only_for_the_same_machine_at_the_same_address(self):
         moved = {**machine_config(), 'url': 'https://moved.example.invalid:8083'}

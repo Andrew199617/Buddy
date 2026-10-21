@@ -87,5 +87,18 @@ class SuperUserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.module.named_super_user_ids(), ['admin-2'])
 
 
+    def test_config_files_never_carry_the_owner_or_super_users(self):
+        imported = {
+            self.module.SUPER_USERS_CONFIG_KEY: ['admin-2'],
+            self.module.SERVER_OWNER_CONFIG_KEY: 'admin-2',
+            'ui.default_locale': 'en-US',
+        }
+        self.assertEqual(self.module.without_server_identity(imported), {'ui.default_locale': 'en-US'})
+
+    def test_the_owner_key_matches_the_subscription_service(self):
+        service = (MODULE_PATH.parent / 'subscriptions' / 'service.py').read_text(encoding='utf-8')
+        self.assertIn(f"SERVER_OWNER_CONFIG_KEY = '{self.module.SERVER_OWNER_CONFIG_KEY}'", service)
+
+
 if __name__ == '__main__':
     unittest.main()
