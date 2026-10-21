@@ -9,7 +9,7 @@
 
 	import { toast } from 'svelte-sonner';
 
-	import { selectedFolder } from '$lib/stores';
+	import { selectedFolder, user } from '$lib/stores';
 
 	import {
 		deleteFolderById,
@@ -252,6 +252,7 @@
 			<div class="flex items-center translate-x-2.5">
 				<FolderMenu
 					align="end"
+					allowDelete={folder.user_id === $user?.id || folder.can_delete === true}
 					onEdit={() => {
 						showFolderModal = true;
 					}}

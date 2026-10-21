@@ -34,6 +34,11 @@ export class CredentialStore {
 		}
 	}
 
+	/** Whether write() can work here; checked before Buddy hands out a credential. */
+	canStore(): boolean {
+		return this.cipher.isEncryptionAvailable();
+	}
+
 	write(credential: string): void {
 		if (!this.cipher.isEncryptionAvailable()) {
 			throw new Error('This computer cannot store the connection securely, so it was not connected.');

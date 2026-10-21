@@ -37,7 +37,7 @@ def load_runner_router(service, users):
     """Execute the real connection endpoint with the service under test."""
     path = ROOT / 'backend' / 'open_webui' / 'routers' / 'runners.py'
     tree = ast.parse(path.read_text(encoding='utf-8'))
-    wanted = ('EnrollForm', '_StarletteSocket', '_refuse', '_read_hello', '_valid_info',
+    wanted = ('EnrollForm', 'UnenrollForm', 'unenroll', '_StarletteSocket', '_refuse', '_read_hello', '_valid_info',
               '_start_cleanup_retry', 'runner_connect')
     nodes = [node for node in tree.body if getattr(node, 'name', None) in wanted]
     for node in nodes:
@@ -45,6 +45,7 @@ def load_runner_router(service, users):
             node.decorator_list = []
     future = ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0)
     module = types.ModuleType('runner_router_under_test')
+    from fastapi import HTTPException, Request, status
     from pydantic import BaseModel
     module.__dict__.update({
         'asyncio': asyncio,
@@ -60,6 +61,12 @@ def load_runner_router(service, users):
         'HUB': service.HUB,
         'RunnerConnection': RunnerConnection,
         '_background_tasks': set(),
+        'HTTPException': HTTPException,
+        'Request': Request,
+        'status': status,
+        'SubscriptionError': service.SubscriptionError,
+        # Throttling has its own tests; here every attempt is allowed.
+        'ENROLL_THROTTLE': types.SimpleNamespace(allow=lambda address: True),
     })
     exec(compile(ast.fix_missing_locations(ast.Module(body=[future, *nodes], type_ignores=[])), str(path), 'exec'),
          module.__dict__)
@@ -191,6 +198,28 @@ class RunnerEnrollmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.service.HUB.is_online(enrollment['machine_id']))
         websocket, _ = await self.connect(self.hello(enrollment))
         self.assertEqual(websocket.closed_with[0], protocol.CLOSE_UNKNOWN_MACHINE)
+
+    async def test_a_computer_can_remove_itself_only_with_its_own_credential(self):
+        enrollment = await self.enroll()
+        other = await self.enroll(name='Second PC')
+        self.assertFalse(await self.service.unenroll_runner(enrollment['machine_id'], other['credential']))
+        self.assertFalse(await self.service.unenroll_runner(enrollment['machine_id'], ''))
+        self.assertEqual(len(self.machines()), 2)
+
+        websocket, _ = await self.connect(self.hello(enrollment))
+        self.assertTrue(await self.service.unenroll_runner(enrollment['machine_id'], enrollment['credential']))
+        self.assertEqual([machine['id'] for machine in self.machines()], [other['machine_id']])
+        self.assertEqual(websocket.closed_with[0], protocol.CLOSE_UNKNOWN_MACHINE)
+        # Asking again finds nothing, the same as a wrong credential.
+        self.assertFalse(await self.service.unenroll_runner(enrollment['machine_id'], enrollment['credential']))
+
+    async def test_the_unenroll_route_says_when_nothing_was_removed(self):
+        enrollment = await self.enroll()
+        request = types.SimpleNamespace(client=types.SimpleNamespace(host='198.51.100.7'))
+        form = self.router.UnenrollForm(machine_id=enrollment['machine_id'], credential=enrollment['credential'])
+        self.assertEqual(await self.router.unenroll(form, request), {'removed': True})
+        # Not a 404, which an older server without this route also answers.
+        self.assertEqual(await self.router.unenroll(form, request), {'removed': False})
 
     async def test_a_policy_change_disconnects_users_it_no_longer_allows(self):
         enrollment = await self.enroll()

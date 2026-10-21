@@ -22,7 +22,7 @@ import { pathToFileURL } from 'node:url';
 import { BRIDGE_CHANNELS } from './bridge-channels';
 import { CredentialStore } from './credential-store';
 import { DesktopService, type LoginItem } from './desktop-service';
-import { enrollComputer } from './enrollment';
+import { enrollComputer, unenrollComputer } from './enrollment';
 import { registerBuddyBridge, registerSetupBridge } from './ipc';
 import { createNativeDialogs } from './native-dialogs';
 import { RunnerSupervisor, type RunnerLaunch } from './runner-supervisor';
@@ -91,6 +91,8 @@ function createService(): DesktopService {
 		dialogs: createNativeDialogs(() => mainWindow, accountName),
 		loginItem,
 		enroll: (serverUrl, token, host) => enrollComputer(serverUrl, token, host, net.fetch),
+		unenroll: (serverUrl, machineId, credential) =>
+			unenrollComputer(serverUrl, machineId, credential, net.fetch),
 		platform: process.platform,
 		appVersion: app.getVersion(),
 		hostName: os.hostname(),

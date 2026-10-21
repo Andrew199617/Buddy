@@ -281,6 +281,7 @@ from open_webui.utils.subscriptions.service import (
     is_conflicting_preset_row,
     mark_run_targets_started,
 )
+from open_webui.utils.super_users import may_change_others_chat
 from open_webui.utils.tool_approval import (
     ResolveToolCallForm,
     build_tool_approval_resume_payload,
@@ -1515,7 +1516,7 @@ async def chat_completion(
                         asyncio.create_task(run_initial_title_generation())
                 else:
                     # Existing chat — verify ownership
-                    if not await Chats.is_chat_owner(chat_id, user.id) and user.role != 'admin':
+                    if not await Chats.is_chat_owner(chat_id, user.id) and not await may_change_others_chat(user):
                         raise HTTPException(
                             status_code=status.HTTP_404_NOT_FOUND,
                             detail=ERROR_MESSAGES.DEFAULT(),
@@ -2115,7 +2116,7 @@ async def verify_chat_ownership(chat_id: str | None, user) -> None:
             detail='Channel chats are not supported on this endpoint',
         )
 
-    if user.role != 'admin' and not await Chats.is_chat_owner(chat_id, user.id):
+    if not await Chats.is_chat_owner(chat_id, user.id) and not await may_change_others_chat(user):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=ERROR_MESSAGES.DEFAULT(),
@@ -2202,7 +2203,8 @@ async def stop_tasks_by_chat_id_endpoint(request: Request, chat_id: str, user=De
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND)
     else:
         chat = await Chats.get_chat_by_id(chat_id)
-        if chat is None or (chat.user_id != user.id and user.role != 'admin'):
+        # Stopping finishes the pending replies in the chat's saved history.
+        if chat is None or (chat.user_id != user.id and not await may_change_others_chat(user)):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND)
     result = await stop_item_tasks(request.app.state.redis, chat_id)
 

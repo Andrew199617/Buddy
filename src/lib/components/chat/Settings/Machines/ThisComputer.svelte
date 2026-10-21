@@ -47,6 +47,10 @@
 		if (current.state === 'error') {
 			return current.message || $i18n.t('Something went wrong with the connection.');
 		}
+		// For example, an old server that kept this computer after the Buddy address changed.
+		if (current.message) {
+			return current.message;
+		}
 		return $i18n.t(
 			'Not connected. Connect it to run Claude and ChatGPT here and to open its projects from any device.'
 		);

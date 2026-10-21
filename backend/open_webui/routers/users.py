@@ -47,6 +47,7 @@ from open_webui.utils.auth import (
 )
 from open_webui.utils.chat_variables import ChatVariablesError, normalize_user_variables, validate_user_variables
 from open_webui.utils.subscriptions import service as subscription_service
+from open_webui.utils import super_users
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -792,6 +793,35 @@ class UserActiveResponse(UserStatus):
     model_config = ConfigDict(extra='allow')
 
 
+############################
+# Super users
+############################
+
+
+class SuperUserForm(BaseModel):
+    enabled: bool
+
+
+@router.get('/super-users')
+async def get_super_users(user=Depends(get_admin_user)):
+    """The server owner and the administrators the owner named; only they edit others' folders."""
+    return await super_users.describe_super_users()
+
+
+@router.post('/{user_id}/super-user')
+async def set_super_user(
+    user_id: str,
+    form_data: SuperUserForm,
+    user=Depends(get_admin_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    target = await Users.get_user_by_id(user_id, db=db)
+    try:
+        return await super_users.set_super_user(user, target, form_data.enabled)
+    except super_users.SuperUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error))
+
+
 @router.get('/{user_id}', response_model=UserActiveResponse)
 async def get_user_by_id(user_id: str, user=Depends(get_admin_user), db: AsyncSession = Depends(get_async_session)):
 
@@ -913,6 +943,16 @@ async def get_user_active_status_by_id(
 ############################
 
 
+def _changes_account(form_data: UserUpdateForm, user: UserModel) -> bool:
+    """Whether the update changes how this person signs in or what they may do.
+
+    Edit User sends the email and role every time, so only a different value counts.
+    """
+    changes_email = form_data.email is not None and form_data.email.lower() != user.email
+    changes_role = form_data.role is not None and form_data.role != user.role
+    return bool(form_data.password) or changes_email or changes_role
+
+
 @router.post('/{user_id}/update', response_model=UserModel | None)
 async def update_user_by_id(
     request: Request,
@@ -952,6 +992,12 @@ async def update_user_by_id(
     user = await Users.get_user_by_id(user_id, db=db)
 
     if user:
+        if _changes_account(form_data, user) and not await super_users.may_change_account(session_user, user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail='Only the server owner can change a super user\'s sign-in or role.',
+            )
+
         if form_data.email is not None and form_data.email.lower() != user.email:
             email_user = await Users.get_user_by_email(form_data.email.lower(), db=db)
             if email_user:
@@ -1005,6 +1051,8 @@ async def update_user_by_id(
                 )
 
             if role_changed:
+                if updated_user.role != 'admin':
+                    await super_users.forget_super_user(user_id)
                 await publish_event(
                     request,
                     EVENTS.USER_ROLE_UPDATED,
@@ -1062,14 +1110,17 @@ async def delete_user_by_id(
         )
 
     if user.id != user_id:
+        target = await Users.get_user_by_id(user_id, db=db)
+        if target and not await super_users.may_change_account(user, target):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail='Only the server owner can delete a super user.',
+            )
+
         result = await Auths.delete_auth_by_id(user_id, db=db)
 
         if result:
-            try:
-                await subscription_service.forget_user(user_id)
-            except Exception as error:
-                # The account is already gone; its machines simply stop being usable.
-                log.warning('Could not clean up the machines of deleted user %s: %s', user_id, error)
+            await subscription_service.forget_deleted_user(user_id)
             await publish_event(
                 request,
                 EVENTS.USER_DELETED,
