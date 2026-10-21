@@ -62,13 +62,14 @@ from open_webui.utils.subscriptions.common import (
     ProviderModel,
     ProviderSettings,
     TurnRequest,
+    UltraOptions,
     requested_effort,
 )
 from open_webui.utils.subscriptions.conversation import parse_messages
 from open_webui.utils.subscriptions import (
-    computer_settings, folder_listing, project_agents, project_folders, run_targets,
+    computer_settings, folder_listing, project_agents, project_folders, run_targets, ultra,
 )
-from open_webui.utils.subscriptions.events import SubscriptionError
+from open_webui.utils.subscriptions.events import StatusUpdate, SubscriptionError
 from open_webui.utils.subscriptions.machines import (
     LOCAL_MACHINE_ID, LocalMachine, RemoteMachine, StartupCleanupUnconfirmedError, TunnelMachine,
 )
@@ -3610,6 +3611,90 @@ def _turn_model(machine_ref: MachineRef, model_id: str, subscription: dict) -> t
     return subscription['model'], [effort for effort in efforts if isinstance(effort, str) and effort]
 
 
+ULTRA_OFF_STATUS = 'Ultra is off for this reply: {reason}'
+ULTRA_UNSUPPORTED_REASON = "{label} on your computer can't run workers with {model}."
+ULTRA_WORKER_PROVIDER_MESSAGE = "Ultra's workers run on this chat's {label} plan. Choose one of its models for them."
+ULTRA_WORKER_MISSING_MESSAGE = "{label} on your computer does not offer the workers' model. Choose another worker model."
+
+
+def _offers_ultra(machine_ref: MachineRef, model_id: str, subscription: dict) -> bool:
+    """Whether the CLI on the computer running a turn can run Ultra with this model.
+
+    As in _turn_model, the computer's own model list decides once it is
+    loaded, and the registry entry until then.
+    """
+    own_models = models_cache.cached(machine_ref)
+    if own_models is not None:
+        for model in own_models:
+            if _model_id(machine_ref.provider_id, model) == model_id:
+                return model.ultra
+        return False
+    return subscription.get('ultra') is True
+
+
+def _model_name(models: dict, model_id: str) -> str:
+    entry = models.get(model_id) or {}
+    return entry.get('name') or model_id
+
+
+def _worker_subscription(models: dict, provider_id: str, worker_model_id: str) -> dict:
+    """The registry entry of the workers' model, which must be a plan model of the chat's own provider."""
+    entry = models.get(worker_model_id) or {}
+    subscription = entry.get('subscription')
+    if not isinstance(subscription, dict) or subscription.get('provider') != provider_id:
+        raise SubscriptionError(ULTRA_WORKER_PROVIDER_MESSAGE.format(label=PROVIDER_LABELS[provider_id]))
+    return subscription
+
+
+def _turn_ultra(
+    machine_ref: MachineRef, metadata: dict, models: dict, model_id: str, subscription: dict, efforts: list[str]
+) -> tuple[UltraOptions | None, str | None]:
+    """The person's Ultra choice for this turn, resolved on the computer that runs it.
+
+    Returns the options, or None when the turn runs without Ultra, and the
+    reason when the person turned Ultra on but the CLI can't run it with the
+    chosen models. Then the reply runs normally and says why.
+
+    A worker model from another provider, or one the computer does not offer,
+    is refused. A worker thinking level the workers' model does not offer is
+    dropped. None for the model or the level means the workers use the chat's own.
+    """
+    choice = metadata.get('ultra')
+    if metadata.get('task') or not isinstance(choice, dict):
+        # Titles, tags and follow-up suggestions never start workers.
+        return None, None
+    provider_id = machine_ref.provider_id
+    label = PROVIDER_LABELS[provider_id]
+    if not _offers_ultra(machine_ref, model_id, subscription):
+        return None, ULTRA_UNSUPPORTED_REASON.format(label=label, model=_model_name(models, model_id))
+
+    worker_model = None
+    worker_label = None
+    worker_efforts = efforts
+    worker_model_id = choice.get('worker_model')
+    if worker_model_id:
+        worker_subscription = _worker_subscription(models, provider_id, worker_model_id)
+        try:
+            worker_model, worker_efforts = _turn_model(machine_ref, worker_model_id, worker_subscription)
+        except SubscriptionError:
+            raise SubscriptionError(ULTRA_WORKER_MISSING_MESSAGE.format(label=label)) from None
+        worker_label = _model_name(models, worker_model_id)
+        if not _offers_ultra(machine_ref, worker_model_id, worker_subscription):
+            return None, ULTRA_UNSUPPORTED_REASON.format(label=label, model=worker_label)
+
+    worker_effort = choice.get('worker_effort')
+    if worker_effort not in worker_efforts:
+        # Not a level the workers' model offers, so they use the chat's own.
+        worker_effort = None
+    options = UltraOptions(
+        worker_model=worker_model,
+        worker_label=worker_label,
+        worker_effort=worker_effort,
+        max_workers=ultra.max_workers(),
+    )
+    return options, None
+
+
 @dataclass(frozen=True)
 class _TurnTarget:
     machine_id: str
@@ -3748,6 +3833,22 @@ def _with_start_note(conversation, cwd: str):
     return replace(conversation, system=system)
 
 
+def _with_ultra_note(conversation, provider_id: str, access: str, options: UltraOptions):
+    """Tell an Ultra turn to orchestrate workers, ahead of the rest of its instructions."""
+    note = ultra.orchestrator_note(provider_id, access, options)
+    system = note
+    if conversation.system:
+        system = f'{note}\n\n{conversation.system}'
+    return replace(conversation, system=system)
+
+
+async def _after_status(description: str, events):
+    """A turn's events, after a status line that starts the reply."""
+    yield StatusUpdate(description)
+    async for event in events:
+        yield event
+
+
 async def generate_subscription_chat_completion(request, form_data: dict, user, models):
     if not await may_use_machines(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=NOT_ALLOWED_MESSAGE)
@@ -3782,6 +3883,9 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
         _require_plan(ref.provider_id, await status_cache.get(on_computer, serve_expired=False))
         cli_model, model_efforts = _turn_model(on_computer, model_id, subscription)
         access = await _turn_access(user, target, metadata, foreign_preset)
+        ultra_options, ultra_off_reason = _turn_ultra(
+            on_computer, metadata, models, model_id, subscription, model_efforts
+        )
         async with _provider_lock(ref):
             if generation != _provider_generations.get(ref, 0):
                 raise SubscriptionError('The provider machine changed; refresh before starting another turn.')
@@ -3799,6 +3903,9 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
             )
             if access == ACCESS_FULL and lets_ai_choose:
                 conversation = _with_start_note(conversation, cwd)
+            if ultra_options is not None:
+                # Added on the server for this turn only, so it is never saved with the chat.
+                conversation = _with_ultra_note(conversation, ref.provider_id, access, ultra_options)
             turn = TurnRequest(
                 model=cli_model,
                 conversation=conversation,
@@ -3808,6 +3915,7 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
                 is_task=is_task,
                 machine=machine,
                 efforts=model_efforts,
+                ultra_options=ultra_options,
             )
         # Checked outside the provider lock, so a slow computer never holds it.
         if project_path:
@@ -3816,6 +3924,8 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
         events = failure_events(str(error))
     else:
         events = _tracked_turn(ref, provider, turn, generation)
+        if ultra_off_reason:
+            events = _after_status(ULTRA_OFF_STATUS.format(reason=ultra_off_reason), events)
 
     response_model_id = form_data.get('model') or model_id
     if payload.get('stream'):
