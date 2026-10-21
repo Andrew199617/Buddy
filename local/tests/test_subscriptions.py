@@ -299,6 +299,8 @@ class ClaudeStreamTests(unittest.TestCase):
             full_args = turn_args('full', effort='max')
             self.assertIn('--dangerously-skip-permissions', full_args)
             self.assertNotIn('--tools', full_args)
+            # User settings may name a work key or gateway; plan turns use the plan's sign-in.
+            self.assertEqual(full_args[full_args.index('--setting-sources') + 1], 'project,local')
 
             task_args = turn_args('full', is_task=True)
             self.assertIn('--no-session-persistence', task_args)

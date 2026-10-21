@@ -654,6 +654,10 @@ class ClaudeCodeProvider:
         else:
             args.extend(['--append-system-prompt-file', instructions_path])
             args.append('--dangerously-skip-permissions')
+            # The person's user settings can name another account, such as an apiKeyHelper or an
+            # ANTHROPIC_BASE_URL for work, which would win over their plan's sign-in. Plan turns
+            # always run on the plan, so only the folder's own settings load.
+            args.extend(['--setting-sources', 'project,local'])
         return args
 
     def _instructions(self, turn: TurnRequest) -> str:
