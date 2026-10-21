@@ -285,15 +285,17 @@ async def get_shared_folders(
 
     owners = await Users.get_users_by_user_ids([folder.user_id for folder in shared_folders], db=db)
     owner_names = {owner.id: owner.name for owner in owners}
-    # None of these folders are this person's own, so only a super user may delete them.
-    can_delete = await is_super_user(user)
+    # None of these folders are this person's own, so only a super user may delete them,
+    # and a super user may also edit one shared with them only for reading.
+    super_user = await is_super_user(user)
 
     results = [
         {
             **folder.model_dump(),
             'owner_name': owner_names.get(folder.user_id, 'Unknown'),
             'permission': folder_perms[folder.id],
-            'can_delete': can_delete,
+            'can_edit': super_user or folder_perms[folder.id] == 'write',
+            'can_delete': super_user,
         }
         for folder in shared_folders
     ]
@@ -310,7 +312,8 @@ async def get_shared_folders(
                         **child.model_dump(),
                         'owner_name': owner_names.get(child.user_id, 'Unknown'),
                         'permission': folder_perms[folder.id],
-                        'can_delete': can_delete,
+                        'can_edit': super_user or folder_perms[folder.id] == 'write',
+                        'can_delete': super_user,
                     }
                 )
 

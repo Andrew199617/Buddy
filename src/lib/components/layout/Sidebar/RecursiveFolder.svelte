@@ -162,7 +162,10 @@
 		}
 	};
 
+	// Adding chats takes a write grant; a super user may also edit or delete a folder
+	// shared with them only for reading.
 	$: isWritable = !folders[folderId]?.shared || folders[folderId]?.permission === 'write';
+	$: canEditFolder = isWritable || folders[folderId]?.can_edit === true;
 	$: allowDelete = !folders[folderId]?.shared || folders[folderId]?.can_delete === true;
 
 	const onDragOver = (e) => {
@@ -762,7 +765,7 @@
 					? 'bg-gray-100/80 dark:bg-gray-850/50 selected'
 					: ''}"
 				on:dblclick={(e) => {
-					if (!isWritable) return;
+					if (!canEditFolder) return;
 					if (clickTimer) {
 						clearTimeout(clickTimer); // cancel the single-click action
 						clickTimer = null;
@@ -880,6 +883,8 @@
 					>
 						<Plus className="size-3.5" strokeWidth="2" />
 					</button>
+				{/if}
+				{#if canEditFolder}
 					<button
 						class="absolute z-10 right-2 hover-reveal self-center flex items-center dark:text-gray-300"
 					>
