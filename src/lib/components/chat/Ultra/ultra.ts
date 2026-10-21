@@ -2,8 +2,10 @@
 // what a chat saves and sends, and the text its workers card shows. Plain helpers
 // with no DOM or network; the server checks whatever the composer sends.
 
-import type { SubscriptionAccess } from '$lib/apis/subscriptions';
+import type { ChatRunTarget, RunTargetOptions, SubscriptionAccess } from '$lib/apis/subscriptions';
 import { isChannelChatId, isTemporaryChatId } from '$lib/utils/chatId';
+
+import { detailsFromDraft, type RunTargetDraft } from '../RunTarget/run-target';
 
 type Translator = { t: (key: string, options?: Record<string, unknown>) => string };
 
@@ -76,6 +78,9 @@ export type WorkerItem = {
 };
 
 const WORKER_STATES: WorkerState[] = ['running', 'done', 'failed', 'stopped'];
+
+// For checks whose reason nobody reads, such as whether a request may carry Ultra.
+const UNTRANSLATED: Translator = { t: (key) => key };
 
 function planProvider(model: UltraModel | null | undefined): PlanProvider | null {
 	if (!model || model.owned_by !== 'subscription') return null;
@@ -159,6 +164,19 @@ export function availability(
 		);
 	}
 	return { available: true, reason: null };
+}
+
+/**
+ * The chat's model as Ultra sees it: the first selected model, or null. Ultra is
+ * available only while it is the one selected model (see availability).
+ */
+export function firstSelectedModel(
+	selectedModels: string[],
+	models: UltraModel[]
+): UltraModel | null {
+	const modelId = selectedModels.find((selected) => !!selected);
+	if (!modelId) return null;
+	return models.find((model) => model.id === modelId) ?? null;
 }
 
 /** The models the workers can run on: the chat's provider's plan models that run Ultra. */
@@ -288,6 +306,17 @@ export function startingUltra(accountDefault: unknown): UltraState {
 }
 
 /**
+ * A loaded chat's Ultra choice: the one saved with it, or what a new chat starts
+ * with when it has none, like a chat from before Ultra.
+ */
+export function loadedUltra(saved: unknown, accountDefault: unknown): UltraState {
+	if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
+		return startingUltra(accountDefault);
+	}
+	return savedUltra(saved);
+}
+
+/**
  * The request's `ultra` field, or undefined while Ultra is off so the field is
  * left out. Pass the choice through fitUltra first, and send it only while
  * availability says Ultra is available.
@@ -295,6 +324,23 @@ export function startingUltra(accountDefault: unknown): UltraState {
 export function requestUltra(state: UltraState): UltraRequest | undefined {
 	if (!state.on) return undefined;
 	return { worker_model: state.worker_model, worker_effort: state.worker_effort };
+}
+
+/**
+ * The `ultra` field for a reply on these models, or undefined to leave it out:
+ * Ultra is off, or the reply can't use it (see availability). The choice is
+ * fitted to the reply's model first, so it never names a model the server would
+ * refuse.
+ */
+export function ultraForReply(
+	state: UltraState,
+	modelIds: string[],
+	models: UltraModel[],
+	chat: UltraChat
+): UltraRequest | undefined {
+	if (!availability(UNTRANSLATED, modelIds, models, chat).available) return undefined;
+	const chatModel = firstSelectedModel(modelIds, models);
+	return requestUltra(fitUltra(state, chatModel, models));
 }
 
 /**
@@ -320,6 +366,22 @@ export function ultraButtonLabel(
 		model: name,
 		effort: effortLabel(i18n, state.worker_effort)
 	});
+}
+
+/**
+ * The access the chat's next reply runs with, which its workers share: the chat's
+ * own target once it has one, else where its next message would bind it, else
+ * the new chat's draft in the composer's bar. Chat only until one is known.
+ */
+export function nextReplyAccess(
+	target: ChatRunTarget | null,
+	draft: RunTargetDraft | null,
+	options: RunTargetOptions | null
+): SubscriptionAccess {
+	if (target && target.bound) return target.access;
+	if (target) return target.would_bind.access;
+	if (draft && options) return detailsFromDraft(draft, options).access;
+	return 'chat';
 }
 
 /** What the workers may do: the same as the access the chat's reply runs with. */

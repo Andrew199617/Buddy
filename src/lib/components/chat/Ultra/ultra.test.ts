@@ -1,10 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
+import type {
+	ChatRunTargetDetails,
+	RunTargetComputer,
+	RunTargetOptions
+} from '$lib/apis/subscriptions';
+import type { RunTargetDraft } from '../RunTarget/run-target';
 import {
 	availability,
 	effortLabel,
+	firstSelectedModel,
 	fitUltra,
 	formatElapsed,
+	loadedUltra,
+	nextReplyAccess,
 	requestUltra,
 	runningWorkers,
 	savedUltra,
@@ -12,6 +21,7 @@ import {
 	shortModelName,
 	startingUltra,
 	ultraButtonLabel,
+	ultraForReply,
 	workerEffortOptions,
 	workerLimitLine,
 	workerModelOptions,
@@ -161,6 +171,19 @@ describe('availability', () => {
 	});
 });
 
+describe('firstSelectedModel', () => {
+	it('finds the first selected model in the list', () => {
+		expect(firstSelectedModel([sonnet.id], models)).toBe(sonnet);
+		expect(firstSelectedModel(['', codex.id, opus.id], models)).toBe(codex);
+	});
+
+	it('is null with no model selected, or one the list lacks', () => {
+		expect(firstSelectedModel([], models)).toBeNull();
+		expect(firstSelectedModel([''], models)).toBeNull();
+		expect(firstSelectedModel(['claude-code.gone'], models)).toBeNull();
+	});
+});
+
 describe('workerModelOptions', () => {
 	it('lists "Same as chat" first, then the chat provider’s models that run workers', () => {
 		expect(workerModelOptions(i18n, opus, models)).toEqual([
@@ -292,6 +315,29 @@ describe('startingUltra', () => {
 	});
 });
 
+describe('loadedUltra', () => {
+	const accountDefault = { worker_model: sonnet.id, worker_effort: 'low' };
+
+	it('reads the choice saved with the chat', () => {
+		const saved = { on: true, worker_model: opus.id, worker_effort: 'max' };
+		expect(loadedUltra(saved, accountDefault)).toEqual(
+			ultra({ worker_model: opus.id, worker_effort: 'max' })
+		);
+		// A chat's own "Same as chat" choices stay, whatever the account's are now.
+		const sameAsChat = { on: false, worker_model: null, worker_effort: null };
+		expect(loadedUltra(sameAsChat, accountDefault)).toEqual(ultra({ on: false }));
+	});
+
+	it('starts a chat saved without a choice like a new chat', () => {
+		const starting = ultra({ on: false, worker_model: sonnet.id, worker_effort: 'low' });
+		expect(loadedUltra(undefined, accountDefault)).toEqual(starting);
+		expect(loadedUltra(null, accountDefault)).toEqual(starting);
+		expect(loadedUltra('on', accountDefault)).toEqual(starting);
+		expect(loadedUltra([true], accountDefault)).toEqual(starting);
+		expect(loadedUltra(undefined, undefined)).toEqual(ultra({ on: false }));
+	});
+});
+
 describe('requestUltra', () => {
 	it('leaves the field out while Ultra is off', () => {
 		expect(requestUltra(ultra({ on: false, worker_model: sonnet.id }))).toBeUndefined();
@@ -302,6 +348,50 @@ describe('requestUltra', () => {
 		expect(request).toEqual({ worker_model: sonnet.id, worker_effort: 'high' });
 		expect(Object.keys(request ?? {}).sort()).toEqual(['worker_effort', 'worker_model']);
 		expect(requestUltra(ultra())).toEqual({ worker_model: null, worker_effort: null });
+	});
+});
+
+describe('ultraForReply', () => {
+	it('sends the choice while Ultra is on and the reply can use it', () => {
+		const choice = ultra({ worker_model: sonnet.id, worker_effort: 'high' });
+		expect(ultraForReply(choice, [opus.id], models, savedChat)).toEqual({
+			worker_model: sonnet.id,
+			worker_effort: 'high'
+		});
+		expect(ultraForReply(ultra(), [codex.id], models, savedChat)).toEqual({
+			worker_model: null,
+			worker_effort: null
+		});
+	});
+
+	it('leaves the field out while Ultra is off', () => {
+		const off = ultra({ on: false, worker_model: sonnet.id });
+		expect(ultraForReply(off, [opus.id], models, savedChat)).toBeUndefined();
+	});
+
+	it('leaves the field out for a reply that cannot use Ultra', () => {
+		const on = ultra({ worker_model: sonnet.id });
+		expect(ultraForReply(on, [opus.id, sonnet.id], models, savedChat)).toBeUndefined();
+		expect(ultraForReply(on, [haiku.id], models, savedChat)).toBeUndefined();
+		expect(ultraForReply(on, [llama.id], models, savedChat)).toBeUndefined();
+		expect(ultraForReply(on, [], models, savedChat)).toBeUndefined();
+		const temporary = { id: '', temporary: true };
+		expect(ultraForReply(on, [opus.id], models, temporary)).toBeUndefined();
+		const channel = { id: 'channel:general', temporary: false };
+		expect(ultraForReply(on, [opus.id], models, channel)).toBeUndefined();
+	});
+
+	it('fits the choice to the reply’s model', () => {
+		const levelCodexLacks = ultra({ worker_model: sonnet.id, worker_effort: 'max' });
+		expect(ultraForReply(levelCodexLacks, [codex.id], models, savedChat)).toEqual({
+			worker_model: null,
+			worker_effort: null
+		});
+		const levelCodexHas = ultra({ worker_model: sonnet.id, worker_effort: 'high' });
+		expect(ultraForReply(levelCodexHas, ['', codex.id], models, savedChat)).toEqual({
+			worker_model: null,
+			worker_effort: 'high'
+		});
 	});
 });
 
@@ -338,6 +428,76 @@ describe('ultraButtonLabel', () => {
 		expect(ultraButtonLabel(i18n, ultra(), available, null, models)).toBe(
 			"Ultra: on. Workers use the chat's model. Thinking: same as chat."
 		);
+	});
+});
+
+describe('nextReplyAccess', () => {
+	function details(changes: Partial<ChatRunTargetDetails> = {}): ChatRunTargetDetails {
+		return {
+			kind: 'computer',
+			machine_id: 'pc-1',
+			computer: { name: 'Work PC', kind: 'app', online: true },
+			folder_mode: 'auto',
+			path: null,
+			access: 'full',
+			source: 'bar',
+			note: null,
+			problem: null,
+			...changes
+		};
+	}
+
+	const workPc: RunTargetComputer = {
+		machine_id: 'pc-1',
+		name: 'Work PC',
+		kind: 'app',
+		online: true,
+		platform: 'win32',
+		can_browse: true,
+		folders: 'on',
+		recent_paths: [],
+		revision: 'rev-1',
+		providers: { claude: { state: 'ready', message: null } }
+	};
+	const options: RunTargetOptions = { allowed: true, has_plans: true, computers: [workPc] };
+
+	function draft(changes: Partial<RunTargetDraft> = {}): RunTargetDraft {
+		return {
+			kind: 'computer',
+			machineId: 'pc-1',
+			expectedRevision: 'rev-1',
+			folder: { mode: 'auto' },
+			access: 'read',
+			acknowledgedFolderId: null,
+			touched: { computer: false, folder: false, access: false },
+			...changes
+		};
+	}
+
+	it('uses the chat’s own target once it has one', () => {
+		const bound = { bound: true as const, ...details({ access: 'full' }) };
+		expect(nextReplyAccess(bound, null, null)).toBe('full');
+		expect(nextReplyAccess(bound, draft(), options)).toBe('full');
+	});
+
+	it('uses where an older chat’s next message would bind it', () => {
+		const unbound = { bound: false as const, would_bind: details({ access: 'read' }) };
+		expect(nextReplyAccess(unbound, null, null)).toBe('read');
+	});
+
+	it('uses a new chat’s draft in the composer’s bar', () => {
+		expect(nextReplyAccess(null, draft(), options)).toBe('read');
+		expect(nextReplyAccess(null, draft({ access: 'full' }), options)).toBe('full');
+		// A chat that runs on no computer, or on one Buddy no longer lists, only chats.
+		expect(nextReplyAccess(null, draft({ kind: 'detached', machineId: null }), options)).toBe(
+			'chat'
+		);
+		expect(nextReplyAccess(null, draft({ machineId: 'gone' }), options)).toBe('chat');
+	});
+
+	it('is chat only until where the chat runs is known', () => {
+		expect(nextReplyAccess(null, null, null)).toBe('chat');
+		expect(nextReplyAccess(null, draft(), null)).toBe('chat');
 	});
 });
 

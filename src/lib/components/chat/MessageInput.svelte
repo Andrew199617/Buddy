@@ -128,6 +128,16 @@
 	import TaskList from './Messages/ResponseMessage/TaskList.svelte';
 	import AgentMenu from './ProjectAgents/AgentMenu.svelte';
 	import type { ChatAgent } from './ProjectAgents/chat-agent';
+	import UltraMenu from './Ultra/UltraMenu.svelte';
+	import {
+		availability,
+		firstSelectedModel,
+		fitUltra,
+		nextReplyAccess,
+		startingUltra,
+		type UltraChange,
+		type UltraState
+	} from './Ultra/ultra';
 
 	const i18n: any = getContext('i18n');
 
@@ -223,6 +233,22 @@
 	export let selectedAgent: ChatAgent | null = null;
 	export let onAgentChange: (agent: ChatAgent | null) => void = () => {};
 	let agentMenuAvailable = false;
+
+	// The chat's saved Ultra choice, and where each edit in the Ultra menu goes; see
+	// chat/Ultra/. The Notes side chat offers no Ultra.
+	export let ultra: UltraState = startingUltra(null);
+	export let onUltraChange: (change: UltraChange) => void = () => {};
+	$: ultraOffered = !embedded;
+	$: ultraChatModel = firstSelectedModel(selectedModelIds, $models);
+	$: ultraAvailability = availability($i18n, selectedModelIds, $models, {
+		id: chatId,
+		temporary: $temporaryChatEnabled
+	});
+	// The menu shows the choice as the chat's model can use it, as the chat sends it.
+	$: shownUltra = fitUltra(ultra, ultraChatModel, $models);
+	$: ultraActive = ultraOffered && shownUltra.on && ultraAvailability.available;
+	// Workers get the access the chat's next reply runs with.
+	$: ultraAccess = nextReplyAccess(runTarget, runTargetDraft, runTargetOptions);
 
 	export let imageGenerationEnabled = false;
 	export let webSearchEnabled = false;
@@ -1052,6 +1078,23 @@
 
 	let user = null;
 	export let placeholder = '';
+
+	// With Ultra on the placeholder says so: the resting composer hides the Ultra button.
+	let composerPlaceholder = '';
+	$: if (ultraActive) {
+		composerPlaceholder = $i18n.t('Message Buddy · Ultra');
+	} else if (placeholder) {
+		composerPlaceholder = placeholder;
+	} else {
+		composerPlaceholder = $i18n.t('Message Buddy…');
+	}
+
+	let composerSettingsLabel = '';
+	$: if (ultraOffered) {
+		composerSettingsLabel = $i18n.t('Model, thinking and Ultra settings');
+	} else {
+		composerSettingsLabel = $i18n.t('Model and thinking settings');
+	}
 
 	type ModelCapability = 'vision' | 'file_upload' | 'web_search' | 'image_generation' | 'terminal';
 	type ModelCapabilitiesById = Record<string, Partial<Record<ModelCapability, boolean>>>;
@@ -1924,6 +1967,27 @@
 	});
 </script>
 
+<!-- Right after the model picker, on desktop and in the phone's settings row, so the
+	Thinking chip that reasoning-chip.js adds after the picker keeps the order
+	[Model][Thinking][Ultra]. -->
+{#snippet ultraControl()}
+	{#if ultraOffered}
+		<div class="buddy-composer-ultra flex shrink-0 items-center">
+			<UltraMenu
+				state={shownUltra}
+				availability={ultraAvailability}
+				chatModel={ultraChatModel}
+				models={$models}
+				access={ultraAccess}
+				generating={isActive}
+				onChange={onUltraChange}
+				preserveComposerFocus={mobileComposer && !embedded}
+				onClose={restoreComposerAfterMenuClose}
+			/>
+		</div>
+	{/if}
+{/snippet}
+
 <SkillsModal bind:show={showSkills} {selectedSkillIds} />
 
 <InputVariablesModal
@@ -2207,6 +2271,7 @@
 						<div
 							id="message-input-container"
 							data-expanded={composerExpanded}
+							data-ultra={ultraActive}
 							class="buddy-composer flex-1 flex flex-col relative w-full shadow-lg rounded-3xl border {$temporaryChatEnabled
 								? 'border-dashed border-gray-100 dark:border-gray-800 hover:border-gray-200 focus-within:border-gray-200 hover:dark:border-gray-700 focus-within:dark:border-gray-700'
 								: ' border-gray-100/30 dark:border-gray-850/30 hover:border-gray-200 focus-within:border-gray-100 hover:dark:border-gray-800 focus-within:dark:border-gray-800'} {($settings?.highContrastMode ??
@@ -2219,7 +2284,7 @@
 								<div
 									class="buddy-composer-settings flex min-w-0 items-center gap-2"
 									role="group"
-									aria-label={$i18n.t('Model and thinking settings')}
+									aria-label={composerSettingsLabel}
 								>
 									<div class="buddy-composer-model flex min-w-0 flex-1 items-center">
 										<ModelSelector
@@ -2232,6 +2297,7 @@
 											triggerClassName="buddy-model-trigger items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-[0.8125rem] font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
 										/>
 									</div>
+									{@render ultraControl()}
 								</div>
 							{/if}
 
@@ -2410,7 +2476,7 @@
 															navigator.maxTouchPoints > 0 ||
 															navigator.msMaxTouchPoints > 0
 														)}
-													placeholder={placeholder ? placeholder : $i18n.t('Message Buddy…')}
+													placeholder={composerPlaceholder}
 													largeTextAsFile={($settings?.largeTextAsFile ?? false) && !shiftKey}
 													autocomplete={$config?.features?.enable_autocomplete_generation &&
 														($settings?.promptAutocomplete ?? false)}
@@ -2931,6 +2997,7 @@
 												triggerClassName="items-center gap-1.5 rounded-lg pl-2 pr-1.5 py-1 text-[0.8125rem] font-normal text-gray-600 transition-colors duration-100 hover:bg-gray-50/40 hover:text-gray-700 dark:text-gray-300 dark:hover:bg-gray-800/40 dark:hover:text-gray-200"
 											/>
 										</div>
+										{@render ultraControl()}
 									{/if}
 
 									{#if hasChatVariables}

@@ -560,6 +560,17 @@
 	display: inline;
 }
 
+/* Ultra sits beside Thinking in the phone's settings row, as a chip of the same shape. */
+.buddy-chat .buddy-composer-settings .buddy-ultra-chip {
+	height: auto;
+	padding: 6px 10px;
+	border-radius: 12px;
+}
+
+.buddy-chat .buddy-composer-settings .buddy-ultra-chip[data-on='false'] {
+	background: var(--buddy-glass);
+}
+
 .buddy-chat .buddy-composer[data-expanded='false'] .buddy-composer-settings {
 	display: none;
 }
@@ -604,11 +615,21 @@
 }
 
 .buddy-chat .buddy-composer[data-expanded='false'] .buddy-composer-model,
+.buddy-chat .buddy-composer[data-expanded='false'] .buddy-composer-ultra,
 .buddy-chat .buddy-composer[data-expanded='false'] .buddy-composer-integrations,
 .buddy-chat .buddy-composer[data-expanded='false'] .buddy-composer-divider,
 .buddy-chat .buddy-composer[data-expanded='false'] #chat-variables-button,
 .buddy-chat .buddy-composer[data-expanded='false']:has(#voice-input-button) .buddy-voice-mode {
 	display: none;
+}
+
+/* With its Ultra button hidden, the resting composer shows Ultra is on by its edge. */
+.buddy-chat .buddy-composer[data-expanded='false'][data-ultra='true'] {
+	border-color: rgba(14, 165, 233, 0.45);
+}
+
+.dark .buddy-chat .buddy-composer[data-expanded='false'][data-ultra='true'] {
+	border-color: rgba(125, 211, 252, 0.35);
 }
 
 .buddy-chat .buddy-composer-tools button {

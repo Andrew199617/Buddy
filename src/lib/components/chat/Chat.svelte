@@ -59,6 +59,13 @@
 		systemWithAgent,
 		type ChatAgent
 	} from '$lib/components/chat/ProjectAgents/chat-agent';
+	import {
+		loadedUltra,
+		startingUltra,
+		ultraForReply,
+		type UltraChange,
+		type UltraState
+	} from '$lib/components/chat/Ultra/ultra';
 	import { refreshChatList, refreshFolderChatLists } from '$lib/stores/chatList';
 
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
@@ -465,6 +472,8 @@
 	let params = {};
 	// The custom agent from the project folder, saved with the chat.
 	let selectedAgent: ChatAgent | null = null;
+	// Whether Ultra is on and what its workers run on, saved with the chat; see chat/Ultra/.
+	let chatUltra: UltraState = startingUltra($settings?.ultra);
 	let chatVariables = {};
 	let showChatVariablesModal = false;
 
@@ -883,6 +892,16 @@
 		return { run_target: requestFromDraft(runTargetDraft) };
 	}
 
+	/** The reply's Ultra choice, sent only while Ultra is on and the reply can use it. */
+	function ultraBody(modelIds: string[], chatIdForTurn: string) {
+		// The Notes side chat offers no Ultra button, so its replies never start workers.
+		if (embedded) return {};
+		const chatForTurn = { id: chatIdForTurn, temporary: $temporaryChatEnabled };
+		const ultra = ultraForReply(chatUltra, modelIds, $models, chatForTurn);
+		if (!ultra) return {};
+		return { ultra };
+	}
+
 	function runTargetForNewChat() {
 		if (!runTargetDraft || !runTargetOptions?.allowed) return null;
 		return requestFromDraft(runTargetDraft);
@@ -1122,6 +1141,7 @@
 		};
 		params = {};
 		selectedAgent = null;
+		chatUltra = startingUltra($settings?.ultra);
 		chatVariables = {};
 		chatFiles = [];
 		files = [];
@@ -2380,6 +2400,7 @@
 		chatFiles = [];
 		params = {};
 		selectedAgent = null;
+		chatUltra = startingUltra($settings?.ultra);
 		chatVariables = {};
 		taskIds = null;
 		chatTasks = [];
@@ -2574,6 +2595,7 @@
 				params = structuredClone(chatContent?.params ?? {});
 				delete params.note_id;
 				selectedAgent = ownAgent(chat, $user?.id);
+				chatUltra = loadedUltra(chatContent?.ultra, $settings?.ultra);
 				chatFiles = structuredClone(chatContent?.files ?? []);
 
 				// Load tasks from chat-level DB field
@@ -3788,6 +3810,8 @@
 		const terminalEnabled = model.info?.meta?.capabilities?.terminal ?? true;
 		const useChatVariablesFallback =
 			!_chatId || $temporaryChatEnabled || isTemporaryChatId(_chatId);
+		// The models this request runs, which decide whether it may carry Ultra.
+		const replyModelIds = messageIdsList?.map((entry) => entry.model_id) ?? [model.id];
 
 		const res = await generateOpenAIChatCompletion(
 			localStorage.token,
@@ -3828,6 +3852,7 @@
 				},
 				...(useChatVariablesFallback ? { chat_variables: chatVariables } : {}),
 				...runTargetBody(_chatId),
+				...ultraBody(replyModelIds, _chatId),
 				model_item: $models.find((m) => m.id === model.id),
 
 				session_id: $socket?.id,
@@ -3919,6 +3944,12 @@
 							await updateChatById(localStorage.token, res.chat_id, {
 								params: params
 							});
+						}
+
+						// The server creates the chat without its Ultra choice; save it while Ultra is on.
+						if (chatUltra.on) {
+							const ultra = chatUltra;
+							void queueUltraSave(() => saveUltra(res.chat_id, ultra));
 						}
 					}
 				}
@@ -4182,6 +4213,7 @@
 					system: $settings.system ?? undefined,
 					params: params,
 					agent: selectedAgent ?? undefined,
+					ultra: chatUltra,
 					history: history,
 					messages: createMessagesList(history, history.currentId),
 					tags: [],
@@ -4254,6 +4286,46 @@
 		if (!$chatId || $temporaryChatEnabled) return;
 		const savingChatId = $chatId;
 		void queueAgentSave(() => saveAgent(savingChatId, agent));
+	};
+
+	// Ultra saves run one at a time too, so the last choice is the one that stays saved.
+	const queueUltraSave = createSaveQueue();
+
+	const saveUltra = async (savingChatId: string, ultra: UltraState) => {
+		const saved = await updateChatById(localStorage.token, savingChatId, { ultra }).catch(
+			(error) => {
+				console.error('[ultra save]', error);
+				toast.error($i18n.t('Ultra could not be saved with this chat.'));
+				return null;
+			}
+		);
+		// The page may have moved on to another chat while this was saving.
+		if (saved && $chatId === savingChatId) chat = saved;
+	};
+
+	type WorkerChoices = Pick<UltraState, 'worker_model' | 'worker_effort'>;
+
+	const saveWorkerChoices = async (choices: WorkerChoices) => {
+		await updateUserSettings(localStorage.token, { ui: { ultra: choices } }).catch((error) => {
+			console.error('[ultra worker choices]', error);
+		});
+	};
+
+	/** The last worker choices are the account's default, which new chats start with. */
+	const rememberWorkerChoices = (ultra: UltraState) => {
+		const choices = { worker_model: ultra.worker_model, worker_effort: ultra.worker_effort };
+		settings.set({ ...$settings, ultra: choices });
+		void queueUltraSave(() => saveWorkerChoices(choices));
+	};
+
+	const changeUltra = (change: UltraChange) => {
+		const ultra: UltraState = { ...chatUltra, ...change };
+		chatUltra = ultra;
+		if (!('on' in change)) rememberWorkerChoices(ultra);
+		// A chat that isn't saved yet keeps it until its first message saves it.
+		if (!$chatId || $temporaryChatEnabled) return;
+		const savingChatId = $chatId;
+		void queueUltraSave(() => saveUltra(savingChatId, ultra));
 	};
 
 	const saveControls = async () => {
@@ -4702,6 +4774,8 @@
 										{agentChatTarget}
 										{selectedAgent}
 										onAgentChange={changeAgent}
+										ultra={chatUltra}
+										onUltraChange={changeUltra}
 										bind:imageGenerationEnabled
 										{pendingOAuthTools}
 										{oauthRedirectHandler}
@@ -4861,6 +4935,8 @@
 									{agentChatTarget}
 									{selectedAgent}
 									onAgentChange={changeAgent}
+									ultra={chatUltra}
+									onUltraChange={changeUltra}
 									bind:imageGenerationEnabled
 									bind:webSearchEnabled
 									bind:atSelectedModel
