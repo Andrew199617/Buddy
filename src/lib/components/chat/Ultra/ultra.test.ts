@@ -11,9 +11,13 @@ import {
 	savedWorkers,
 	shortModelName,
 	startingUltra,
+	ultraButtonLabel,
 	workerEffortOptions,
+	workerLimitLine,
 	workerModelOptions,
 	workerPill,
+	workersAccessLine,
+	workersAccessNote,
 	workersElapsed,
 	workersHeader,
 	workersModel,
@@ -298,6 +302,65 @@ describe('requestUltra', () => {
 		expect(request).toEqual({ worker_model: sonnet.id, worker_effort: 'high' });
 		expect(Object.keys(request ?? {}).sort()).toEqual(['worker_effort', 'worker_model']);
 		expect(requestUltra(ultra())).toEqual({ worker_model: null, worker_effort: null });
+	});
+});
+
+describe('ultraButtonLabel', () => {
+	const available = { available: true, reason: null };
+
+	it('says Ultra is off while it is off or not available', () => {
+		expect(ultraButtonLabel(i18n, ultra({ on: false }), available, opus, models)).toBe(
+			'Ultra: off'
+		);
+		const unavailable = { available: false, reason: 'Ultra works with one model at a time.' };
+		expect(ultraButtonLabel(i18n, ultra(), unavailable, opus, models)).toBe('Ultra: off');
+	});
+
+	it('names the workers’ model and thinking level while Ultra is on', () => {
+		expect(ultraButtonLabel(i18n, ultra(), available, opus, models)).toBe(
+			'Ultra: on. Workers use Claude Opus 4.1. Thinking: same as chat.'
+		);
+		const chosen = ultra({ worker_model: sonnet.id, worker_effort: 'high' });
+		expect(ultraButtonLabel(i18n, chosen, available, opus, models)).toBe(
+			'Ultra: on. Workers use Claude Sonnet 4.5. Thinking: High.'
+		);
+		const off = ultra({ worker_effort: 'none' });
+		expect(ultraButtonLabel(i18n, off, available, codex, models)).toBe(
+			'Ultra: on. Workers use GPT-5.1-Codex. Thinking: Off.'
+		);
+	});
+
+	it('names the chat’s model for a worker model the chat’s provider does not offer', () => {
+		const fromCodex = ultra({ worker_model: codex.id });
+		expect(ultraButtonLabel(i18n, fromCodex, available, opus, models)).toBe(
+			'Ultra: on. Workers use Claude Opus 4.1. Thinking: same as chat.'
+		);
+		expect(ultraButtonLabel(i18n, ultra(), available, null, models)).toBe(
+			"Ultra: on. Workers use the chat's model. Thinking: same as chat."
+		);
+	});
+});
+
+describe('menu footer', () => {
+	it('says what workers may do at each access level', () => {
+		expect(workersAccessLine(i18n, 'chat')).toBe('Workers can only think.');
+		expect(workersAccessLine(i18n, 'read')).toBe('Workers can read the project.');
+		expect(workersAccessLine(i18n, 'full')).toBe('Workers can edit the project.');
+	});
+
+	it('notes that Codex workers always share the chat’s access', () => {
+		expect(workersAccessNote(i18n, codex)).toBe("Codex workers share the chat's access.");
+		expect(workersAccessNote(i18n, opus)).toBeNull();
+		expect(workersAccessNote(i18n, llama)).toBeNull();
+		expect(workersAccessNote(i18n, null)).toBeNull();
+	});
+
+	it('says there is no worker limit unless an admin set one', () => {
+		const noLimit = 'No worker limit — Ultra uses your plan faster';
+		expect(workerLimitLine(i18n, null)).toBe(noLimit);
+		expect(workerLimitLine(i18n, 0)).toBe(noLimit);
+		expect(workerLimitLine(i18n, 1)).toBe('Up to 1 worker at once');
+		expect(workerLimitLine(i18n, 4)).toBe('Up to 4 workers at once');
 	});
 });
 

@@ -501,13 +501,27 @@
 		.app-dropdown-menu
 		button:not([role='switch']),
 	[data-composer-menu='terminal'] .app-dropdown-menu button:not([role='switch']),
-	[data-composer-menu='agents'] .app-dropdown-menu button {
+	[data-composer-menu='agents'] .app-dropdown-menu button,
+	[data-composer-menu='ultra'] .app-dropdown-menu button:not([role='switch']) {
 		min-height: 44px;
 	}
 
 	[data-composer-menu='attachments'] input,
 	[data-composer-menu='integrations'] input {
 		font-size: 16px;
+	}
+
+	/* Ultra's menu stays between the chat header and the composer, clear of the notch and home bar. */
+	[data-composer-menu='ultra'] .buddy-ultra-menu {
+		max-height: min(
+			var(--buddy-ultra-room, 100dvh),
+			calc(
+				100dvh - var(--buddy-safe-top, env(safe-area-inset-top, 0px)) -
+					var(--buddy-safe-bottom, env(safe-area-inset-bottom, 0px)) - 16px
+			)
+		);
+		overflow-y: auto;
+		overscroll-behavior: contain;
 	}
 }
 

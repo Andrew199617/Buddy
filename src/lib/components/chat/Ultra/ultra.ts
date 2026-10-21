@@ -2,6 +2,7 @@
 // what a chat saves and sends, and the text its workers card shows. Plain helpers
 // with no DOM or network; the server checks whatever the composer sends.
 
+import type { SubscriptionAccess } from '$lib/apis/subscriptions';
 import { isChannelChatId, isTemporaryChatId } from '$lib/utils/chatId';
 
 type Translator = { t: (key: string, options?: Record<string, unknown>) => string };
@@ -34,6 +35,15 @@ export type UltraState = {
 	// One of the workers' model's thinking levels; null uses the chat's.
 	worker_effort: string | null;
 };
+
+/**
+ * One edit in the Ultra menu. The composer merges it into the chat's saved
+ * choice, so a choice the chat's current model can't use stays saved.
+ */
+export type UltraChange =
+	| { on: boolean }
+	| { worker_model: string | null }
+	| { worker_effort: string | null };
 
 /** The chat request's top-level `ultra` field, sent only while Ultra is on. */
 export type UltraRequest = { worker_model: string | null; worker_effort: string | null };
@@ -285,6 +295,56 @@ export function startingUltra(accountDefault: unknown): UltraState {
 export function requestUltra(state: UltraState): UltraRequest | undefined {
 	if (!state.on) return undefined;
 	return { worker_model: state.worker_model, worker_effort: state.worker_effort };
+}
+
+/**
+ * The Ultra button's name and tooltip: whether the next message uses Ultra, and
+ * what its workers run on. Ultra counts as off while it isn't available.
+ */
+export function ultraButtonLabel(
+	i18n: Translator,
+	state: UltraState,
+	ultraAvailability: UltraAvailability,
+	chatModel: UltraModel | null,
+	models: UltraModel[]
+): string {
+	if (!state.on || !ultraAvailability.available) return i18n.t('Ultra: off');
+
+	const model = workersModel(state, chatModel, models);
+	let name = i18n.t("the chat's model");
+	if (model) name = modelName(model);
+	if (state.worker_effort === null) {
+		return i18n.t('Ultra: on. Workers use {{model}}. Thinking: same as chat.', { model: name });
+	}
+	return i18n.t('Ultra: on. Workers use {{model}}. Thinking: {{effort}}.', {
+		model: name,
+		effort: effortLabel(i18n, state.worker_effort)
+	});
+}
+
+/** What the workers may do: the same as the access the chat's reply runs with. */
+export function workersAccessLine(i18n: Translator, access: SubscriptionAccess): string {
+	if (access === 'full') return i18n.t('Workers can edit the project.');
+	if (access === 'read') return i18n.t('Workers can read the project.');
+	return i18n.t('Workers can only think.');
+}
+
+/**
+ * Codex starts every worker with the chat's access, so a worker that only needs
+ * to read can't be given less. Null for Claude, whose read-only workers can.
+ */
+export function workersAccessNote(i18n: Translator, chatModel: UltraModel | null): string | null {
+	if (planProvider(chatModel) !== 'codex') return null;
+	return i18n.t("Codex workers share the chat's access.");
+}
+
+/** How many workers run at once: no limit unless an admin set one. */
+export function workerLimitLine(i18n: Translator, maxWorkers: number | null): string {
+	if (maxWorkers === null || maxWorkers < 1) {
+		return i18n.t('No worker limit — Ultra uses your plan faster');
+	}
+	if (maxWorkers === 1) return i18n.t('Up to 1 worker at once');
+	return i18n.t('Up to {{count}} workers at once', { count: maxWorkers });
 }
 
 function workerItem(value: unknown): WorkerItem | null {
