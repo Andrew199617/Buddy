@@ -57,8 +57,22 @@ export type UltraChange =
 /** The chat request's top-level `ultra` field, sent only while Ultra is on. */
 export type UltraRequest = { worker_model: string | null; worker_effort: string | null };
 
-/** A row in the Worker model or Worker thinking list; null is "Same as chat". */
-export type UltraOption = { value: string | null; label: string };
+/**
+ * A row in the Worker model or Worker thinking list; null is "Same as chat". The
+ * label is its full name, as screen readers hear it and the menu's compact rows
+ * show it. A list row shows the title, with the detail on a muted line under it.
+ */
+export type UltraOption = {
+	value: string | null;
+	label: string;
+	title: string;
+	detail: string | null;
+};
+
+/** A list row whose label is all it shows. */
+function plainOption(value: string | null, label: string): UltraOption {
+	return { value, label, title: label, detail: null };
+}
 
 export type WorkerState = 'running' | 'done' | 'failed' | 'stopped';
 
@@ -206,8 +220,9 @@ function chosenWorkerModel(
 
 /**
  * The Worker model list: "Same as chat (<name>)" first, then the chat's
- * provider's plan models that run Ultra. Empty when the chat's model isn't a
- * plan model.
+ * provider's plan models that run Ultra. The first row names the chat's model on
+ * a line of its own, so a long name isn't cut where models differ. Empty when the
+ * chat's model isn't a plan model.
  */
 export function workerModelOptions(
 	i18n: Translator,
@@ -215,10 +230,16 @@ export function workerModelOptions(
 	models: UltraModel[]
 ): UltraOption[] {
 	if (!chatModel || planProvider(chatModel) === null) return [];
-	const sameAsChat = i18n.t('Same as chat ({{model}})', { model: modelName(chatModel) });
-	const options: UltraOption[] = [{ value: null, label: sameAsChat }];
+	const chatModelName = modelName(chatModel);
+	const sameAsChat: UltraOption = {
+		value: null,
+		label: i18n.t('Same as chat ({{model}})', { model: chatModelName }),
+		title: i18n.t('Same as chat'),
+		detail: chatModelName
+	};
+	const options = [sameAsChat];
 	for (const model of workerModels(chatModel, models)) {
-		options.push({ value: model.id, label: modelName(model) });
+		options.push(plainOption(model.id, modelName(model)));
 	}
 	return options;
 }
@@ -259,9 +280,9 @@ export function effortLabel(i18n: Translator, effort: string): string {
  * chat" first, then the levels that model offers.
  */
 export function workerEffortOptions(i18n: Translator, model: UltraModel | null): UltraOption[] {
-	const options: UltraOption[] = [{ value: null, label: i18n.t('Same as chat') }];
+	const options = [plainOption(null, i18n.t('Same as chat'))];
 	for (const effort of effortNames(model)) {
-		options.push({ value: effort, label: effortLabel(i18n, effort) });
+		options.push(plainOption(effort, effortLabel(i18n, effort)));
 	}
 	return options;
 }

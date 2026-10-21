@@ -171,10 +171,18 @@
 				type="button"
 				role="menuitemradio"
 				aria-checked={option.value === chosen}
+				aria-label={option.label}
 				class={rowClass}
 				on:click={() => choose(option.value)}
 			>
-				<span class="min-w-0 flex-1 truncate">{option.label}</span>
+				<span class="flex min-w-0 flex-1 flex-col">
+					<span class="truncate">{option.title}</span>
+					{#if option.detail}
+						<span class="truncate text-xs leading-snug text-gray-500 dark:text-gray-400">
+							{option.detail}
+						</span>
+					{/if}
+				</span>
 				{#if option.value === chosen}
 					<Check className="size-3.5 shrink-0" strokeWidth="2" />
 				{/if}

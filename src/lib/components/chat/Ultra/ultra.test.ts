@@ -201,16 +201,31 @@ describe('firstSelectedModel', () => {
 	});
 });
 
+/** A list row that shows just its label. */
+function plainOption(value: string | null, label: string) {
+	return { value, label, title: label, detail: null };
+}
+
 describe('workerModelOptions', () => {
 	it('lists "Same as chat" first, then the chat provider’s models that run workers', () => {
 		expect(workerModelOptions(i18n, opus, models)).toEqual([
-			{ value: null, label: 'Same as chat (Claude Opus 4.1)' },
-			{ value: opus.id, label: 'Claude Opus 4.1' },
-			{ value: sonnet.id, label: 'Claude Sonnet 4.5' }
+			{
+				value: null,
+				label: 'Same as chat (Claude Opus 4.1)',
+				title: 'Same as chat',
+				detail: 'Claude Opus 4.1'
+			},
+			plainOption(opus.id, 'Claude Opus 4.1'),
+			plainOption(sonnet.id, 'Claude Sonnet 4.5')
 		]);
 		expect(workerModelOptions(i18n, codex, models)).toEqual([
-			{ value: null, label: 'Same as chat (GPT-5.1-Codex)' },
-			{ value: codex.id, label: 'GPT-5.1-Codex' }
+			{
+				value: null,
+				label: 'Same as chat (GPT-5.1-Codex)',
+				title: 'Same as chat',
+				detail: 'GPT-5.1-Codex'
+			},
+			plainOption(codex.id, 'GPT-5.1-Codex')
 		]);
 	});
 
@@ -237,10 +252,10 @@ describe('workersModel', () => {
 describe('workerEffortOptions', () => {
 	it('lists "Same as chat" first, then the model’s levels', () => {
 		expect(workerEffortOptions(i18n, sonnet)).toEqual([
-			{ value: null, label: 'Same as chat' },
-			{ value: 'low', label: 'Low' },
-			{ value: 'medium', label: 'Medium' },
-			{ value: 'high', label: 'High' }
+			plainOption(null, 'Same as chat'),
+			plainOption('low', 'Low'),
+			plainOption('medium', 'Medium'),
+			plainOption('high', 'High')
 		]);
 		expect(workerEffortOptions(i18n, codex).map((option) => option.label)).toEqual([
 			'Same as chat',
@@ -253,8 +268,8 @@ describe('workerEffortOptions', () => {
 	});
 
 	it('offers only "Same as chat" without levels', () => {
-		expect(workerEffortOptions(i18n, null)).toEqual([{ value: null, label: 'Same as chat' }]);
-		expect(workerEffortOptions(i18n, haiku)).toEqual([{ value: null, label: 'Same as chat' }]);
+		expect(workerEffortOptions(i18n, null)).toEqual([plainOption(null, 'Same as chat')]);
+		expect(workerEffortOptions(i18n, haiku)).toEqual([plainOption(null, 'Same as chat')]);
 		const odd = planModel('claude-code.odd', 'Odd', 'claude', ['high', '', 3, null]);
 		expect(workerEffortOptions(i18n, odd).map((option) => option.value)).toEqual([null, 'high']);
 		const notAList = planModel('claude-code.odd', 'Odd', 'claude', 'high');

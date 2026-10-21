@@ -3639,8 +3639,9 @@ async function truncatedTexts(menu) {
 }
 
 async function radioNames(group) {
-	const names = await group.getByRole('menuitemradio').allInnerTexts();
-	return names.map((name) => name.trim());
+	return group
+		.getByRole('menuitemradio')
+		.evaluateAll((options) => options.map((option) => option.getAttribute('aria-label')));
 }
 
 /** Every row of an open phone menu is a full touch target; the switch inside a row is not one. */
@@ -3931,6 +3932,12 @@ async function chooseWorkersOnPhone(page, menu) {
 	assert.deepEqual(await radioNames(modelList), workerModelNames);
 	const sameAsChat = modelList.getByRole('menuitemradio', { name: sameAsChatModel, exact: true });
 	assert.equal(await sameAsChat.getAttribute('aria-checked'), 'true');
+	assert.deepEqual(
+		(await sameAsChat.innerText()).split('\n').map((line) => line.trim()),
+		['Same as chat', ultraChatModel.name],
+		'“Same as chat” names the chat’s model on a line of its own'
+	);
+	assert.deepEqual(await truncatedTexts(menu), [], 'The list shows each model’s whole name');
 	assert.equal(await effortRow.count(), 0, 'The sub-view shows only the worker models');
 	await assertTouchRows(menu);
 	await assertMenuInView(menu);
