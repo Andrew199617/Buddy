@@ -2,8 +2,11 @@
 	import { flyAndScale } from '$lib/utils/transitions';
 	import { tick } from 'svelte';
 	import {
+		getComposerMenuRoom,
+		getComposerMenuTop,
 		getMobileComposerMenuMaxHeight,
-		getMobileComposerMenuPosition
+		getMobileComposerMenuPosition,
+		type ComposerSpace
 	} from '$lib/utils/mobile-composer-menu';
 	import { mobile } from '$lib/stores';
 
@@ -35,6 +38,14 @@
 	export let visualViewportAware = false;
 	export let preserveComposerFocus = false;
 	export let composerMenu = 'dropdown';
+	/**
+	 * For a phone composer menu (visualViewportAware with preserveComposerFocus): the
+	 * least room, in pixels, the menu needs between the chat's header and the
+	 * composer. The menu then stays below the header, and with less room, as in a
+	 * short landscape window with the keyboard up, it covers the composer instead.
+	 * 0 keeps the usual placement.
+	 */
+	export let minRoomAboveComposer = 0;
 	/** Plus and Tools use an adaptive, frosted menu on mobile. */
 	export let mobileActionMenu = false;
 	// The popup's role, for popups that are not menus, such as a dialog with a search field.
@@ -265,8 +276,61 @@
 		}
 	}
 
+	/** The composer a phone composer menu is placed by, or null for the usual placement. */
+	function composerForPlacement(): HTMLElement | null {
+		if (minRoomAboveComposer <= 0 || !preserveComposerFocus || !triggerEl) return null;
+		return triggerEl.closest<HTMLElement>('.buddy-composer');
+	}
+
+	/** The top of the visible area: below the chat's header, which already clears the notch. */
+	function visibleTopAbove(composer: HTMLElement, viewportTop: number): number {
+		const header = composer.closest('.buddy-chat')?.querySelector('.buddy-chat-header');
+		if (!header) return viewportTop;
+		return Math.max(viewportTop, header.getBoundingClientRect().bottom);
+	}
+
+	/**
+	 * Above the composer and below the chat's header, or over the composer when too
+	 * little room is left above it (see getComposerMenuRoom).
+	 */
+	function positionContentByComposer(composer: HTMLElement) {
+		if (!contentEl) return;
+		const viewport = visualViewportRect();
+		const composerRect = composer.getBoundingClientRect();
+		const space: ComposerSpace = {
+			visibleTop: visibleTopAbove(composer, viewport.top),
+			visibleBottom: viewport.top + viewport.height,
+			composerTop: composerRect.top,
+			composerBottom: composerRect.bottom
+		};
+		const room = getComposerMenuRoom(space, minRoomAboveComposer);
+
+		contentEl.style.position = 'fixed';
+		contentEl.style.zIndex = '9999';
+		resolvedMaxHeight = `min(${maxHeight}, ${room.maxHeight}px)`;
+		contentEl.style.maxHeight = resolvedMaxHeight;
+
+		// Measure after the cap is applied, so the menu sits right above the composer.
+		const menuHeight = contentEl.offsetHeight;
+		contentEl.style.top = `${getComposerMenuTop(space, room, menuHeight)}px`;
+		contentEl.style.bottom = 'auto';
+
+		const pad = 8;
+		const contentWidth = contentEl.offsetWidth || 0;
+		let preferredLeft = composerRect.left;
+		if (align === 'end') preferredLeft = composerRect.right - contentWidth;
+		const maxLeft = viewport.left + viewport.width - contentWidth - pad;
+		contentEl.style.left = `${Math.max(viewport.left + pad, Math.min(preferredLeft, maxLeft))}px`;
+		contentEl.style.right = 'auto';
+	}
+
 	function positionContentVisualViewport() {
 		if (!triggerEl || !contentEl) return;
+		const placingComposer = composerForPlacement();
+		if (placingComposer) {
+			positionContentByComposer(placingComposer);
+			return;
+		}
 		let anchor = triggerEl;
 		if (preserveComposerFocus) {
 			const composer = triggerEl.closest<HTMLElement>('.buddy-composer');

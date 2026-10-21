@@ -70,3 +70,56 @@ export function getMobileComposerMenuPosition(
 
 	return { top: top, left: left };
 }
+
+/** The visible area around a phone composer, in client pixels. */
+export type ComposerSpace = {
+	// The top of the visible area: the chat header's bottom edge, or the visual viewport's top.
+	visibleTop: number;
+	// The bottom of the visible area: the visual viewport's bottom edge, above the keyboard.
+	visibleBottom: number;
+	composerTop: number;
+	composerBottom: number;
+};
+
+export type ComposerMenuRoom = {
+	// True when the menu covers the composer because too little room is left above it.
+	coversComposer: boolean;
+	// The tallest the menu may be.
+	maxHeight: number;
+};
+
+// Model and Thinking open this far above the composer too.
+const composerGap = 6;
+
+/**
+ * The room for a menu opened from a phone composer: above the composer and below
+ * the chat's header. When that room is shorter than minimumHeight, as in a short
+ * landscape window with the keyboard up, the menu covers the composer instead,
+ * from just below the header down to the composer's bottom edge, so its rows stay
+ * reachable.
+ */
+export function getComposerMenuRoom(space: ComposerSpace, minimumHeight: number): ComposerMenuRoom {
+	const highestTop = space.visibleTop + viewportGutter;
+	const roomAbove = Math.max(0, space.composerTop - composerGap - highestTop);
+	if (roomAbove >= minimumHeight) {
+		return { coversComposer: false, maxHeight: roomAbove };
+	}
+
+	const lowestBottom = Math.min(space.visibleBottom - viewportGutter, space.composerBottom);
+	return { coversComposer: true, maxHeight: Math.max(0, lowestBottom - highestTop) };
+}
+
+/**
+ * The top edge of a menu in the room getComposerMenuRoom gave it, once the menu
+ * shows at menuHeight: just above the composer, or just below the header when it
+ * covers the composer.
+ */
+export function getComposerMenuTop(
+	space: ComposerSpace,
+	room: ComposerMenuRoom,
+	menuHeight: number
+): number {
+	const highestTop = space.visibleTop + viewportGutter;
+	if (room.coversComposer) return highestTop;
+	return Math.max(highestTop, space.composerTop - composerGap - menuHeight);
+}
