@@ -62,9 +62,13 @@ PROJECT = 'C:\\code\\site'
 PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgo='
 # The chat's model in the recording. Its model list offers it every level up to 'ultra'.
 CHAT_MODEL = 'gpt-6-astra'
-# Another model in the recording's model list, which offers levels up to 'max' only.
+# Other models in the recording's model list. Sol and Terra offer the same
+# levels as the chat's model and run Codex's v2 workers, as it does.
+SOL = 'gpt-5.6-sol'
+TERRA = 'gpt-5.6-terra'
+SOL_LOW = UltraOptions(worker_model=SOL, worker_label='GPT-5.6-Sol', worker_effort='low')
+# The recording's one model that runs Codex's v1 workers, which no recorded Ultra turn ran.
 LUNA = 'gpt-5.6-luna'
-LUNA_LOW = UltraOptions(worker_model=LUNA, worker_label='GPT-5.6-Luna', worker_effort='low')
 SAME_AS_CHAT = UltraOptions()
 # What each recorded answer's result holds, which says the request it answers.
 # The recordings number their requests differently.
@@ -434,7 +438,7 @@ def chat_messages(earlier=(), prompt=PROMPT) -> list[dict]:
     return [{'role': 'system', 'content': FOLDER_INSTRUCTIONS}, *earlier, {'role': 'user', 'content': prompt}]
 
 
-def ultra_turn(machine=None, access='read', options=LUNA_LOW, effort='low', earlier=(), prompt=PROMPT):
+def ultra_turn(machine=None, access='read', options=SOL_LOW, effort='low', earlier=(), prompt=PROMPT):
     """An Ultra turn as the server hands it on, with the orchestrator note ahead of the chat's instructions."""
     conversation = parse_messages(chat_messages(earlier, prompt))
     noted = ultra.with_orchestrator_note(conversation.system, codex.PROVIDER_ID, access, options)
@@ -596,7 +600,7 @@ class UltraThreadTests(unittest.IsolatedAsyncioTestCase):
             thread_start['config'],
             {
                 'features.multi_agent': True,
-                'agents.default_subagent_model': LUNA,
+                'agents.default_subagent_model': SOL,
                 'agents.default_subagent_reasoning_effort': 'low',
                 # The Read access keys stay.
                 'mcp_servers': {},
@@ -623,8 +627,8 @@ class UltraThreadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failures(events), [])
 
     async def test_workers_are_on_at_every_access_level_with_that_levels_keys(self):
-        options = UltraOptions(worker_model=LUNA, worker_label='GPT-5.6-Luna')
-        worker_keys = {'features.multi_agent': True, 'agents.default_subagent_model': LUNA}
+        options = UltraOptions(worker_model=SOL, worker_label='GPT-5.6-Sol')
+        worker_keys = {'features.multi_agent': True, 'agents.default_subagent_model': SOL}
         for access in ('chat', 'read', 'full'):
             with self.subTest(access=access):
                 turn = ultra_turn(access=access, options=options, effort=None)
@@ -661,10 +665,10 @@ class UltraThreadTests(unittest.IsolatedAsyncioTestCase):
         def worker_keys(params):
             return {key: value for key, value in params['config'].items() if key.startswith('agents.')}
 
-        # The recording's Luna offers levels up to 'max', and the chat's model up to 'ultra'.
-        luna_ultra = UltraOptions(worker_model=LUNA, worker_label='GPT-5.6-Luna', worker_effort='ultra')
-        params = await self.thread_start(ultra_turn(options=luna_ultra))
-        self.assertEqual(worker_keys(params), {'agents.default_subagent_model': LUNA})
+        # The recording's Sol, like the chat's model, offers the levels from 'low' up to 'ultra'.
+        sol_minimal = UltraOptions(worker_model=SOL, worker_label='GPT-5.6-Sol', worker_effort='minimal')
+        params = await self.thread_start(ultra_turn(options=sol_minimal))
+        self.assertEqual(worker_keys(params), {'agents.default_subagent_model': SOL})
 
         chat_model_ultra = UltraOptions(worker_effort='ultra')
         params = await self.thread_start(ultra_turn(options=chat_model_ultra))
@@ -693,7 +697,7 @@ class UltraThreadTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(codex.turn_input(plain_turn()), [text_input(PROMPT)])
         # Titles and follow-ups never start workers, so they get no note either.
-        task = dataclasses.replace(plain_turn(), is_task=True, ultra_options=LUNA_LOW)
+        task = dataclasses.replace(plain_turn(), is_task=True, ultra_options=SOL_LOW)
         self.assertEqual(codex.turn_input(task), [text_input(PROMPT)])
 
 
@@ -754,19 +758,19 @@ class UltraThreadReuseTests(unittest.IsolatedAsyncioTestCase):
             return codex.LiveThread(thread_id, FakeMachine.id, 1, 'read', PROJECT, None, ultra=options)
 
         # Even under the same key, neither kind of thread runs the other kind's turns.
-        self.provider._keep_live_thread('chat', kept('ultra-thread', LUNA_LOW))
+        self.provider._keep_live_thread('chat', kept('ultra-thread', SOL_LOW))
         self.assertIsNone(self.provider._take_live_thread('chat', plain_turn(), 1))
         self.provider._keep_live_thread('chat', kept('plain-thread', None))
         self.assertIsNone(self.provider._take_live_thread('chat', ultra_turn(), 1))
         # The workers' model and level were set when the thread started.
-        self.provider._keep_live_thread('chat', kept('luna-thread', LUNA_LOW))
+        self.provider._keep_live_thread('chat', kept('sol-thread', SOL_LOW))
         self.assertIsNone(self.provider._take_live_thread('chat', ultra_turn(options=SAME_AS_CHAT), 1))
         # Let the release tasks send their requests.
         await asyncio.sleep(0)
         released = [params['threadId'] for params in self.server.sent('thread/unsubscribe')]
-        self.assertEqual(released, ['ultra-thread', 'plain-thread', 'luna-thread'])
+        self.assertEqual(released, ['ultra-thread', 'plain-thread', 'sol-thread'])
 
-        same_choice = kept('matching', LUNA_LOW)
+        same_choice = kept('matching', SOL_LOW)
         self.provider._keep_live_thread('chat', same_choice)
         self.assertIs(self.provider._take_live_thread('chat', ultra_turn(), 1), same_choice)
 
@@ -791,7 +795,7 @@ class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_recorded_workers_are_listed_from_start_to_finish(self):
         messages = recorded('codex-p.jsonl')
-        events = await self.replay(messages, options=LUNA_LOW)
+        events = await self.replay(messages, options=SOL_LOW)
         workers = recorded_workers(messages)
         multiply = workers['/root/multiply']
         primes = workers['/root/primes']
@@ -805,7 +809,7 @@ class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):
                 depth=1,
                 label=label,
                 state=WORKER_RUNNING,
-                model='GPT-5.6-Luna',
+                model='GPT-5.6-Sol',
                 effort='low',
             )
             self.assertEqual(worker_updates(events, worker_id)[0], started)
@@ -832,7 +836,7 @@ class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(server._worker_routes, {})
 
     async def test_the_reply_counts_its_workers_tokens(self):
-        events = await self.replay(recorded('codex-p.jsonl'), options=LUNA_LOW)
+        events = await self.replay(recorded('codex-p.jsonl'), options=SOL_LOW)
         # The orchestrator's thread used 71584 tokens in, 56320 of them cached,
         # and 180 out. Each worker's thread used 13979 in, 11776 of the second's
         # cached, and 12 and 13 out.
@@ -1417,7 +1421,7 @@ class UltraVersionTests(unittest.TestCase):
 
 
 class UltraModelListTests(unittest.IsolatedAsyncioTestCase):
-    """Whether Codex runs Ultra with its models, judged by the version its app-server reports."""
+    """Whether Codex runs Ultra with its models, judged by its app-server's version and each model's workers."""
 
     def setUp(self):
         self.messages = recorded('codex-p.jsonl')
@@ -1430,13 +1434,31 @@ class UltraModelListTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(provider.stop)
         return provider
 
-    async def test_the_recorded_codex_runs_ultra_with_every_model(self):
+    def ultra_models(self, models) -> list[str]:
+        return [model.value for model in models if model.ultra]
+
+    async def test_the_recorded_codex_runs_ultra_with_the_models_that_run_its_v2_workers(self):
         provider = self.provider()
         machine = ReplayMachine(ReplayProcess(self.messages))
         models = await provider.list_models(ProviderSettings(enable=True), machine)
         self.assertEqual([model.value for model in models], self.model_ids)
-        self.assertTrue(all(model.ultra for model in models))
+        # Luna runs Codex's v1 workers. No recorded Ultra turn ran those, so
+        # nothing shows that Buddy can list them and stop them.
+        self.assertEqual(self.ultra_models(models), [CHAT_MODEL, SOL, TERRA])
         self.assertEqual(provider._servers[machine.id].version, CODEX_VERSION)
+
+    async def test_each_model_is_judged_by_the_workers_its_entry_names(self):
+        messages = copy.deepcopy(self.messages)
+        listed = recorded_answer(messages, 'model/list')['result']['data']
+        versions = {CHAT_MODEL: 'v1', SOL: None, LUNA: 'v2'}
+        for entry in listed:
+            if entry['id'] in versions:
+                entry['multiAgentVersion'] = versions[entry['id']]
+            else:
+                # An entry that names no workers at all.
+                del entry['multiAgentVersion']
+        models = await self.provider().list_models(ProviderSettings(enable=True), ReplayMachine(ReplayProcess(messages)))
+        self.assertEqual(self.ultra_models(models), [LUNA])
 
     async def test_an_older_or_unknown_codex_runs_ultra_with_no_model(self):
         user_agents = [
@@ -1467,7 +1489,7 @@ class UltraModelListTests(unittest.IsolatedAsyncioTestCase):
         newer = await provider.list_models(settings, machine)
         self.assertIs(provider._servers[machine.id], server)
         self.assertEqual(server.version, CODEX_VERSION)
-        self.assertTrue(all(model.ultra for model in newer))
+        self.assertEqual(self.ultra_models(newer), [CHAT_MODEL, SOL, TERRA])
 
 
 if __name__ == '__main__':

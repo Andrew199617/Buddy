@@ -98,6 +98,11 @@ STOP_WORKERS_GRACE = 5
 # thread, reports each one from the thread that starts it, and stops one with
 # turn/interrupt on the worker's own thread.
 ULTRA_MIN_VERSION = (0, 153, 4)
+# The kind of Codex workers that Ultra runs, as model/list reports it for each
+# model in multiAgentVersion. The recorded Ultra turns ran v2 workers, each
+# reported with its agent path, from which Buddy lists it, places it and holds
+# it to ultra.MAX_DEPTH. No Ultra turn was recorded with v1 workers.
+ULTRA_MULTI_AGENT_VERSION = 'v2'
 # The Codex version at the start of the userAgent that initialize returns,
 # after the client's name, as in "buddy/0.153.4 (Windows 10.0.26200; x86_64) ...".
 # A pre-release keeps its suffix, as in "0.154.0-alpha.3".
@@ -1295,8 +1300,7 @@ class CodexProvider:
         result = await server.request('model/list', {}, timeout=30)
         if server.generation != generation:
             raise SubscriptionError('Codex restarted while loading model metadata. Try again.')
-        # Ultra depends on Codex, not the model: a recent enough app-server runs
-        # it with every model it lists.
+        # Ultra needs a recent enough app-server, and a model that runs its v2 workers.
         codex_runs_ultra = version_runs_ultra(server.version)
         models = []
         model_efforts = {}
@@ -1309,6 +1313,7 @@ class CodexProvider:
             efforts = [option.get('reasoningEffort') for option in entry.get('supportedReasoningEfforts') or []]
             efforts = [effort for effort in efforts if effort]
             model_efforts[value] = efforts
+            runs_ultra = codex_runs_ultra and entry.get('multiAgentVersion') == ULTRA_MULTI_AGENT_VERSION
             models.append(
                 ProviderModel(
                     key=model_key(value),
@@ -1317,7 +1322,7 @@ class CodexProvider:
                     description=entry.get('description') or '',
                     efforts=efforts,
                     vision='image' in (entry.get('inputModalities') or ['image']),
-                    ultra=codex_runs_ultra,
+                    ultra=runs_ultra,
                 )
             )
         self._model_efforts = model_efforts
