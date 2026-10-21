@@ -1108,6 +1108,33 @@ async def _set_direct_model(request: Request, model_item: dict, user) -> None:
     request.state.model = model_item
 
 
+def _pop_ultra(form_data: dict, request: Request) -> dict | None:
+    """Take the composer's Ultra choice out of a chat request.
+
+    The field is always removed, so it never reaches the provider. A choice is
+    exactly {worker_model, worker_effort}, each a string or None for the chat's
+    own; any other value is dropped. API keys can't turn Ultra on, the same way
+    they can't choose where a chat runs.
+    """
+    ultra = form_data.pop('ultra', None)
+    if not isinstance(ultra, dict) or set(ultra) != {'worker_model', 'worker_effort'}:
+        return None
+
+    worker_model = ultra['worker_model']
+    if worker_model is not None and not isinstance(worker_model, str):
+        return None
+    worker_effort = ultra['worker_effort']
+    if worker_effort is not None and not isinstance(worker_effort, str):
+        return None
+
+    if getattr(request.state, 'auth_type', None) == 'api_key':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Sign in to Buddy to use Ultra; API keys can't.",
+        )
+    return {'worker_model': worker_model, 'worker_effort': worker_effort}
+
+
 @app.post('/api/chat/completions')
 @app.post('/api/v1/chat/completions')  # Experimental: Compatibility with OpenAI API
 async def chat_completion(
@@ -1319,6 +1346,12 @@ async def chat_completion(
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=API_KEY_TARGET_MESSAGE)
             if is_temporary_chat_id(metadata['chat_id']):
                 metadata[REQUESTED_RUN_TARGET_KEY] = run_target
+
+        # Ultra, from the composer's button. It goes in metadata only: params are
+        # forwarded to providers, and features are copied into child runs.
+        ultra = _pop_ultra(form_data, request)
+        if ultra is not None:
+            metadata['ultra'] = ultra
 
         initial_title_generation = None
         if is_new_chat and tasks and TASKS.TITLE_GENERATION in tasks:
