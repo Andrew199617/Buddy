@@ -33,12 +33,17 @@ from open_webui.utils.subscriptions.conversation import (
     conversation_key,
 )
 from open_webui.utils.subscriptions.events import (
+    WORKER_DONE,
+    WORKER_FAILED,
+    WORKER_RUNNING,
+    WORKER_STOPPED,
     ReasoningDelta,
     StatusUpdate,
     SubscriptionError,
     TextDelta,
     TokenUsage,
     TurnFailed,
+    WorkerUpdate,
 )
 from buddy_runner.discovery import TOOL_CLAUDE
 from buddy_runner.local_process import temp_file_arg
@@ -74,6 +79,20 @@ READER_DESCRIPTION = (
 # can't start sub-workers.
 READER_TOOLS = READ_ONLY_TOOLS.split(',')
 ULTRA_TOO_OLD_REASON = 'Claude Code on {computer} is too old for Ultra.'
+# The tool that starts a worker. Claude Code called it Task before it was renamed.
+AGENT_TOOLS = ('Agent', 'Task')
+# How long Buddy reads an Ultra turn before it stops the CLI and every worker
+# still running. Workers may take hours; this only ends a turn that never would.
+ULTRA_TIME_LIMIT_HOURS = 6
+ULTRA_TIME_LIMIT = ULTRA_TIME_LIMIT_HOURS * 60 * 60
+ULTRA_TIME_LIMIT_MESSAGE = f'Buddy stopped this Ultra reply after {ULTRA_TIME_LIMIT_HOURS} hours.'
+# The summary of a worker that was still running when its turn ended.
+WORKER_ENDED_WITH_TURN = 'Stopped when the reply ended.'
+# A worker's report is kept to this many characters, since every snapshot of the
+# turn's workers carries it.
+WORKER_SUMMARY_LIMIT = 4000
+# The task_updated statuses of a task that has not ended.
+TASK_LIVE_STATUSES = ('pending', 'running')
 TRANSCRIPT_INTRO = 'Here is our conversation so far. Continue it by replying to my latest message.'
 INSTRUCTIONS_FILE = 'instructions'
 LOGIN_URL = re.compile(r'https://\S+/oauth/authorize\?\S+')
@@ -266,6 +285,14 @@ def _shorten(text, limit: int = 160) -> str:
     return text
 
 
+def _clip(text, limit: int) -> str:
+    """Text cut to at most ``limit`` characters, keeping its lines."""
+    text = str(text or '').strip()
+    if len(text) > limit:
+        return text[: limit - 1].rstrip() + '…'
+    return text
+
+
 def describe_tool(name: str, tool_input: dict) -> str:
     """One line describing a Claude Code tool call."""
     tool_input = tool_input if isinstance(tool_input, dict) else {}
@@ -299,6 +326,15 @@ def _usage_from_result(usage: dict) -> TokenUsage:
         input_tokens=uncached + cache_read + cache_write,
         output_tokens=int(usage.get('output_tokens') or 0),
         cached_input_tokens=cache_read,
+    )
+
+
+def _usage_sum(first: TokenUsage, second: TokenUsage) -> TokenUsage:
+    return TokenUsage(
+        input_tokens=first.input_tokens + second.input_tokens,
+        output_tokens=first.output_tokens + second.output_tokens,
+        cached_input_tokens=first.cached_input_tokens + second.cached_input_tokens,
+        reasoning_tokens=first.reasoning_tokens + second.reasoning_tokens,
     )
 
 
@@ -365,8 +401,213 @@ def _not_a_plan_message(auth_method: str) -> str:
     )
 
 
+def _worker_state(status) -> str:
+    """The state of a worker whose task ended with this Claude Code status."""
+    if status == 'completed':
+        return WORKER_DONE
+    if status in ('stopped', 'killed'):
+        return WORKER_STOPPED
+    return WORKER_FAILED
+
+
+def _worker_label(task: dict) -> str:
+    """A worker's name in the list: the description its Agent call gave the task."""
+    label = _shorten(task.get('description'), 100)
+    if label:
+        return label
+    return task.get('subagent_type') or 'Worker'
+
+
+def _task_tokens(message: dict) -> int | None:
+    """The tokens a task has used so far, from a task_progress or task_notification message."""
+    usage = message.get('usage')
+    if not isinstance(usage, dict):
+        return None
+    tokens = usage.get('total_tokens')
+    if isinstance(tokens, int):
+        return tokens
+    return None
+
+
+class ClaudeWorkers:
+    """The workers of one Ultra turn, followed through Claude Code's task messages.
+
+    Claude Code runs each worker as a task. It reports task_started when one
+    starts, task_progress while it works, task_updated and task_notification
+    when it ends, and background_tasks_changed with every task still running
+    in the background. A worker's id is its task id, which stop_task takes.
+
+    A task that the orchestrator's own Agent call started is depth 1; one that
+    a worker's Agent call started is depth 2, under that worker.
+    """
+
+    def __init__(self, options: UltraOptions):
+        self._options = options
+        self._workers: dict[str, WorkerUpdate] = {}
+        # Each Agent call's id, and the Agent call of the worker that made it:
+        # None for the orchestrator's own calls.
+        self._callers: dict[str, str | None] = {}
+        # The task that each Agent call started.
+        self._tasks_by_call: dict[str, str] = {}
+
+    def running(self) -> bool:
+        """Whether any worker, started or listed in the background, has not ended yet."""
+        for worker in self._workers.values():
+            if worker.state == WORKER_RUNNING:
+                return True
+        return False
+
+    def note_agent_calls(self, message: dict) -> None:
+        """Remember who made each Agent call in an assistant message: the orchestrator or a worker."""
+        caller = message.get('parent_tool_use_id') or None
+        for block in (message.get('message') or {}).get('content') or []:
+            if block.get('type') != 'tool_use' or block.get('name') not in AGENT_TOOLS:
+                continue
+            if block.get('id'):
+                self._callers[block['id']] = caller
+
+    def handle(self, message: dict) -> list:
+        """WorkerUpdate events for one system message."""
+        subtype = message.get('subtype')
+        if subtype == 'task_started':
+            return self._started(message)
+        if subtype == 'task_progress':
+            return self._progressed(message)
+        if subtype == 'task_updated':
+            return self._updated(message)
+        if subtype == 'task_notification':
+            return self._ended(message)
+        if subtype == 'background_tasks_changed':
+            return self._listed_in_background(message)
+        return []
+
+    def stop_running(self) -> list:
+        """Every worker still running, as stopped: they end with the CLI when the turn does."""
+        events = []
+        for worker_id, worker in list(self._workers.items()):
+            if worker.state == WORKER_RUNNING:
+                events.extend(
+                    self._change(worker_id, state=WORKER_STOPPED, activity=None, summary=WORKER_ENDED_WITH_TURN)
+                )
+        return events
+
+    def _add(self, task_id: str, parent_id: str | None, depth: int, label: str) -> list:
+        worker = WorkerUpdate(
+            worker_id=task_id,
+            parent_id=parent_id,
+            depth=depth,
+            label=label,
+            state=WORKER_RUNNING,
+            # Every worker runs on the person's choices, or the chat's own when both are None.
+            model=self._options.worker_label or self._options.worker_model,
+            effort=self._options.worker_effort,
+        )
+        self._workers[task_id] = worker
+        return [worker]
+
+    def _change(self, task_id: str, **changes) -> list:
+        """Apply changes to a worker, and report it when anything changed.
+
+        Each change makes a new WorkerUpdate, so an update already reported
+        keeps what it said.
+        """
+        worker = self._workers[task_id]
+        changed = dataclasses.replace(worker, **changes)
+        if changed == worker:
+            return []
+        self._workers[task_id] = changed
+        return [changed]
+
+    def _parent(self, message: dict) -> str | None:
+        """The worker that started this task, or None when the orchestrator did."""
+        call_id = message.get('tool_use_id')
+        if call_id in self._callers:
+            caller = self._callers[call_id]
+            if caller is None:
+                return None
+            parent_id = self._tasks_by_call.get(caller)
+        else:
+            # The calling worker's messages were not streamed, but Claude Code names its task.
+            parent_id = message.get('parent_task_id')
+        if parent_id in self._workers:
+            return parent_id
+        return None
+
+    def _started(self, message: dict) -> list:
+        task_id = message.get('task_id')
+        if not task_id:
+            return []
+        call_id = message.get('tool_use_id')
+        if call_id:
+            self._tasks_by_call[call_id] = task_id
+        parent_id = self._parent(message)
+        depth = 1
+        if parent_id is not None:
+            depth = self._workers[parent_id].depth + 1
+        label = _worker_label(message)
+        if task_id in self._workers:
+            # Listed in the background first, before Claude Code said who started it.
+            return self._change(task_id, parent_id=parent_id, depth=depth, label=label)
+        return self._add(task_id, parent_id, depth, label)
+
+    def _progressed(self, message: dict) -> list:
+        task_id = message.get('task_id')
+        worker = self._workers.get(task_id)
+        if worker is None or worker.state != WORKER_RUNNING:
+            return []
+        changes = {}
+        # Claude Code's own line for the worker's latest step, such as "Reading notes.txt".
+        activity = _shorten(message.get('description'), 100)
+        if activity:
+            changes['activity'] = activity
+        tokens = _task_tokens(message)
+        if tokens is not None:
+            changes['tokens'] = tokens
+        return self._change(task_id, **changes)
+
+    def _updated(self, message: dict) -> list:
+        task_id = message.get('task_id')
+        status = (message.get('patch') or {}).get('status')
+        if task_id not in self._workers or not status or status in TASK_LIVE_STATUSES:
+            return []
+        return self._change(task_id, state=_worker_state(status), activity=None)
+
+    def _ended(self, message: dict) -> list:
+        task_id = message.get('task_id')
+        if task_id not in self._workers:
+            return []
+        changes = {'state': _worker_state(message.get('status')), 'activity': None}
+        # The worker's final report, which the orchestrator also gets.
+        summary = _clip(message.get('summary'), WORKER_SUMMARY_LIMIT)
+        if summary:
+            changes['summary'] = summary
+        tokens = _task_tokens(message)
+        if tokens is not None:
+            changes['tokens'] = tokens
+        return self._change(task_id, **changes)
+
+    def _listed_in_background(self, message: dict) -> list:
+        """Add any task listed as running in the background that hasn't started here yet.
+
+        Claude Code may list a background task just before its task_started,
+        and a task it lists as running is shown, so nothing runs unseen.
+        """
+        events = []
+        for task in message.get('tasks') or []:
+            if not isinstance(task, dict):
+                continue
+            task_id = task.get('task_id')
+            if task_id and task_id not in self._workers:
+                events.extend(self._add(task_id, None, 1, _worker_label(task)))
+        return events
+
+
 class ClaudeStreamParser:
-    """Turns Claude Code stream-json messages into turn events."""
+    """Turns Claude Code stream-json messages into turn events.
+
+    On Ultra turns, once track_workers() is called, it also reports the
+    turn's workers, and a result ends the turn only when no worker runs.
+    """
 
     def __init__(self):
         self.session_id: str | None = None
@@ -374,10 +615,24 @@ class ClaudeStreamParser:
         self.error: str | None = None
         self.finished = False
         self.rate_limit: dict | None = None
+        # An Ultra turn's workers; None on other turns.
+        self.workers: ClaudeWorkers | None = None
+        # The usage of an Ultra turn's results so far.
+        self._ultra_usage = TokenUsage()
         self._text_block_started = False
         self._reasoning_text = ''
         self._reasoning_block_started = False
         self._streamed_text_since_message = False
+
+    def track_workers(self, options: UltraOptions) -> None:
+        """Follow an Ultra turn's workers, once Claude Code knows Buddy's worker types."""
+        self.workers = ClaudeWorkers(options)
+
+    def stop_workers(self) -> list:
+        """Workers still running when the CLI ends, as stopped with it."""
+        if self.workers is None:
+            return []
+        return self.workers.stop_running()
 
     def handle(self, message: dict) -> list:
         kind = message.get('type')
@@ -422,6 +677,8 @@ class ClaudeStreamParser:
             return [StatusUpdate('Claude is busy, retrying…')]
         elif subtype == 'compact_boundary':
             return [StatusUpdate('Summarized earlier messages to stay within the context window')]
+        elif self.workers is not None:
+            return self.workers.handle(message)
         return []
 
     def _handle_stream_event(self, message: dict) -> list:
@@ -446,6 +703,9 @@ class ClaudeStreamParser:
         return []
 
     def _handle_assistant(self, message: dict) -> list:
+        if self.workers is not None:
+            # Read before a worker's message is left out: its Agent calls start sub-workers.
+            self.workers.note_agent_calls(message)
         if message.get('parent_tool_use_id'):
             return []
         body = message.get('message') or {}
@@ -463,26 +723,45 @@ class ClaudeStreamParser:
                 events.extend(self._text(block.get('text', '')))
             elif block.get('type') == 'tool_use':
                 description = describe_tool(block.get('name', ''), block.get('input'))
-                events.append(StatusUpdate(description))
+                starts_worker = self.workers is not None and block.get('name') in AGENT_TOOLS
+                if not starts_worker:
+                    # A worker gets its own status line when its task starts.
+                    events.append(StatusUpdate(description))
                 self._reasoning_block_started = True
                 events.extend(self._reasoning(f'*{description}*'))
         self._streamed_text_since_message = False
         return events
 
     def _handle_result(self, message: dict) -> list:
-        self.finished = True
         self.session_id = message.get('session_id') or self.session_id
         if message.get('is_error') or message.get('subtype') != 'success':
             result_text = message.get('result') or message.get('subtype') or 'Claude Code reported an error.'
             if not self.error:
                 self.error = _readable_error(str(result_text))
+        self.finished = self._result_ends_turn()
         usage = message.get('usage')
         if not isinstance(usage, dict):
             return []
         token_usage = _usage_from_result(usage)
+        if self.workers is not None:
+            # Each result of an Ultra turn reports only its own part, and the
+            # last usage a turn reports is the one that counts.
+            self._ultra_usage = _usage_sum(self._ultra_usage, token_usage)
+            token_usage = self._ultra_usage
         if token_usage.input_tokens == 0 and token_usage.output_tokens == 0:
             return []
         return [token_usage]
+
+    def _result_ends_turn(self) -> bool:
+        """Whether the result just read ends the turn.
+
+        A normal turn ends at its first result. An Ultra turn's orchestrator
+        may reply while workers still run, and their reports start more
+        results, so it ends at a result once no worker runs, or at an error.
+        """
+        if self.workers is None or self.error:
+            return True
+        return not self.workers.running()
 
 
 class ClaudeLogin:
@@ -869,7 +1148,9 @@ class ClaudeCodeProvider:
 
         An Ultra turn first defines Buddy's worker types. When Claude Code then
         doesn't list buddy-worker, the run ends before the prompt is sent, with
-        the reason in ``attempt.ultra_off_reason``.
+        the reason in ``attempt.ultra_off_reason``. Otherwise its workers are
+        reported as they run, and it is read past results until none runs, for
+        at most ULTRA_TIME_LIMIT seconds.
         """
         parser = attempt.parser
         process = await turn.machine.start_process(
@@ -892,9 +1173,16 @@ class ClaudeCodeProvider:
                 if ultra.WORKER_AGENT not in agents:
                     attempt.ultra_off_reason = ULTRA_TOO_OLD_REASON.format(computer=turn.machine.name)
                     return
+                parser.track_workers(turn.ultra)
             await process.write(json.dumps(turn_message(turn, resume_id)) + '\n')
+            deadline = _reply_deadline(turn)
             while not parser.finished:
-                line = await process.read_line()
+                try:
+                    line = await _read_line_by(process, deadline)
+                except TimeoutError:
+                    log.warning('Stopping an Ultra turn on %s that ran past its time limit', turn.machine.name)
+                    attempt.timed_out = True
+                    break
                 if line is None:
                     break
                 for event in parser.handle(_parse_json_line(line)):
@@ -902,7 +1190,8 @@ class ClaudeCodeProvider:
                 if parser.rate_limit:
                     self._record_rate_limit(parser.rate_limit)
                     parser.rate_limit = None
-            output_ended = True
+            # Past the time limit the CLI is still working, so it is killed at once.
+            output_ended = not attempt.timed_out
         except ProcessClosedError:
             attempt.exited_early = True
             output_ended = True
@@ -916,6 +1205,9 @@ class ClaudeCodeProvider:
                 # Runs even when a second cancellation interrupts the wait.
                 process.kill()
                 attempt.stderr = process.stderr_text()
+        # A turn that ended by error, exit or time limit took its running workers with the CLI.
+        for event in parser.stop_workers():
+            yield event
 
     async def run_turn(self, turn: TurnRequest):
         """Run one chat turn and yield its events."""
@@ -959,6 +1251,8 @@ class ClaudeAttempt:
         self.exited_early = False
         # Why the reply ran without Ultra although the person turned it on.
         self.ultra_off_reason: str | None = None
+        # An Ultra turn ran past ULTRA_TIME_LIMIT and was stopped.
+        self.timed_out = False
 
     def session_missing(self) -> bool:
         """The resumed session was deleted or belongs to another folder."""
@@ -974,6 +1268,8 @@ class ClaudeAttempt:
             if self.parser.error.startswith('error_') and details:
                 return details
             return self.parser.error
+        if self.timed_out:
+            return ULTRA_TIME_LIMIT_MESSAGE
         if self.exited_early:
             return f'Claude Code exited unexpectedly. {details}'.strip()
         if not self.parser.finished:
@@ -1013,6 +1309,24 @@ def models_from_initialize(entries: list) -> list[ProviderModel]:
             )
         )
     return models
+
+
+def _reply_deadline(turn: TurnRequest) -> float | None:
+    """When an Ultra turn that started now is stopped, on the event loop's clock; None for other turns."""
+    if turn.ultra is None:
+        return None
+    return asyncio.get_running_loop().time() + ULTRA_TIME_LIMIT
+
+
+async def _read_line_by(process, deadline: float | None) -> str | None:
+    """The CLI's next output line, or None once its output ends.
+
+    Raises TimeoutError when the deadline passes first.
+    """
+    if deadline is None:
+        return await process.read_line()
+    async with asyncio.timeout_at(deadline):
+        return await process.read_line()
 
 
 def _parse_json_line(line: str) -> dict:

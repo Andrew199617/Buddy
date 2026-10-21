@@ -1,10 +1,17 @@
-"""Offline tests: Claude Code Ultra turns, replayed from a recorded Claude Code stream.
+"""Offline tests: Claude Code Ultra turns, replayed from recorded Claude Code streams.
 
-fixtures/ultra/claude-chat.jsonl is what Claude Code 2.1.295 wrote on stdout for
-an Ultra turn in Chat access that ran two workers at once, recorded on
-2026-10-20. Its first line answers the initialize request that defined
-Buddy's worker types; the rest is the turn. The answer's account details were
-removed, and paths name the user "fixture".
+The fixtures under fixtures/ultra are what Claude Code 2.1.295 wrote on stdout
+for Ultra turns recorded on 2026-10-20. Each one's first line answers the
+initialize request that defined Buddy's worker types; the rest is the turn:
+
+- claude-chat.jsonl: two workers at once, in Chat access.
+- claude-read.jsonl: a buddy-reader and a buddy-worker at once, in Read access.
+- claude-depth.jsonl: a worker that starts a sub-worker, which can't start another.
+- claude-background.jsonl: two background workers. The orchestrator replies
+  while both run, and again when one reports; the recording ends while the
+  other still runs.
+
+The answers' account details were removed, and paths name the user "fixture".
 
 Run from the repository root:
     python -m unittest discover -s local/tests -p test_ultra_claude.py -v
@@ -26,7 +33,17 @@ sys.path.insert(0, str(ROOT_DIR / 'backend'))
 from open_webui.utils.subscriptions import claude_code, ultra  # noqa: E402
 from open_webui.utils.subscriptions.common import ProviderSettings, TurnRequest, UltraOptions  # noqa: E402
 from open_webui.utils.subscriptions.conversation import parse_messages  # noqa: E402
-from open_webui.utils.subscriptions.events import StatusUpdate, TextDelta, TurnFailed  # noqa: E402
+from open_webui.utils.subscriptions.events import (  # noqa: E402
+    WORKER_DONE,
+    WORKER_FAILED,
+    WORKER_RUNNING,
+    WORKER_STOPPED,
+    StatusUpdate,
+    TextDelta,
+    TokenUsage,
+    TurnFailed,
+    WorkerUpdate,
+)
 
 FIXTURES = Path(__file__).resolve().parent / 'fixtures' / 'ultra'
 PROMPT = 'What is 17 times 23, and what are three prime numbers above 100?'
@@ -35,6 +52,7 @@ HAIKU_LOW = UltraOptions(worker_model='haiku', worker_label='Claude Haiku', work
 SAME_AS_CHAT = UltraOptions()
 TOO_OLD_STATUS = 'Ultra is off for this reply: Claude Code on Fixture PC is too old for Ultra.'
 MISSING_SESSION = 'No conversation found with session ID: old-session'
+ESSAY_STOPPED_REPLY = 'The essay worker was stopped, so there is no essay.'
 
 
 def recorded(name: str) -> list[dict]:
@@ -43,10 +61,14 @@ def recorded(name: str) -> list[dict]:
     return [json.loads(line) for line in lines]
 
 
-def recorded_chat() -> tuple[dict, list[dict]]:
+def recorded_turn(name: str) -> tuple[dict, list[dict]]:
     """The recorded answer to the initialize request, and the turn that followed it."""
-    messages = recorded('claude-chat.jsonl')
+    messages = recorded(name)
     return messages[0], messages[1:]
+
+
+def recorded_chat() -> tuple[dict, list[dict]]:
+    return recorded_turn('claude-chat.jsonl')
 
 
 def without_buddys_workers(answer: dict) -> dict:
@@ -127,6 +149,10 @@ class ReplayProcess:
     def tool_list(self) -> str:
         return self.args[self.args.index('--tools') + 1]
 
+    def unread_lines(self) -> int:
+        """How many output lines Buddy never read before it ended the CLI."""
+        return len(self._lines)
+
 
 class ReplayMachine:
     id = 'fixture-pc'
@@ -178,6 +204,87 @@ def statuses(events: list) -> list[str]:
 
 def reply(events: list) -> str:
     return ''.join(event.text for event in events if isinstance(event, TextDelta))
+
+
+def system_messages(messages: list[dict], subtype: str) -> list[dict]:
+    return [message for message in messages if message['type'] == 'system' and message.get('subtype') == subtype]
+
+
+def results(messages: list[dict]) -> list[dict]:
+    return [message for message in messages if message['type'] == 'result']
+
+
+def worker_updates(events: list, worker_id: str) -> list[WorkerUpdate]:
+    return [event for event in events if isinstance(event, WorkerUpdate) and event.worker_id == worker_id]
+
+
+def latest_workers(events: list) -> dict[str, WorkerUpdate]:
+    """Each worker's last update, in the order the workers were first reported."""
+    latest = {}
+    for event in events:
+        if isinstance(event, WorkerUpdate):
+            latest[event.worker_id] = event
+    return latest
+
+
+def first_update_index(events: list, worker_id: str, state: str) -> int:
+    """Where in the turn's events a worker was first reported in this state."""
+    for index, event in enumerate(events):
+        if isinstance(event, WorkerUpdate) and event.worker_id == worker_id and event.state == state:
+            return index
+    raise AssertionError(f'{worker_id} was never {state}')
+
+
+def failures(events: list) -> list[str]:
+    return [event.message for event in events if isinstance(event, TurnFailed)]
+
+
+def last_usage(events: list) -> TokenUsage:
+    return [event for event in events if isinstance(event, TokenUsage)][-1]
+
+
+def background_essay_stopped(turn_output: list[dict]) -> list[dict]:
+    """What Claude Code says once the background essay worker is stopped, ending with a third result.
+
+    Not recorded: the recording ends while the essay worker still runs. This
+    follows the shape of the recorded task_notification, background list and
+    result messages.
+    """
+    essay = system_messages(turn_output, 'task_started')[0]
+    session_id = results(turn_output)[-1]['session_id']
+    return [
+        {
+            'type': 'system',
+            'subtype': 'task_notification',
+            'task_id': essay['task_id'],
+            'tool_use_id': essay['tool_use_id'],
+            'status': 'stopped',
+            'summary': 'The essay was stopped before it was finished.',
+            'usage': {'total_tokens': 2048, 'tool_uses': 0, 'duration_ms': 30000},
+            'session_id': session_id,
+        },
+        {'type': 'system', 'subtype': 'background_tasks_changed', 'tasks': [], 'session_id': session_id},
+        {'type': 'system', 'subtype': 'init', 'session_id': session_id},
+        {
+            'type': 'assistant',
+            'message': {'content': [{'type': 'text', 'text': ESSAY_STOPPED_REPLY}]},
+            'parent_tool_use_id': None,
+            'session_id': session_id,
+        },
+        {
+            'type': 'result',
+            'subtype': 'success',
+            'is_error': False,
+            'result': ESSAY_STOPPED_REPLY,
+            'session_id': session_id,
+            'usage': {
+                'input_tokens': 3,
+                'cache_read_input_tokens': 5000,
+                'cache_creation_input_tokens': 40,
+                'output_tokens': 12,
+            },
+        },
+    ]
 
 
 class WorkerTypeTests(unittest.TestCase):
@@ -390,6 +497,263 @@ class UltraHandshakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(texts(fresh.written[0]), [PROMPT])
         self.assertEqual(fresh.tool_list(), '')
         self.assertEqual(reply(events), 'Fresh reply.')
+
+
+class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):
+    """Workers reported from the recorded turns, and how long the turns are read."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.directory = directory.name
+        self.provider = claude_code.ClaudeCodeProvider(Path(directory.name))
+
+    async def replay(self, name, access='chat', extra_output=(), silent=False):
+        """Run an Ultra turn against a recorded stream; returns its events, the process, and the recorded turn."""
+        answer, turn_output = recorded_turn(name)
+        process = ReplayProcess(answer, [*turn_output, *extra_output], silent=silent)
+        turn = ultra_turn(self.directory, ReplayMachine(process), access=access)
+        events = [event async for event in self.provider.run_turn(turn)]
+        return events, process, turn_output
+
+    def assert_worker_started(self, events, task: dict, parent_id=None, depth=1):
+        """The worker's first update says it runs, as the person chose, under the worker that started it."""
+        self.assertEqual(
+            worker_updates(events, task['task_id'])[0],
+            WorkerUpdate(
+                worker_id=task['task_id'],
+                parent_id=parent_id,
+                depth=depth,
+                label=task['description'],
+                state=WORKER_RUNNING,
+                model='Claude Haiku',
+                effort='low',
+            ),
+        )
+
+    def assert_worker_ended(self, events, notification: dict):
+        """The worker's last update carries its report and the tokens it used."""
+        latest = latest_workers(events)[notification['task_id']]
+        self.assertEqual(latest.state, WORKER_DONE)
+        self.assertEqual(latest.summary, notification['summary'])
+        self.assertEqual(latest.tokens, notification['usage']['total_tokens'])
+        self.assertIsNone(latest.activity)
+
+    async def test_parallel_workers_are_listed_from_start_to_finish(self):
+        events, process, turn_output = await self.replay('claude-chat.jsonl')
+        started = system_messages(turn_output, 'task_started')
+        notifications = system_messages(turn_output, 'task_notification')
+
+        self.assertEqual(list(latest_workers(events)), [task['task_id'] for task in started])
+        for task in started:
+            self.assert_worker_started(events, task)
+        for notification in notifications:
+            self.assert_worker_ended(events, notification)
+        # Both ran at once: the second started before the first ended.
+        first, second = (task['task_id'] for task in started)
+        self.assertLess(
+            first_update_index(events, second, WORKER_RUNNING), first_update_index(events, first, WORKER_DONE)
+        )
+        # The workers' own text stays out of the reply, and their start has no status line of its own here.
+        self.assertEqual(reply(events), results(turn_output)[0]['result'])
+        self.assertFalse(any(status.startswith('Starting a subagent') for status in statuses(events)))
+        self.assertEqual(failures(events), [])
+        self.assertTrue(process.killed)
+
+    async def test_read_workers_report_what_they_are_doing(self):
+        events, _, turn_output = await self.replay('claude-read.jsonl', access='read')
+        started = system_messages(turn_output, 'task_started')
+        self.assertEqual([task['subagent_type'] for task in started], [ultra.READER_AGENT, ultra.WORKER_AGENT])
+
+        for task in started:
+            self.assert_worker_started(events, task)
+        for progress in system_messages(turn_output, 'task_progress'):
+            updates = worker_updates(events, progress['task_id'])
+            # Claude Code's own line for the worker's latest step, such as "Finding *.txt".
+            doing = [update for update in updates if update.activity == progress['description']]
+            self.assertEqual(len(doing), 1)
+            self.assertEqual(doing[0].state, WORKER_RUNNING)
+            self.assertEqual(doing[0].tokens, progress['usage']['total_tokens'])
+        for notification in system_messages(turn_output, 'task_notification'):
+            self.assert_worker_ended(events, notification)
+        # The workers' Glob and Read calls stay out of the reply's status lines.
+        self.assertEqual(statuses(events), [])
+        self.assertEqual(reply(events), results(turn_output)[0]['result'])
+        self.assertEqual(failures(events), [])
+
+    async def test_a_worker_started_by_a_worker_is_listed_under_it(self):
+        events, _, turn_output = await self.replay('claude-depth.jsonl')
+        level1, level2 = system_messages(turn_output, 'task_started')
+
+        self.assert_worker_started(events, level1)
+        # Started by level 1's own Agent call, as Claude Code's general-purpose type.
+        self.assertEqual(level2['subagent_type'], 'general-purpose')
+        self.assert_worker_started(events, level2, parent_id=level1['task_id'], depth=2)
+        for notification in system_messages(turn_output, 'task_notification'):
+            self.assert_worker_ended(events, notification)
+        self.assertEqual(len(latest_workers(events)), 2)
+        self.assertEqual(reply(events), results(turn_output)[0]['result'])
+
+    async def test_a_sub_worker_is_placed_by_its_parent_task_when_its_caller_is_not_streamed(self):
+        answer, turn_output = recorded_turn('claude-depth.jsonl')
+        # Without level 1's own messages, only task_started's parent_task_id says who started level 2.
+        main_thread = [message for message in turn_output if not message.get('parent_tool_use_id')]
+        process = ReplayProcess(answer, main_thread)
+        events = [event async for event in self.provider.run_turn(ultra_turn(self.directory, ReplayMachine(process)))]
+        level1, level2 = system_messages(turn_output, 'task_started')
+        self.assert_worker_started(events, level2, parent_id=level1['task_id'], depth=2)
+
+    async def test_a_background_worker_keeps_the_turn_open_past_two_results(self):
+        _, turn_output = recorded_turn('claude-background.jsonl')
+        essay_stopped = background_essay_stopped(turn_output)
+        events, process, _ = await self.replay('claude-background.jsonl', extra_output=essay_stopped)
+        essay, math = system_messages(turn_output, 'task_started')
+        self.assertTrue(essay['is_backgrounded'])
+        first, second = results(turn_output)
+        [third] = results(essay_stopped)
+
+        # Every result's text is in the reply, in order, and the turn ended at the third.
+        self.assertEqual(reply(events), f"{first['result']}\n\n{second['result']}\n\n{third['result']}")
+        self.assertEqual(process.unread_lines(), 0)
+        self.assertEqual(failures(events), [])
+        self.assertTrue(process.killed)
+        # Listed in the background just before its task_started, which changes nothing.
+        self.assertEqual(
+            [update.state for update in worker_updates(events, essay['task_id'])], [WORKER_RUNNING, WORKER_STOPPED]
+        )
+        self.assert_worker_started(events, essay)
+        self.assertEqual(
+            latest_workers(events)[essay['task_id']].summary, 'The essay was stopped before it was finished.'
+        )
+        [math_report] = system_messages(turn_output, 'task_notification')
+        self.assertEqual(math_report['task_id'], math['task_id'])
+        self.assert_worker_ended(events, math_report)
+        # The reply's usage counts all three results, since only the last usage reported counts.
+        usage = TokenUsage()
+        for result in (first, second, third):
+            usage = claude_code._usage_sum(usage, claude_code._usage_from_result(result['usage']))
+        self.assertEqual(last_usage(events), usage)
+
+    async def test_output_ending_while_a_worker_runs_stops_it_with_the_turn(self):
+        # The recording ends while the essay worker runs, as if Claude Code had exited.
+        events, process, turn_output = await self.replay('claude-background.jsonl')
+        essay = system_messages(turn_output, 'task_started')[0]
+        first, second = results(turn_output)
+
+        self.assertEqual(reply(events), f"{first['result']}\n\n{second['result']}")
+        latest = latest_workers(events)[essay['task_id']]
+        self.assertEqual((latest.state, latest.summary), (WORKER_STOPPED, claude_code.WORKER_ENDED_WITH_TURN))
+        self.assertEqual(len(failures(events)), 1)
+        self.assertTrue(failures(events)[0].startswith('Claude Code stopped before finishing the reply.'))
+        self.assertTrue(process.killed)
+
+    async def test_an_ultra_turn_stops_with_its_workers_at_the_time_limit(self):
+        with patch.object(claude_code, 'ULTRA_TIME_LIMIT', 0.2):
+            with self.assertLogs(claude_code.log, level='WARNING'):
+                events, process, turn_output = await self.replay('claude-background.jsonl', silent=True)
+        essay = system_messages(turn_output, 'task_started')[0]
+        first, second = results(turn_output)
+
+        self.assertEqual(reply(events), f"{first['result']}\n\n{second['result']}")
+        self.assertEqual(latest_workers(events)[essay['task_id']].state, WORKER_STOPPED)
+        self.assertEqual(failures(events), [claude_code.ULTRA_TIME_LIMIT_MESSAGE])
+        self.assertTrue(process.killed)
+
+    async def test_an_error_result_ends_an_ultra_turn_while_a_worker_runs(self):
+        answer, turn_output = recorded_turn('claude-background.jsonl')
+        # The first result, while the essay worker runs, becomes an error.
+        first_result = turn_output.index(results(turn_output)[0])
+        error = {
+            'type': 'result',
+            'subtype': 'error_during_execution',
+            'is_error': True,
+            'session_id': 'x',
+            'usage': {},
+        }
+        output = [*turn_output[:first_result], error, *turn_output[first_result + 1 :]]
+        process = ReplayProcess(answer, output, stderr='API Error: 500')
+        events = [event async for event in self.provider.run_turn(ultra_turn(self.directory, ReplayMachine(process)))]
+        essay, math = system_messages(turn_output, 'task_started')
+
+        self.assertEqual(failures(events), ['API Error: 500'])
+        self.assertEqual(latest_workers(events)[essay['task_id']].state, WORKER_STOPPED)
+        self.assertEqual(latest_workers(events)[math['task_id']].state, WORKER_DONE)
+        # Nothing after the error was read.
+        self.assertEqual(process.unread_lines(), len(output) - first_result - 1)
+
+    async def test_a_normal_turn_still_ends_at_its_first_result(self):
+        _, turn_output = recorded_turn('claude-background.jsonl')
+        process = ReplayProcess(turn_output=turn_output)
+        conversation = parse_messages([{'role': 'user', 'content': PROMPT}])
+        settings = ProviderSettings(enable=True, access='chat')
+        turn = TurnRequest('opus', conversation, settings, self.directory, machine=ReplayMachine(process))
+        events = [event async for event in self.provider.run_turn(turn)]
+        first_result = turn_output.index(results(turn_output)[0])
+
+        self.assertEqual(reply(events), turn_output[first_result]['result'])
+        self.assertFalse(any(isinstance(event, WorkerUpdate) for event in events))
+        self.assertIn('Starting a subagent: Compute 6 times 7', statuses(events))
+        self.assertEqual(process.unread_lines(), len(turn_output) - first_result - 1)
+        self.assertEqual(failures(events), [])
+        self.assertTrue(process.killed)
+
+
+def ultra_parser() -> claude_code.ClaudeStreamParser:
+    parser = claude_code.ClaudeStreamParser()
+    parser.track_workers(HAIKU_LOW)
+    return parser
+
+
+def task_message(subtype: str, **fields) -> dict:
+    return {'type': 'system', 'subtype': subtype, 'task_id': 'task-1', **fields}
+
+
+class WorkerStateTests(unittest.TestCase):
+    def test_each_way_a_task_ends_sets_the_workers_state(self):
+        endings = {
+            'completed': WORKER_DONE,
+            'stopped': WORKER_STOPPED,
+            'killed': WORKER_STOPPED,
+            'failed': WORKER_FAILED,
+        }
+        for status, state in endings.items():
+            with self.subTest(status=status):
+                parser = ultra_parser()
+                parser.handle(task_message('task_started', description='Check the fix'))
+                [update] = parser.handle(task_message('task_notification', status=status))
+                self.assertEqual(update.state, state)
+                self.assertFalse(parser.workers.running())
+
+    def test_a_task_update_ends_a_worker_only_with_a_final_status(self):
+        parser = ultra_parser()
+        parser.handle(task_message('task_started', description='Check the fix'))
+        self.assertEqual(parser.handle(task_message('task_updated', patch={'status': 'running'})), [])
+        self.assertTrue(parser.workers.running())
+        [update] = parser.handle(task_message('task_updated', patch={'status': 'failed', 'end_time': 1}))
+        self.assertEqual(update.state, WORKER_FAILED)
+        # The notification that follows adds the report without changing the state again.
+        [update] = parser.handle(task_message('task_notification', status='failed', summary='Tests fail.'))
+        self.assertEqual((update.state, update.summary), (WORKER_FAILED, 'Tests fail.'))
+
+    def test_a_long_report_is_clipped(self):
+        parser = ultra_parser()
+        parser.handle(task_message('task_started', description='Write the essay'))
+        report = 'Bridges.\n' * 1000
+        [update] = parser.handle(task_message('task_notification', status='completed', summary=report))
+        self.assertEqual(len(update.summary), claude_code.WORKER_SUMMARY_LIMIT)
+        self.assertTrue(update.summary.startswith('Bridges.\nBridges.\n'))
+        self.assertTrue(update.summary.endswith('…'))
+
+    def test_a_worker_without_a_description_is_named_by_its_type(self):
+        parser = ultra_parser()
+        [update] = parser.handle(task_message('task_started', subagent_type=ultra.READER_AGENT))
+        self.assertEqual(update.label, ultra.READER_AGENT)
+
+    def test_task_messages_of_a_normal_turn_report_no_workers(self):
+        parser = claude_code.ClaudeStreamParser()
+        self.assertEqual(parser.handle(task_message('task_started', description='Check the fix')), [])
+        parser.handle({'type': 'result', 'subtype': 'success', 'is_error': False, 'usage': {}})
+        self.assertTrue(parser.finished)
 
 
 if __name__ == '__main__':
