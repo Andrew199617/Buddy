@@ -21,6 +21,7 @@ from open_webui.utils.subscriptions.common import (  # noqa: E402
     ACCESS_READ,
     UltraOptions,
 )
+from open_webui.utils.subscriptions.events import StatusUpdate  # noqa: E402
 
 PROVIDERS = (claude_code.PROVIDER_ID, codex.PROVIDER_ID)
 SONNET = UltraOptions(worker_model='sonnet', worker_label='Claude Sonnet 4.6', worker_effort='high')
@@ -261,6 +262,13 @@ class NotePlacementTests(unittest.TestCase):
         self.assertEqual(
             ultra.OFF_STATUS.format(reason=reason),
             'Ultra is off for this reply: Claude Code on Fixture PC is too old for Ultra.',
+        )
+
+    def test_the_off_status_line_stays_shown_once_the_reply_ends(self):
+        reason = 'Claude Code on Fixture PC is too old for Ultra.'
+        self.assertEqual(
+            ultra.off_status(reason),
+            StatusUpdate('Ultra is off for this reply: Claude Code on Fixture PC is too old for Ultra.', keep=True),
         )
 
 

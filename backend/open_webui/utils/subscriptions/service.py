@@ -3863,9 +3863,9 @@ def _with_ultra_note(conversation, provider_id: str, access: str, options: Ultra
     return replace(conversation, system=system)
 
 
-async def _after_status(description: str, events):
+async def _after_status(status: StatusUpdate, events):
     """A turn's events, after a status line that starts the reply."""
-    yield StatusUpdate(description)
+    yield status
     async with aclosing(events):
         async for event in events:
             yield event
@@ -4059,7 +4059,7 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
         if live_turn is not None:
             events = _while_live(live_turn, events)
         if ultra_off_reason:
-            events = _after_status(ultra.OFF_STATUS.format(reason=ultra_off_reason), events)
+            events = _after_status(ultra.off_status(ultra_off_reason), events)
 
     response_model_id = form_data.get('model') or model_id
     if payload.get('stream'):

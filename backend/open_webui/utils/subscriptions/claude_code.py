@@ -1382,7 +1382,7 @@ class ClaudeCodeProvider:
                 yield event
         if attempt.ultra_off_reason is None:
             return
-        yield StatusUpdate(ultra.OFF_STATUS.format(reason=attempt.ultra_off_reason))
+        yield ultra.off_status(attempt.ultra_off_reason)
         async with aclosing(self._run_cli(cli, without_ultra(turn), None, attempt)) as events:
             async for event in events:
                 yield event

@@ -1717,7 +1717,7 @@ class CodexProvider:
         machine = turn.machine
         server = await self._server_for(turn.settings, machine)
         if turn.ultra is not None and not version_runs_ultra(server.version):
-            yield StatusUpdate(ultra.OFF_STATUS.format(reason=ULTRA_TOO_OLD_REASON.format(computer=machine.name)))
+            yield ultra.off_status(ULTRA_TOO_OLD_REASON.format(computer=machine.name))
             turn = without_ultra(turn)
         await self._ensure_effort_models(server, turn)
         conversation = turn.conversation

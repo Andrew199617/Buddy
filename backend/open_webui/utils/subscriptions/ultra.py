@@ -12,6 +12,7 @@ import logging
 import os
 
 from open_webui.utils.subscriptions.common import ACCESS_FULL, ACCESS_READ, UltraOptions
+from open_webui.utils.subscriptions.events import StatusUpdate
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +75,14 @@ DEPTH_NOTE = (
 CODEX_DEPTH_NOTE = "Buddy stops any worker started deeper than that, so say this in each worker's task."
 
 DIRECT_REPLY_NOTE = 'Reply directly, without workers, to greetings, thanks and questions you can answer at once.'
+
+
+def off_status(reason: str) -> StatusUpdate:
+    """The status line that starts a reply without Ultra, for a person who turned Ultra on.
+
+    It stays shown once the reply ends, so the reply still says why it had no workers.
+    """
+    return StatusUpdate(OFF_STATUS.format(reason=reason), keep=True)
 
 
 def max_workers() -> int | None:

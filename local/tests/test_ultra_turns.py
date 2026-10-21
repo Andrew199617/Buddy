@@ -288,7 +288,7 @@ class UltraTurnTests(UltraServiceTestCase):
         self.registry[CHAT_MODEL_ID] = self.other_users_entry('fixture-model')
         events = await self.chat()
         self.assertIsNone(self.turns[0].ultra_options)
-        self.assertEqual(events[0], StatusUpdate(OFF_FOR_CHAT_MODEL))
+        self.assertEqual(events[0], StatusUpdate(OFF_FOR_CHAT_MODEL, keep=True))
 
     async def test_after_a_restart_the_computer_lists_its_models_for_ultra(self):
         await self.bind()
@@ -319,7 +319,7 @@ class UltraTurnTests(UltraServiceTestCase):
         # The CLI lists nothing, so only the shared registry knows the chat's model.
         events = await self.chat()
         self.assertIsNone(self.turns[0].ultra_options)
-        self.assertEqual(events, [StatusUpdate(OFF_UNLISTED), {'text': 'fixture response'}])
+        self.assertEqual(events, [StatusUpdate(OFF_UNLISTED, keep=True), {'text': 'fixture response'}])
 
     async def test_the_model_list_says_which_models_run_ultra(self):
         # The composer offers Ultra, and lists workers' models, from these flags.
@@ -335,21 +335,21 @@ class UltraTurnTests(UltraServiceTestCase):
         turn = self.turns[0]
         self.assertIsNone(turn.ultra_options)
         self.assertEqual(turn.conversation.system, 'Folder instructions.')
-        self.assertEqual(events, [StatusUpdate(OFF_FOR_CHAT_MODEL), {'text': 'fixture response'}])
+        self.assertEqual(events, [StatusUpdate(OFF_FOR_CHAT_MODEL, keep=True), {'text': 'fixture response'}])
 
     async def test_a_worker_model_without_ultra_turns_it_off_for_the_reply(self):
         await self.bind()
         self.claude_models[1].ultra = False
         events = await self.chat({'worker_model': WORKER_MODEL_ID, 'worker_effort': None})
         self.assertIsNone(self.turns[0].ultra_options)
-        self.assertEqual(events[0], StatusUpdate(OFF_FOR_WORKER_MODEL))
+        self.assertEqual(events[0], StatusUpdate(OFF_FOR_WORKER_MODEL, keep=True))
 
     async def test_a_streamed_reply_starts_with_why_ultra_is_off(self):
         await self.bind()
         self.claude_models[0].ultra = False
         response = await self.chat(stream=True)
         events = [event async for event in response.body_iterator]
-        self.assertEqual(events, [StatusUpdate(OFF_FOR_CHAT_MODEL), {'text': 'fixture response'}])
+        self.assertEqual(events, [StatusUpdate(OFF_FOR_CHAT_MODEL, keep=True), {'text': 'fixture response'}])
 
     async def test_tasks_and_turns_without_ultra_get_no_workers_note_or_status(self):
         await self.bind()

@@ -19,10 +19,15 @@ class ReasoningDelta:
 
 @dataclass
 class StatusUpdate:
-    """A short progress line shown above the reply."""
+    """A short progress line shown above the reply.
+
+    The chat hides a reply's lines once it ends, unless one is marked keep:
+    the latest such line then stays shown.
+    """
 
     description: str
     done: bool = False
+    keep: bool = False
 
 
 WORKER_RUNNING = 'running'

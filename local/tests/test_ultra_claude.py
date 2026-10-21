@@ -571,7 +571,7 @@ class UltraHandshakeTests(unittest.IsolatedAsyncioTestCase):
                 turn = ultra_turn(self.directory, ReplayMachine(older, plain))
                 events = await self.run_turn(turn)
 
-                self.assertEqual(events[0], StatusUpdate(TOO_OLD_STATUS))
+                self.assertEqual(events[0], StatusUpdate(TOO_OLD_STATUS, keep=True))
                 self.assertEqual(reply(events), '391, and 101, 103 and 107.')
                 self.assertFalse(any(isinstance(event, TurnFailed) for event in events))
                 # The prompt never reached the older CLI.
@@ -593,7 +593,7 @@ class UltraHandshakeTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(claude_code, 'WORKERS_ANSWER_TIMEOUT', 0.05):
             with self.assertLogs(claude_code.log, level='WARNING'):
                 events = await self.run_turn(turn)
-        self.assertEqual(events, [StatusUpdate(TOO_OLD_STATUS), TextDelta('Done.')])
+        self.assertEqual(events, [StatusUpdate(TOO_OLD_STATUS, keep=True), TextDelta('Done.')])
         self.assertTrue(silent.killed)
         self.assertEqual(len(silent.written), 1)
 

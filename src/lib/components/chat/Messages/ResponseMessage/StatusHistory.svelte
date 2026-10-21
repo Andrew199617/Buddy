@@ -3,6 +3,7 @@
 	const i18n = getContext('i18n');
 
 	import StatusItem from './StatusHistory/StatusItem.svelte';
+	import { shownStatus } from './StatusHistory/shown-status';
 	import equal from 'fast-deep-equal';
 	export let statusHistory = [];
 	export let expand = false;
@@ -19,7 +20,7 @@
 	let status = null;
 
 	$: if (history && history.length > 0) {
-		status = history.at(-1);
+		status = shownStatus(history);
 	}
 
 	$: if (!equal(statusHistory, history)) {
@@ -39,7 +40,8 @@
 				}}
 			>
 				<div class="flex items-start gap-2">
-					<StatusItem {status} />
+					<!-- Done once later lines follow it, as they follow a kept line when a reply ends. -->
+					<StatusItem {status} done={status !== history.at(-1)} />
 				</div>
 			</button>
 

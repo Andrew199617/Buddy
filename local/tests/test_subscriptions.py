@@ -1655,6 +1655,25 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual(payloads[6]['choices'][0]['finish_reason'], 'stop')
         self.assertEqual(lines[-1], 'data: [DONE]\n\n')
 
+    def test_a_status_line_marked_keep_says_so_and_the_others_do_not(self):
+        async def events():
+            yield StatusUpdate('Ultra is off for this reply: Fixture is too old.', keep=True)
+            yield StatusUpdate('Running `ls`')
+            yield TextDelta('Hello')
+
+        lines = asyncio.run(collect(streaming.stream_events(events(), 'claude-code.opus')))
+        payloads = [json.loads(line[6:]) for line in lines if line.startswith('data: {')]
+        statuses = [payload['event']['data'] for payload in payloads if 'event' in payload]
+        self.assertEqual(
+            statuses,
+            [
+                {'description': 'Ultra is off for this reply: Fixture is too old.', 'done': False, 'keep': True},
+                {'description': 'Running `ls`', 'done': False},
+                # The line that ends the reply is hidden as before; the chat keeps showing the kept one.
+                {'description': 'Done', 'done': True, 'hidden': True},
+            ],
+        )
+
     def test_collect_events_builds_a_completion(self):
         async def events():
             yield TextDelta('Hi ')

@@ -51,10 +51,13 @@ def _chunk(completion_id: str, model_id: str, delta: dict, finish_reason: str | 
     }
 
 
-def _status_chunk(description: str, done: bool, hidden: bool = False) -> dict:
+def _status_chunk(description: str, done: bool, hidden: bool = False, keep: bool = False) -> dict:
     data = {'description': description, 'done': done}
     if hidden:
         data['hidden'] = True
+    if keep:
+        # The chat keeps showing this line after the hidden line that ends the reply.
+        data['keep'] = True
     return {'event': {'type': 'status', 'data': data}}
 
 
@@ -189,7 +192,7 @@ async def stream_events(events, model_id: str, emit_when_stopped=None):
                 yield _sse(_chunk(completion_id, model_id, {'reasoning_content': event.text}))
             elif isinstance(event, StatusUpdate):
                 status_shown = True
-                yield _sse(_status_chunk(event.description, event.done))
+                yield _sse(_status_chunk(event.description, event.done, keep=event.keep))
             elif isinstance(event, WorkerUpdate):
                 if workers.update(event):
                     # Shown before the chat has a workers card to show it in.

@@ -741,7 +741,7 @@ class UltraThreadTests(unittest.IsolatedAsyncioTestCase):
         events = await self.run_turn(ultra_turn(ReplayMachine(process)))
 
         reason = codex.ULTRA_TOO_OLD_REASON.format(computer=ReplayMachine.name)
-        self.assertEqual(events[0], StatusUpdate(ultra.OFF_STATUS.format(reason=reason)))
+        self.assertEqual(events[0], StatusUpdate(ultra.OFF_STATUS.format(reason=reason), keep=True))
         # Its thread is an ordinary one, with workers off, and nothing asks for workers.
         [thread_start] = process.sent('thread/start')
         self.assertIs(thread_start['ephemeral'], True)
