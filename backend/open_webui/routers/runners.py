@@ -104,6 +104,29 @@ async def enroll(form_data: EnrollForm, request: Request):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
 
 
+class UnenrollForm(BaseModel):
+    machine_id: str
+    credential: str
+
+
+@router.post('/unenroll')
+async def unenroll(form_data: UnenrollForm, request: Request):
+    """The Buddy app removes its own computer, proving it with the machine credential.
+
+    Answers {"removed": false} when nothing matched, either a computer already removed or a
+    wrong credential, rather than 404: a server too old to have this route also answers 404,
+    and the app must not take that for a removal.
+    """
+    address = request.client.host if request.client else 'unknown'
+    if not ENROLL_THROTTLE.allow(address):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail='Too many attempts. Wait a few minutes.')
+    try:
+        removed = await service.unenroll_runner(form_data.machine_id, form_data.credential)
+    except SubscriptionError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
+    return {'removed': removed}
+
+
 class _StarletteSocket:
     """The text-in, text-out view of a WebSocket that RunnerConnection uses."""
 

@@ -21,6 +21,7 @@ from open_webui.env import SCIM_AUTH_PROVIDER
 from open_webui.internal.db import get_async_session
 from open_webui.models.groups import GroupModel, Groups
 from open_webui.models.users import UserModel, Users
+from open_webui.utils.subscriptions import service as subscription_service
 from open_webui.utils.auth import (
     decode_token,
     get_admin_user,
@@ -860,6 +861,9 @@ async def delete_user(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail='Failed to delete user',
         )
+
+    # Like the admin delete route: stored sign-ins, keys and computers go too.
+    await subscription_service.forget_deleted_user(user_id)
 
     await publish_event(
         request,

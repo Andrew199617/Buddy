@@ -93,6 +93,7 @@ from open_webui.utils.auth import (
 )
 from open_webui.utils.groups import apply_default_group_assignment
 from open_webui.utils.misc import parse_duration
+from open_webui.utils.super_users import forget_super_user
 from open_webui.utils.validate import validate_image_url
 from starlette.responses import RedirectResponse
 
@@ -1966,6 +1967,8 @@ class OAuthManager:
         updated_user = await Users.update_user_role_by_id(user.id, determined_role, db=db)
         user = updated_user or user
         user.role = determined_role
+        if determined_role != 'admin':
+            await forget_super_user(user.id)
         await publish_event(
             request,
             EVENTS.USER_ROLE_UPDATED,

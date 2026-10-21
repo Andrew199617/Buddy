@@ -78,6 +78,7 @@ from open_webui.utils.groups import apply_default_group_assignment
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.misc import parse_duration, validate_email_format
 from open_webui.utils.rate_limit import RateLimiter
+from open_webui.utils.super_users import forget_super_user
 from pydantic import BaseModel, StrictStr, field_validator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -772,6 +773,8 @@ async def signin(
                 if trusted_role in {'admin', 'user', 'pending'}:
                     if user.role != trusted_role:
                         updated_user = await Users.update_user_role_by_id(user.id, trusted_role, db=db)
+                        if trusted_role != 'admin':
+                            await forget_super_user(user.id)
                         if updated_user:
                             user = updated_user
                             await publish_event(

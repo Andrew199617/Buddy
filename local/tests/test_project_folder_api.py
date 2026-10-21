@@ -359,6 +359,19 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
         await self.service.forget_user(MEMBER)
         self.assertEqual(self.config.values['subscriptions.users.member-1.project_folders'], {})
 
+    async def test_every_delete_route_forgets_the_user_and_only_logs_a_failed_cleanup(self):
+        await self.save(MEMBER_USER, 'chat')
+        await self.service.forget_deleted_user(MEMBER)
+        self.assertEqual(self.config.values['subscriptions.users.member-1.project_folders'], {})
+
+        async def failing_cleanup(user_id):
+            raise RuntimeError('database is locked')
+
+        self.service.forget_user = failing_cleanup
+        with self.assertLogs(level='WARNING') as logged:
+            await self.service.forget_deleted_user(MEMBER)
+        self.assertIn('database is locked', logged.output[0])
+
 
     # --- Agent files on This server -------------------------------------------
 

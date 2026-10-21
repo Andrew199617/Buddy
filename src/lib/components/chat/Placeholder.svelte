@@ -107,6 +107,13 @@
 		$selectedFolder != null &&
 		$selectedFolder.user_id !== $user?.id &&
 		!$selectedFolder.write_access;
+
+	// Editing a folder and starting chats in it are separate: a super user may edit someone else's
+	// folder, but a new chat there would run with the owner's instructions, so it takes a write grant.
+	$: folderAcceptsNewChats =
+		$selectedFolder == null ||
+		$selectedFolder.user_id === $user?.id ||
+		$selectedFolder.can_add_chats === true;
 </script>
 
 <div class="buddy-chat-welcome">
@@ -164,7 +171,7 @@
 			{/if}
 		{/if}
 	</div>
-	{#if !($selectedFolder && folderReadOnly)}
+	{#if folderAcceptsNewChats}
 		<div class="buddy-welcome-composer">
 			<MessageInput
 				bind:this={messageInput}

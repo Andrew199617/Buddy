@@ -143,6 +143,39 @@ export const updateUserRole = async (token: string, id: string, role: string) =>
 	return res;
 };
 
+export type SuperUsers = { owner_id: string | null; user_ids: string[] };
+
+/** The server owner and the administrators the owner has named super users. */
+export const getSuperUsers = async (token: string): Promise<SuperUsers> => {
+	const response = await fetch(`${WEBUI_API_BASE_URL}/users/super-users`, {
+		method: 'GET',
+		headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+	});
+	const data = await response.json().catch(() => null);
+	if (!response.ok) {
+		throw data?.detail ?? `Request failed (${response.status})`;
+	}
+	return data;
+};
+
+/** Only the server owner may name or remove a super user. */
+export const setSuperUser = async (
+	token: string,
+	id: string,
+	enabled: boolean
+): Promise<SuperUsers> => {
+	const response = await fetch(`${WEBUI_API_BASE_URL}/users/${encodeURIComponent(id)}/super-user`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+		body: JSON.stringify({ enabled })
+	});
+	const data = await response.json().catch(() => null);
+	if (!response.ok) {
+		throw data?.detail ?? `Request failed (${response.status})`;
+	}
+	return data;
+};
+
 export const getUsers = async (
 	token: string,
 	query?: string,

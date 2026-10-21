@@ -1417,6 +1417,20 @@ async def authenticate_runner(machine_id, credential) -> dict | None:
     return {**config, 'user_id': _machine_owner(config, await server_owner_id())}
 
 
+async def unenroll_runner(machine_id, credential) -> bool:
+    """A computer removes itself with its own credential, as if its owner removed it.
+
+    The Buddy app does this when it can't keep a credential it was just given, and
+    before it moves to another Buddy server. False when no computer matches, so a
+    removal that was already done reads the same as one that never could be.
+    """
+    machine = await authenticate_runner(machine_id, credential)
+    if machine is None:
+        return False
+    await delete_machine(machine['user_id'], machine['id'])
+    return True
+
+
 async def record_runner_connected(machine_id: str, info: dict) -> None:
     """Save what a connecting computer reports about itself, and when it was seen."""
     async with _machine_lock:
@@ -2863,6 +2877,18 @@ async def forget_user(user_id: str) -> None:
     for machine_id in removed_runner_ids:
         _tunnel_machines.pop(machine_id, None)
         await HUB.disconnect(machine_id, CLOSE_UNKNOWN_MACHINE, REMOVED_MACHINE_MESSAGE)
+
+
+async def forget_deleted_user(user_id: str) -> None:
+    """forget_user for an account that is already deleted, from any delete route.
+
+    The account is gone either way, so a failed cleanup is only logged: its
+    machines simply stop being usable.
+    """
+    try:
+        await forget_user(user_id)
+    except Exception as error:
+        log.warning('Could not clean up the machines of deleted user %s: %s', user_id, error)
 
 
 # Stored sign-ins and API keys

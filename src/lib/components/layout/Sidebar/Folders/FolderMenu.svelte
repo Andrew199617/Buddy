@@ -19,6 +19,8 @@
 	export let onExport = () => {};
 	export let onShare = () => {};
 	export let onDelete = () => {};
+	// Off when the server would refuse: only a folder's owner and super users may delete it.
+	export let allowDelete = true;
 	export let onCreateSubFolder = () => {};
 	export let onMarkAllRead = () => {};
 
@@ -102,17 +104,19 @@
 				<div class="flex items-center">{$i18n.t('Share')}</div>
 			</button>
 
-			<hr class="border-gray-50/30 dark:border-gray-800/30 mx-1 my-0.5" />
+			{#if allowDelete}
+				<hr class="border-gray-50/30 dark:border-gray-800/30 mx-1 my-0.5" />
 
-			<button
-				class="flex h-[1.6875rem] w-full items-center gap-2 rounded-xl px-2 text-[0.8125rem] select-none cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-900"
-				on:click={() => {
-					onDelete();
-				}}
-			>
-				<TrashIcon className="size-3.5" />
-				<div class="flex items-center">{$i18n.t('Delete')}</div>
-			</button>
+				<button
+					class="flex h-[1.6875rem] w-full items-center gap-2 rounded-xl px-2 text-[0.8125rem] select-none cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-900"
+					on:click={() => {
+						onDelete();
+					}}
+				>
+					<TrashIcon className="size-3.5" />
+					<div class="flex items-center">{$i18n.t('Delete')}</div>
+				</button>
+			{/if}
 		</DropdownMenu>
 	</div>
 </Dropdown>
