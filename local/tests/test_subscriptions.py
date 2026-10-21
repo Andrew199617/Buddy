@@ -1020,12 +1020,14 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(chat_config['mcp_servers'], {'node_repl': {'enabled': False}})
         self.assertFalse(chat_config['features.shell_tool'])
         self.assertFalse(chat_config['features.unified_exec'])
+        self.assertIs(chat_config['features.multi_agent'], False)
 
         read_config = thread_config('read')
         # The folder's AGENTS.md files and skills could steer reads, so neither loads.
         self.assertEqual(
             read_config,
             {
+                'features.multi_agent': False,
                 'mcp_servers': {'node_repl': {'enabled': False}},
                 'project_doc_max_bytes': 0,
                 'skills.include_instructions': False,
@@ -1034,9 +1036,34 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(chat_config['project_doc_max_bytes'], 0)
         self.assertFalse(chat_config['skills.include_instructions'])
 
-        self.assertIsNone(thread_config('full'))
+        # Full threads keep the user's tools; only Codex's own workers are off.
+        self.assertEqual(thread_config('full'), {'features.multi_agent': False})
         # Chat and read threads read the effective config; full threads skip it.
         self.assertEqual(server.methods, ['config/read', 'config/read'])
+
+    def test_codex_threads_start_with_workers_off_at_every_access_level(self):
+        # Buddy lists no Codex workers on these turns, so none may start unseen.
+        class FakeServer:
+            def __init__(self):
+                self.thread_starts = []
+
+            async def request(self, method, params=None, timeout=None):
+                if method == 'thread/start':
+                    self.thread_starts.append(params)
+                    return {'thread': {'id': 'thread-1'}}
+                return {'config': {'mcp_servers': {}}}
+
+        provider = codex.CodexProvider()
+        conversation = parse_messages([{'role': 'user', 'content': 'hi'}])
+        for access in ('chat', 'read', 'full'):
+            with self.subTest(access=access):
+                server = FakeServer()
+                turn = TurnRequest('gpt-x', conversation, ProviderSettings(access=access), '.')
+                asyncio.run(provider._start_thread(server, turn))
+                config = server.thread_starts[0]['config']
+                self.assertIs(config['features.multi_agent'], False)
+                # A whole features table would turn back on what the app-server disabled at start.
+                self.assertNotIn('features', config)
 
     def test_hooks_are_a_disabled_feature(self):
         # Hooks run commands outside the read-only sandbox.

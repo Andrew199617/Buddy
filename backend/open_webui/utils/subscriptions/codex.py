@@ -746,8 +746,11 @@ class CodexProvider:
             return f'{CHAT_INSTRUCTIONS}\n\n{system}'.strip()
         return system or None
 
-    async def _thread_config(self, server: CodexAppServer, turn: TurnRequest) -> dict | None:
-        """Per-thread config overrides that keep chat and read threads in bounds.
+    async def _thread_config(self, server: CodexAppServer, turn: TurnRequest) -> dict:
+        """Per-thread config overrides that keep threads in bounds.
+
+        No thread may start Codex's own sub-agents: Buddy does not list them,
+        and nothing may run unseen.
 
         The read-only sandbox blocks writes but not reads anywhere on disk, and
         MCP servers from the user's Codex config (such as a JavaScript REPL) run
@@ -756,19 +759,19 @@ class CodexProvider:
         folder may be someone else's repository, so neither loads its AGENTS.md
         files or skills, which could steer those reads.
         """
+        # Dotted keys leave the app-server's other feature switches alone. A
+        # whole features table would turn back on what it disabled at start.
+        config = {'features.multi_agent': False}
         if turn.access == ACCESS_FULL:
-            return None
+            return config
 
         effective = await server.request('config/read', {'includeLayers': False, 'cwd': turn.cwd})
         server_names = ((effective.get('config') or {}).get('mcp_servers') or {}).keys()
-        config = {
-            'mcp_servers': {name: {'enabled': False} for name in server_names},
-            # The user's own ~/.codex/AGENTS.md still applies.
-            'project_doc_max_bytes': 0,
-            'skills.include_instructions': False,
-        }
+        config['mcp_servers'] = {name: {'enabled': False} for name in server_names}
+        # The user's own ~/.codex/AGENTS.md still applies.
+        config['project_doc_max_bytes'] = 0
+        config['skills.include_instructions'] = False
         if turn.access == ACCESS_CHAT:
-            # Dotted keys leave the app-server's other feature switches alone.
             config['features.shell_tool'] = False
             config['features.unified_exec'] = False
             config['features.view_image'] = False
@@ -786,9 +789,7 @@ class CodexProvider:
             'approvalPolicy': 'never',
             'developerInstructions': self._developer_instructions(turn),
         }
-        config = await self._thread_config(server, turn)
-        if config:
-            params['config'] = config
+        params['config'] = await self._thread_config(server, turn)
         result = await server.request('thread/start', params)
         thread_id = result['thread']['id']
         if turn.conversation.history:
