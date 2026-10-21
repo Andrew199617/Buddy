@@ -4,9 +4,13 @@ Run from the repository root:
     python -m unittest discover -s local/tests -p test_chat_agent.py -v
 """
 
+import ast
 import importlib.util
+import types
 import unittest
 from pathlib import Path
+
+from pydantic import BaseModel
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / 'backend' / 'open_webui' / 'utils' / 'chat_agent.py'
 spec = importlib.util.spec_from_file_location('chat_agent', MODULE_PATH)
@@ -77,6 +81,41 @@ class ContentsForOwnerTests(unittest.TestCase):
     def test_params_that_are_not_a_dict_are_left_alone(self):
         odd = {'title': 'Plan', 'params': None}
         self.assertEqual(chat_agent.contents_for_owner(odd, None, 'owner'), odd)
+
+
+
+class ChatResponse(BaseModel):
+    id: str
+    user_id: str
+    chat: dict
+
+
+def load_chat_response_for():
+    router = MODULE_PATH.parents[1] / 'routers' / 'chats.py'
+    parsed = ast.parse(router.read_text(encoding='utf-8'))
+    selected = [node for node in parsed.body if getattr(node, 'name', None) == '_chat_response_for']
+    if len(selected) != 1:
+        raise AssertionError(f'_chat_response_for is missing from {router}')
+    namespace = {'ChatResponse': ChatResponse, 'without_agent': chat_agent.without_agent}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[])), str(router), 'exec'), namespace)
+    return namespace['_chat_response_for']
+
+
+class ChatResponseForTests(unittest.TestCase):
+    def setUp(self):
+        self.response_for = load_chat_response_for()
+        self.chat = types.SimpleNamespace(id='chat-1', user_id='owner', chat=CHAT)
+
+    def test_the_owner_sees_their_agent(self):
+        owner = types.SimpleNamespace(id='owner')
+        self.assertEqual(self.response_for(owner, self.chat).chat['agent'], AGENT)
+
+    def test_anyone_else_including_an_administrator_does_not(self):
+        admin = types.SimpleNamespace(id='admin', role='admin')
+        response = self.response_for(admin, self.chat)
+        self.assertNotIn('agent', response.chat)
+        self.assertEqual(response.chat['title'], 'Plan')
+        self.assertEqual(CHAT['agent'], AGENT)
 
 
 if __name__ == '__main__':
