@@ -4200,7 +4200,10 @@ async function sendUltraMessage(session, profile) {
 	return ultraTurn.id;
 }
 
-/** Phone rows are 44px and open a bottom sheet, even with the keyboard still up. */
+/**
+ * Phone rows are 44px and open a bottom sheet, even with the keyboard still up. Stop
+ * is in the sheet only, away from the next row's.
+ */
 async function stopWorkerOnPhone(page, card, fixtures) {
 	const touchTargets = await card.locator('button').evaluateAll((buttons) =>
 		buttons.map((button) => ({
@@ -4229,9 +4232,16 @@ async function stopWorkerOnPhone(page, card, fixtures) {
 	await captureScreenshot(page, 'phone-ultra-workers-sheet');
 	await sheetStop.tap();
 	await waitUntil(() => fixtures.workerStops.length === 1, 'Stop asks the server to stop it');
-	await sheet.getByRole('button', { name: 'Stopping…', exact: true }).waitFor();
+	const sheetStopping = sheet.getByRole('button', { name: 'Stopping…', exact: true });
+	await sheetStopping.waitFor();
+	assert.equal(
+		await sheetStopping.isDisabled(),
+		true,
+		'A worker being stopped can’t be stopped twice'
+	);
 	await sheet.getByRole('button', { name: 'Done', exact: true }).tap();
 	await sheet.waitFor({ state: 'hidden' });
+	await row.getByText('Stopping…', { exact: true }).waitFor();
 }
 
 /** A desktop row opens in place to show its worker's report; Stop sits on the row. */
@@ -4297,8 +4307,13 @@ async function checkWorkersCard(page, profile, fixtures, replyId) {
 	const stopFix = card.getByRole('button', { name: 'Stop Fix the parser', exact: true });
 	const stopTest = card.getByRole('button', { name: 'Stop Write a failing test', exact: true });
 	const stopRead = card.getByRole('button', { name: 'Stop Read the parser', exact: true });
-	assert.equal(await stopFix.count(), 1, 'A running worker has Stop');
-	assert.equal(await stopTest.count(), 1, 'A running sub-worker has Stop');
+	if (profile.mobile) {
+		assert.equal(await stopFix.count(), 0, 'Phone rows leave Stop to their sheet');
+		assert.equal(await stopTest.count(), 0, 'Phone sub-worker rows leave Stop to their sheet');
+	} else {
+		assert.equal(await stopFix.count(), 1, 'A running worker has Stop');
+		assert.equal(await stopTest.count(), 1, 'A running sub-worker has Stop');
+	}
 	assert.equal(await stopRead.count(), 0, 'A finished worker has no Stop');
 
 	if (profile.mobile) {
@@ -4312,12 +4327,18 @@ async function checkWorkersCard(page, profile, fixtures, replyId) {
 		fixtures.requests.some((request) => request.method === 'POST' && request.path === stopPath),
 		'Stop posts to the worker’s stop route'
 	);
-	const stopping = card.getByRole('button', {
-		name: 'Stopping Write a failing test…',
-		exact: true
-	});
-	await stopping.waitFor();
-	assert.equal(await stopping.isDisabled(), true, 'A worker being stopped can’t be stopped twice');
+	if (!profile.mobile) {
+		const stopping = card.getByRole('button', {
+			name: 'Stopping Write a failing test…',
+			exact: true
+		});
+		await stopping.waitFor();
+		assert.equal(
+			await stopping.isDisabled(),
+			true,
+			'A worker being stopped can’t be stopped twice'
+		);
+	}
 
 	// The reply ends while workers still run, then they end one by one.
 	await sendChatEvent(page, replyId, 'chat:completion', {

@@ -3,9 +3,10 @@
 	// started, with the sub-workers it started under it, what each one is doing, and
 	// a Stop for each one still running. The card stays open while workers run, also
 	// after the reply has ended, and collapses to what the reply used once they have
-	// all ended. On desktop a row opens in place to show the worker's report; on
-	// phones the rows are 44px tall and each opens a bottom sheet, which shows the
-	// worker's model and thinking. A model all workers share shows in the header.
+	// all ended. On desktop a row opens in place to show the worker's report and has
+	// its own Stop; on phones the rows are 44px tall and each opens a bottom sheet,
+	// which shows the worker's model and thinking and holds its Stop. A model all
+	// workers share shows in the header.
 	import { getContext, onDestroy, onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import equal from 'fast-deep-equal';
@@ -129,15 +130,12 @@
 
 	let headerSize = '';
 	let rowSize = '';
-	let stopSize = '';
 	$: if (touchLayout) {
 		headerSize = 'min-h-11';
 		rowSize = 'min-h-11';
-		stopSize = 'min-h-11 min-w-11 px-3 text-sm';
 	} else {
 		headerSize = 'min-h-9';
 		rowSize = 'min-h-9';
-		stopSize = 'h-7 px-2.5 text-xs';
 	}
 
 	function nowInSeconds(): number {
@@ -256,6 +254,16 @@
 		return $i18n.t('Stop {{worker}}', { worker: worker.label });
 	}
 
+	/**
+	 * A row's line under the worker's label. A phone row has no Stop of its own, so its
+	 * line says when the Stop pressed in its sheet is on its way.
+	 */
+	function rowLine(worker: WorkerItem, request: StopRequest | undefined): string {
+		const stopping = stopControl(worker, canStop, request) === 'stopping';
+		if (touchLayout && stopping) return $i18n.t('Stopping…');
+		return workerLine($i18n, worker, request);
+	}
+
 	onMount(() => {
 		const pointerQuery = window.matchMedia('(pointer: coarse)');
 		function updatePointer() {
@@ -274,7 +282,7 @@
 	const rowButtonClass =
 		'flex min-w-0 flex-1 items-center gap-2 rounded-xl px-2 py-1 text-left outline-hidden hover:bg-gray-100/70 focus-visible:ring-2 focus-visible:ring-sky-500/60 dark:hover:bg-gray-800/60';
 	const stopButtonClass =
-		'shrink-0 rounded-full border border-gray-200 font-medium text-gray-700 outline-hidden hover:border-red-300 hover:text-red-600 focus-visible:ring-2 focus-visible:ring-sky-500/60 disabled:cursor-default disabled:opacity-60 disabled:hover:border-gray-200 disabled:hover:text-gray-700 dark:border-gray-700 dark:text-gray-200 dark:hover:border-red-500/50 dark:hover:text-red-400';
+		'h-7 shrink-0 rounded-full border border-gray-200 px-2.5 text-xs font-medium text-gray-700 outline-hidden hover:border-red-300 hover:text-red-600 focus-visible:ring-2 focus-visible:ring-sky-500/60 disabled:cursor-default disabled:opacity-60 disabled:hover:border-gray-200 disabled:hover:text-gray-700 dark:border-gray-700 dark:text-gray-200 dark:hover:border-red-500/50 dark:hover:text-red-400';
 </script>
 
 {#snippet stateIcon(worker: WorkerItem)}
@@ -315,7 +323,7 @@
 			{/if}
 		</span>
 		<span class="min-w-0 truncate text-xs text-gray-500 dark:text-gray-400">
-			{workerLine($i18n, worker, stopRequests[worker.id])}
+			{rowLine(worker, stopRequests[worker.id])}
 		</span>
 	</span>
 {/snippet}
@@ -357,10 +365,11 @@
 				{@render rowSummary(worker)}
 			</div>
 		{/if}
-		{#if control !== 'none'}
+		<!-- On phones Stop is in the row's sheet, away from the next row's. -->
+		{#if control !== 'none' && !touchLayout}
 			<button
 				type="button"
-				class="{stopButtonClass} {stopSize}"
+				class={stopButtonClass}
 				aria-label={stopLabel(worker, control)}
 				disabled={control === 'stopping'}
 				on:click={() => stopWorker(worker)}
