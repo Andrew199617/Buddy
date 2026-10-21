@@ -1,9 +1,10 @@
 // Ultra in the composer: whether a chat can use it, the choices for its workers,
-// what a chat saves and sends, and the text its workers card shows. Plain helpers
-// with no DOM or network; the server checks whatever the composer sends.
+// what a chat saves and sends, and how its workers card lays out, words and
+// announces its workers. Plain helpers with no DOM or network; the server checks
+// whatever the composer sends.
 
 import type { ChatRunTarget, RunTargetOptions, SubscriptionAccess } from '$lib/apis/subscriptions';
-import { isChannelChatId, isTemporaryChatId } from '$lib/utils/chatId';
+import { isChannelChatId, isSavedChatId, isTemporaryChatId } from '$lib/utils/chatId';
 
 import { detailsFromDraft, type RunTargetDraft } from '../RunTarget/run-target';
 
@@ -585,4 +586,261 @@ export function workersUsed(i18n: Translator, items: WorkerItem[], now: number):
 	const seconds = workersElapsed(items, now);
 	if (seconds === null) return used;
 	return `${used} · ${formatElapsed(seconds)}`;
+}
+
+// --- The workers card -----------------------------------------------------------
+
+/** One row of the workers card: a worker and the sub-workers it started. */
+export type WorkerRow = { worker: WorkerItem; subWorkers: WorkerItem[] };
+
+/**
+ * How the workers card shows:
+ * - 'working' while the reply is being written, open;
+ * - 'still-running' when the reply has ended and workers still run, open;
+ * - 'finished' when every worker has ended, collapsed to what the reply used;
+ * - 'none' for an Ultra reply that ended without starting any worker.
+ */
+export type WorkersCardPhase = 'working' | 'still-running' | 'finished' | 'none';
+
+/** Where a Stop the person pressed stands, by worker id. */
+export type StopRequest =
+	// On its way to the server.
+	| 'sending'
+	// Accepted; the worker shows as running until the reply reports it stopped.
+	| 'sent'
+	// The server answered that the worker isn't running any more.
+	| 'not-running';
+
+/** A row's Stop button: none, ready to press, or waiting for the worker to stop. */
+export type StopControl = 'none' | 'ready' | 'stopping';
+
+/**
+ * The row a worker shows in: the id of the top worker of its parent chain. A
+ * sub-worker shows under the orchestrator's worker that started it, and so does
+ * a worker it started in turn. A worker whose parent isn't listed gets its own row.
+ */
+function rowIdFor(worker: WorkerItem, byId: Map<string, WorkerItem>): string {
+	let current = worker;
+	// The workers already passed, so a parent chain that loops back still ends.
+	const passed = new Set<string>();
+	while (current.parent_id !== null && !passed.has(current.id)) {
+		const parent = byId.get(current.parent_id);
+		if (!parent) break;
+		passed.add(current.id);
+		current = parent;
+	}
+	return current.id;
+}
+
+/**
+ * The card's rows: each of the orchestrator's workers with its sub-workers under
+ * it, all in the order they started, which is the snapshot's order. Rows keep
+ * their place as workers end, so a Stop button never moves under a finger. A
+ * worker listed twice shows once.
+ */
+export function workerRows(items: WorkerItem[]): WorkerRow[] {
+	const byId = new Map<string, WorkerItem>();
+	for (const item of items) {
+		if (!byId.has(item.id)) byId.set(item.id, item);
+	}
+
+	const rows: WorkerRow[] = [];
+	const rowsById = new Map<string, WorkerRow>();
+	for (const worker of byId.values()) {
+		if (rowIdFor(worker, byId) !== worker.id) continue;
+		const row: WorkerRow = { worker, subWorkers: [] };
+		rows.push(row);
+		rowsById.set(worker.id, row);
+	}
+	for (const worker of byId.values()) {
+		const rowId = rowIdFor(worker, byId);
+		if (rowId === worker.id) continue;
+		rowsById.get(rowId)?.subWorkers.push(worker);
+	}
+	return rows;
+}
+
+/** The card's phase, from the reply's workers and whether its own text has ended. */
+export function workersCardPhase(items: WorkerItem[], replyDone: boolean): WorkersCardPhase {
+	if (!replyDone) return 'working';
+	if (items.length === 0) return 'none';
+	if (runningWorkers(items) > 0) return 'still-running';
+	return 'finished';
+}
+
+/** Whether the card shows its rows in this phase, until the person opens or closes it. */
+export function workersCardOpens(phase: WorkersCardPhase): boolean {
+	return phase === 'working' || phase === 'still-running';
+}
+
+/**
+ * The card's header: "Ultra · 3 workers · 2 running" while the reply is written,
+ * "Ultra · 3 workers · 2 still running" after it, and what the reply used once
+ * every worker has ended (see workersUsed).
+ */
+export function workersCardTitle(
+	i18n: Translator,
+	items: WorkerItem[],
+	phase: WorkersCardPhase,
+	now: number
+): string {
+	if (phase === 'working') return workersHeader(i18n, items);
+	if (phase === 'still-running') {
+		const parts = ['Ultra', workerCount(i18n, items.length), workersStillRunning(i18n, items)];
+		return parts.join(' · ');
+	}
+	return workersUsed(i18n, items, now);
+}
+
+/** A worker's state in words, for its icon and its sheet. */
+export function workerStateLabel(i18n: Translator, state: WorkerState): string {
+	switch (state) {
+		case 'running':
+			return i18n.t('Running');
+		case 'done':
+			return i18n.t('Done');
+		case 'failed':
+			return i18n.t('Failed');
+		case 'stopped':
+			return i18n.t('Stopped');
+	}
+}
+
+function firstLine(text: string | null): string | null {
+	if (text === null) return null;
+	for (const line of text.split('\n')) {
+		if (line.trim() !== '') return line.trim();
+	}
+	return null;
+}
+
+/**
+ * A row's one line under the worker's label: what a running worker is doing, or
+ * how an ended one ended, from the first line of its report. A worker the server
+ * said isn't running any more, while the chat still lists it running, says so.
+ */
+export function workerLine(
+	i18n: Translator,
+	worker: WorkerItem,
+	request: StopRequest | undefined = undefined
+): string {
+	if (worker.state === 'running') {
+		if (request === 'not-running') return i18n.t('Not running any more');
+		if (worker.activity) return worker.activity;
+		return i18n.t('Working…');
+	}
+	const reported = firstLine(worker.summary);
+	if (reported) return reported;
+	return workerStateLabel(i18n, worker.state);
+}
+
+/**
+ * What a desktop row opens to show: the whole of what a running worker is doing,
+ * or an ended worker's report. Null when there is nothing more: someone else's
+ * chat never carries either, and a worker the server said isn't running any more
+ * is no longer doing what it last reported.
+ */
+export function workerDetails(
+	worker: WorkerItem,
+	request: StopRequest | undefined = undefined
+): string | null {
+	if (worker.state !== 'running') return worker.summary;
+	if (request === 'not-running') return null;
+	return worker.activity;
+}
+
+/**
+ * Whether the person may stop this chat's workers one by one: only the chat's
+ * owner, and only in a saved chat, since the stop route finds workers by the
+ * chat's id.
+ */
+export function canStopWorkers(ownChat: boolean, chatId: string | null | undefined): boolean {
+	return ownChat && isSavedChatId(chatId);
+}
+
+/** A row's Stop button for a worker and the Stop the person pressed for it, if any. */
+export function stopControl(
+	worker: WorkerItem,
+	canStop: boolean,
+	request: StopRequest | undefined
+): StopControl {
+	if (!canStop || worker.state !== 'running') return 'none';
+	if (request === 'not-running') return 'none';
+	if (request === 'sending' || request === 'sent') return 'stopping';
+	return 'ready';
+}
+
+/** The toast when Stop failed: the server's reason when it gave one. */
+export function stopFailedMessage(i18n: Translator, label: string, error: unknown): string {
+	let reason = i18n.t('Something went wrong.');
+	if (typeof error === 'string' && error.trim() !== '') {
+		reason = error;
+	} else if (error instanceof Error && error.message) {
+		reason = error.message;
+	}
+	return i18n.t("Couldn't stop {{worker}}: {{reason}}", { worker: label, reason });
+}
+
+/**
+ * The workers snapshot saved with one reply of a chat read from the server, or
+ * null when it has none.
+ */
+export function savedReplyWorkers(chat: unknown, messageId: string): WorkersSnapshot | null {
+	if (!chat || typeof chat !== 'object') return null;
+	const content = (chat as { chat?: { history?: { messages?: Record<string, unknown> } } }).chat;
+	const message = content?.history?.messages?.[messageId];
+	if (!message || typeof message !== 'object') return null;
+	return workersSnapshot((message as MessageWithWorkers).workers);
+}
+
+/** The workers that ended since the earlier snapshot: running then, or not listed yet. */
+export function newlyEnded(earlier: WorkerItem[], current: WorkerItem[]): WorkerItem[] {
+	const earlierStates = new Map<string, WorkerState>();
+	for (const worker of earlier) {
+		earlierStates.set(worker.id, worker.state);
+	}
+	const ended: WorkerItem[] = [];
+	for (const worker of current) {
+		if (worker.state === 'running') continue;
+		const earlierState = earlierStates.get(worker.id);
+		if (earlierState === undefined || earlierState === 'running') ended.push(worker);
+	}
+	return ended;
+}
+
+function endedLine(i18n: Translator, worker: WorkerItem): string {
+	if (worker.state === 'done')
+		return i18n.t('Worker finished: {{worker}}', { worker: worker.label });
+	if (worker.state === 'failed')
+		return i18n.t('Worker failed: {{worker}}', { worker: worker.label });
+	return i18n.t('Worker stopped: {{worker}}', { worker: worker.label });
+}
+
+function endedCount(i18n: Translator, state: WorkerState, count: number): string {
+	if (state === 'done') {
+		if (count === 1) return i18n.t('1 worker finished');
+		return i18n.t('{{count}} workers finished', { count });
+	}
+	if (state === 'failed') {
+		if (count === 1) return i18n.t('1 worker failed');
+		return i18n.t('{{count}} workers failed', { count });
+	}
+	if (count === 1) return i18n.t('1 worker stopped');
+	return i18n.t('{{count}} workers stopped', { count });
+}
+
+/**
+ * What the card's live region says about workers that ended since it last spoke:
+ * "Worker finished: Read the parser" for one, or "2 workers finished, 1 worker
+ * failed" for several. Empty for none.
+ */
+export function workersEndedAnnouncement(i18n: Translator, ended: WorkerItem[]): string {
+	if (ended.length === 0) return '';
+	if (ended.length === 1) return endedLine(i18n, ended[0]);
+	const parts: string[] = [];
+	for (const state of ['done', 'failed', 'stopped'] as WorkerState[]) {
+		const count = ended.filter((worker) => worker.state === state).length;
+		if (count > 0) parts.push(endedCount(i18n, state, count));
+	}
+	return parts.join(', ');
 }

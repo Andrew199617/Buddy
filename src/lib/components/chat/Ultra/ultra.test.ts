@@ -8,32 +8,45 @@ import type {
 import type { RunTargetDraft } from '../RunTarget/run-target';
 import {
 	availability,
+	canStopWorkers,
 	effortLabel,
 	firstSelectedModel,
 	fitUltra,
 	formatElapsed,
 	loadedUltra,
+	newlyEnded,
 	nextReplyAccess,
 	requestUltra,
 	runningWorkers,
+	savedReplyWorkers,
 	savedUltra,
 	savedWorkers,
 	shortModelName,
 	startingUltra,
+	stopControl,
+	stopFailedMessage,
 	ultraButtonLabel,
 	ultraForReply,
+	workerDetails,
 	workerEffortOptions,
 	workerLimitLine,
+	workerLine,
 	workerModelOptions,
 	workerPill,
+	workerRows,
 	workersAccessLine,
 	workersAccessNote,
+	workersCardOpens,
+	workersCardPhase,
+	workersCardTitle,
 	workersElapsed,
+	workersEndedAnnouncement,
 	workersHeader,
 	workersModel,
 	workersSnapshot,
 	workersStillRunning,
 	workersUsed,
+	workerStateLabel,
 	withCurrentWorkers,
 	type UltraModel,
 	type UltraState,
@@ -725,5 +738,250 @@ describe('workers card text', () => {
 		);
 		expect(workersUsed(i18n, [worker(), worker({ id: 'task-2' })], 5000)).toBe('Used 2 workers');
 		expect(workersUsed(i18n, [], 5000)).toBe('Answered without workers');
+	});
+});
+
+describe('workerRows', () => {
+	it('puts sub-workers under the worker that started them, in the order they started', () => {
+		const reader = worker({ id: 'task-1', label: 'Read the parser' });
+		const fixer = worker({ id: 'task-2', label: 'Fix the parser' });
+		const readTests = worker({ id: 'task-3', parent_id: 'task-1', depth: 2 });
+		const runTests = worker({ id: 'task-4', parent_id: 'task-2', depth: 2 });
+		const readDocs = worker({ id: 'task-5', parent_id: 'task-1', depth: 2 });
+		expect(workerRows([reader, fixer, readTests, runTests, readDocs])).toEqual([
+			{ worker: reader, subWorkers: [readTests, readDocs] },
+			{ worker: fixer, subWorkers: [runTests] }
+		]);
+	});
+
+	it('keeps every row in place as workers end', () => {
+		const running = [
+			worker({ id: 'task-1', state: 'running' }),
+			worker({ id: 'task-2', state: 'running' }),
+			worker({ id: 'task-3', state: 'running' })
+		];
+		const ended = [
+			worker({ id: 'task-1', state: 'running' }),
+			worker({ id: 'task-2', state: 'done' }),
+			worker({ id: 'task-3', state: 'failed' })
+		];
+		const ids = (items: WorkerItem[]) => workerRows(items).map((row) => row.worker.id);
+		expect(ids(running)).toEqual(['task-1', 'task-2', 'task-3']);
+		expect(ids(ended)).toEqual(['task-1', 'task-2', 'task-3']);
+	});
+
+	it('gives a worker whose parent is not listed a row of its own, in its place', () => {
+		const first = worker({ id: 'task-1' });
+		const orphan = worker({ id: 'task-2', parent_id: 'task-gone', depth: 2 });
+		const last = worker({ id: 'task-3' });
+		expect(workerRows([first, orphan, last])).toEqual([
+			{ worker: first, subWorkers: [] },
+			{ worker: orphan, subWorkers: [] },
+			{ worker: last, subWorkers: [] }
+		]);
+	});
+
+	it('puts a worker that a sub-worker started under the same row', () => {
+		// Codex can start a third level, which Buddy stops and still lists.
+		const top = worker({ id: 'thread-1' });
+		const sub = worker({ id: 'thread-2', parent_id: 'thread-1', depth: 2 });
+		const tooDeep = worker({ id: 'thread-3', parent_id: 'thread-2', state: 'stopped' });
+		expect(workerRows([top, sub, tooDeep])).toEqual([{ worker: top, subWorkers: [sub, tooDeep] }]);
+	});
+
+	it('shows a worker listed twice once, and ends a parent chain that loops', () => {
+		const first = worker({ id: 'task-1', state: 'running' });
+		const again = worker({ id: 'task-1', state: 'done' });
+		expect(workerRows([first, again])).toEqual([{ worker: first, subWorkers: [] }]);
+
+		const one = worker({ id: 'task-1', parent_id: 'task-2' });
+		const two = worker({ id: 'task-2', parent_id: 'task-1' });
+		expect(workerRows([one, two]).map((row) => row.worker.id)).toEqual(['task-1', 'task-2']);
+		expect(workerRows([])).toEqual([]);
+	});
+});
+
+describe('workers card phase', () => {
+	const running = worker({ state: 'running' });
+	const done = worker({ id: 'task-2', state: 'done' });
+
+	it('is working, and open, while the reply is written', () => {
+		expect(workersCardPhase([running, done], false)).toBe('working');
+		expect(workersCardPhase([done], false)).toBe('working');
+		expect(workersCardPhase([], false)).toBe('working');
+		expect(workersCardOpens('working')).toBe(true);
+	});
+
+	it('stays open when the reply ended with workers still running', () => {
+		expect(workersCardPhase([running, done], true)).toBe('still-running');
+		expect(workersCardOpens('still-running')).toBe(true);
+	});
+
+	it('collapses once every worker ended, or when the reply started none', () => {
+		expect(workersCardPhase([done], true)).toBe('finished');
+		expect(workersCardPhase([], true)).toBe('none');
+		expect(workersCardOpens('finished')).toBe(false);
+		expect(workersCardOpens('none')).toBe(false);
+	});
+});
+
+describe('workersCardTitle', () => {
+	const team = [
+		worker({ id: 'task-1', state: 'running', started_at: 1000 }),
+		worker({ id: 'task-2', state: 'done', started_at: 1010, ended_at: 1100 }),
+		worker({ id: 'task-3', parent_id: 'task-1', depth: 2, state: 'running', started_at: 1020 })
+	];
+	const done = [
+		worker({ id: 'task-1', started_at: 1000, ended_at: 1150 }),
+		worker({ id: 'task-2', started_at: 1010, ended_at: 1192 })
+	];
+
+	it('heads the card for each phase', () => {
+		expect(workersCardTitle(i18n, team, 'working', 1300)).toBe('Ultra · 3 workers · 2 running');
+		expect(workersCardTitle(i18n, team, 'still-running', 1300)).toBe(
+			'Ultra · 3 workers · 2 still running'
+		);
+		expect(workersCardTitle(i18n, done, 'finished', 5000)).toBe('Used 2 workers · 3m 12s');
+		expect(workersCardTitle(i18n, [], 'none', 5000)).toBe('Answered without workers');
+	});
+});
+
+describe('worker rows text', () => {
+	it('words each state', () => {
+		expect(workerStateLabel(i18n, 'running')).toBe('Running');
+		expect(workerStateLabel(i18n, 'done')).toBe('Done');
+		expect(workerStateLabel(i18n, 'failed')).toBe('Failed');
+		expect(workerStateLabel(i18n, 'stopped')).toBe('Stopped');
+	});
+
+	it('says what a running worker is doing', () => {
+		const reading = worker({ state: 'running', activity: 'Reading claude_code.py' });
+		expect(workerLine(i18n, reading)).toBe('Reading claude_code.py');
+		expect(workerLine(i18n, worker({ state: 'running' }))).toBe('Working…');
+		expect(workerLine(i18n, reading, 'sent')).toBe('Reading claude_code.py');
+		expect(workerLine(i18n, reading, 'not-running')).toBe('Not running any more');
+	});
+
+	it('says how an ended worker ended, from its report', () => {
+		const reported = worker({
+			activity: 'Running the tests',
+			summary: '\n  All 12 tests pass.  \nNothing else changed.'
+		});
+		expect(workerLine(i18n, reported)).toBe('All 12 tests pass.');
+		expect(workerLine(i18n, worker({ state: 'failed', activity: 'Running the tests' }))).toBe(
+			'Failed'
+		);
+		expect(workerLine(i18n, worker({ state: 'stopped', summary: '   ' }))).toBe('Stopped');
+	});
+
+	it('opens a row to what a worker is doing or its whole report', () => {
+		const reading = worker({ state: 'running', activity: 'Reading claude_code.py' });
+		expect(workerDetails(reading)).toBe('Reading claude_code.py');
+		expect(workerDetails(reading, 'not-running')).toBeNull();
+		expect(workerDetails(worker({ state: 'running' }))).toBeNull();
+
+		const report = 'All 12 tests pass.\nNothing else changed.';
+		expect(workerDetails(worker({ summary: report, activity: 'Running the tests' }))).toBe(report);
+		expect(workerDetails(worker())).toBeNull();
+	});
+});
+
+describe('stopping one worker', () => {
+	const running = worker({ state: 'running' });
+
+	it('lets only the owner of a saved chat stop its workers', () => {
+		const savedChatId = '7d5e8a54-3b1f-4c2e-9a7d-0f6b2c1e4d3a';
+		expect(canStopWorkers(true, savedChatId)).toBe(true);
+		expect(canStopWorkers(false, savedChatId)).toBe(false);
+		expect(canStopWorkers(true, '')).toBe(false);
+		expect(canStopWorkers(true, null)).toBe(false);
+		expect(canStopWorkers(true, 'temporary:session-1')).toBe(false);
+		expect(canStopWorkers(true, 'channel:general')).toBe(false);
+	});
+
+	it('offers Stop on running workers only', () => {
+		expect(stopControl(running, true, undefined)).toBe('ready');
+		expect(stopControl(running, false, undefined)).toBe('none');
+		expect(stopControl(worker({ state: 'done' }), true, undefined)).toBe('none');
+		expect(stopControl(worker({ state: 'stopped' }), true, 'sent')).toBe('none');
+	});
+
+	it('waits once Stop is pressed, and drops it for a worker that already ended', () => {
+		expect(stopControl(running, true, 'sending')).toBe('stopping');
+		expect(stopControl(running, true, 'sent')).toBe('stopping');
+		expect(stopControl(running, true, 'not-running')).toBe('none');
+	});
+
+	it('gives the server’s reason when Stop failed', () => {
+		expect(stopFailedMessage(i18n, 'Fix the parser', 'Your computer is offline.')).toBe(
+			"Couldn't stop Fix the parser: Your computer is offline."
+		);
+		expect(stopFailedMessage(i18n, 'Fix the parser', new TypeError('Failed to fetch'))).toBe(
+			"Couldn't stop Fix the parser: Failed to fetch"
+		);
+		expect(stopFailedMessage(i18n, 'Fix the parser', '')).toBe(
+			"Couldn't stop Fix the parser: Something went wrong."
+		);
+		expect(stopFailedMessage(i18n, 'Fix the parser', { detail: [] })).toBe(
+			"Couldn't stop Fix the parser: Something went wrong."
+		);
+	});
+
+	it('reads one reply’s saved workers from the chat', () => {
+		const snapshot = { items: [worker()], running: 0 };
+		const messages = { 'reply-1': { id: 'reply-1', workers: snapshot } };
+		const chat = { id: 'chat-1', chat: { history: { messages } } };
+		expect(savedReplyWorkers(chat, 'reply-1')).toBe(snapshot);
+		expect(savedReplyWorkers(chat, 'reply-2')).toBeNull();
+
+		const withoutWorkers = { chat: { history: { messages: { 'reply-1': { id: 'reply-1' } } } } };
+		expect(savedReplyWorkers(withoutWorkers, 'reply-1')).toBeNull();
+		expect(savedReplyWorkers({ chat: {} }, 'reply-1')).toBeNull();
+		expect(savedReplyWorkers(null, 'reply-1')).toBeNull();
+	});
+});
+
+describe('announcing ended workers', () => {
+	it('finds the workers that ended since the last snapshot', () => {
+		const earlier = [
+			worker({ id: 'task-1', state: 'running' }),
+			worker({ id: 'task-2', state: 'done' }),
+			worker({ id: 'task-3', state: 'running' })
+		];
+		const finished = worker({ id: 'task-1', state: 'done' });
+		const quick = worker({ id: 'task-4', state: 'failed' });
+		const current = [
+			finished,
+			worker({ id: 'task-2', state: 'done' }),
+			worker({ id: 'task-3', state: 'running' }),
+			quick,
+			worker({ id: 'task-5', state: 'running' })
+		];
+		expect(newlyEnded(earlier, current)).toEqual([finished, quick]);
+		expect(newlyEnded(current, current)).toEqual([]);
+	});
+
+	it('names one worker that ended', () => {
+		expect(workersEndedAnnouncement(i18n, [])).toBe('');
+		const finished = worker({ label: 'Read the parser' });
+		expect(workersEndedAnnouncement(i18n, [finished])).toBe('Worker finished: Read the parser');
+		const failed = worker({ label: 'Run the tests', state: 'failed' });
+		expect(workersEndedAnnouncement(i18n, [failed])).toBe('Worker failed: Run the tests');
+		const stopped = worker({ label: 'Review the fix', state: 'stopped' });
+		expect(workersEndedAnnouncement(i18n, [stopped])).toBe('Worker stopped: Review the fix');
+	});
+
+	it('counts several by how they ended', () => {
+		const several = [
+			worker({ id: 'task-1', state: 'done' }),
+			worker({ id: 'task-2', state: 'failed' }),
+			worker({ id: 'task-3', state: 'done' })
+		];
+		expect(workersEndedAnnouncement(i18n, several)).toBe('2 workers finished, 1 worker failed');
+		const stopped = [
+			worker({ id: 'task-1', state: 'stopped' }),
+			worker({ id: 'task-2', state: 'stopped' })
+		];
+		expect(workersEndedAnnouncement(i18n, stopped)).toBe('2 workers stopped');
 	});
 });

@@ -92,6 +92,11 @@
 	width: 94%;
 }
 
+/* So does an Ultra reply's workers card, so the reply keeps its width as workers report. */
+.buddy-chat .buddy-assistant-card:has(.buddy-ultra-workers) {
+	width: 94%;
+}
+
 .buddy-chat .buddy-assistant-stack > .self-center {
 	margin-bottom: 5px;
 }
