@@ -8,7 +8,9 @@ credentials in its own config folder on that machine.
 
 Chats use in-memory (ephemeral) Codex threads. A thread stays loaded while the
 chat continues; any other state is rebuilt by injecting the chat's earlier
-messages into a new thread.
+messages into a new thread. Ultra turns use persistent threads, which Codex also
+saves in its own sessions folder, because Codex can't start workers from an
+ephemeral thread.
 """
 
 import asyncio
@@ -18,6 +20,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from open_webui.utils.subscriptions import ultra
 from open_webui.utils.subscriptions.common import (
     ACCESS_CHAT,
     ACCESS_FULL,
@@ -27,6 +30,7 @@ from open_webui.utils.subscriptions.common import (
     ProviderModel,
     ProviderSettings,
     TurnRequest,
+    UltraOptions,
     model_key,
 )
 from open_webui.utils.subscriptions.conversation import ChatTurn, conversation_key
@@ -167,6 +171,25 @@ def user_input(turn: ChatTurn) -> list[dict]:
         if url.startswith(('data:', 'http://', 'https://')):
             inputs.append({'type': 'image', 'url': url})
     return inputs
+
+
+def turn_input(turn: TurnRequest) -> list[dict]:
+    """The input of a turn's turn/start: the person's message, and ULTRA_TURN_NOTE on Ultra turns.
+
+    The note is a text item of its own, added here so the chat never holds it.
+    """
+    inputs = user_input(turn.conversation.prompt)
+    if turn.ultra is not None:
+        inputs.append({'type': 'text', 'text': ultra.ULTRA_TURN_NOTE, 'text_elements': []})
+    return inputs
+
+
+def _sends_effort(turn: TurnRequest) -> bool:
+    """Whether a turn sends Codex a thinking level, which must be one its model offers."""
+    if turn.effort or turn.is_task:
+        return True
+    # The person may choose a level for an Ultra turn's workers alone.
+    return turn.ultra is not None and bool(turn.ultra.worker_effort)
 
 
 def _shorten(text, limit: int = 160) -> str:
@@ -496,6 +519,22 @@ class LiveThread:
     access: str
     cwd: str
     usage_total: dict | None
+    # The Ultra choice the thread started with, or None when it started without Ultra.
+    ultra: UltraOptions | None = None
+
+    def can_run(self, turn: TurnRequest, generation: int) -> bool:
+        """Whether this kept thread can run the turn.
+
+        Its app-server must not have restarted since. Its sandbox, folder and
+        workers were set when it started, so it must have started for the
+        turn's access, folder and Ultra choice. Workers are on only in Ultra
+        threads, so a thread never runs a turn of the other kind.
+        """
+        if self.generation != generation:
+            return False
+        if self.access != turn.access or self.cwd != turn.cwd:
+            return False
+        return self.ultra == turn.ultra
 
 
 class CodexLogin:
@@ -730,7 +769,7 @@ class CodexProvider:
         return None
 
     async def _ensure_effort_models(self, server: CodexAppServer, turn: TurnRequest) -> None:
-        if not turn.effort and not turn.is_task:
+        if not _sends_effort(turn):
             return
         if not (
             self._model_efforts_server is server
@@ -746,11 +785,39 @@ class CodexProvider:
             return f'{CHAT_INSTRUCTIONS}\n\n{system}'.strip()
         return system or None
 
+    def _worker_effort(self, turn: TurnRequest) -> str | None:
+        """The thinking level chosen for an Ultra turn's workers, when their model offers it here.
+
+        Workers run on the chat's own model unless the person chose another.
+        """
+        options = turn.ultra
+        if not options.worker_effort:
+            return None
+        worker_model = options.worker_model or turn.model
+        if options.worker_effort in self._model_efforts.get(worker_model, []):
+            return options.worker_effort
+        return None
+
+    def _worker_config(self, turn: TurnRequest) -> dict:
+        """Config keys that turn Codex's workers on for an Ultra thread, with the person's model and level.
+
+        Codex may not honour the model and level keys, so the orchestrator
+        note also asks for them in every spawn.
+        """
+        config = {'features.multi_agent': True}
+        if turn.ultra.worker_model:
+            config['agents.default_subagent_model'] = turn.ultra.worker_model
+        effort = self._worker_effort(turn)
+        if effort:
+            config['agents.default_subagent_reasoning_effort'] = effort
+        return config
+
     async def _thread_config(self, server: CodexAppServer, turn: TurnRequest) -> dict:
         """Per-thread config overrides that keep threads in bounds.
 
-        No thread may start Codex's own sub-agents: Buddy does not list them,
-        and nothing may run unseen.
+        Only Ultra threads may start Codex's own sub-agents, the workers Buddy
+        lists under the chat. Other threads have them off: Buddy does not list
+        their sub-agents, and nothing may run unseen.
 
         The read-only sandbox blocks writes but not reads anywhere on disk, and
         MCP servers from the user's Codex config (such as a JavaScript REPL) run
@@ -762,6 +829,8 @@ class CodexProvider:
         # Dotted keys leave the app-server's other feature switches alone. A
         # whole features table would turn back on what it disabled at start.
         config = {'features.multi_agent': False}
+        if turn.ultra is not None:
+            config.update(self._worker_config(turn))
         if turn.access == ACCESS_FULL:
             return config
 
@@ -781,10 +850,14 @@ class CodexProvider:
         sandbox = 'read-only'
         if turn.access == ACCESS_FULL:
             sandbox = 'danger-full-access'
+        ephemeral = True
+        if turn.ultra is not None:
+            # Workers can't start from an ephemeral thread: Codex fails their spawns.
+            ephemeral = False
         params = {
             'cwd': turn.cwd,
             'model': turn.model,
-            'ephemeral': True,
+            'ephemeral': ephemeral,
             'sandbox': sandbox,
             'approvalPolicy': 'never',
             'developerInstructions': self._developer_instructions(turn),
@@ -801,7 +874,7 @@ class CodexProvider:
         live = self._live_threads.pop(key, None)
         if not live:
             return None
-        if live.generation != generation or live.access != turn.access or live.cwd != turn.cwd:
+        if not live.can_run(turn, generation):
             self._release_live_thread(live)
             return None
         return live
@@ -871,7 +944,7 @@ class CodexProvider:
         try:
             # Thread setup also sends RPCs and may restart the app-server.
             await self._ensure_effort_models(server, turn)
-            params = {'threadId': thread_id, 'input': user_input(conversation.prompt), 'model': turn.model}
+            params = {'threadId': thread_id, 'input': turn_input(turn), 'model': turn.model}
             effort = self._effort(turn)
             if effort:
                 params['effort'] = effort
@@ -899,7 +972,13 @@ class CodexProvider:
                 answered = conversation.history + [conversation.prompt, ChatTurn('assistant', parser.reply_text)]
                 next_key = f'{machine.id}|{conversation_key(answered, conversation.system)}'
                 live = LiveThread(
-                    thread_id, machine.id, server.generation, turn.access, turn.cwd, parser.usage_total
+                    thread_id,
+                    machine.id,
+                    server.generation,
+                    turn.access,
+                    turn.cwd,
+                    parser.usage_total,
+                    ultra=turn.ultra,
                 )
                 self._keep_live_thread(next_key, live)
             elif parser and not parser.finished:
