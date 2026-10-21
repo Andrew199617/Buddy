@@ -841,6 +841,24 @@ class ProviderHostTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.config.commits), commits)
         self.assertEqual(self.providers['claude'].calls, [])
 
+    async def test_a_removed_computer_is_named_as_removed_not_as_unverified(self):
+        # The owner's plan pointed at a computer that was then removed: say so, and where to fix it.
+        await self.service.delete_machine(OWNER, 'runner-a')
+        status = await self.service._load_status(self.on_plan('claude'))
+        self.assertEqual(status['message'], self.service.REMOVED_MACHINE_SETTINGS_MESSAGE)
+        with self.assertRaises(self.service.HTTPException) as caught:
+            await self.service.save_settings(OWNER, 'claude', {'enable': True}, 'runner-a')
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(str(caught.exception), self.service.REMOVED_MACHINE_SETTINGS_MESSAGE)
+        # Choosing another computer under Runs on still recovers.
+        moved = await self.service.save_settings(OWNER, 'claude', enabled_settings('runner-b'), 'runner-a')
+        self.assertEqual(moved.machine_id, 'runner-b')
+
+    async def test_a_computer_still_listed_but_unverified_keeps_the_verify_message(self):
+        self.config.values['subscriptions.machines'][0]['revision'] = ''
+        status = await self.service._load_status(self.on_plan('claude'))
+        self.assertEqual(status['message'], self.service.REVERIFY_MACHINE_MESSAGE)
+
     async def test_existing_legacy_host_without_revision_cannot_use_deleted_host_recovery(self):
         self.config.values['subscriptions.machines'][0].pop('revision')
         before = copy.deepcopy(self.config.values)

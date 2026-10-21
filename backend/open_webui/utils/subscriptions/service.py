@@ -93,6 +93,10 @@ USER_SETTINGS_PREFIX = 'subscriptions.users'
 HOST_FIELDS = ('id', 'name', 'platform', 'version')
 CAPABILITY_FIELDS = ('directories', 'files', 'workspaces', 'terminals', 'pty', 'providerExecution', 'folderBrowsing')
 REVERIFY_MACHINE_MESSAGE = 'Verify the selected machine again in subscription settings before using its provider.'
+REMOVED_MACHINE_SETTINGS_MESSAGE = (
+    'The computer this provider used was removed. Under Runs on, choose another computer and save, '
+    'then turn the provider on.'
+)
 NO_MACHINE_MESSAGE = 'Choose one of your computers for this provider in Settings → Machines.'
 SERVER_MACHINE_MESSAGE = 'This server is not available to your account. Choose one of your computers.'
 NOT_ALLOWED_MESSAGE = 'Your account cannot use AI plans on computers here. Ask an administrator.'
@@ -432,6 +436,11 @@ async def _machine_revision(owner_id: str, machine_id: str) -> str | None:
     return None
 
 
+async def _machine_was_removed(owner_id: str, machine_id: str) -> bool:
+    """Whether the computer is gone from the person's list, rather than there but unverified."""
+    return not any(machine['id'] == machine_id for machine in await _owned_machine_configs(owner_id))
+
+
 async def _require_verified_machine(ref: ProviderRef, settings: ProviderSettings) -> None:
     if not settings.machine_id:
         raise SubscriptionError(NO_MACHINE_MESSAGE)
@@ -440,6 +449,8 @@ async def _require_verified_machine(ref: ProviderRef, settings: ProviderSettings
             raise SubscriptionError(SERVER_MACHINE_MESSAGE)
         return
     if await _machine_revision(ref.owner_id, settings.machine_id) is None:
+        if await _machine_was_removed(ref.owner_id, settings.machine_id):
+            raise SubscriptionError(REMOVED_MACHINE_SETTINGS_MESSAGE)
         raise SubscriptionError(REVERIFY_MACHINE_MESSAGE)
 
 
@@ -458,6 +469,8 @@ async def _check_expected_machine(
         raise HTTPException(status_code=409, detail='The selected machine changed. Refresh before trying again.')
     revision = await _machine_revision(owner_id, settings.machine_id)
     if mutation and _selects_computer(settings) and (not revision or not expected_machine_revision):
+        if not revision and await _machine_was_removed(owner_id, settings.machine_id):
+            raise HTTPException(status_code=409, detail=REMOVED_MACHINE_SETTINGS_MESSAGE)
         raise HTTPException(status_code=409, detail='Verify the selected machine again, then refresh before trying again.')
     if expected_machine_revision is not None and expected_machine_revision != revision:
         raise HTTPException(status_code=409, detail='The selected machine changed. Refresh before trying again.')
