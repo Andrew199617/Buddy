@@ -3766,6 +3766,23 @@ async function assertMenuShowsWhole(menu) {
 }
 
 /**
+ * Rows and lines of the scrolling menu that its bottom edge cuts through. Each one
+ * should show whole or not at all.
+ */
+async function rowsCutAtBottom(scroller) {
+	return scroller.evaluate((element) => {
+		const bottom = element.getBoundingClientRect().top + element.clientTop + element.clientHeight;
+		const lines = Array.from(element.querySelectorAll('button:not([role="switch"]), p'));
+		return lines
+			.filter((line) => {
+				const rect = line.getBoundingClientRect();
+				return rect.top < bottom - 1 && rect.bottom > bottom + 1;
+			})
+			.map((line) => line.textContent.trim());
+	});
+}
+
+/**
  * Opens the composer as a person would, by its draft. Closing the model picker from its
  * own button leaves an empty desktop composer at rest.
  */
@@ -4396,6 +4413,13 @@ async function checkLandscapeUltraMenu(page) {
 		(element) => element.scrollHeight > element.clientHeight + 1
 	);
 	assert.ok(scrollable, 'A menu taller than the room scrolls');
+	assert.deepEqual(await rowsCutAtBottom(scroller), [], 'The menu ends between rows');
+	assert.equal(
+		await scroller.getAttribute('data-more-below'),
+		'true',
+		'A shadow shows there is more below'
+	);
+	await captureScreenshot(page, 'phone-ultra-landscape-scroll');
 	for (let swipe = 0; swipe < 3; swipe += 1) {
 		await swipeUp(page, scroller);
 	}
@@ -4403,6 +4427,12 @@ async function checkLandscapeUltraMenu(page) {
 		(element) => element.scrollTop + element.clientHeight >= element.scrollHeight - 1
 	);
 	assert.ok(atEnd, 'Swipes scroll the menu to its end');
+	assert.equal(
+		await scroller.getAttribute('data-more-below'),
+		'false',
+		'At the end, no shadow below'
+	);
+	assert.equal(await scroller.getAttribute('data-more-above'), 'true', 'A shadow shows more above');
 	const lastLine = menu.getByText('No worker limit — Ultra uses your plan faster', {
 		exact: true
 	});

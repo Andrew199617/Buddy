@@ -117,6 +117,75 @@
 		menuElement.querySelector<HTMLElement>(selector)?.focus();
 	}
 
+	/**
+	 * The height of the scrolling menu's box that ends just below a whole row or line,
+	 * never through one, as tall as the room allows. Rows are measured from the box,
+	 * which positions them, so the opening animation's scaling doesn't count.
+	 */
+	function wholeRowsHeight(scroller: HTMLElement, content: HTMLElement, room: number): number {
+		const style = getComputedStyle(scroller);
+		const above = parseFloat(style.borderTopWidth);
+		const below = parseFloat(style.paddingBottom) + parseFloat(style.borderBottomWidth);
+		let height = 0;
+		for (const line of content.querySelectorAll<HTMLElement>('button, p, hr')) {
+			// The rows of a sticky Back header are measured from that header instead.
+			if (line.offsetParent !== scroller) continue;
+			const bottom = above + line.offsetTop + line.offsetHeight + below;
+			if (bottom <= room) height = Math.max(height, bottom);
+		}
+		return height;
+	}
+
+	/**
+	 * Svelte action for the menu's content. When the menu is taller than the room the
+	 * dropdown leaves it, its box ends between rows, and a shadow at an edge shows
+	 * there is more past it. The dropdown sets that room as its popup's max-height,
+	 * which the box inherits, whenever the keyboard or the window changes.
+	 */
+	function fitWholeRows(content: HTMLElement) {
+		const parent = content.parentElement;
+		if (!parent) return;
+		const scroller: HTMLElement = parent;
+		const popup = content.closest<HTMLElement>('[role="menu"]');
+		let frame: number | undefined;
+
+		function showShadows() {
+			const hiddenBelow = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
+			scroller.dataset.moreAbove = String(scroller.scrollTop > 1);
+			scroller.dataset.moreBelow = String(hiddenBelow > 1);
+		}
+
+		function fit() {
+			frame = undefined;
+			// Back to the room the dropdown gives, to measure what fits in it.
+			scroller.style.maxHeight = '';
+			if (scroller.scrollHeight > scroller.clientHeight + 1) {
+				const height = wholeRowsHeight(scroller, content, scroller.offsetHeight);
+				if (height > 0) scroller.style.maxHeight = `${height}px`;
+			}
+			showShadows();
+		}
+
+		function scheduleFit() {
+			if (frame !== undefined) return;
+			frame = requestAnimationFrame(fit);
+		}
+
+		const contentResizes = new ResizeObserver(scheduleFit);
+		contentResizes.observe(content);
+		const roomChanges = new MutationObserver(scheduleFit);
+		if (popup) roomChanges.observe(popup, { attributes: true, attributeFilter: ['style'] });
+		scroller.addEventListener('scroll', showShadows, { passive: true });
+		return {
+			destroy() {
+				if (frame !== undefined) cancelAnimationFrame(frame);
+				contentResizes.disconnect();
+				roomChanges.disconnect();
+				scroller.removeEventListener('scroll', showShadows);
+			}
+		};
+	}
+
 	function toggleUltra() {
 		if (!availability.available) return;
 		onChange({ on: !active });
@@ -242,9 +311,9 @@
 		can't: Svelte resets its overflow when the opening animation ends. -->
 	<div slot="content" class="max-h-[inherit]">
 		<DropdownMenu
-			className="buddy-ultra-menu {menuWidth} max-h-[inherit] overflow-y-auto overscroll-contain"
+			className="buddy-ultra-menu relative {menuWidth} max-h-[inherit] overflow-y-auto overscroll-contain"
 		>
-			<div bind:this={menuElement} class="flex flex-col">
+			<div bind:this={menuElement} use:fitWholeRows class="flex flex-col">
 				{#if view === 'main'}
 					<button
 						type="button"
@@ -319,3 +388,32 @@
 		</DropdownMenu>
 	</div>
 </Dropdown>
+
+<style>
+	/* A shadow inside the scrolling menu's edge where more of it is out of view. */
+	:global(.buddy-ultra-menu[data-more-above='true']) {
+		--tw-inset-shadow: inset 0 14px 10px -10px rgb(0 0 0 / 0.2);
+	}
+
+	:global(.buddy-ultra-menu[data-more-below='true']) {
+		--tw-inset-shadow: inset 0 -14px 10px -10px rgb(0 0 0 / 0.2);
+	}
+
+	:global(.buddy-ultra-menu[data-more-above='true'][data-more-below='true']) {
+		--tw-inset-shadow:
+			inset 0 14px 10px -10px rgb(0 0 0 / 0.2), inset 0 -14px 10px -10px rgb(0 0 0 / 0.2);
+	}
+
+	:global(.dark .buddy-ultra-menu[data-more-above='true']) {
+		--tw-inset-shadow: inset 0 14px 10px -10px rgb(0 0 0 / 0.6);
+	}
+
+	:global(.dark .buddy-ultra-menu[data-more-below='true']) {
+		--tw-inset-shadow: inset 0 -14px 10px -10px rgb(0 0 0 / 0.6);
+	}
+
+	:global(.dark .buddy-ultra-menu[data-more-above='true'][data-more-below='true']) {
+		--tw-inset-shadow:
+			inset 0 14px 10px -10px rgb(0 0 0 / 0.6), inset 0 -14px 10px -10px rgb(0 0 0 / 0.6);
+	}
+</style>
