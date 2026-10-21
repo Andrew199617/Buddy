@@ -1539,8 +1539,12 @@ class CodexProvider:
 
         asyncio.create_task(interrupt())
 
-    def _interrupt_worker(self, server: CodexAppServer, thread_id: str, turn_id: str) -> None:
-        """Interrupt a worker's turn. Its thread stays loaded, since the thread that started it still holds it."""
+    def _send_interrupt(self, server: CodexAppServer, thread_id: str, turn_id: str) -> None:
+        """Interrupt a turn without waiting for Codex's answer, and leave its thread loaded.
+
+        A worker's thread stays loaded since the thread that started it still
+        holds it. An orchestrator's thread is let go once its turn has ended.
+        """
         if not server.running:
             return
         asyncio.create_task(self._request_interrupt(server, thread_id, turn_id))
@@ -1548,32 +1552,35 @@ class CodexProvider:
     def _interrupt_workers(self, server: CodexAppServer, parser: CodexTurnParser) -> None:
         """Interrupt the workers' turns that the turn's parser hands over, each on its worker's own thread."""
         for worker_thread, worker_turn in parser.take_interrupts():
-            self._interrupt_worker(server, worker_thread, worker_turn)
+            self._send_interrupt(server, worker_thread, worker_turn)
 
     async def _stop_ultra_turn(self, run: CodexUltraRun) -> list:
         """Stop an Ultra turn that ends before it is over, and return its workers' updates meanwhile.
 
         Codex doesn't stop workers with their orchestrator. So Buddy interrupts
         the orchestrator's turn first, so that it starts no more workers, and
-        then the turn of each running worker on its own thread. It then reads
-        the turn's notifications until all of those turns have ended, for at
-        most STOP_WORKERS_GRACE seconds. A turn that a worker starts meanwhile
-        is interrupted too, such as that of a worker whose thread hadn't named
-        its turn yet. The reply has ended, so only the workers' updates are
-        kept. Does nothing when the turn is over, is being stopped already, or
-        its app-server has stopped, which ends its workers.
+        then the turn of each running worker on its own thread. The workers'
+        interrupts don't wait for Codex to answer the orchestrator's, which
+        took it about 4 seconds in the recorded turns, so a slow answer or a
+        second Stop can't keep them from going out. Buddy then reads the turn's
+        notifications until all of those turns have ended, for at most
+        STOP_WORKERS_GRACE seconds. A turn that a worker starts meanwhile is
+        interrupted too, such as that of a worker whose thread hadn't named its
+        turn yet. The reply has ended, so only the workers' updates are kept.
+        Does nothing when the turn is over, is being stopped already, or its
+        app-server has stopped, which ends its workers.
         """
         parser = run.parser
         workers = parser.workers
         if parser.turn_over() or workers.interrupting_all or not run.server_running():
             return []
         workers.interrupt_all()
+        if not parser.finished:
+            self._send_interrupt(run.server, parser.thread_id, parser.turn_id)
+        self._interrupt_workers(run.server, parser)
         updates = []
         try:
             async with asyncio.timeout(STOP_WORKERS_GRACE):
-                if not parser.finished:
-                    await self._request_interrupt(run.server, parser.thread_id, parser.turn_id)
-                self._interrupt_workers(run.server, parser)
                 while not parser.turn_over():
                     message = await run.queue.get()
                     if isinstance(message, SubscriptionError):

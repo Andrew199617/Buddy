@@ -277,15 +277,46 @@ class InterruptibleProcess(ReplayProcess):
         if message.get('method') != 'turn/interrupt':
             await super().write(text)
             return
-        params = message['params']
-        self.requests.append(('turn/interrupt', params))
-        self._answer(message['id'], {})
+        self.requests.append(('turn/interrupt', message['params']))
+        self._interrupted(message['id'], message['params'])
+
+    def _interrupted(self, request_id, params: dict) -> None:
+        """Answer a turn/interrupt, and end its turn unless it has ended already."""
+        self._answer(request_id, {})
         turn = (params['threadId'], params['turnId'])
         if turn in self._ended:
             return
         self._ended.add(turn)
         completion = self._held_back.pop(turn, None) or interrupted_completion(*turn)
         self._lines.put_nowait(json.dumps(completion))
+
+
+class SlowInterruptProcess(InterruptibleProcess):
+    """An interruptible app-server that answers turn/interrupt on ``slow_thread`` only once release() is called.
+
+    In the recorded stops, Codex took about 4 seconds to answer the
+    orchestrator's turn/interrupt, and milliseconds to answer each worker's.
+    A busy computer or a Runner's connection can take longer still.
+    """
+
+    def __init__(self, messages: list[dict], waiting, slow_thread: str):
+        super().__init__(messages, waiting=waiting)
+        self.slow_thread = slow_thread
+        # The turn/interrupt requests on slow_thread not answered yet, as (request id, params).
+        self._unanswered = []
+
+    def _interrupted(self, request_id, params: dict) -> None:
+        if params['threadId'] == self.slow_thread:
+            self._unanswered.append((request_id, params))
+            return
+        super()._interrupted(request_id, params)
+
+    def release(self) -> None:
+        """Answer the held turn/interrupt requests, and end their turns."""
+        unanswered = self._unanswered
+        self._unanswered = []
+        for request_id, params in unanswered:
+            super()._interrupted(request_id, params)
 
 
 class ReplayMachine:
@@ -1189,6 +1220,27 @@ class UltraStopTests(unittest.IsolatedAsyncioTestCase):
         server = self.provider._servers[ReplayMachine.id]
         self.assertEqual(server._thread_queues, {})
         self.assertEqual(server._worker_routes, {})
+
+    async def test_the_workers_are_interrupted_without_waiting_for_codex_to_answer_the_orchestrators_interrupt(self):
+        # Here Codex answers the orchestrator's interrupt only after Buddy has stopped waiting.
+        waiting = [self.orchestrator, self.rivers, self.mountains]
+        process = SlowInterruptProcess(self.messages, waiting=waiting, slow_thread=self.orchestrator)
+        _, task, _ = await self.start(process)
+        [run] = self.provider._ultra_runs
+
+        with patch.object(codex, 'STOP_WORKERS_GRACE', 0.2):
+            with self.assertLogs(codex.log, level='WARNING'):
+                await self.stop_reply(task)
+
+        # Each worker's interrupt went out right after the orchestrator's, before Codex answered it.
+        self.assertEqual(process.sent('turn/interrupt')[:3], [self.interrupt_of(thread) for thread in waiting])
+        # So both workers' turns ended within the grace, and only the orchestrator's didn't.
+        self.assertFalse(run.parser.workers.running())
+        self.assertFalse(run.parser.finished)
+        # As Buddy let the orchestrator's thread go, it interrupted its turn once more.
+        await asyncio.sleep(0)
+        self.assertEqual(process.sent('turn/interrupt')[3:], [self.interrupt_of(self.orchestrator)])
+        process.release()
 
     async def test_the_reply_ends_soon_when_codex_does_not_report_its_workers_stopped(self):
         # Here Codex only answers the interrupts.
