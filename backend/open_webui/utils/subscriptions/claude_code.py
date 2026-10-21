@@ -91,6 +91,15 @@ AGENT_TOOLS = ('Agent', 'Task')
 ULTRA_TIME_LIMIT_HOURS = 6
 ULTRA_TIME_LIMIT = ULTRA_TIME_LIMIT_HOURS * 60 * 60
 ULTRA_TIME_LIMIT_MESSAGE = f'Buddy stopped this Ultra reply after {ULTRA_TIME_LIMIT_HOURS} hours.'
+# The session state Claude Code reports once an Ultra turn is over: its last
+# turn has ended, every background worker has ended, and no worker's report
+# still waits for a turn of its own.
+SESSION_IDLE = 'idle'
+# Seconds Buddy waits, once Claude Code's latest turn has its result and no
+# worker runs, for Claude Code to report its session idle or start another
+# turn. Past that the reply ends anyway, so a CLI that never says so can't
+# hold it open for hours.
+TURN_OVER_GRACE = 30
 # The summary of a worker that was still running when its turn ended.
 WORKER_ENDED_WITH_TURN = 'Stopped when the reply ended.'
 # A worker's report is kept to this many characters, since every snapshot of the
@@ -168,6 +177,8 @@ def ultra_env(options: UltraOptions) -> dict[str, str]:
     """Environment variables that set how an Ultra turn's workers run."""
     # The orchestrator's workers may start sub-workers, and those may not start any.
     env = {'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH': str(ultra.MAX_DEPTH)}
+    # Claude Code reports when its session goes idle, which is when an Ultra reply ends.
+    env['CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS'] = '1'
     if options.worker_model:
         # Sub-workers may start as Claude Code's own general-purpose type
         # instead of Buddy's, so the person's model is forced on every worker.
@@ -739,7 +750,8 @@ class ClaudeStreamParser:
     """Turns Claude Code stream-json messages into turn events.
 
     On Ultra turns, once track_workers() is called, it also reports the
-    turn's workers, and a result ends the turn only when no worker runs.
+    turn's workers. Such a turn may span several of Claude Code's own turns,
+    and it ends when Claude Code reports its session idle.
     """
 
     def __init__(self):
@@ -750,6 +762,10 @@ class ClaudeStreamParser:
         self.rate_limit: dict | None = None
         # An Ultra turn's workers; None on other turns.
         self.workers: ClaudeWorkers | None = None
+        # Whether Claude Code's latest turn has its result. A worker's report
+        # that arrives too late for the orchestrator's turn gets a turn of its
+        # own, which starts with init.
+        self._turn_answered = False
         # The usage of an Ultra turn's results so far.
         self._ultra_usage = TokenUsage()
         self._text_block_started = False
@@ -766,6 +782,16 @@ class ClaudeStreamParser:
         if self.workers is None:
             return []
         return self.workers.stop_running()
+
+    def waiting_for_turn_over(self) -> bool:
+        """Whether an Ultra turn may be over: Claude Code's latest turn has its result, and no worker runs.
+
+        Claude Code then either reports its session idle, which ends the
+        reply, or starts another turn to pass a worker's report on.
+        """
+        if self.workers is None or self.finished:
+            return False
+        return self._turn_answered and not self.workers.running()
 
     def handle(self, message: dict) -> list:
         kind = message.get('type')
@@ -806,13 +832,27 @@ class ClaudeStreamParser:
         subtype = message.get('subtype')
         if subtype == 'init':
             self.session_id = message.get('session_id') or self.session_id
+            # Each of Claude Code's turns starts with init, including one that passes on a worker's report.
+            self._turn_answered = False
         elif subtype == 'api_retry':
             return [StatusUpdate('Claude is busy, retrying…')]
         elif subtype == 'compact_boundary':
             return [StatusUpdate('Summarized earlier messages to stay within the context window')]
+        elif subtype == 'session_state_changed':
+            self._session_state_changed(message)
         elif self.workers is not None:
             return self.workers.handle(message)
         return []
+
+    def _session_state_changed(self, message: dict) -> None:
+        """End an Ultra turn when Claude Code reports its session idle and the turn may be over.
+
+        Idle before the latest turn's result, or while a worker is still
+        listed as running, ends nothing: the reply keeps its workers listed
+        until each one ends.
+        """
+        if message.get('state') == SESSION_IDLE and self.waiting_for_turn_over():
+            self.finished = True
 
     def _handle_stream_event(self, message: dict) -> list:
         if message.get('parent_tool_use_id'):
@@ -871,6 +911,7 @@ class ClaudeStreamParser:
             result_text = message.get('result') or message.get('subtype') or 'Claude Code reported an error.'
             if not self.error:
                 self.error = _readable_error(str(result_text))
+        self._turn_answered = True
         self.finished = self._result_ends_turn()
         usage = message.get('usage')
         if not isinstance(usage, dict):
@@ -888,13 +929,13 @@ class ClaudeStreamParser:
     def _result_ends_turn(self) -> bool:
         """Whether the result just read ends the turn.
 
-        A normal turn ends at its first result. An Ultra turn's orchestrator
-        may reply while workers still run, and their reports start more
-        results, so it ends at a result once no worker runs, or at an error.
+        A normal turn ends at its first result, and any turn at an error. An
+        Ultra turn doesn't end at a result even when no worker runs: a
+        worker's report that arrived while the orchestrator was writing is
+        passed on in another turn, after this result. Claude Code reports
+        its session idle once nothing is left.
         """
-        if self.workers is None or self.error:
-            return True
-        return not self.workers.running()
+        return self.workers is None or bool(self.error)
 
 
 class ClaudeLogin:
@@ -1296,10 +1337,12 @@ class ClaudeCodeProvider:
         An Ultra turn first defines Buddy's worker types. When Claude Code then
         doesn't list buddy-worker, the run ends before the prompt is sent, with
         the reason in ``attempt.ultra_off_reason``. Otherwise its workers are
-        reported as they run, and it is read past results until none runs, for
-        at most ULTRA_TIME_LIMIT seconds. Meanwhile stop_worker() can stop
-        them one by one, and when the turn ends while some still run, they are
-        stopped before the CLI is killed.
+        reported as they run, and it is read past results until Claude Code
+        reports its session idle, for at most ULTRA_TIME_LIMIT seconds. When
+        the latest result is in and no worker runs, it waits only
+        TURN_OVER_GRACE seconds for that, or for another turn to start.
+        Meanwhile stop_worker() can stop workers one by one, and when the turn
+        ends while some still run, they are stopped before the CLI is killed.
         """
         parser = attempt.parser
         process = await turn.machine.start_process(
@@ -1329,10 +1372,21 @@ class ClaudeCodeProvider:
                 self._ultra_runs.append(run)
             await process.write(json.dumps(turn_message(turn, resume_id)) + '\n')
             deadline = _reply_deadline(turn)
+            # When Buddy ends an Ultra turn that may be over, unless Claude Code says first.
+            turn_over_deadline = None
             while not parser.finished:
+                turn_over_deadline = _turn_over_deadline(parser, turn_over_deadline)
                 try:
-                    line = await _read_line_by(process, deadline)
+                    line = await _read_line_by(process, _sooner(deadline, turn_over_deadline))
                 except TimeoutError:
+                    if parser.waiting_for_turn_over():
+                        log.warning(
+                            'Claude Code on %s did not report its Ultra turn over within %s seconds of its result',
+                            turn.machine.name,
+                            TURN_OVER_GRACE,
+                        )
+                        parser.finished = True
+                        break
                     log.warning('Stopping an Ultra turn on %s that ran past its time limit', turn.machine.name)
                     attempt.timed_out = True
                     break
@@ -1479,6 +1533,29 @@ def _reply_deadline(turn: TurnRequest) -> float | None:
     if turn.ultra is None:
         return None
     return asyncio.get_running_loop().time() + ULTRA_TIME_LIMIT
+
+
+def _turn_over_deadline(parser: ClaudeStreamParser, deadline: float | None) -> float | None:
+    """When Buddy ends an Ultra turn that may be over, on the event loop's clock.
+
+    None while the turn can't be over yet. Once it may be, the deadline is
+    TURN_OVER_GRACE seconds away, and it stays put, so output that starts no
+    new turn doesn't put it off.
+    """
+    if not parser.waiting_for_turn_over():
+        return None
+    if deadline is not None:
+        return deadline
+    return asyncio.get_running_loop().time() + TURN_OVER_GRACE
+
+
+def _sooner(first: float | None, second: float | None) -> float | None:
+    """The sooner of two deadlines, where None is no deadline."""
+    if first is None:
+        return second
+    if second is None:
+        return first
+    return min(first, second)
 
 
 async def _read_line_by(process, deadline: float | None) -> str | None:

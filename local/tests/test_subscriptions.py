@@ -422,9 +422,12 @@ class ClaudeStreamTests(unittest.TestCase):
             for access in ('chat', 'read', 'full'):
                 with self.subTest(access=access):
                     self.assertEqual(turn_env(access), {'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS': '1'})
-                    # Ultra turns read on past the first result and list every worker.
+                    # Ultra turns read on past the first result and list every
+                    # worker, until Claude Code reports its session idle.
                     ultra_env = turn_env(access, ultra_options=UltraOptions())
                     self.assertNotIn('CLAUDE_CODE_DISABLE_BACKGROUND_TASKS', ultra_env)
+                    self.assertEqual(ultra_env['CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS'], '1')
+                    self.assertNotIn('CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS', turn_env(access))
 
             # Titles and follow-ups run with no tools, so they cannot start agents.
             self.assertEqual(turn_env('full', is_task=True), {})
@@ -450,7 +453,14 @@ class ClaudeStreamTests(unittest.TestCase):
             for access in ('chat', 'read', 'full'):
                 with self.subTest(access=access):
                     # Workers may start sub-workers, and those may not start any.
-                    self.assertEqual(turn_env(access, UltraOptions()), {'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH': '2'})
+                    # Claude Code also reports when its session goes idle.
+                    self.assertEqual(
+                        turn_env(access, UltraOptions()),
+                        {
+                            'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH': '2',
+                            'CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS': '1',
+                        },
+                    )
                     # Every worker, Buddy's types and Claude Code's own, uses the chosen model.
                     # The chosen level is not set as CLAUDE_CODE_EFFORT_LEVEL, which would
                     # change the orchestrator's own too.
@@ -458,6 +468,7 @@ class ClaudeStreamTests(unittest.TestCase):
                         turn_env(access, chosen),
                         {
                             'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH': '2',
+                            'CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS': '1',
                             'CLAUDE_CODE_SUBAGENT_MODEL': 'claude-fable-5-1[1m]',
                             'CLAUDE_CODE_SUBAGENT_MODEL_FORCE': '1',
                         },
@@ -467,6 +478,7 @@ class ClaudeStreamTests(unittest.TestCase):
                         turn_env(access, capped),
                         {
                             'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH': '2',
+                            'CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS': '1',
                             'CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS': '3',
                         },
                     )

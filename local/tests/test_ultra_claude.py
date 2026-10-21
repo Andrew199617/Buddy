@@ -7,11 +7,17 @@ initialize request that defined Buddy's worker types; the rest is the turn:
 - claude-chat.jsonl: two workers at once, in Chat access.
 - claude-read.jsonl: a buddy-reader and a buddy-worker at once, in Read access.
 - claude-depth.jsonl: a worker that starts a sub-worker, which can't start another.
-- claude-background.jsonl: two background workers. The orchestrator replies
-  while both run, and again when one reports; the recording ends while the
-  other still runs.
+- claude-background.jsonl: two background workers. The math worker reports
+  while the orchestrator writes its first reply, which therefore says neither
+  has returned. Claude Code then passes the report on in a turn of its own,
+  whose result answers. The recording ends while the essay worker still runs.
 
 The answers' account details were removed, and paths name the user "fixture".
+
+The recordings were made without CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, which
+Ultra turns set, so they lack the message that reports Claude Code's session
+idle. Tests that need it add SESSION_IDLE, in the shape of Claude Code
+2.1.295's session_state_changed message.
 
 Run from the repository root:
     python -m unittest discover -s local/tests -p test_ultra_claude.py -v
@@ -98,6 +104,15 @@ MISSING_SESSION_RESULT = {
     'session_id': 'unused',
     'usage': {},
 }
+
+# What Claude Code says once an Ultra turn is over: its last turn has ended,
+# every background worker has ended, and no report waits for a turn of its own.
+SESSION_IDLE = {'type': 'system', 'subtype': 'session_state_changed', 'state': 'idle', 'session_id': 'idle-session'}
+
+
+def until_idle(turn_output: list[dict]) -> list[dict]:
+    """A turn's output followed by Claude Code reporting its session idle, which ends an Ultra reply."""
+    return [*turn_output, SESSION_IDLE]
 
 
 def stopped_notification(task_id: str) -> dict:
@@ -329,6 +344,30 @@ async def until(condition) -> None:
         await asyncio.sleep(0)
 
 
+def background_essay_finished(turn_output: list[dict]) -> list[dict]:
+    """What Claude Code says when the background essay worker finishes: its report, and no background task left.
+
+    Not recorded: the recording ends while the essay worker still runs. This
+    follows the shape of the recorded task_notification and background list
+    messages.
+    """
+    essay = system_messages(turn_output, 'task_started')[0]
+    session_id = results(turn_output)[-1]['session_id']
+    return [
+        {
+            'type': 'system',
+            'subtype': 'task_notification',
+            'task_id': essay['task_id'],
+            'tool_use_id': essay['tool_use_id'],
+            'status': 'completed',
+            'summary': 'Bridges, from fallen logs to suspension spans.',
+            'usage': {'total_tokens': 4096, 'tool_uses': 0, 'duration_ms': 60000},
+            'session_id': session_id,
+        },
+        {'type': 'system', 'subtype': 'background_tasks_changed', 'tasks': [], 'session_id': session_id},
+    ]
+
+
 def background_essay_stopped(turn_output: list[dict]) -> list[dict]:
     """What Claude Code says once the background essay worker is stopped, ending with a third result.
 
@@ -457,7 +496,7 @@ class UltraHandshakeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_ultra_turn_defines_buddys_workers_before_its_prompt(self):
         answer, turn_output = recorded_chat()
-        process = ReplayProcess(answer, turn_output)
+        process = ReplayProcess(answer, until_idle(turn_output))
         machine = ReplayMachine(process)
         turn = ultra_turn(self.directory, machine, access='full')
         events = await self.run_turn(turn)
@@ -481,7 +520,7 @@ class UltraHandshakeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_fresh_session_ends_its_chat_transcript_with_the_ultra_note(self):
         answer, turn_output = recorded_chat()
-        process = ReplayProcess(answer, turn_output)
+        process = ReplayProcess(answer, until_idle(turn_output))
         earlier = [{'role': 'user', 'content': 'Hi'}, {'role': 'assistant', 'content': 'Hello!'}]
         await self.run_turn(ultra_turn(self.directory, ReplayMachine(process), earlier=earlier))
         prompt_texts = texts(process.written[1])
@@ -551,7 +590,7 @@ class UltraHandshakeTests(unittest.IsolatedAsyncioTestCase):
         # says nothing about Ultra, so the fresh session defines workers again.
         answer, turn_output = recorded_chat()
         gone = ReplayProcess(stderr=MISSING_SESSION)
-        fresh = ReplayProcess(answer, turn_output)
+        fresh = ReplayProcess(answer, until_idle(turn_output))
         machine = ReplayMachine(gone, fresh)
         turn = ultra_turn(self.directory, machine)
         self.provider._sessions.put(self.provider._session_key(turn, turn.conversation.history), 'old-session')
@@ -594,10 +633,17 @@ class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.directory = directory.name
         self.provider = claude_code.ClaudeCodeProvider(Path(directory.name))
 
-    async def replay(self, name, access='chat', extra_output=(), silent=False):
-        """Run an Ultra turn against a recorded stream; returns its events, the process, and the recorded turn."""
+    async def replay(self, name, access='chat', extra_output=(), silent=False, idle=True):
+        """Run an Ultra turn against a recorded stream; returns its events, the process, and the recorded turn.
+
+        With ``idle``, Claude Code reports its session idle after the
+        recording and ``extra_output``.
+        """
         answer, turn_output = recorded_turn(name)
-        process = ReplayProcess(answer, [*turn_output, *extra_output], silent=silent)
+        output = [*turn_output, *extra_output]
+        if idle:
+            output = until_idle(output)
+        process = ReplayProcess(answer, output, silent=silent)
         turn = ultra_turn(self.directory, ReplayMachine(process), access=access)
         events = [event async for event in self.provider.run_turn(turn)]
         return events, process, turn_output
@@ -698,7 +744,8 @@ class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):
         first, second = results(turn_output)
         [third] = results(essay_stopped)
 
-        # Every result's text is in the reply, in order, and the turn ended at the third.
+        # Every result's text is in the reply, in order, and the turn ended
+        # when Claude Code reported its session idle after the third.
         self.assertEqual(reply(events), f"{first['result']}\n\n{second['result']}\n\n{third['result']}")
         self.assertEqual(process.unread_lines(), 0)
         self.assertEqual(failures(events), [])
@@ -720,9 +767,68 @@ class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):
             usage = claude_code._usage_sum(usage, claude_code._usage_from_result(result['usage']))
         self.assertEqual(last_usage(events), usage)
 
+    async def test_a_report_that_arrives_while_the_orchestrator_writes_gets_a_turn_of_its_own(self):
+        answer, turn_output = recorded_turn('claude-background.jsonl')
+        essay, math = system_messages(turn_output, 'task_started')
+        [math_report] = system_messages(turn_output, 'task_notification')
+        first, second = results(turn_output)
+        # The math worker reported before the first result, which says it
+        # hasn't. The second result, in a turn of Claude Code's own, passes
+        # the report on.
+        self.assertLess(turn_output.index(math_report), turn_output.index(first))
+        self.assertEqual(second['origin']['kind'], 'task-notification')
+        self.assertEqual(second['origin']['runId'], math['run_id'])
+        # Here the essay worker also finishes before the first result, so no worker runs there.
+        at_first = turn_output.index(first)
+        output = [*turn_output[:at_first], *background_essay_finished(turn_output), *turn_output[at_first:]]
+        process = ReplayProcess(answer, until_idle(output))
+        events = [event async for event in self.provider.run_turn(ultra_turn(self.directory, ReplayMachine(process)))]
+
+        # Buddy read on to the later turn's answer, and ended when Claude Code reported its session idle.
+        self.assertEqual(reply(events), f"{first['result']}\n\n{second['result']}")
+        self.assertEqual(process.unread_lines(), 0)
+        self.assertEqual(failures(events), [])
+        self.assertEqual(latest_workers(events)[essay['task_id']].state, WORKER_DONE)
+        self.assertEqual(latest_workers(events)[math['task_id']].state, WORKER_DONE)
+        self.assertEqual(stop_requests(process), [])
+
+    async def test_idle_ends_an_ultra_turn_only_after_its_result_with_no_worker_running(self):
+        answer, turn_output = recorded_turn('claude-background.jsonl')
+        first, second = results(turn_output)
+        init = system_messages(turn_output, 'init')[0]
+        at_init = turn_output.index(init) + 1
+        at_first = turn_output.index(first) + 1
+        # Idle before any result, and after the first result while the essay worker runs, ends nothing.
+        output = [
+            *turn_output[:at_init],
+            SESSION_IDLE,
+            *turn_output[at_init:at_first],
+            SESSION_IDLE,
+            *turn_output[at_first:],
+            *background_essay_finished(turn_output),
+            SESSION_IDLE,
+        ]
+        process = ReplayProcess(answer, output)
+        events = [event async for event in self.provider.run_turn(ultra_turn(self.directory, ReplayMachine(process)))]
+
+        # The turn ended at the last idle, once the essay worker had finished.
+        self.assertEqual(reply(events), f"{first['result']}\n\n{second['result']}")
+        self.assertEqual(process.unread_lines(), 0)
+        self.assertEqual(failures(events), [])
+        self.assertFalse(any(update.state == WORKER_RUNNING for update in latest_workers(events).values()))
+
+    async def test_an_ultra_turn_ends_soon_after_its_result_when_claude_code_never_says_idle(self):
+        with patch.object(claude_code, 'TURN_OVER_GRACE', 0.05):
+            with self.assertLogs(claude_code.log, level='WARNING'):
+                events, process, turn_output = await self.replay('claude-chat.jsonl', silent=True, idle=False)
+
+        self.assertEqual(reply(events), results(turn_output)[0]['result'])
+        self.assertEqual(failures(events), [])
+        self.assertEqual(process.calls, ['initialize', 'user', 'close_stdin', 'kill'])
+
     async def test_output_ending_while_a_worker_runs_stops_it_with_the_turn(self):
         # The recording ends while the essay worker runs, as if Claude Code had exited.
-        events, process, turn_output = await self.replay('claude-background.jsonl')
+        events, process, turn_output = await self.replay('claude-background.jsonl', idle=False)
         essay = system_messages(turn_output, 'task_started')[0]
         first, second = results(turn_output)
 
@@ -736,9 +842,10 @@ class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(process.killed)
 
     async def test_an_ultra_turn_stops_with_its_workers_at_the_time_limit(self):
-        with patch.object(claude_code, 'ULTRA_TIME_LIMIT', 0.2):
+        # Buddy doesn't end a turn soon after its result while a worker still runs.
+        with patch.object(claude_code, 'TURN_OVER_GRACE', 0.01), patch.object(claude_code, 'ULTRA_TIME_LIMIT', 0.2):
             with self.assertLogs(claude_code.log, level='WARNING'):
-                events, process, turn_output = await self.replay('claude-background.jsonl', silent=True)
+                events, process, turn_output = await self.replay('claude-background.jsonl', silent=True, idle=False)
         essay = system_messages(turn_output, 'task_started')[0]
         first, second = results(turn_output)
 
@@ -850,7 +957,7 @@ class UltraStopTests(unittest.IsolatedAsyncioTestCase):
         _, recorded_output = recorded_turn('claude-background.jsonl')
         essay, _ = system_messages(recorded_output, 'task_started')
         essay_stopped = background_essay_stopped(recorded_output)
-        process, turn, _ = self.background_turn(stop_output={essay['task_id']: essay_stopped})
+        process, turn, _ = self.background_turn(stop_output={essay['task_id']: until_idle(essay_stopped)})
         task, events = await self.start(process, turn)
         self.assertEqual(latest_workers(events)[essay['task_id']].state, WORKER_RUNNING)
 
@@ -861,7 +968,8 @@ class UltraStopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request['type'], 'control_request')
         self.assertTrue(request['request_id'].startswith(claude_code.STOP_REQUEST_ID))
         self.assertEqual(request['request'], {'subtype': 'stop_task', 'task_id': essay['task_id']})
-        # Claude Code reported the worker stopped, and the orchestrator's reply to that ended the turn.
+        # Claude Code reported the worker stopped, the orchestrator replied to
+        # that, and Claude Code then reported its session idle, which ended the turn.
         latest = latest_workers(events)[essay['task_id']]
         self.assertEqual(latest.state, WORKER_STOPPED)
         self.assertEqual(latest.summary, 'The essay was stopped before it was finished.')
@@ -871,6 +979,36 @@ class UltraStopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(process.calls, ['initialize', 'user', 'stop_task', 'close_stdin', 'kill'])
         # The turn has ended, so it has no workers to stop any more.
         self.assertFalse(await self.provider.stop_worker(turn, essay['task_id']))
+
+    async def stop_last_worker(self, stop_output: list[dict]) -> None:
+        """Stop the essay worker of the recorded background turn after both of its results, and check how it ends.
+
+        ``stop_output`` is all Claude Code says once asked to stop it: no
+        other turn, so no other result.
+        """
+        _, recorded_output = recorded_turn('claude-background.jsonl')
+        essay, _ = system_messages(recorded_output, 'task_started')
+        first, second = results(recorded_output)
+        process, turn, _ = self.background_turn(stop_output={essay['task_id']: stop_output})
+        task, events = await self.start(process, turn)
+
+        self.assertTrue(await self.provider.stop_worker(turn, essay['task_id']))
+        await asyncio.wait_for(task, 5)
+
+        self.assertEqual(latest_workers(events)[essay['task_id']].state, WORKER_STOPPED)
+        self.assertEqual(reply(events), f"{first['result']}\n\n{second['result']}")
+        self.assertEqual(failures(events), [])
+        self.assertEqual(process.calls, ['initialize', 'user', 'stop_task', 'close_stdin', 'kill'])
+
+    async def test_stopping_the_last_worker_ends_the_reply_when_claude_code_reports_idle(self):
+        essay = system_messages(recorded_turn('claude-background.jsonl')[1], 'task_started')[0]
+        await self.stop_last_worker(until_idle([stopped_notification(essay['task_id'])]))
+
+    async def test_stopping_the_last_worker_ends_the_reply_soon_even_if_claude_code_says_nothing_more(self):
+        essay = system_messages(recorded_turn('claude-background.jsonl')[1], 'task_started')[0]
+        with patch.object(claude_code, 'TURN_OVER_GRACE', 0.05):
+            with self.assertLogs(claude_code.log, level='WARNING'):
+                await self.stop_last_worker([stopped_notification(essay['task_id'])])
 
     async def test_only_a_running_worker_of_a_live_turn_can_be_stopped(self):
         process, turn, turn_output = self.background_turn()
