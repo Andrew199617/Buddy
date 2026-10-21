@@ -147,30 +147,15 @@ export type SuperUsers = { owner_id: string | null; user_ids: string[] };
 
 /** The server owner and the administrators the owner has named super users. */
 export const getSuperUsers = async (token: string): Promise<SuperUsers> => {
-	let error = null;
-
-	const res = await fetch(`${WEBUI_API_BASE_URL}/users/super-users`, {
+	const response = await fetch(`${WEBUI_API_BASE_URL}/users/super-users`, {
 		method: 'GET',
-		headers: {
-			'Content-Type': 'application/json',
-			Authorization: `Bearer ${token}`
-		}
-	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
-		.catch((err) => {
-			console.error(err);
-			error = err.detail;
-			return null;
-		});
-
-	if (error) {
-		throw error;
+		headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+	});
+	const data = await response.json().catch(() => null);
+	if (!response.ok) {
+		throw data?.detail ?? `Request failed (${response.status})`;
 	}
-
-	return res;
+	return data;
 };
 
 /** Only the server owner may name or remove a super user. */
@@ -179,31 +164,16 @@ export const setSuperUser = async (
 	id: string,
 	enabled: boolean
 ): Promise<SuperUsers> => {
-	let error = null;
-
-	const res = await fetch(`${WEBUI_API_BASE_URL}/users/${encodeURIComponent(id)}/super-user`, {
+	const response = await fetch(`${WEBUI_API_BASE_URL}/users/${encodeURIComponent(id)}/super-user`, {
 		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			Authorization: `Bearer ${token}`
-		},
+		headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
 		body: JSON.stringify({ enabled })
-	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
-		.catch((err) => {
-			console.error(err);
-			error = err.detail;
-			return null;
-		});
-
-	if (error) {
-		throw error;
+	});
+	const data = await response.json().catch(() => null);
+	if (!response.ok) {
+		throw data?.detail ?? `Request failed (${response.status})`;
 	}
-
-	return res;
+	return data;
 };
 
 export const getUsers = async (

@@ -58,9 +58,10 @@
 		});
 
 		if (res) {
-			await saveSuperUser();
+			const savedSuperUser = await saveSuperUser();
 			dispatch('save');
-			show = false;
+			// Stay open after a failed super user change, so the owner sees it and can try again.
+			if (savedSuperUser) show = false;
 		}
 	};
 
@@ -76,14 +77,18 @@
 		superUser = wasSuperUser;
 	};
 
-	const saveSuperUser = async () => {
-		if (!isServerOwner) return;
-		// Someone who stops being an administrator stops being a super user too.
-		const wanted = superUser && _user.role === 'admin';
-		if (wanted === wasSuperUser) return;
-		await setSuperUser(localStorage.token, selectedUser.id, wanted).catch((error) => {
+	/** False when the change could not be saved. */
+	const saveSuperUser = async (): Promise<boolean> => {
+		// The server drops someone from the super users when they stop being an administrator.
+		if (!isServerOwner || _user.role !== 'admin' || superUser === wasSuperUser) return true;
+		try {
+			await setSuperUser(localStorage.token, selectedUser.id, superUser);
+			wasSuperUser = superUser;
+			return true;
+		} catch (error) {
 			toast.error(`${error}`);
-		});
+			return false;
+		}
 	};
 
 	const loadUserGroups = async () => {
