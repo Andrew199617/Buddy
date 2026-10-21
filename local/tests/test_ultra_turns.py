@@ -1,9 +1,13 @@
-"""Ultra turns resolve the person's worker choice on the computer that runs them.
+"""Ultra turns on the server.
+
+The person's worker choice resolves on the computer that runs the turn, and
+while the turn runs, the person can stop its workers one by one.
 
 Run from the repository root:
     python -m unittest discover -s local/tests -p test_ultra_turns.py -v
 """
 
+import asyncio
 import os
 import time
 import types
@@ -34,7 +38,7 @@ from test_subscription_machines import (
 from open_webui.utils.subscriptions import ultra  # noqa: E402
 from open_webui.utils.subscriptions.common import ProviderModel  # noqa: E402
 from open_webui.utils.subscriptions.conversation import parse_messages  # noqa: E402
-from open_webui.utils.subscriptions.events import StatusUpdate  # noqa: E402
+from open_webui.utils.subscriptions.events import StatusUpdate, SubscriptionError  # noqa: E402
 
 PROJECT = 'C:\\code\\site'
 CHAT_MODEL_ID = 'claude-code.fixture-model'
@@ -54,7 +58,45 @@ def plan_model(key, name, efforts, ultra=True):
     return ProviderModel(key=key, value=f'{key}-cli', name=name, efforts=list(efforts), ultra=ultra)
 
 
-class UltraTurnTests(unittest.IsolatedAsyncioTestCase):
+class HeldTurn:
+    """A fake provider turn that runs until the test ends it, with the workers it runs meanwhile."""
+
+    def __init__(self, *worker_ids):
+        self.running_workers = set(worker_ids)
+        # The request the service passed to run_turn, once the turn has started.
+        self.request = None
+        self.started = asyncio.Event()
+        self.over = False
+        self._end = asyncio.Event()
+        self._failure = None
+
+    def end(self, failure=None):
+        """Let the turn finish, or fail with this error."""
+        self._failure = failure
+        self._end.set()
+
+    async def run(self, request):
+        self.request = request
+        self.started.set()
+        try:
+            await self._end.wait()
+            if self._failure is not None:
+                raise self._failure
+            yield {'text': 'fixture response'}
+        finally:
+            self.over = True
+
+    def stop_worker(self, worker_id):
+        """As the providers do: False once the turn is over or the worker isn't running."""
+        if self.over or worker_id not in self.running_workers:
+            return False
+        self.running_workers.remove(worker_id)
+        return True
+
+
+class UltraServiceTestCase(unittest.IsolatedAsyncioTestCase):
+    """A chat on the owner's computer, with fake Claude and Codex plans that can run Ultra."""
+
     def setUp(self):
         self.config = MemoryConfig({
             'subscriptions.machines': [machine_config()],
@@ -168,6 +210,8 @@ class UltraTurnTests(unittest.IsolatedAsyncioTestCase):
         """UltraOptions as the service under test builds them."""
         return self.service.UltraOptions(**choices)
 
+
+class UltraTurnTests(UltraServiceTestCase):
     async def test_same_as_chat_means_the_workers_inherit_the_chats_model_and_level(self):
         await self.bind()
         await self.chat()
@@ -337,6 +381,201 @@ class UltraTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(turn.ultra_options, options)
         self.assertEqual(turn.conversation.system, ultra.orchestrator_note('codex', 'full', options))
         self.assertIn('Start every worker with model `fixture-codex-cli`', turn.conversation.system)
+
+
+class LiveUltraTurnTests(UltraServiceTestCase):
+    def setUp(self):
+        super().setUp()
+        # The held turns that the next turns run as, in order.
+        self.next_turns = []
+        self.held_turns = []
+        # The stops the providers were asked for: (provider id, worker id).
+        self.stops = []
+        self.providers['claude'].turn_hook = self.run_next_turn
+        self.providers['codex'].turn_hook = self.run_next_turn
+        self.providers['claude'].stop_worker = self.claude_stop_worker
+        self.providers['codex'].stop_worker = self.codex_stop_worker
+
+    async def run_next_turn(self, request):
+        held = self.next_turns.pop(0)
+        self.held_turns.append(held)
+        async for event in held.run(request):
+            yield event
+
+    async def claude_stop_worker(self, request, worker_id):
+        return self.stop_held_worker('claude', request, worker_id)
+
+    async def codex_stop_worker(self, request, worker_id):
+        return self.stop_held_worker('codex', request, worker_id)
+
+    def stop_held_worker(self, provider_id, request, worker_id):
+        """As the providers do, find the turn by the very request that was passed to run_turn."""
+        self.stops.append((provider_id, worker_id))
+        for held in self.held_turns:
+            if held.request is request:
+                return held.stop_worker(worker_id)
+        return False
+
+    async def start_turn(self, held, ultra_choice=SAME_AS_CHAT, model=CHAT_MODEL_ID, **metadata):
+        """Send a chat turn that runs as this held turn, and return once the provider runs it."""
+        self.next_turns.append(held)
+        reply = asyncio.create_task(self.chat(ultra_choice, model=model, **metadata))
+        await asyncio.wait_for(held.started.wait(), 5)
+        return reply
+
+    def live_turns(self, chat_id='chat-1'):
+        return self.service._live_ultra_turns.get(chat_id, [])
+
+    async def stop_worker(self, worker_id, user=OWNER_USER, chat_id='chat-1'):
+        return await self.service.stop_worker(user, chat_id, worker_id)
+
+    async def test_an_ultra_turn_is_live_from_its_start_until_it_ends(self):
+        await self.bind()
+        held = HeldTurn('worker-1')
+        reply = await self.start_turn(held, message_id='message-1')
+        [live] = self.live_turns()
+        self.assertEqual(
+            (live.chat_id, live.message_id, live.owner_id, live.provider_id),
+            ('chat-1', 'message-1', OWNER, 'claude'),
+        )
+        self.assertIs(live.provider, self.providers['claude'])
+        self.assertIs(live.turn, held.request)
+        held.end()
+        self.assertEqual(await reply, [{'text': 'fixture response'}])
+        self.assertEqual(self.service._live_ultra_turns, {})
+
+    async def test_stopping_a_worker_asks_the_provider_that_runs_the_turn(self):
+        await self.bind()
+        held = HeldTurn('worker-1', 'worker-2')
+        reply = await self.start_turn(held)
+        self.assertTrue(await self.stop_worker('worker-2'))
+        self.assertEqual(held.running_workers, {'worker-1'})
+        self.assertEqual(self.stops, [('claude', 'worker-2')])
+        held.end()
+        await reply
+
+    async def test_a_codex_turns_workers_are_stopped_by_codex(self):
+        await self.bind()
+        held = HeldTurn('worker-thread-1')
+        reply = await self.start_turn(held, model=CODEX_MODEL_ID)
+        [live] = self.live_turns()
+        self.assertEqual(live.provider_id, 'codex')
+        self.assertTrue(await self.stop_worker('worker-thread-1'))
+        self.assertEqual(self.stops, [('codex', 'worker-thread-1')])
+        held.end()
+        await reply
+
+    async def test_a_worker_that_is_not_running_is_not_stopped(self):
+        await self.bind()
+        held = HeldTurn('worker-1')
+        reply = await self.start_turn(held)
+        self.assertTrue(await self.stop_worker('worker-1'))
+        # Stopped already, and never started.
+        self.assertFalse(await self.stop_worker('worker-1'))
+        self.assertFalse(await self.stop_worker('worker-2'))
+        held.end()
+        await reply
+
+    async def test_nothing_is_stopped_without_a_live_turn_in_the_chat(self):
+        await self.bind()
+        self.assertFalse(await self.stop_worker('worker-1'))
+        held = HeldTurn('worker-1')
+        reply = await self.start_turn(held)
+        self.assertFalse(await self.stop_worker('worker-1', chat_id='chat-2'))
+        held.end()
+        await reply
+        # The turn has ended, so its workers have too.
+        self.assertFalse(await self.stop_worker('worker-1'))
+        self.assertEqual(self.stops, [])
+
+    async def test_only_the_person_who_runs_the_turn_can_stop_its_workers(self):
+        await self.bind()
+        held = HeldTurn('worker-1')
+        reply = await self.start_turn(held)
+        someone_else = types.SimpleNamespace(id='user-2', role='admin')
+        self.assertFalse(await self.stop_worker('worker-1', user=someone_else))
+        self.assertEqual(self.stops, [])
+        self.assertEqual(held.running_workers, {'worker-1'})
+        held.end()
+        await reply
+
+    async def test_a_failed_turn_leaves_the_registry(self):
+        await self.bind()
+        held = HeldTurn('worker-1')
+        reply = await self.start_turn(held)
+        # As when the app-server ends during the turn.
+        held.end(SubscriptionError('Fixture app-server ended'))
+        with self.assertRaises(SubscriptionError):
+            await reply
+        self.assertEqual(self.service._live_ultra_turns, {})
+
+    async def test_a_stopped_reply_leaves_the_registry_once_the_provider_has_stopped(self):
+        await self.bind()
+        held = HeldTurn('worker-1')
+        reply = await self.start_turn(held)
+        # As when the person stops the chat, which cancels the reply's task.
+        reply.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await reply
+        self.assertTrue(held.over)
+        self.assertEqual(self.service._live_ultra_turns, {})
+        self.assertFalse(await self.stop_worker('worker-1'))
+
+    async def test_a_streamed_reply_is_live_while_it_streams(self):
+        await self.bind()
+        held = HeldTurn('worker-1')
+        response = await self.chat(stream=True)
+        self.next_turns.append(held)
+        # Nothing runs until the reply is read.
+        self.assertEqual(self.service._live_ultra_turns, {})
+        reading = asyncio.create_task(anext(response.body_iterator))
+        await asyncio.wait_for(held.started.wait(), 5)
+        [live] = self.live_turns()
+        self.assertIs(live.turn, held.request)
+        held.end()
+        self.assertEqual(await reading, {'text': 'fixture response'})
+        with self.assertRaises(StopAsyncIteration):
+            await anext(response.body_iterator)
+        self.assertEqual(self.service._live_ultra_turns, {})
+
+    async def test_turns_without_ultra_are_never_live(self):
+        await self.bind()
+        without_ultra = HeldTurn()
+        title = HeldTurn()
+        ultra_off = HeldTurn()
+        outside_chats = HeldTurn()
+        replies = [
+            await self.start_turn(without_ultra, None),
+            await self.start_turn(title, task='title_generation'),
+        ]
+        self.claude_models[0].ultra = False
+        replies.append(await self.start_turn(ultra_off))
+        self.claude_models[0].ultra = True
+        replies.append(await self.start_turn(outside_chats, chat_id=None))
+        self.assertIsNotNone(outside_chats.request.ultra)
+        self.assertEqual(self.service._live_ultra_turns, {})
+        for held in (without_ultra, title, ultra_off, outside_chats):
+            held.end()
+        await asyncio.gather(*replies)
+
+    async def test_stopping_a_worker_asks_each_live_turn_of_the_chat(self):
+        # A request that names two models runs a turn for each in the same chat.
+        await self.bind()
+        first = HeldTurn('worker-1')
+        second = HeldTurn('worker-2')
+        first_reply = await self.start_turn(first, message_id='message-1')
+        second_reply = await self.start_turn(second, message_id='message-2')
+        message_ids = [live.message_id for live in self.live_turns()]
+        self.assertEqual(message_ids, ['message-1', 'message-2'])
+        self.assertTrue(await self.stop_worker('worker-2'))
+        self.assertEqual((first.running_workers, second.running_workers), ({'worker-1'}, set()))
+        first.end()
+        await first_reply
+        [live] = self.live_turns()
+        self.assertIs(live.turn, second.request)
+        second.end()
+        await second_reply
+        self.assertEqual(self.service._live_ultra_turns, {})
 
 
 if __name__ == '__main__':

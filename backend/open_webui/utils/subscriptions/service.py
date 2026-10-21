@@ -3853,6 +3853,97 @@ async def _after_status(description: str, events):
         yield event
 
 
+# Live Ultra turns
+
+
+# Entries compare by identity, as providers find a turn by its very request:
+# two turns with equal requests are still two turns.
+@dataclass(eq=False)
+class _LiveUltraTurn:
+    """An Ultra turn in a chat that is still running, so the person can stop its workers one by one."""
+
+    chat_id: str
+    # The reply's message, or None when the request named none.
+    message_id: str | None
+    owner_id: str
+    provider_id: str
+    # The provider that runs the turn, which stops its workers.
+    provider: Any
+    # The request passed to the provider's run_turn. The provider finds the
+    # turn's workers by this very object.
+    turn: TurnRequest
+
+
+# Each chat's live Ultra turns, by chat id. Buddy runs one backend worker
+# (see _require_single_worker), so every turn runs in this process.
+#
+# The chat page sends one turn per chat at a time. By default a message sent
+# while a reply runs waits in the composer's queue until the reply is done,
+# and an Ultra reply is done only once its workers have ended; otherwise the
+# page stops the reply first. The server doesn't refuse a second turn,
+# though. A request that names several models runs one turn per model, each
+# with its own message id, and a second tab can send meanwhile. A Stop that
+# goes through Redis returns before the stopped turn has stopped its workers,
+# so the next message may start while it does. So a chat holds a list, and
+# stopping a worker asks each of the chat's turns.
+_live_ultra_turns: dict[str, list[_LiveUltraTurn]] = {}
+
+
+def _live_ultra_turn(user, ref: ProviderRef, provider, turn: TurnRequest, metadata: dict) -> _LiveUltraTurn | None:
+    """The registry entry for an Ultra turn in a chat, or None for any other turn.
+
+    A turn outside a chat has no chat to stop its workers from; stopping the
+    reply still stops them all.
+    """
+    chat_id = metadata.get('chat_id')
+    if turn.ultra is None or not chat_id:
+        return None
+    return _LiveUltraTurn(
+        chat_id=chat_id,
+        message_id=metadata.get('message_id'),
+        owner_id=user.id,
+        provider_id=ref.provider_id,
+        provider=provider,
+        turn=turn,
+    )
+
+
+async def _while_live(live_turn: _LiveUltraTurn, events):
+    """An Ultra turn's events, with the turn in the registry from its start until they end.
+
+    The provider's events end only when the turn really has: all its workers
+    have ended and its last result is read, or it failed, or it was stopped,
+    in which case the provider has stopped its workers first. However the
+    events end, the turn leaves the registry.
+    """
+    _live_ultra_turns.setdefault(live_turn.chat_id, []).append(live_turn)
+    try:
+        async for event in events:
+            yield event
+    finally:
+        chat_turns = _live_ultra_turns[live_turn.chat_id]
+        chat_turns.remove(live_turn)
+        if not chat_turns:
+            del _live_ultra_turns[live_turn.chat_id]
+
+
+async def stop_worker(user, chat_id: str, worker_id: str) -> bool:
+    """Stop one running worker of the person's live Ultra turn in a chat.
+
+    Asks the provider that runs the turn to stop it; the provider then
+    reports the worker stopped in the turn's own events. Returns False when
+    the person runs no Ultra turn in the chat, or none of theirs has that
+    worker running, so the stop route can answer that it isn't running.
+    """
+    # A copy, since a turn may end while its provider is asked.
+    for live_turn in list(_live_ultra_turns.get(chat_id, [])):
+        if live_turn.owner_id != user.id:
+            continue
+        if await live_turn.provider.stop_worker(live_turn.turn, worker_id):
+            return True
+    return False
+
+
 async def generate_subscription_chat_completion(request, form_data: dict, user, models):
     if not await may_use_machines(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=NOT_ALLOWED_MESSAGE)
@@ -3926,6 +4017,9 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
         events = failure_events(str(error))
     else:
         events = _tracked_turn(ref, provider, turn, generation)
+        live_turn = _live_ultra_turn(user, ref, provider, turn, metadata)
+        if live_turn is not None:
+            events = _while_live(live_turn, events)
         if ultra_off_reason:
             events = _after_status(ultra.OFF_STATUS.format(reason=ultra_off_reason), events)
 
