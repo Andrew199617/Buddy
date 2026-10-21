@@ -93,6 +93,11 @@ WORKER_ENDED_WITH_TURN = 'Stopped when the reply ended.'
 WORKER_SUMMARY_LIMIT = 4000
 # The task_updated statuses of a task that has not ended.
 TASK_LIVE_STATUSES = ('pending', 'running')
+# Buddy stops a worker with a stop_task control request; each one's id starts with this.
+STOP_REQUEST_ID = 'buddy-stop'
+# Seconds Buddy waits for Claude Code to report its workers stopped, before it
+# ends the CLI of an Ultra turn that is stopped while workers still run.
+STOP_WORKERS_GRACE = 5
 TRANSCRIPT_INTRO = 'Here is our conversation so far. Continue it by replying to my latest message.'
 INSTRUCTIONS_FILE = 'instructions'
 LOGIN_URL = re.compile(r'https://\S+/oauth/authorize\?\S+')
@@ -457,6 +462,19 @@ class ClaudeWorkers:
                 return True
         return False
 
+    def is_running(self, worker_id: str) -> bool:
+        """Whether this turn has a worker with this id that has not ended yet."""
+        worker = self._workers.get(worker_id)
+        return worker is not None and worker.state == WORKER_RUNNING
+
+    def running_ids(self) -> list[str]:
+        """The ids of the workers that have not ended yet, in the order they were first reported."""
+        ids = []
+        for worker_id, worker in self._workers.items():
+            if worker.state == WORKER_RUNNING:
+                ids.append(worker_id)
+        return ids
+
     def note_agent_calls(self, message: dict) -> None:
         """Remember who made each Agent call in an assistant message: the orchestrator or a worker."""
         caller = message.get('parent_tool_use_id') or None
@@ -600,6 +618,81 @@ class ClaudeWorkers:
             if task_id and task_id not in self._workers:
                 events.extend(self._add(task_id, None, 1, _worker_label(task)))
         return events
+
+
+def _ended_task_id(message: dict) -> str | None:
+    """The task that a task_notification reports as ended, or None for any other message."""
+    if message.get('type') != 'system' or message.get('subtype') != 'task_notification':
+        return None
+    return message.get('task_id')
+
+
+class ClaudeUltraRun:
+    """A live Ultra turn's ``claude -p``, through which Buddy stops its workers.
+
+    Claude Code stops a worker when it gets a stop_task control request with
+    the worker's task id, and then reports that task as stopped.
+    """
+
+    def __init__(self, turn: TurnRequest, process, workers: ClaudeWorkers):
+        # The request that was passed to run_turn, which stop_worker() is given.
+        self.turn = turn
+        self._process = process
+        self._workers = workers
+        self._stop_requests = 0
+
+    async def stop_worker(self, worker_id: str) -> bool:
+        """Ask Claude Code to stop one worker. False when it isn't running, or the CLI has ended."""
+        if not self._workers.is_running(worker_id):
+            return False
+        try:
+            await self._send_stop(worker_id)
+        except ProcessClosedError:
+            return False
+        return True
+
+    async def stop_all(self) -> None:
+        """Stop every worker still running, before Buddy ends the CLI.
+
+        Asks Claude Code to stop each one, then reads its output until it has
+        reported all of them ended, for at most STOP_WORKERS_GRACE seconds.
+        The turn has ended by then, so that output is not part of the reply.
+        """
+        worker_ids = self._workers.running_ids()
+        if not worker_ids:
+            return
+        try:
+            async with asyncio.timeout(STOP_WORKERS_GRACE):
+                for worker_id in worker_ids:
+                    await self._send_stop(worker_id)
+                await self._wait_until_ended(worker_ids)
+        except TimeoutError:
+            log.warning(
+                'Claude Code on %s did not report its Ultra workers stopped within %s seconds',
+                self.turn.machine.name,
+                STOP_WORKERS_GRACE,
+            )
+        except ProcessClosedError:
+            # The CLI has already ended, and its workers with it.
+            pass
+
+    async def _send_stop(self, worker_id: str) -> None:
+        self._stop_requests += 1
+        request = {
+            'type': 'control_request',
+            'request_id': f'{STOP_REQUEST_ID}-{self._stop_requests}',
+            'request': {'subtype': 'stop_task', 'task_id': worker_id},
+        }
+        await self._process.write(json.dumps(request) + '\n')
+
+    async def _wait_until_ended(self, worker_ids: list[str]) -> None:
+        """Read the CLI's output until Claude Code reports each of these workers ended, or the output ends."""
+        waiting = set(worker_ids)
+        while waiting:
+            line = await self._process.read_line()
+            if line is None:
+                return
+            waiting.discard(_ended_task_id(_parse_json_line(line)))
 
 
 class ClaudeStreamParser:
@@ -797,6 +890,21 @@ class ClaudeCodeProvider:
         self.credential_mode = CREDENTIAL_MACHINE
         self._usage_windows: dict[str, dict] = {}
         self._limit_reached = False
+        # The Ultra turns whose CLI is running, so that their workers can be stopped one by one.
+        self._ultra_runs: list[ClaudeUltraRun] = []
+
+    async def stop_worker(self, turn: TurnRequest, worker_id: str) -> bool:
+        """Stop one running worker of a live Ultra turn.
+
+        ``turn`` is the request that was passed to run_turn. Returns False when
+        that turn's CLI has ended or the worker isn't running any more. Claude
+        Code then reports the worker stopped in the turn's own events. Stopping
+        the whole turn cancels run_turn instead, which stops every worker.
+        """
+        for run in self._ultra_runs:
+            if run.turn is turn:
+                return await run.stop_worker(worker_id)
+        return False
 
     def _record_rate_limit(self, info: dict) -> None:
         self._limit_reached = info.get('status') == 'rejected'
@@ -1150,7 +1258,9 @@ class ClaudeCodeProvider:
         doesn't list buddy-worker, the run ends before the prompt is sent, with
         the reason in ``attempt.ultra_off_reason``. Otherwise its workers are
         reported as they run, and it is read past results until none runs, for
-        at most ULTRA_TIME_LIMIT seconds.
+        at most ULTRA_TIME_LIMIT seconds. Meanwhile stop_worker() can stop
+        them one by one, and when the turn ends while some still run, they are
+        stopped before the CLI is killed.
         """
         parser = attempt.parser
         process = await turn.machine.start_process(
@@ -1163,6 +1273,8 @@ class ClaudeCodeProvider:
         # something fails here. The CLI keeps working after stdin closes, so
         # then it is killed at once instead of being given time to exit.
         output_ended = False
+        # An Ultra turn's live CLI, once Claude Code knows Buddy's worker types.
+        run = None
         try:
             if turn.ultra is not None:
                 agents = await self._define_workers(process, turn)
@@ -1174,6 +1286,8 @@ class ClaudeCodeProvider:
                     attempt.ultra_off_reason = ULTRA_TOO_OLD_REASON.format(computer=turn.machine.name)
                     return
                 parser.track_workers(turn.ultra)
+                run = ClaudeUltraRun(turn, process, parser.workers)
+                self._ultra_runs.append(run)
             await process.write(json.dumps(turn_message(turn, resume_id)) + '\n')
             deadline = _reply_deadline(turn)
             while not parser.finished:
@@ -1196,16 +1310,21 @@ class ClaudeCodeProvider:
             attempt.exited_early = True
             output_ended = True
         finally:
-            process.close_stdin()
             try:
+                if run is not None:
+                    self._ultra_runs.remove(run)
+                    # Workers still running, as when the person stops the reply,
+                    # are stopped first, so Claude Code ends them itself.
+                    await run.stop_all()
+                process.close_stdin()
                 if output_ended and (parser.error or not parser.finished):
                     # The CLI is exiting with an error; it explains why on stderr.
                     await process.finish_output(5)
             finally:
-                # Runs even when a second cancellation interrupts the wait.
+                # Runs even when a second cancellation interrupts a wait.
                 process.kill()
                 attempt.stderr = process.stderr_text()
-        # A turn that ended by error, exit or time limit took its running workers with the CLI.
+        # The workers still running when a turn ended by error, exit or time limit stopped with it.
         for event in parser.stop_workers():
             yield event
 

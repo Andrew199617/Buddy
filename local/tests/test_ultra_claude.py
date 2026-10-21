@@ -30,6 +30,7 @@ from unittest.mock import patch
 ROOT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT_DIR / 'backend'))
 
+from buddy_runner.process import ProcessClosedError  # noqa: E402
 from open_webui.utils.subscriptions import claude_code, ultra  # noqa: E402
 from open_webui.utils.subscriptions.common import ProviderSettings, TurnRequest, UltraOptions  # noqa: E402
 from open_webui.utils.subscriptions.conversation import parse_messages  # noqa: E402
@@ -97,42 +98,82 @@ MISSING_SESSION_RESULT = {
 }
 
 
+def stopped_notification(task_id: str) -> dict:
+    """What Claude Code reports once it has stopped a task, shaped like the recorded task_notification messages."""
+    return {
+        'type': 'system',
+        'subtype': 'task_notification',
+        'task_id': task_id,
+        'status': 'stopped',
+        'summary': '',
+        'session_id': 'stopped-session',
+    }
+
+
 class ReplayProcess:
     """A ``claude -p`` process that answers the way the recorded one did.
 
     It answers an initialize request with ``initialize_answer`` and only then
-    writes out ``turn_output``, once the prompt is written. Without an answer,
-    its output ends, or with ``silent`` it never says anything more.
+    writes out ``turn_output``, once the prompt is written. It answers a
+    stop_task request with ``stop_output`` for that task, or else with a
+    task_notification that the task stopped. When it has nothing more to
+    say, its output ends, or with ``silent`` it waits to be written to. Once
+    its output ends, it can't be written to, like a CLI that has exited.
     """
 
-    def __init__(self, initialize_answer=None, turn_output=(), stderr='', silent=False):
+    def __init__(self, initialize_answer=None, turn_output=(), stderr='', silent=False, stop_output=None):
         self.initialize_answer = initialize_answer
         self.turn_output = list(turn_output)
         self.stderr = stderr
         self.silent = silent
+        self.stop_output = stop_output or {}
         self.written = []
+        # What Buddy did to the process, in order: each request's subtype or
+        # message's type, then close_stdin and kill.
+        self.calls = []
         self.killed = False
         self.args = []
         self.extra_env = None
         self.temp_files = None
+        # Set while it waits to be written to, with nothing left to say.
+        self.idle = asyncio.Event()
+        self._written_to = asyncio.Event()
+        self._output_ended = False
         self._lines = []
 
     async def write(self, text):
+        if self._output_ended:
+            raise ProcessClosedError('claude is no longer running')
         message = json.loads(text)
         self.written.append(message)
-        if message['type'] == 'control_request' and self.initialize_answer is not None:
+        self.idle.clear()
+        if message['type'] == 'user':
+            self.calls.append('user')
+            self._say(self.turn_output)
+            return
+        request = message['request']
+        self.calls.append(request['subtype'])
+        if request['subtype'] == 'initialize' and self.initialize_answer is not None:
             answer = copy.deepcopy(self.initialize_answer)
             answer['response']['request_id'] = message['request_id']
-            self._lines.append(json.dumps(answer))
-        elif message['type'] == 'user':
-            self._lines.extend(json.dumps(line) for line in self.turn_output)
+            self._say([answer])
+        elif request['subtype'] == 'stop_task':
+            task_id = request['task_id']
+            self._say(self.stop_output.get(task_id, [stopped_notification(task_id)]))
+
+    def _say(self, messages):
+        self._lines.extend(json.dumps(message) for message in messages)
+        self._written_to.set()
 
     async def read_line(self):
-        if self._lines:
-            return self._lines.pop(0)
-        if self.silent:
-            await asyncio.Event().wait()
-        return None
+        while not self._lines:
+            if not self.silent:
+                self._output_ended = True
+                return None
+            self.idle.set()
+            self._written_to.clear()
+            await self._written_to.wait()
+        return self._lines.pop(0)
 
     async def finish_output(self, timeout):
         return None
@@ -141,9 +182,10 @@ class ReplayProcess:
         return self.stderr
 
     def close_stdin(self):
-        pass
+        self.calls.append('close_stdin')
 
     def kill(self):
+        self.calls.append('kill')
         self.killed = True
 
     def tool_list(self) -> str:
@@ -241,6 +283,25 @@ def failures(events: list) -> list[str]:
 
 def last_usage(events: list) -> TokenUsage:
     return [event for event in events if isinstance(event, TokenUsage)][-1]
+
+
+def stop_requests(process: ReplayProcess) -> list[str]:
+    """The task ids of the stop_task requests written to a process, in order."""
+    task_ids = []
+    for message in process.written:
+        if message['type'] == 'control_request' and message['request']['subtype'] == 'stop_task':
+            task_ids.append(message['request']['task_id'])
+    return task_ids
+
+
+def started_tasks(turn_output: list[dict]) -> list[str]:
+    return [task['task_id'] for task in system_messages(turn_output, 'task_started')]
+
+
+async def until(condition) -> None:
+    """Let the other tasks run until ``condition()`` holds."""
+    while not condition():
+        await asyncio.sleep(0)
 
 
 def background_essay_stopped(turn_output: list[dict]) -> list[dict]:
@@ -645,6 +706,8 @@ class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((latest.state, latest.summary), (WORKER_STOPPED, claude_code.WORKER_ENDED_WITH_TURN))
         self.assertEqual(len(failures(events)), 1)
         self.assertTrue(failures(events)[0].startswith('Claude Code stopped before finishing the reply.'))
+        # Claude Code had exited, so asking it to stop the essay worker failed quietly.
+        self.assertNotIn('stop_task', process.calls)
         self.assertTrue(process.killed)
 
     async def test_an_ultra_turn_stops_with_its_workers_at_the_time_limit(self):
@@ -657,7 +720,9 @@ class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reply(events), f"{first['result']}\n\n{second['result']}")
         self.assertEqual(latest_workers(events)[essay['task_id']].state, WORKER_STOPPED)
         self.assertEqual(failures(events), [claude_code.ULTRA_TIME_LIMIT_MESSAGE])
-        self.assertTrue(process.killed)
+        # Claude Code was asked to stop the essay worker before the CLI was ended.
+        self.assertEqual(stop_requests(process), [essay['task_id']])
+        self.assertEqual(process.calls[-3:], ['stop_task', 'close_stdin', 'kill'])
 
     async def test_an_error_result_ends_an_ultra_turn_while_a_worker_runs(self):
         answer, turn_output = recorded_turn('claude-background.jsonl')
@@ -678,8 +743,11 @@ class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failures(events), ['API Error: 500'])
         self.assertEqual(latest_workers(events)[essay['task_id']].state, WORKER_STOPPED)
         self.assertEqual(latest_workers(events)[math['task_id']].state, WORKER_DONE)
-        # Nothing after the error was read.
-        self.assertEqual(process.unread_lines(), len(output) - first_result - 1)
+        # Nothing after the error reached the reply. Buddy read on only while
+        # Claude Code stopped the essay worker, before the CLI was ended.
+        self.assertNotIn(results(turn_output)[1]['result'], reply(events))
+        self.assertEqual(stop_requests(process), [essay['task_id']])
+        self.assertEqual(process.calls[-3:], ['stop_task', 'close_stdin', 'kill'])
 
     async def test_a_normal_turn_still_ends_at_its_first_result(self):
         _, turn_output = recorded_turn('claude-background.jsonl')
@@ -695,6 +763,139 @@ class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Starting a subagent: Compute 6 times 7', statuses(events))
         self.assertEqual(process.unread_lines(), len(turn_output) - first_result - 1)
         self.assertEqual(failures(events), [])
+        self.assertTrue(process.killed)
+
+
+class UltraStopTests(unittest.IsolatedAsyncioTestCase):
+    """Stopping one worker of a live Ultra turn, and stopping the whole turn."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.directory = directory.name
+        self.provider = claude_code.ClaudeCodeProvider(Path(directory.name))
+
+    async def start(self, process: ReplayProcess, turn: TurnRequest):
+        """Run the turn in a task, until Claude Code has nothing more to say for now.
+
+        Returns the task, and the list that the turn's events are added to as they come.
+        """
+        events = []
+
+        async def run():
+            async for event in self.provider.run_turn(turn):
+                events.append(event)
+
+        task = asyncio.create_task(run())
+        self.addAsyncCleanup(self.finish, task)
+        await asyncio.wait_for(process.idle.wait(), 5)
+        return task, events
+
+    async def finish(self, task: asyncio.Task):
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def stop_reply(self, task: asyncio.Task):
+        """Stop the reply as Stop does: cancel it and wait until it has ended."""
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5)
+
+    def background_turn(self, stop_output=None):
+        """The recorded background turn, which waits after its second result while the essay worker runs."""
+        answer, turn_output = recorded_turn('claude-background.jsonl')
+        process = ReplayProcess(answer, turn_output, silent=True, stop_output=stop_output)
+        return process, ultra_turn(self.directory, ReplayMachine(process)), turn_output
+
+    def parallel_turn(self, reports_stops=True):
+        """The recorded Chat turn until its first worker ends, while both of its workers run.
+
+        Unless ``reports_stops``, Claude Code never says that it stopped them.
+        """
+        answer, turn_output = recorded_chat()
+        first_end = turn_output.index(system_messages(turn_output, 'task_updated')[0])
+        stop_output = {}
+        if not reports_stops:
+            for task_id in started_tasks(turn_output):
+                stop_output[task_id] = []
+        process = ReplayProcess(answer, turn_output[:first_end], silent=True, stop_output=stop_output)
+        return process, ultra_turn(self.directory, ReplayMachine(process)), turn_output
+
+    async def test_stopping_one_worker_asks_claude_code_to_stop_its_task(self):
+        _, recorded_output = recorded_turn('claude-background.jsonl')
+        essay, _ = system_messages(recorded_output, 'task_started')
+        essay_stopped = background_essay_stopped(recorded_output)
+        process, turn, _ = self.background_turn(stop_output={essay['task_id']: essay_stopped})
+        task, events = await self.start(process, turn)
+        self.assertEqual(latest_workers(events)[essay['task_id']].state, WORKER_RUNNING)
+
+        self.assertTrue(await self.provider.stop_worker(turn, essay['task_id']))
+        await asyncio.wait_for(task, 5)
+
+        request = process.written[-1]
+        self.assertEqual(request['type'], 'control_request')
+        self.assertTrue(request['request_id'].startswith(claude_code.STOP_REQUEST_ID))
+        self.assertEqual(request['request'], {'subtype': 'stop_task', 'task_id': essay['task_id']})
+        # Claude Code reported the worker stopped, and the orchestrator's reply to that ended the turn.
+        latest = latest_workers(events)[essay['task_id']]
+        self.assertEqual(latest.state, WORKER_STOPPED)
+        self.assertEqual(latest.summary, 'The essay was stopped before it was finished.')
+        self.assertTrue(reply(events).endswith(ESSAY_STOPPED_REPLY))
+        self.assertEqual(failures(events), [])
+        # Asked once, while the turn still read. Nothing was left to stop when it ended.
+        self.assertEqual(process.calls, ['initialize', 'user', 'stop_task', 'close_stdin', 'kill'])
+        # The turn has ended, so it has no workers to stop any more.
+        self.assertFalse(await self.provider.stop_worker(turn, essay['task_id']))
+
+    async def test_only_a_running_worker_of_a_live_turn_can_be_stopped(self):
+        process, turn, turn_output = self.background_turn()
+        essay, math = system_messages(turn_output, 'task_started')
+        await self.start(process, turn)
+
+        # The math worker has reported already, and no worker has that id.
+        self.assertFalse(await self.provider.stop_worker(turn, math['task_id']))
+        self.assertFalse(await self.provider.stop_worker(turn, 'no-such-task'))
+        # The turn is found by the very request that was passed to run_turn, not an equal copy.
+        self.assertFalse(await self.provider.stop_worker(dataclasses.replace(turn), essay['task_id']))
+        self.assertEqual(stop_requests(process), [])
+
+    async def test_stopping_the_reply_stops_every_running_worker_before_the_cli_ends(self):
+        process, turn, turn_output = self.parallel_turn()
+        task, events = await self.start(process, turn)
+        workers = latest_workers(events)
+        self.assertEqual([worker.state for worker in workers.values()], [WORKER_RUNNING, WORKER_RUNNING])
+
+        await self.stop_reply(task)
+
+        self.assertEqual(stop_requests(process), started_tasks(turn_output))
+        # Every request has an id of its own.
+        request_ids = [message['request_id'] for message in process.written if message['type'] == 'control_request']
+        self.assertEqual(len(set(request_ids)), len(request_ids))
+        # Claude Code was asked to stop both, and reported them stopped, before stdin closed and the CLI was killed.
+        self.assertEqual(process.calls, ['initialize', 'user', 'stop_task', 'stop_task', 'close_stdin', 'kill'])
+        self.assertEqual(process.unread_lines(), 0)
+        self.assertFalse(await self.provider.stop_worker(turn, started_tasks(turn_output)[0]))
+
+    async def test_workers_that_do_not_report_stopping_in_time_end_with_the_cli(self):
+        process, turn, _ = self.parallel_turn(reports_stops=False)
+        task, _ = await self.start(process, turn)
+
+        with patch.object(claude_code, 'STOP_WORKERS_GRACE', 0.05):
+            with self.assertLogs(claude_code.log, level='WARNING'):
+                await self.stop_reply(task)
+
+        self.assertEqual(process.calls, ['initialize', 'user', 'stop_task', 'stop_task', 'close_stdin', 'kill'])
+
+    async def test_stopping_again_while_workers_stop_ends_the_cli_at_once(self):
+        process, turn, _ = self.parallel_turn(reports_stops=False)
+        task, _ = await self.start(process, turn)
+
+        task.cancel()
+        # Buddy waits for Claude Code to report the workers stopped, and the person presses Stop again.
+        await asyncio.wait_for(until(lambda: process.calls.count('stop_task') == 2), 5)
+        await self.stop_reply(task)
+
+        self.assertEqual(process.calls[-3:], ['stop_task', 'stop_task', 'kill'])
         self.assertTrue(process.killed)
 
 
