@@ -1728,6 +1728,8 @@ def load_subscription_service(data_dir: Path, config: StandInConfig):
         'open_webui.models.chats': types.SimpleNamespace(Chats=None),
         'open_webui.models.folders': types.SimpleNamespace(Folders=None),
         'open_webui.utils.access_control.folders': types.SimpleNamespace(has_folder_access=None),
+        # Where a stopped reply's Ultra workers go; these tests stop no replies.
+        'open_webui.socket.main': types.SimpleNamespace(get_event_emitter=None),
     }
     service_path = ROOT_DIR / 'backend' / 'open_webui' / 'utils' / 'subscriptions' / 'service.py'
     spec = importlib.util.spec_from_file_location('subscription_service_under_test', service_path)

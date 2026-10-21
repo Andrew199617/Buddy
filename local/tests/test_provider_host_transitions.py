@@ -205,7 +205,7 @@ async def fixture_collect_events(events, model_id):
     return [event async for event in events]
 
 
-async def fixture_stream_events(events, model_id):
+async def fixture_stream_events(events, model_id, emit_when_stopped=None):
     async for event in events:
         yield event
 

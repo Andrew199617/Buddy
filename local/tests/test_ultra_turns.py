@@ -914,6 +914,16 @@ class ChatStopTests(UltraServiceTestCase):
         self.service._remote_machines['runner-a'] = self.computer
         self.service.stream_events = streaming.stream_events
         self.chat_tasks = load_chat_tasks()
+        # What the chat's event emitter is sent once Stop has closed the reply's stream.
+        self.sent_after_stop = []
+
+        async def chat_event_emitter(request_info):
+            async def emit(event):
+                self.sent_after_stop.append((request_info, event))
+
+            return emit
+
+        self.service.get_event_emitter = chat_event_emitter
         # A worker's step goes out to the chat at once, rather than at most once a second.
         snapshot_interval = patch.object(streaming, 'WORKER_SNAPSHOT_INTERVAL', 0)
         snapshot_interval.start()
@@ -947,6 +957,31 @@ class ChatStopTests(UltraServiceTestCase):
         result = await asyncio.wait_for(self.chat_tasks.stop_item_tasks(None, 'chat-1'), 10)
         self.assertEqual(result['message'], CHAT_STOPPED)
         self.assertEqual(self.left_unclosed, [])
+
+    def assert_chat_sent_the_workers_stopped(self):
+        """The chat was sent the reply's workers after Stop, with each one that still ran as stopped.
+
+        It no longer reads the reply then, so the snapshot goes to its event
+        emitter, which saves it as the message's workers.
+        """
+        before = self.reader.last_workers_snapshot()
+        self.assertGreater(before['running'], 0)
+        [(request_info, event)] = self.sent_after_stop
+        self.assertEqual((request_info['chat_id'], request_info['message_id']), ('chat-1', 'message-1'))
+        self.assertEqual(event['type'], streaming.WORKERS_EVENT_TYPE)
+        self.assertEqual(event['data']['running'], 0)
+        expected_states = {}
+        for item in before['items']:
+            if item['state'] == 'running':
+                expected_states[item['id']] = 'stopped'
+            else:
+                expected_states[item['id']] = item['state']
+        states = {}
+        for item in event['data']['items']:
+            states[item['id']] = item['state']
+            if item['state'] == 'stopped':
+                self.assertIsNotNone(item['ended_at'])
+        self.assertEqual(states, expected_states)
 
     async def claude_reply_with_a_worker_running(self):
         """A Claude reply that has answered twice while its essay worker writes on, as recorded.
@@ -1012,6 +1047,7 @@ class ChatStopTests(UltraServiceTestCase):
         process, essay = await self.claude_reply_with_a_worker_running()
         await self.stop_chat()
         self.assert_claude_workers_stopped(process, essay)
+        self.assert_chat_sent_the_workers_stopped()
 
     async def test_a_stop_while_the_chat_hands_on_a_claude_workers_step_stops_the_workers_too(self):
         process, essay = await self.claude_reply_with_a_worker_running()
@@ -1022,11 +1058,13 @@ class ChatStopTests(UltraServiceTestCase):
         self.assertEqual(self.reader.activities()[essay['task_id']], 'Writing about suspension bridges')
         await self.stop_chat()
         self.assert_claude_workers_stopped(process, essay)
+        self.assert_chat_sent_the_workers_stopped()
 
     async def test_stopping_the_chat_stops_a_codex_replys_workers(self):
         process, messages, workers, run = await self.codex_reply_with_workers_running()
         await self.stop_chat()
         self.assert_codex_workers_stopped(process, messages, workers, run)
+        self.assert_chat_sent_the_workers_stopped()
 
     async def test_a_stop_while_the_chat_hands_on_a_codex_workers_step_stops_the_workers_too(self):
         process, messages, workers, run = await self.codex_reply_with_workers_running()
@@ -1037,6 +1075,7 @@ class ChatStopTests(UltraServiceTestCase):
         self.assertEqual(self.reader.activities()[workers[0]], 'Thinking')
         await self.stop_chat()
         self.assert_codex_workers_stopped(process, messages, workers, run)
+        self.assert_chat_sent_the_workers_stopped()
 
     async def test_a_stop_while_the_chat_hands_on_text_ends_the_cli_of_a_reply_without_ultra(self):
         # Ultra is off for this reply, which starts by saying why.
@@ -1049,6 +1088,13 @@ class ChatStopTests(UltraServiceTestCase):
         self.assertEqual(self.reader.reply(), 'Working on it')
         await self.stop_chat()
         self.assertEqual(process.calls, ['user', 'close_stdin', 'kill'])
+        # It had no workers to list as stopped.
+        self.assertEqual(self.sent_after_stop, [])
+
+    def test_a_reply_outside_a_chat_has_no_chat_to_send_its_workers_to(self):
+        self.assertIsNone(self.service._stopped_reply_emitter({'chat_id': 'chat-1'}))
+        self.assertIsNone(self.service._stopped_reply_emitter({'message_id': 'message-1'}))
+        self.assertIsNotNone(self.service._stopped_reply_emitter({'chat_id': 'chat-1', 'message_id': 'message-1'}))
 
 
 if __name__ == '__main__':

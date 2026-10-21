@@ -5,7 +5,8 @@ Run from the repository root:
 
 A worker starting or ending is sent at once with a status line; changes to
 what a worker is doing are sent at most once a second. The chat's event
-emitter keeps only the latest snapshot as message.workers.
+emitter keeps only the latest snapshot as message.workers. When the chat
+stops a reply, the workers still running reach it as stopped.
 """
 
 import asyncio
@@ -379,6 +380,129 @@ class StreamWorkerTests(unittest.TestCase):
         self.assertNotIn('workers', json.dumps(completion))
 
 
+class HeldTurn:
+    """A turn's events, held until the chat stops the reply.
+
+    Its worker writes on and its sub-worker has finished, or it has only text.
+    """
+
+    # What the reply sends before the turn waits: a status line and a snapshot for each of the
+    # workers' three updates, or the text of a turn without workers.
+    CHUNKS_WITH_WORKERS = 6
+    CHUNKS_WITHOUT_WORKERS = 1
+
+    def __init__(self, workers=True):
+        self.workers = workers
+        self.waiting = asyncio.Event()
+        # What happened once the chat stopped the reply, in order.
+        self.after_stop = []
+
+    async def events(self):
+        try:
+            if self.workers:
+                yield research_worker(activity='Reading parser.py')
+                yield sub_worker()
+                yield sub_worker(state=WORKER_DONE, summary='Read them.')
+            else:
+                yield TextDelta('Working on it.')
+            self.waiting.set()
+            await asyncio.Event().wait()
+        finally:
+            # The provider stops the turn's workers here.
+            self.after_stop.append('turn closed')
+
+    def chunks_before_waiting(self) -> int:
+        if self.workers:
+            return self.CHUNKS_WITH_WORKERS
+        return self.CHUNKS_WITHOUT_WORKERS
+
+
+async def read_until_the_turn_waits(turn: HeldTurn, stream) -> list[str]:
+    """Read the reply as the chat does, up to its last chunk before the turn waits.
+
+    The chat is then handing that chunk on when Stop lands.
+    """
+    chunks = []
+    for _ in range(turn.chunks_before_waiting()):
+        chunks.append(await anext(stream))
+    return chunks
+
+
+class StoppedReplyTests(unittest.IsolatedAsyncioTestCase):
+    """The chat stops reading a reply when it stops it, so its workers' last snapshot goes to the emitter given."""
+
+    def setUp(self):
+        self.turn = HeldTurn()
+        self.emitted = []
+
+    async def emit(self, event):
+        self.turn.after_stop.append('snapshot sent')
+        self.emitted.append(event)
+
+    def stream(self, emit=None):
+        if emit is None:
+            emit = self.emit
+        return streaming.stream_events(self.turn.events(), MODEL_ID, emit_when_stopped=emit)
+
+    def assert_sent_with_the_running_worker_stopped(self):
+        [event] = self.emitted
+        self.assertEqual(event['type'], streaming.WORKERS_EVENT_TYPE)
+        self.assertEqual(event['data']['running'], 0)
+        research, sub = event['data']['items']
+        self.assertEqual(research['id'], 'task-research')
+        self.assertEqual(research['state'], WORKER_STOPPED)
+        self.assertIsNone(research['activity'])
+        self.assertEqual(research['summary'], streaming.WORKER_STOPPED_WITH_REPLY)
+        self.assertIsInstance(research['ended_at'], int)
+        # A worker that had ended keeps how it ended.
+        self.assertEqual((sub['state'], sub['summary']), (WORKER_DONE, 'Read them.'))
+        # The turn is closed first, so its provider has stopped the workers by then.
+        self.assertEqual(self.turn.after_stop, ['turn closed', 'snapshot sent'])
+
+    async def test_a_stop_while_the_chat_hands_on_a_chunk_sends_the_running_worker_stopped(self):
+        stream = self.stream()
+        chunks = await read_until_the_turn_waits(self.turn, stream)
+        self.assertEqual(snapshot_data(json.loads(chunks[-1][6:]))['running'], 1)
+        # The chat closes the stream, as middleware.py does when Stop lands while it hands a chunk on.
+        await stream.aclose()
+        self.assert_sent_with_the_running_worker_stopped()
+
+    async def test_a_stop_while_the_reply_waits_for_its_turn_sends_it_stopped_too(self):
+        task = asyncio.create_task(collect(self.stream()))
+        await asyncio.wait_for(self.turn.waiting.wait(), 5)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assert_sent_with_the_running_worker_stopped()
+
+    async def test_a_reply_that_ends_on_its_own_sends_nothing_after_it(self):
+        async def events():
+            yield research_worker()
+            yield research_worker(state=WORKER_DONE)
+
+        payloads = await collect(streaming.stream_events(events(), MODEL_ID, emit_when_stopped=self.emit))
+        self.assertEqual(self.emitted, [])
+        self.assertTrue(payloads)
+
+    async def test_a_stopped_reply_without_workers_sends_nothing(self):
+        self.turn = HeldTurn(workers=False)
+        stream = self.stream()
+        await read_until_the_turn_waits(self.turn, stream)
+        await stream.aclose()
+        self.assertEqual(self.emitted, [])
+        self.assertEqual(self.turn.after_stop, ['turn closed'])
+
+    async def test_a_snapshot_that_cannot_be_sent_still_lets_the_reply_stop(self):
+        async def broken_emit(event):
+            raise RuntimeError('The chat is gone')
+
+        stream = self.stream(broken_emit)
+        await read_until_the_turn_waits(self.turn, stream)
+        with self.assertLogs(streaming.log, 'ERROR'):
+            await stream.aclose()
+        self.assertEqual(self.turn.after_stop, ['turn closed'])
+
+
 class StandInSocketServer:
     """The Socket.IO server, recording what the emitter sends to the person's browser."""
 
@@ -485,6 +609,26 @@ class SocketWorkersTests(unittest.IsolatedAsyncioTestCase):
                 await emit(event)
         self.assertEqual(self.chats.upserts, [])
         self.assertNotIn('workers', self.chats.messages[MESSAGE_ID])
+
+    async def test_a_stopped_replys_last_snapshot_replaces_the_saved_one(self):
+        emit = await self.emitter()
+        turn = HeldTurn()
+        stream = streaming.stream_events(turn.events(), MODEL_ID, emit_when_stopped=emit)
+        # The chat hands each snapshot on to its emitter, as middleware.py does, until Stop lands.
+        for chunk in await read_until_the_turn_waits(turn, stream):
+            event = json.loads(chunk[6:])['event']
+            if event['type'] == streaming.WORKERS_EVENT_TYPE:
+                await emit(event)
+        self.assertEqual(self.chats.messages[MESSAGE_ID]['workers']['running'], 1)
+        await stream.aclose()
+
+        saved = self.chats.messages[MESSAGE_ID]['workers']
+        self.assertEqual(saved['running'], 0)
+        self.assertEqual([item['state'] for item in saved['items']], [WORKER_STOPPED, WORKER_DONE])
+        self.assertFalse(self.chats.upserts[-1]['touch'])
+        # The person's open chat is told too.
+        last_sent = self.sio.emitted[-1][1]['data']
+        self.assertEqual(last_sent['data'], saved)
 
     async def test_a_temporary_chat_is_sent_the_snapshot_but_saves_nothing(self):
         emit = await self.emitter(chat_id='local:fixture-temporary')

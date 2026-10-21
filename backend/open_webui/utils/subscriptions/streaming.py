@@ -5,6 +5,7 @@ compatible connection: content and reasoning deltas, ``usage`` chunks,
 ``error`` chunks, and ``event`` chunks for status lines and Ultra workers.
 """
 
+import asyncio
 import dataclasses
 import json
 import logging
@@ -17,6 +18,7 @@ from open_webui.utils.subscriptions.events import (
     WORKER_DONE,
     WORKER_FAILED,
     WORKER_RUNNING,
+    WORKER_STOPPED,
     ReasoningDelta,
     StatusUpdate,
     SubscriptionError,
@@ -31,6 +33,8 @@ log = logging.getLogger(__name__)
 WORKERS_EVENT_TYPE = 'chat:message:workers'
 # Seconds between snapshots that only change what workers are doing.
 WORKER_SNAPSHOT_INTERVAL = 1.0
+# The summary of a worker that was still running when the chat stopped its reply.
+WORKER_STOPPED_WITH_REPLY = 'Stopped when the reply was stopped.'
 
 
 def _sse(data: dict) -> str:
@@ -119,6 +123,19 @@ class WorkerSnapshots:
         """Whether any change has not been sent yet."""
         return self._state_changed or self._activity_changed
 
+    def stop_running(self) -> None:
+        """Record every worker still running as stopped with the reply."""
+        for worker in list(self._workers.values()):
+            if worker.state != WORKER_RUNNING:
+                continue
+            stopped = dataclasses.replace(
+                worker,
+                state=WORKER_STOPPED,
+                activity=None,
+                summary=WORKER_STOPPED_WITH_REPLY,
+            )
+            self.update(stopped)
+
     def snapshot(self) -> dict:
         """The snapshot event for every worker so far; its changes then count as sent."""
         self._state_changed = False
@@ -149,11 +166,21 @@ class WorkerSnapshots:
         }
 
 
-async def stream_events(events, model_id: str):
-    """Yield server-sent events for a streaming chat completion."""
+async def stream_events(events, model_id: str, emit_when_stopped=None):
+    """Yield server-sent events for a streaming chat completion.
+
+    When the chat stops the reply, it closes this stream or cancels the task
+    that reads it, so the stream can't send its workers' last snapshot. The
+    provider has stopped the workers by then, but its last updates are lost
+    with the stream. So the workers still running are recorded as stopped,
+    and emit_when_stopped, when given, is awaited with that snapshot's event,
+    so the chat no longer lists them as running.
+    """
     completion_id = f'chatcmpl-{uuid.uuid4()}'
     status_shown = False
     workers = WorkerSnapshots()
+    # Whether the chat stopped the reply before its events ended.
+    stopped = False
     try:
         async for event in events:
             if isinstance(event, TextDelta):
@@ -179,6 +206,9 @@ async def stream_events(events, model_id: str):
             # Checked after every event, so a held activity change goes out once its second has passed.
             if workers.ready():
                 yield _sse(workers.snapshot())
+    except (GeneratorExit, asyncio.CancelledError):
+        stopped = True
+        raise
     except SubscriptionError as error:
         yield _sse({'error': {'message': str(error)}})
     except Exception as error:
@@ -190,6 +220,8 @@ async def stream_events(events, model_id: str):
         # and an Ultra turn stops its workers. Left for Python's garbage
         # collector to close, it would end later, in a task nobody waits for.
         await events.aclose()
+        if stopped:
+            await _send_stopped_workers(workers, emit_when_stopped)
 
     if workers.unsent():
         yield _sse(workers.snapshot())
@@ -197,6 +229,22 @@ async def stream_events(events, model_id: str):
         yield _sse(_status_chunk('Done', done=True, hidden=True))
     yield _sse(_chunk(completion_id, model_id, {}, finish_reason='stop'))
     yield 'data: [DONE]\n\n'
+
+
+async def _send_stopped_workers(workers: WorkerSnapshots, emit_when_stopped) -> None:
+    """Send the chat the last snapshot of a stopped reply's workers, with those still running stopped.
+
+    Sends nothing when no worker changed since the last snapshot, as in a
+    reply without workers. A snapshot that can't be sent is only logged, so
+    that the reply still stops.
+    """
+    workers.stop_running()
+    if emit_when_stopped is None or not workers.unsent():
+        return
+    try:
+        await emit_when_stopped(workers.snapshot()['event'])
+    except Exception:
+        log.exception("Could not send the chat a stopped reply's Ultra workers")
 
 
 async def collect_events(events, model_id: str) -> dict:

@@ -47,6 +47,7 @@ from open_webui.models.chat_run_targets import (
 from open_webui.models.chats import Chats
 from open_webui.models.subscription_credentials import KIND_API_KEY, KIND_PLAN_TOKEN, SubscriptionCredentials
 from open_webui.models.users import Users
+from open_webui.socket.main import get_event_emitter
 from open_webui.utils.chat_id import CHANNEL_CHAT_ID_PREFIX, is_saved_chat_id, is_temporary_chat_id
 from open_webui.utils.payload import apply_model_params_to_body_openai, apply_system_prompt_to_body
 from open_webui.utils.subscriptions.claude_code import ClaudeCodeProvider
@@ -3951,6 +3952,23 @@ async def stop_worker(user, chat_id: str, worker_id: str) -> bool:
     return False
 
 
+def _stopped_reply_emitter(metadata: dict):
+    """What sends a stopped reply's last Ultra workers snapshot to its chat, or None outside a chat.
+
+    The chat stops reading a reply's stream when it stops the reply, so that
+    snapshot goes through the chat's event emitter instead, which saves it as
+    the message's workers, as it does each snapshot the chat reads.
+    """
+    if not metadata.get('chat_id') or not metadata.get('message_id'):
+        return None
+
+    async def emit_to_chat(event: dict) -> None:
+        event_emitter = await get_event_emitter(metadata)
+        await event_emitter(event)
+
+    return emit_to_chat
+
+
 async def generate_subscription_chat_completion(request, form_data: dict, user, models):
     if not await may_use_machines(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=NOT_ALLOWED_MESSAGE)
@@ -4032,5 +4050,6 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
 
     response_model_id = form_data.get('model') or model_id
     if payload.get('stream'):
-        return StreamingResponse(stream_events(events, response_model_id), media_type='text/event-stream')
+        body = stream_events(events, response_model_id, emit_when_stopped=_stopped_reply_emitter(metadata))
+        return StreamingResponse(body, media_type='text/event-stream')
     return await collect_events(events, response_model_id)
