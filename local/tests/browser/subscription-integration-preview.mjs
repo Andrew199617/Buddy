@@ -18,7 +18,7 @@ const selectedCases = new Set(
 const stores = resolveProductionExports(
 	readProductionSourceMaps(buildDirectory),
 	'/stores/index.ts',
-	['showSettings']
+	['showSettings', 'socket']
 );
 const subscriptionModel = {
 	id: 'codex.synthetic-subscription',
@@ -41,6 +41,79 @@ const baseModel = {
 	openai: { id: 'buddy-design-model' },
 	info: { id: 'buddy-design-model', name: 'Buddy local model', params: {}, meta: {} }
 };
+// Ultra's chat model: a Claude plan model whose CLI can run workers, listed as the server lists it.
+const ultraChatModel = {
+	id: 'claude-code.synthetic-sonnet',
+	name: 'Claude Synthetic Sonnet',
+	object: 'model',
+	created: 0,
+	owned_by: 'subscription',
+	connection_type: 'external',
+	tags: [{ name: 'Claude plan' }],
+	subscription: {
+		provider: 'claude',
+		model: 'synthetic-sonnet',
+		description: 'Synthetic Ultra plan model.',
+		efforts: ['low', 'medium', 'high'],
+		ultra: true,
+		ultra_max_workers: null
+	}
+};
+// A second Claude plan model the workers can run on, with fewer thinking levels.
+const ultraWorkerModel = {
+	...ultraChatModel,
+	id: 'claude-code.synthetic-haiku',
+	name: 'Claude Synthetic Haiku',
+	subscription: {
+		...ultraChatModel.subscription,
+		model: 'synthetic-haiku',
+		efforts: ['low', 'medium']
+	}
+};
+
+/** The chat the Ultra case opens: one finished reply from Ultra's chat model. */
+function ultraChatFixture() {
+	const now = Math.floor(Date.now() / 1000);
+	const prompt = {
+		id: 'ultra-user-message',
+		parentId: null,
+		childrenIds: ['ultra-first-reply'],
+		role: 'user',
+		content: 'Can you look at the parser?',
+		timestamp: now - 60
+	};
+	const reply = {
+		id: 'ultra-first-reply',
+		parentId: prompt.id,
+		childrenIds: [],
+		role: 'assistant',
+		model: ultraChatModel.id,
+		modelName: ultraChatModel.name,
+		content: 'A plain answer for optional panel tests.',
+		timestamp: now - 30,
+		done: true
+	};
+	return {
+		id: 'buddy-design-chat',
+		title: 'A little room to think',
+		user_id: 'buddy-design-user',
+		created_at: now - 60,
+		updated_at: now,
+		last_read_at: now,
+		pinned: false,
+		active: false,
+		current_message_id: reply.id,
+		folder_id: null,
+		chat: {
+			title: 'A little room to think',
+			models: [ultraChatModel.id],
+			params: {},
+			files: [],
+			history: { currentId: reply.id, messages: { [prompt.id]: prompt, [reply.id]: reply } },
+			messages: [prompt, reply]
+		}
+	};
+}
 
 function providerFixture(id, signedIn = id === 'codex') {
 	return {
@@ -823,6 +896,27 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		return false;
 	}
 
+	// --- Ultra: the chat that uses it and the workers stopped one by one ------
+	let ultraChat = null;
+	if (mode === 'ultra') ultraChat = ultraChatFixture();
+	const workerStops = [];
+
+	/** Answers the Ultra chat's reads and saves; returns false for anything else. */
+	async function routeUltraChat(route, request, path) {
+		if (path !== '/api/v1/chats/buddy-design-chat') return false;
+		const method = request.method();
+		if (method === 'POST') {
+			const body = request.postDataJSON();
+			requests.push({ method, path, body });
+			// Like the server, a save merges its fields into the saved chat.
+			ultraChat = { ...ultraChat, chat: { ...ultraChat.chat, ...body.chat } };
+		} else if (method !== 'GET') {
+			return false;
+		}
+		await route.fulfill({ status: 200, json: ultraChat });
+		return true;
+	}
+
 	let sessionOptions = {};
 	if (mode === 'project-tab' || mode === 'project-agents' || mode === 'project-agents-server')
 		sessionOptions = { folderId: 'website' };
@@ -850,8 +944,16 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		const path = url.pathname.replace(/\/$/, '');
 		if (path === '/api/models' || path === '/api/models/base') {
 			requests.push({ method: request.method(), path });
-			const data = role === 'admin' ? [baseModel, subscriptionModel] : [baseModel];
+			let data = [baseModel];
+			if (mode === 'ultra') {
+				data = [baseModel, ultraChatModel, ultraWorkerModel];
+			} else if (role === 'admin') {
+				data = [baseModel, subscriptionModel];
+			}
 			await route.fulfill({ status: 200, json: { object: 'list', data } });
+			return;
+		}
+		if (mode === 'ultra' && (await routeUltraChat(route, request, path))) {
 			return;
 		}
 		if (path === '/openai/config') {
@@ -898,6 +1000,17 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		// per-user view is not modelled here.
 		if (role !== 'admin') {
 			await route.fulfill({ status: 403, json: { detail: 'Synthetic administrator guard.' } });
+			return;
+		}
+		const workerStop = path.match(
+			/^\/api\/v1\/subscriptions\/chats\/([^/]+)\/workers\/([^/]+)\/stop$/
+		);
+		if (mode === 'ultra' && workerStop && request.method() === 'POST') {
+			workerStops.push({
+				chatId: decodeURIComponent(workerStop[1]),
+				workerId: decodeURIComponent(workerStop[2])
+			});
+			await route.fulfill({ status: 200, json: { stopped: true } });
 			return;
 		}
 		if (path === '/api/v1/subscriptions/admin/policy' && request.method() === 'GET') {
@@ -1119,6 +1232,7 @@ function createFixtures(mode = 'normal', role = 'admin') {
 		sessionOptions,
 		projectSaves,
 		projectRelayClients,
+		workerStops,
 		// A plan turned on elsewhere, such as in Settings → Machines.
 		turnOnPlan(id, access) {
 			const plan = folderPlans.find((candidate) => candidate.id === id);
@@ -3279,6 +3393,836 @@ async function projectAgentsServerCase(browser, profile) {
 	);
 }
 
+// --- Ultra: the composer button, its menu and a reply's workers card ----------
+
+const ultraTrigger = '#ultra-menu-button';
+const composerModelTrigger = '.buddy-composer button[id^="model-selector-"][id$="-button"]';
+
+function ultraMenu(page) {
+	return page.locator('[role="menu"]').filter({ has: page.locator('.buddy-ultra-menu') });
+}
+
+/** Waits for the menu, and for its opening animation, which scales it, to end. */
+async function waitForMenu(menu) {
+	await menu.waitFor();
+	await menu.evaluate(async (element) => {
+		// The animation starts on a later frame than the menu appears.
+		await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+		const animations = element.getAnimations({ subtree: true });
+		await Promise.all(animations.map((animation) => animation.finished));
+	});
+}
+
+/** Taps on phones and clicks on desktop, as a person would. */
+async function press(profile, locator) {
+	if (profile.mobile) {
+		await locator.tap();
+	} else {
+		await locator.click();
+	}
+}
+
+async function draftHasFocus(page) {
+	return page.evaluate(() => {
+		const input = document.getElementById('chat-input');
+		if (!input) return false;
+		return input === document.activeElement || input.contains(document.activeElement);
+	});
+}
+
+/** The visible height the phone's on-screen keyboard leaves; null for no keyboard. */
+async function setVisibleHeight(page, height, top = 0) {
+	await page.evaluate(
+		({ height, top }) => {
+			const visible = height ?? window.innerHeight;
+			Object.defineProperty(visualViewport, 'height', { configurable: true, get: () => visible });
+			Object.defineProperty(visualViewport, 'offsetTop', { configurable: true, get: () => top });
+			visualViewport.dispatchEvent(new Event('resize'));
+			visualViewport.dispatchEvent(new Event('scroll'));
+		},
+		{ height, top }
+	);
+	await page.waitForTimeout(300);
+}
+
+/** Where the composer's model, Thinking and Ultra controls sit, in the page and on screen. */
+async function composerControlOrder(page) {
+	return page.locator('.buddy-composer').evaluate((composer) => {
+		const model = composer.querySelector('.buddy-composer-model');
+		const thinking = composer.querySelector('#owui-reasoning-chip');
+		const ultra = composer.querySelector('.buddy-composer-ultra');
+		function box(element) {
+			const rect = element.getBoundingClientRect();
+			return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+		}
+		if (!model || !thinking || !ultra) return { found: false };
+		return {
+			found: true,
+			sameRow:
+				model.parentElement === thinking.parentElement &&
+				thinking.parentElement === ultra.parentElement,
+			adjacent: model.nextElementSibling === thinking && thinking.nextElementSibling === ultra,
+			rowClass: model.parentElement.className,
+			rowLabel: model.parentElement.getAttribute('aria-label'),
+			boxes: [box(model), box(thinking), box(ultra)]
+		};
+	});
+}
+
+function assertComposerOrder(order, profile) {
+	assert.ok(order.found, 'The composer shows its model, Thinking and Ultra controls');
+	assert.ok(order.sameRow, 'Model, Thinking and Ultra share one row');
+	assert.ok(order.adjacent, 'The composer reads [Model][Thinking][Ultra]');
+	const [model, thinking, ultra] = order.boxes;
+	assert.ok(model.right <= thinking.left + 1, 'Thinking sits right of the model');
+	assert.ok(thinking.right <= ultra.left + 1, 'Ultra sits right of Thinking');
+	if (profile.mobile) {
+		assert.match(order.rowClass, /buddy-composer-settings/, 'Phones show them in the settings row');
+		assert.equal(order.rowLabel, 'Model, thinking and Ultra settings');
+	} else {
+		assert.match(order.rowClass, /buddy-composer-actions/, 'Desktop shows them with the actions');
+	}
+}
+
+/** Closes the Ultra menu as a person would: its button again, or Escape when the menu covers it. */
+async function closeUltraMenu(page, profile) {
+	const triggerReceivesTap = await page.locator(ultraTrigger).evaluate((button) => {
+		const bounds = button.getBoundingClientRect();
+		const hit = document.elementFromPoint(
+			bounds.x + bounds.width / 2,
+			bounds.y + bounds.height / 2
+		);
+		return Boolean(hit && button.contains(hit));
+	});
+	if (triggerReceivesTap) {
+		await press(profile, page.locator(ultraTrigger));
+	} else {
+		await page.keyboard.press('Escape');
+	}
+	await ultraMenu(page).waitFor({ state: 'detached' });
+}
+
+async function radioNames(group) {
+	const names = await group.getByRole('menuitemradio').allInnerTexts();
+	return names.map((name) => name.trim());
+}
+
+/** Every row of an open phone menu is a full touch target; the switch inside a row is not one. */
+async function assertTouchRows(menu) {
+	const rows = await menu.locator('button:not([role="switch"])').evaluateAll((buttons) =>
+		buttons.map((button) => ({
+			name: button.textContent.trim(),
+			height: button.getBoundingClientRect().height
+		}))
+	);
+	assert.ok(rows.length > 0, 'The menu has rows');
+	for (const row of rows) {
+		assert.ok(row.height >= 44, 'Ultra menu rows are 44px touch targets: ' + JSON.stringify(row));
+	}
+}
+
+/** A finger swipe up on an element, which scrolls it as a phone would. */
+async function swipeUp(page, locator) {
+	const box = await locator.boundingBox();
+	const x = box.x + box.width / 2;
+	const startY = box.y + box.height * 0.8;
+	const endY = box.y + box.height * 0.2;
+	const protocol = await page.context().newCDPSession(page);
+	await protocol.send('Input.dispatchTouchEvent', {
+		type: 'touchStart',
+		touchPoints: [{ x, y: startY, id: 1 }]
+	});
+	for (let step = 1; step <= 5; step += 1) {
+		await protocol.send('Input.dispatchTouchEvent', {
+			type: 'touchMove',
+			touchPoints: [{ x, y: startY + ((endY - startY) * step) / 5, id: 1 }]
+		});
+		await page.waitForTimeout(25);
+	}
+	await protocol.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+	await protocol.detach();
+	await page.waitForTimeout(300);
+}
+
+/** The open menu's box stays inside what the keyboard leaves visible, with its rows reachable. */
+async function assertMenuInView(menu) {
+	const metrics = await menu.locator('.buddy-ultra-menu').evaluate((element) => {
+		const rect = element.getBoundingClientRect();
+		const viewport = window.visualViewport;
+		const firstRow = element.querySelector('button');
+		let firstRowReceivesTap = false;
+		if (firstRow) {
+			const row = firstRow.getBoundingClientRect();
+			const hit = document.elementFromPoint(row.x + row.width / 2, row.y + row.height / 2);
+			firstRowReceivesTap = Boolean(hit && firstRow.contains(hit));
+		}
+		return {
+			top: rect.top,
+			bottom: rect.bottom,
+			left: rect.left,
+			right: rect.right,
+			viewportTop: viewport.offsetTop,
+			viewportHeight: viewport.height,
+			viewportWidth: viewport.width,
+			firstRowReceivesTap
+		};
+	});
+	assert.ok(metrics.top >= metrics.viewportTop - 1, 'The menu starts inside the visible area');
+	assert.ok(
+		metrics.bottom <= metrics.viewportTop + metrics.viewportHeight + 1,
+		'The menu ends above the keyboard: ' + JSON.stringify(metrics)
+	);
+	assert.ok(
+		metrics.left >= 0 && metrics.right <= metrics.viewportWidth + 1,
+		'The menu fits across'
+	);
+	assert.ok(metrics.firstRowReceivesTap, 'The menu’s first row takes taps');
+}
+
+/**
+ * Opens the composer as a person would, by its draft. Closing the model picker from its
+ * own button leaves an empty desktop composer at rest.
+ */
+async function openComposer(page, profile) {
+	await press(profile, page.locator('#chat-input'));
+	await waitUntil(
+		async () => (await page.locator('.buddy-composer').getAttribute('data-expanded')) === 'true',
+		'The composer opens'
+	);
+}
+
+async function openModelPicker(page, profile) {
+	const picker = page.locator(composerModelTrigger);
+	await openComposer(page, profile);
+	await press(profile, picker);
+	await waitUntil(
+		async () => (await picker.getAttribute('aria-expanded')) === 'true',
+		'The model picker opens'
+	);
+}
+
+async function closeModelPicker(page, profile) {
+	const picker = page.locator(composerModelTrigger);
+	await press(profile, picker);
+	await waitUntil(
+		async () => (await picker.getAttribute('aria-expanded')) === 'false',
+		'The model picker closes'
+	);
+}
+
+async function chooseModel(page, profile, modelName) {
+	await openModelPicker(page, profile);
+	await press(
+		profile,
+		page.getByRole('option', { name: 'Select ' + modelName + ' model', exact: true })
+	);
+	await waitUntil(
+		async () =>
+			(await page.locator(composerModelTrigger).getAttribute('aria-expanded')) === 'false',
+		'Choosing a model closes the picker'
+	);
+}
+
+/** Compare adds a second model to the chat, or goes back to the first one alone. */
+async function toggleCompare(page, profile, addedModelName = null) {
+	await openModelPicker(page, profile);
+	await press(profile, page.getByRole('button', { name: 'Compare', exact: true }));
+	if (addedModelName) {
+		await press(
+			profile,
+			page.getByRole('option', { name: 'Select ' + addedModelName + ' model', exact: true })
+		);
+	}
+	await closeModelPicker(page, profile);
+}
+
+async function expectUltraUnavailable(page, profile, reason) {
+	const trigger = page.locator(ultraTrigger);
+	await openComposer(page, profile);
+	await waitUntil(
+		async () => (await trigger.getAttribute('aria-label')) === 'Ultra: off',
+		'Ultra shows off while it is unavailable'
+	);
+	await press(profile, trigger);
+	const menu = ultraMenu(page);
+	await waitForMenu(menu);
+	const toggle = menu.getByRole('button', { name: /^Ultra/ });
+	assert.equal(await toggle.isDisabled(), true, 'The switch is disabled: ' + reason);
+	assert.equal(await toggle.getAttribute('aria-pressed'), 'false');
+	assert.equal(await toggle.getAttribute('aria-describedby'), 'ultra-menu-unavailable');
+	assert.equal((await menu.locator('#ultra-menu-unavailable').innerText()).trim(), reason);
+	assert.equal(
+		await menu.getByText('Worker model').count(),
+		0,
+		'No worker choices while Ultra is unavailable'
+	);
+	await closeUltraMenu(page, profile);
+}
+
+/** Sends a socket event for the chat's reply, as the server does, to the page's own handlers. */
+async function sendChatEvent(page, messageId, type, data) {
+	const event = { chat_id: 'buddy-design-chat', message_id: messageId, data: { type, data } };
+	await page.evaluate(
+		async ({ stores, event }) => {
+			const module = await import(stores.url);
+			let socket = null;
+			const unsubscribe = module[stores.aliases.socket].subscribe((value) => {
+				socket = value;
+			});
+			unsubscribe();
+			if (!socket) throw new Error('The page has no socket to hear the event');
+			for (const listener of socket.listeners('events')) {
+				await listener(event, () => {});
+			}
+		},
+		{ stores, event }
+	);
+}
+
+/**
+ * A chat:message:workers snapshot: a finished reader, a fixer and the test-writer it
+ * started. All three run on the chosen worker model, at Medium.
+ */
+function ultraWorkersSnapshot(startedAt, states) {
+	function ended(state, at) {
+		if (state === 'running') return null;
+		return startedAt + at;
+	}
+	const items = [
+		{
+			id: 'task-read',
+			parent_id: null,
+			depth: 1,
+			label: 'Read the parser',
+			state: 'done',
+			model: ultraWorkerModel.name,
+			effort: 'medium',
+			activity: null,
+			summary: 'The parser drops the last line.\nSee parse.ts:42.',
+			tokens: 1800,
+			started_at: startedAt,
+			ended_at: startedAt + 40
+		},
+		{
+			id: 'task-fix',
+			parent_id: null,
+			depth: 1,
+			label: 'Fix the parser',
+			state: states.fix,
+			model: ultraWorkerModel.name,
+			effort: 'medium',
+			activity: 'Editing parse.ts',
+			summary: states.fix === 'done' ? 'Kept the last line.' : null,
+			tokens: 900,
+			started_at: startedAt + 41,
+			ended_at: ended(states.fix, 75)
+		},
+		{
+			id: 'task-test',
+			parent_id: 'task-fix',
+			depth: 2,
+			label: 'Write a failing test',
+			state: states.test,
+			model: ultraWorkerModel.name,
+			effort: 'medium',
+			activity: 'Running npm test',
+			summary: null,
+			tokens: 300,
+			started_at: startedAt + 50,
+			ended_at: ended(states.test, 60)
+		}
+	];
+	return { items, running: items.filter((item) => item.state === 'running').length };
+}
+
+/** The chat's saved Ultra choice, from its last save that carried one. */
+function lastUltraSave(fixtures) {
+	const saves = fixtures.requests.filter(
+		(request) =>
+			request.method === 'POST' &&
+			request.path === '/api/v1/chats/buddy-design-chat' &&
+			request.body?.chat?.ultra
+	);
+	return saves.at(-1)?.body.chat.ultra ?? null;
+}
+
+const ultraDraft = 'Please fix the parser bug';
+const sameAsChatModel = 'Same as chat (' + ultraChatModel.name + ')';
+const workerModelNames = [sameAsChatModel, ultraChatModel.name, ultraWorkerModel.name];
+
+/**
+ * The resting composer hides its controls; the open one reads [Model][Thinking][Ultra].
+ * Returns the resting composer's height, which Ultra must not change.
+ */
+async function checkUltraPlacement(page, profile) {
+	const composer = page.locator('.buddy-composer');
+	const input = page.locator('#chat-input');
+	const trigger = page.locator(ultraTrigger);
+	await waitUntil(
+		async () => (await composer.getAttribute('data-expanded')) === 'false',
+		'The composer starts at rest'
+	);
+	assert.equal(await trigger.isVisible(), false, 'The resting composer hides the Ultra button');
+	assert.equal(await input.getAttribute('aria-label'), 'Message Buddy…');
+	const restingHeight = await composer.evaluate((element) => element.offsetHeight);
+	await press(profile, input);
+	await trigger.waitFor();
+	assertComposerOrder(await composerControlOrder(page), profile);
+	assert.equal(await trigger.getAttribute('aria-label'), 'Ultra: off');
+	return restingHeight;
+}
+
+/** Ultra needs exactly one plan model that can run workers. */
+async function checkUltraUnavailable(page, profile) {
+	await toggleCompare(page, profile, ultraWorkerModel.name);
+	await expectUltraUnavailable(page, profile, 'Ultra works with one model at a time.');
+	await toggleCompare(page, profile);
+	await chooseModel(page, profile, baseModel.name);
+	await expectUltraUnavailable(page, profile, 'Ultra works with Claude and ChatGPT plan models.');
+	await chooseModel(page, profile, ultraChatModel.name);
+}
+
+/** Phones show each list in place, with Back, and keep the keyboard throughout. */
+async function chooseWorkersOnPhone(page, menu) {
+	const phone = { mobile: true };
+	const modelRow = menu.locator('button[data-opens="model"]');
+	const effortRow = menu.locator('button[data-opens="effort"]');
+	assert.ok((await modelRow.innerText()).includes(sameAsChatModel));
+	await press(phone, modelRow);
+	const modelList = menu.getByRole('group', { name: 'Worker model', exact: true });
+	await modelList.waitFor();
+	assert.deepEqual(await radioNames(modelList), workerModelNames);
+	const sameAsChat = modelList.getByRole('menuitemradio', { name: sameAsChatModel, exact: true });
+	assert.equal(await sameAsChat.getAttribute('aria-checked'), 'true');
+	assert.equal(await effortRow.count(), 0, 'The sub-view shows only the worker models');
+	await assertTouchRows(menu);
+	await assertMenuInView(menu);
+	assert.equal(await draftHasFocus(page), true, 'The sub-view keeps the keyboard');
+	await captureScreenshot(page, 'phone-ultra-worker-model');
+
+	// Back changes nothing; choosing a model goes back to the menu, which names it.
+	await press(phone, menu.getByRole('button', { name: /^Back/ }));
+	await modelRow.waitFor();
+	await press(phone, modelRow);
+	const haiku = modelList.getByRole('menuitemradio', { name: ultraWorkerModel.name, exact: true });
+	await press(phone, haiku);
+	await waitUntil(
+		async () => (await modelRow.innerText()).includes(ultraWorkerModel.name),
+		'Choosing a worker model goes back to the menu, which names it'
+	);
+
+	await press(phone, effortRow);
+	const effortList = menu.getByRole('group', { name: 'Worker thinking', exact: true });
+	await effortList.waitFor();
+	assert.deepEqual(
+		await radioNames(effortList),
+		['Same as chat', 'Low', 'Medium'],
+		"The thinking levels are the worker model's"
+	);
+	await press(phone, effortList.getByRole('menuitemradio', { name: 'Medium', exact: true }));
+	await waitUntil(
+		async () => (await effortRow.innerText()).includes('Medium'),
+		'Choosing a thinking level goes back to the menu, which names it'
+	);
+	assert.equal(await draftHasFocus(page), true, 'Choosing keeps the keyboard');
+}
+
+/** Desktop shows both lists at once, and choosing keeps the menu open. */
+async function chooseWorkersOnDesktop(menu) {
+	const desktop = { mobile: false };
+	const modelList = menu.getByRole('group', { name: 'Worker model', exact: true });
+	const effortList = menu.getByRole('group', { name: 'Worker thinking', exact: true });
+	assert.deepEqual(await radioNames(modelList), workerModelNames);
+	assert.deepEqual(await radioNames(effortList), ['Same as chat', 'Low', 'Medium', 'High']);
+	const haiku = modelList.getByRole('menuitemradio', { name: ultraWorkerModel.name, exact: true });
+	await press(desktop, haiku);
+	await waitUntil(
+		async () => (await haiku.getAttribute('aria-checked')) === 'true',
+		'The worker model is chosen'
+	);
+	await waitUntil(
+		async () => (await radioNames(effortList)).join('|') === 'Same as chat|Low|Medium',
+		"The thinking levels follow the worker model's"
+	);
+	const medium = effortList.getByRole('menuitemradio', { name: 'Medium', exact: true });
+	await press(desktop, medium);
+	await waitUntil(
+		async () => (await medium.getAttribute('aria-checked')) === 'true',
+		'The worker thinking level is chosen'
+	);
+	assert.equal(await menu.isVisible(), true, 'Choosing leaves the menu open');
+}
+
+/** The menu: the switch, the workers' model and thinking, and what the workers may do. */
+async function checkUltraMenu(page, profile) {
+	const input = page.locator('#chat-input');
+	const trigger = page.locator(ultraTrigger);
+	const menu = ultraMenu(page);
+	await press(profile, input);
+	await input.fill(ultraDraft);
+	if (profile.mobile) await setVisibleHeight(page, 464);
+	await press(profile, trigger);
+	await waitForMenu(menu);
+	if (profile.mobile) {
+		assert.equal(await draftHasFocus(page), true, 'Opening Ultra keeps the draft and keyboard');
+		await assertMenuInView(menu);
+		await assertTouchRows(menu);
+	}
+
+	const toggle = menu.getByRole('button', { name: /^Ultra/ });
+	assert.equal(await toggle.getAttribute('aria-pressed'), 'false', 'A chat starts with Ultra off');
+	await press(profile, toggle);
+	await waitUntil(
+		async () => (await toggle.getAttribute('aria-pressed')) === 'true',
+		'The switch turns Ultra on'
+	);
+	assert.equal(await menu.isVisible(), true, 'The switch leaves the menu open');
+	assert.equal(await trigger.getAttribute('data-on'), 'true');
+
+	if (profile.mobile) {
+		await chooseWorkersOnPhone(page, menu);
+	} else {
+		await chooseWorkersOnDesktop(menu);
+	}
+
+	await menu.getByText('Workers can only think.', { exact: true }).waitFor();
+	await menu.getByText('No worker limit — Ultra uses your plan faster', { exact: true }).waitFor();
+	const codexNote = menu.getByText("Codex workers share the chat's access.");
+	assert.equal(await codexNote.count(), 0, 'Claude workers need no Codex note');
+	const nextMessageNote = menu.getByText('Changes apply to your next message');
+	assert.equal(await nextMessageNote.count(), 0, 'Nothing is generating yet');
+	assert.equal(
+		await trigger.getAttribute('aria-label'),
+		'Ultra: on. Workers use Claude Synthetic Haiku. Thinking: Medium.'
+	);
+	if (profile.mobile) {
+		await assertMenuInView(menu);
+		await assertTouchRows(menu);
+		assert.equal(await draftHasFocus(page), true, 'The open menu keeps the keyboard');
+		await captureScreenshot(page, 'phone-ultra-menu');
+	} else {
+		await captureScreenshot(page, 'desktop-ultra-menu');
+	}
+
+	await closeUltraMenu(page, profile);
+	assert.equal((await input.innerText()).trim(), ultraDraft, 'The draft survives the menu');
+	if (profile.mobile) {
+		assert.equal(await draftHasFocus(page), true, 'Closing the menu keeps the keyboard');
+		await captureScreenshot(page, 'phone-ultra-settings-row');
+	} else {
+		await captureScreenshot(page, 'desktop-ultra-composer');
+	}
+}
+
+/** The chat saves the choice, and the worker choices become the account's default. */
+async function checkUltraSaves(session, fixtures) {
+	await waitUntil(
+		() => lastUltraSave(fixtures)?.worker_effort === 'medium',
+		'The chat saves its Ultra choice'
+	);
+	assert.deepEqual(lastUltraSave(fixtures), {
+		on: true,
+		worker_model: ultraWorkerModel.id,
+		worker_effort: 'medium'
+	});
+	function savesWorkerChoices(entry) {
+		return (
+			entry.path === '/api/v1/users/user/settings/update' &&
+			entry.body?.ui?.ultra?.worker_effort === 'medium'
+		);
+	}
+	await waitUntil(
+		() => session.mutations.some(savesWorkerChoices),
+		'The worker choices are saved as the account default'
+	);
+}
+
+/** At rest with Ultra on, the composer says so without growing. */
+async function checkRestingUltraComposer(page, profile, restingHeight) {
+	const composer = page.locator('.buddy-composer');
+	const input = page.locator('#chat-input');
+	await input.fill('');
+	await press(profile, page.getByText('A plain answer for optional panel tests.', { exact: true }));
+	if (profile.mobile) await setVisibleHeight(page, null);
+	await waitUntil(
+		async () => (await composer.getAttribute('data-expanded')) === 'false',
+		'The empty composer goes back to rest'
+	);
+	assert.equal(await composer.getAttribute('data-ultra'), 'true');
+	await waitUntil(
+		async () => (await input.getAttribute('aria-label')) === 'Message Buddy · Ultra',
+		'The resting placeholder says Ultra is on'
+	);
+	const height = await composer.evaluate((element) => element.offsetHeight);
+	assert.equal(height, restingHeight, 'Ultra leaves the resting composer’s height alone');
+}
+
+/**
+ * A message sent with Ultra on carries exactly the workers' choices. Returns its reply's
+ * id. While the reply is written, the menu says changes wait for the next message.
+ */
+async function sendUltraMessage(session, profile) {
+	const { page } = session;
+	const input = page.locator('#chat-input');
+	const menu = ultraMenu(page);
+	await press(profile, input);
+	await input.fill(ultraDraft);
+	await press(profile, page.locator('#send-message-button'));
+	await waitUntil(() => session.completions.length === 1, 'The Ultra message is sent');
+	const ultraTurn = session.completions[0];
+	assert.equal(ultraTurn.model, ultraChatModel.id);
+	assert.deepEqual(ultraTurn.ultra, {
+		worker_model: ultraWorkerModel.id,
+		worker_effort: 'medium'
+	});
+	assert.equal(typeof ultraTurn.id, 'string', 'The request names its reply');
+
+	await press(profile, page.locator(ultraTrigger));
+	await waitForMenu(menu);
+	await menu.getByText('Changes apply to your next message', { exact: true }).waitFor();
+	await closeUltraMenu(page, profile);
+	return ultraTurn.id;
+}
+
+/** Phone rows are 44px and open a bottom sheet, even with the keyboard still up. */
+async function stopWorkerOnPhone(page, card, fixtures) {
+	const touchTargets = await card.locator('button').evaluateAll((buttons) =>
+		buttons.map((button) => ({
+			name: button.getAttribute('aria-label') || button.textContent.trim(),
+			height: button.getBoundingClientRect().height
+		}))
+	);
+	for (const target of touchTargets) {
+		assert.ok(target.height >= 44, 'Workers card rows are 44px: ' + JSON.stringify(target));
+	}
+	// The keyboard is still up from sending; the first tap opens the row.
+	assert.equal(await draftHasFocus(page), true, 'The draft still has the keyboard');
+	const row = card
+		.locator('button[aria-haspopup="dialog"]')
+		.filter({ hasText: 'Write a failing test' });
+	await row.tap();
+	const sheet = page.getByRole('dialog', { name: 'Write a failing test', exact: true });
+	await sheet.waitFor();
+	await sheet.getByText('Running npm test', { exact: true }).waitFor();
+	await sheet.getByText('Synthetic Haiku · medium', { exact: true }).waitFor();
+	const sheetStop = sheet.getByRole('button', { name: 'Stop worker', exact: true });
+	const stopBox = await sheetStop.boundingBox();
+	assert.ok(stopBox.height >= 44, "The sheet's Stop is a full touch target");
+	await captureScreenshot(page, 'phone-ultra-workers-sheet');
+	await sheetStop.tap();
+	await waitUntil(() => fixtures.workerStops.length === 1, 'Stop asks the server to stop it');
+	await sheet.getByRole('button', { name: 'Stopping…', exact: true }).waitFor();
+	await sheet.getByRole('button', { name: 'Done', exact: true }).tap();
+	await sheet.waitFor({ state: 'hidden' });
+}
+
+/** A desktop row opens in place to show its worker's report; Stop sits on the row. */
+async function stopWorkerOnDesktop(page, card, fixtures) {
+	const rows = card.getByRole('list', { name: 'Workers', exact: true });
+	const readRow = rows.getByRole('button', { name: /Read the parser/ });
+	assert.equal(await readRow.getAttribute('aria-expanded'), 'false');
+	await readRow.click();
+	const report = card.getByText(/See parse\.ts:42\./);
+	await report.waitFor();
+	assert.equal(await readRow.getAttribute('aria-expanded'), 'true');
+	// The report lines up under the worker's name, on every line.
+	assert.equal(await report.evaluate((element) => getComputedStyle(element).display), 'block');
+	const reportBox = await report.boundingBox();
+	const readLabel = await rows.getByText('Read the parser', { exact: true }).boundingBox();
+	assert.ok(Math.abs(reportBox.x - readLabel.x) <= 2, 'The report is indented as one block');
+	await card.getByRole('button', { name: 'Stop Write a failing test', exact: true }).click();
+	await waitUntil(() => fixtures.workerStops.length === 1, 'Stop asks the server to stop it');
+	await captureScreenshot(page, 'desktop-ultra-workers');
+}
+
+/** The workers card follows the reply's snapshots, stops one worker, and ends. */
+async function checkWorkersCard(page, profile, fixtures, replyId) {
+	const startedAt = Math.floor(Date.now() / 1000) - 75;
+	const running = ultraWorkersSnapshot(startedAt, { fix: 'running', test: 'running' });
+	await sendChatEvent(page, replyId, 'chat:message:workers', running);
+	const card = page.locator('.buddy-ultra-workers');
+	await card.waitFor();
+	const header = card.locator('button[aria-expanded]').first();
+	await waitUntil(
+		async () => (await header.innerText()).includes('Ultra · 3 workers · 2 running'),
+		'The card counts its workers and the running ones'
+	);
+	assert.equal(
+		await header.getAttribute('aria-expanded'),
+		'true',
+		'The card is open while they run'
+	);
+
+	const rows = card.getByRole('list', { name: 'Workers', exact: true });
+	assert.equal(await rows.locator(':scope > li').count(), 2, "One row per orchestrator's worker");
+	const subWorkers = card.getByRole('list', { name: 'Started by Fix the parser', exact: true });
+	assert.equal(await subWorkers.locator(':scope > li').count(), 1);
+	const parentLabel = await rows.getByText('Fix the parser', { exact: true }).boundingBox();
+	const subLabel = await subWorkers
+		.getByText('Write a failing test', { exact: true })
+		.boundingBox();
+	assert.ok(subLabel.x >= parentLabel.x + 12, 'The sub-worker is indented under its parent');
+	const pills = card.getByText('Synthetic Haiku · medium', { exact: true });
+	assert.equal(await pills.count(), 3, 'Each row has its model · effort pill');
+	const stopFix = card.getByRole('button', { name: 'Stop Fix the parser', exact: true });
+	const stopTest = card.getByRole('button', { name: 'Stop Write a failing test', exact: true });
+	const stopRead = card.getByRole('button', { name: 'Stop Read the parser', exact: true });
+	assert.equal(await stopFix.count(), 1, 'A running worker has Stop');
+	assert.equal(await stopTest.count(), 1, 'A running sub-worker has Stop');
+	assert.equal(await stopRead.count(), 0, 'A finished worker has no Stop');
+
+	if (profile.mobile) {
+		await stopWorkerOnPhone(page, card, fixtures);
+	} else {
+		await stopWorkerOnDesktop(page, card, fixtures);
+	}
+	assert.deepEqual(fixtures.workerStops, [{ chatId: 'buddy-design-chat', workerId: 'task-test' }]);
+	const stopPath = '/api/v1/subscriptions/chats/buddy-design-chat/workers/task-test/stop';
+	assert.ok(
+		fixtures.requests.some((request) => request.method === 'POST' && request.path === stopPath),
+		'Stop posts to the worker’s stop route'
+	);
+	const stopping = card.getByRole('button', {
+		name: 'Stopping Write a failing test…',
+		exact: true
+	});
+	await stopping.waitFor();
+	assert.equal(await stopping.isDisabled(), true, 'A worker being stopped can’t be stopped twice');
+
+	// The reply ends while workers still run, then they end one by one.
+	await sendChatEvent(page, replyId, 'chat:completion', {
+		content: 'Two workers are still checking the fix.',
+		done: true
+	});
+	await waitUntil(
+		async () => (await header.innerText()).includes('Ultra · 3 workers · 2 still running'),
+		'After the reply the card says how many still run'
+	);
+	assert.equal(await header.getAttribute('aria-expanded'), 'true', 'The card stays open');
+	const oneStopped = ultraWorkersSnapshot(startedAt, { fix: 'running', test: 'stopped' });
+	await sendChatEvent(page, replyId, 'chat:message:workers', oneStopped);
+	await waitUntil(
+		async () => (await header.innerText()).includes('Ultra · 3 workers · 1 still running'),
+		'The stopped worker no longer counts as running'
+	);
+	const allEnded = ultraWorkersSnapshot(startedAt, { fix: 'done', test: 'stopped' });
+	await sendChatEvent(page, replyId, 'chat:message:workers', allEnded);
+	await waitUntil(
+		async () => (await header.innerText()).includes('Used 3 workers · 1m 15s'),
+		'With every worker done the card says what the reply used'
+	);
+	assert.equal(await header.getAttribute('aria-expanded'), 'false', 'The card collapses');
+	await sendChatEvent(page, replyId, 'chat:active', { active: false });
+}
+
+/** Turning Ultra off is saved, and the next message has no ultra field. */
+async function checkUltraOffMessage(session, profile, fixtures) {
+	const { page } = session;
+	const input = page.locator('#chat-input');
+	const trigger = page.locator(ultraTrigger);
+	const menu = ultraMenu(page);
+	await press(profile, input);
+	await press(profile, trigger);
+	await waitForMenu(menu);
+	const toggle = menu.getByRole('button', { name: /^Ultra/ });
+	await press(profile, toggle);
+	await waitUntil(
+		async () => (await toggle.getAttribute('aria-pressed')) === 'false',
+		'The switch turns Ultra off'
+	);
+	await closeUltraMenu(page, profile);
+	await waitUntil(
+		() => lastUltraSave(fixtures)?.on === false,
+		'Turning Ultra off is saved with the chat'
+	);
+	assert.deepEqual(lastUltraSave(fixtures), {
+		on: false,
+		worker_model: ultraWorkerModel.id,
+		worker_effort: 'medium'
+	});
+	assert.equal(await trigger.getAttribute('aria-label'), 'Ultra: off');
+
+	await input.fill('Thanks');
+	await press(profile, page.locator('#send-message-button'));
+	await waitUntil(() => session.completions.length === 2, 'The second message is sent');
+	const plainTurn = session.completions[1];
+	assert.equal('ultra' in plainTurn, false, 'With Ultra off there is no ultra field');
+	await sendChatEvent(page, plainTurn.id, 'chat:completion', {
+		content: 'You are welcome.',
+		done: true
+	});
+	await sendChatEvent(page, plainTurn.id, 'chat:active', { active: false });
+	// This case sends two messages on purpose; runCase still checks that nothing else was sent.
+	session.completions.splice(0);
+}
+
+/** A phone on its side with the keyboard up: the menu fits, scrolls, and keeps the draft. */
+async function checkLandscapeUltraMenu(page) {
+	const phone = { mobile: true };
+	const input = page.locator('#chat-input');
+	const menu = ultraMenu(page);
+	await page.setViewportSize({ width: 844, height: 390 });
+	await page.reload({ waitUntil: 'domcontentloaded' });
+	await input.waitFor();
+	await page.evaluate(() => document.fonts.ready);
+	await page.waitForTimeout(400);
+	await input.tap();
+	await input.fill('Keep this landscape draft');
+	await setVisibleHeight(page, 240);
+	await page.locator(ultraTrigger).tap();
+	await waitForMenu(menu);
+	await assertMenuInView(menu);
+	await assertTouchRows(menu);
+	assert.equal(await draftHasFocus(page), true, 'The landscape menu keeps the keyboard');
+	await captureScreenshot(page, 'phone-ultra-landscape-keyboard');
+
+	// The rest of the menu is a swipe away, never behind the keyboard.
+	const scroller = menu.locator('.buddy-ultra-menu');
+	const scrollable = await scroller.evaluate(
+		(element) => element.scrollHeight > element.clientHeight + 1
+	);
+	assert.ok(scrollable, 'A menu taller than the room scrolls');
+	for (let swipe = 0; swipe < 3; swipe += 1) {
+		await swipeUp(page, scroller);
+	}
+	const atEnd = await scroller.evaluate(
+		(element) => element.scrollTop + element.clientHeight >= element.scrollHeight - 1
+	);
+	assert.ok(atEnd, 'Swipes scroll the menu to its end');
+	const lastLine = menu.getByText('No worker limit — Ultra uses your plan faster', {
+		exact: true
+	});
+	const lastLineBox = await lastLine.boundingBox();
+	const scrollerBox = await scroller.boundingBox();
+	const visibleBottom = await page.evaluate(() => visualViewport.offsetTop + visualViewport.height);
+	assert.ok(
+		lastLineBox.y + lastLineBox.height <= scrollerBox.y + scrollerBox.height,
+		'Swiping shows the menu’s last line'
+	);
+	assert.ok(
+		scrollerBox.y + scrollerBox.height <= visibleBottom,
+		'The menu ends above the keyboard'
+	);
+	assert.equal(await draftHasFocus(page), true, 'Swiping the menu keeps the keyboard');
+	await closeUltraMenu(page, phone);
+	assert.equal((await input.innerText()).trim(), 'Keep this landscape draft');
+}
+
+async function ultraCase(browser, profile) {
+	await runCase(browser, profile, 'ultra', 'ultra', async (session, fixtures) => {
+		const { page } = session;
+		const restingHeight = await checkUltraPlacement(page, profile);
+		await checkUltraUnavailable(page, profile);
+		await checkUltraMenu(page, profile);
+		await checkUltraSaves(session, fixtures);
+		await checkRestingUltraComposer(page, profile, restingHeight);
+		const replyId = await sendUltraMessage(session, profile);
+		await checkWorkersCard(page, profile, fixtures, replyId);
+		await checkUltraOffMessage(session, profile, fixtures);
+		if (profile.mobile) await checkLandscapeUltraMenu(page);
+	});
+}
+
 async function folderChipCase(browser, profile) {
 	await runCase(browser, profile, 'folder-chip', 'folder-chip', async ({ page }, fixtures) => {
 		const chip = page.getByRole('button', { name: 'Project folder: Work PC · site', exact: true });
@@ -4066,6 +5010,7 @@ try {
 		await projectTabCase(browser, profile);
 		await projectAgentsCase(browser, profile);
 		await projectAgentsServerCase(browser, profile);
+		await ultraCase(browser, profile);
 		await folderChipCase(browser, profile);
 		await folderEditCase(browser, profile);
 		await folderDialogCase(browser, profile);
