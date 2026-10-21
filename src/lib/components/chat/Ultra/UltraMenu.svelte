@@ -204,7 +204,7 @@
 			data-on={active}
 		>
 			<Sparkles className="size-4 shrink-0" strokeWidth="1.75" />
-			<span>{$i18n.t('Ultra')}</span>
+			<span class="buddy-ultra-label">{$i18n.t('Ultra')}</span>
 		</button>
 	</Tooltip>
 

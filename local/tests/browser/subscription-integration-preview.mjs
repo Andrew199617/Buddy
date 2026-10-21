@@ -3536,6 +3536,50 @@ async function textContrast(locator) {
 	});
 }
 
+/**
+ * On a narrow phone the Ultra chip shows only its icon, so the model chip has the
+ * room, and it still takes taps across 44px.
+ */
+async function assertIconOnlyUltraChip(page) {
+	const chip = await page.locator(ultraTrigger).evaluate((button) => {
+		const rect = button.getBoundingClientRect();
+		const y = rect.top + rect.height / 2;
+		function takesTap(x) {
+			const hit = document.elementFromPoint(x, y);
+			return Boolean(hit && button.contains(hit));
+		}
+		return {
+			width: rect.width,
+			labelShown: button.querySelector('.buddy-ultra-label').getClientRects().length > 0,
+			name: button.getAttribute('aria-label'),
+			left: takesTap(rect.left - 3.5),
+			right: takesTap(rect.right + 3.5)
+		};
+	});
+	assert.equal(chip.labelShown, false, 'A narrow phone shows the Ultra chip as an icon');
+	assert.ok(chip.width <= 44, 'The icon-only Ultra chip leaves the model room: ' + chip.width);
+	assert.ok(
+		chip.left && chip.right,
+		'The icon-only chip takes taps either side of it: ' + JSON.stringify(chip)
+	);
+	assert.match(chip.name, /^Ultra: /, 'The icon-only chip keeps its name');
+	const room = await page.locator(composerModelTrigger).evaluate((button) => {
+		const label = button.querySelector('.truncate');
+		const sample = label.cloneNode();
+		sample.textContent = 'Claude Sonnet 4.5';
+		sample.style.position = 'absolute';
+		sample.style.visibility = 'hidden';
+		label.parentElement.appendChild(sample);
+		const needed = sample.scrollWidth;
+		sample.remove();
+		return { needed, available: label.clientWidth };
+	});
+	assert.ok(
+		room.available >= room.needed,
+		'The model chip has room for a plan model’s name: ' + JSON.stringify(room)
+	);
+}
+
 /** The phone's settings-row chips look 36px tall but take taps across 44px. */
 async function assertSettingsChipsTakeTaps(page) {
 	const chips = await page.locator('.buddy-composer-settings').evaluate((row) => {
@@ -3994,6 +4038,7 @@ async function checkUltraMenu(page, profile) {
 	if (profile.mobile) {
 		assert.equal(await draftHasFocus(page), true, 'Closing the menu keeps the keyboard');
 		await assertSettingsChipsTakeTaps(page);
+		await assertIconOnlyUltraChip(page);
 		await captureScreenshot(page, 'phone-ultra-settings-row');
 	} else {
 		await captureScreenshot(page, 'desktop-ultra-composer');
@@ -4255,6 +4300,11 @@ async function checkLandscapeUltraMenu(page) {
 	await input.tap();
 	await input.fill('Keep this landscape draft');
 	await setVisibleHeight(page, 240);
+	assert.equal(
+		await page.locator(ultraTrigger).locator('.buddy-ultra-label').isVisible(),
+		true,
+		'A phone on its side has room for the Ultra chip’s label'
+	);
 	await page.locator(ultraTrigger).tap();
 	await waitForMenu(menu);
 	await assertMenuInView(menu);

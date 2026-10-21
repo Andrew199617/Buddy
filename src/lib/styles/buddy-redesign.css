@@ -579,6 +579,20 @@
 	background: var(--buddy-glass);
 }
 
+/* On a narrow phone the Ultra chip shows only its icon, so the model chip beside it
+   has room for the model's name. Its aria-label still names it, on or off. The
+   narrower chip also takes taps 4px either side, half the gap to Thinking, so its
+   tap area stays 44px wide. */
+@media (max-width: 479px) {
+	.buddy-chat .buddy-composer-settings .buddy-ultra-label {
+		display: none;
+	}
+
+	.buddy-chat .buddy-composer-settings .buddy-ultra-chip::before {
+		inset: -5px;
+	}
+}
+
 .buddy-chat .buddy-composer[data-expanded='false'] .buddy-composer-settings {
 	display: none;
 }
