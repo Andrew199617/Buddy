@@ -4,7 +4,7 @@ import uuid
 from typing import Optional
 
 from open_webui.internal.db import Base, JSONField, get_async_db_context
-from open_webui.utils.chat_agent import without_agent
+from open_webui.utils.chat_agent import contents_for_share
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import JSON, BigInteger, Column, ForeignKey, Text, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -79,8 +79,9 @@ class SharedChatsTable:
                 chat_id=chat_id,
                 user_id=user_id,
                 title=chat.title,
-                # A share link never shows the owner's custom agent instructions.
-                chat=without_agent(chat.chat),
+                # A share link never shows the owner's custom agent instructions,
+                # or what the chat's Ultra workers were doing and found.
+                chat=contents_for_share(chat.chat),
                 created_at=now,
                 updated_at=now,
             )
@@ -106,7 +107,7 @@ class SharedChatsTable:
                 return None
 
             shared_chat.title = chat.title
-            shared_chat.chat = without_agent(chat.chat)
+            shared_chat.chat = contents_for_share(chat.chat)
             shared_chat.updated_at = int(time.time())
 
             await db.commit()
