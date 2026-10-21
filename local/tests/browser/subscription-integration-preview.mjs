@@ -4187,6 +4187,42 @@ async function checkUltraReopens(page) {
 	assert.equal(await trigger.getAttribute('data-on'), 'true');
 }
 
+/**
+ * Saved on, Ultra still shows off while the chat can't use it, and the message
+ * carries no ultra field. Choosing the Ultra model again brings the saved choice back.
+ */
+async function checkUltraOnButUnavailable(session, profile) {
+	const { page } = session;
+	const composer = page.locator('.buddy-composer');
+	const input = page.locator('#chat-input');
+	const trigger = page.locator(ultraTrigger);
+	await chooseModel(page, profile, baseModel.name);
+	await expectUltraUnavailable(page, profile, 'Ultra works with Claude and ChatGPT plan models.');
+	assert.equal(await trigger.getAttribute('data-on'), 'false', 'The button shows Ultra off');
+	assert.equal(await composer.getAttribute('data-ultra'), 'false', 'The composer shows Ultra off');
+	assert.equal(await input.getAttribute('aria-label'), 'Message Buddy…');
+
+	await input.fill('Answer without workers');
+	await press(profile, page.locator('#send-message-button'));
+	await waitUntil(() => session.completions.length === 1, 'The message is sent');
+	const turn = session.completions[0];
+	assert.equal(turn.model, baseModel.id);
+	assert.equal('ultra' in turn, false, 'A model that can’t run Ultra gets no ultra field');
+	await sendChatEvent(page, turn.id, 'chat:completion', {
+		content: 'Answered without workers.',
+		done: true
+	});
+	await sendChatEvent(page, turn.id, 'chat:active', { active: false });
+	session.completions.splice(0);
+
+	await chooseModel(page, profile, ultraChatModel.name);
+	await waitUntil(
+		async () => (await trigger.getAttribute('aria-label')) === ultraOnLabel,
+		'Choosing the Ultra model again brings the saved choice back'
+	);
+	assert.equal(await trigger.getAttribute('data-on'), 'true');
+}
+
 /** At rest with Ultra on, the composer says so without growing. */
 async function checkRestingUltraComposer(page, profile, restingHeight) {
 	const composer = page.locator('.buddy-composer');
@@ -4573,6 +4609,7 @@ async function ultraCase(browser, profile) {
 		await checkUltraMenu(page, profile);
 		await checkUltraSaves(session, fixtures);
 		await checkUltraReopens(page);
+		await checkUltraOnButUnavailable(session, profile);
 		await checkRestingUltraComposer(page, profile, restingHeight);
 		const replyId = await sendUltraMessage(session, profile);
 		await checkWorkersCard(page, profile, fixtures, replyId);
