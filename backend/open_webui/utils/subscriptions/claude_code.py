@@ -79,6 +79,11 @@ READER_DESCRIPTION = (
 # can't start sub-workers.
 READER_TOOLS = READ_ONLY_TOOLS.split(',')
 ULTRA_TOO_OLD_REASON = 'Claude Code on {computer} is too old for Ultra.'
+# The first Claude Code that runs Ultra turns: it takes worker types in
+# initialize, reports each worker as task events and stops one with stop_task.
+ULTRA_MIN_VERSION = (2, 1, 295)
+# The version number in `claude --version` output, such as "2.1.295 (Claude Code)".
+VERSION_NUMBER = re.compile(r'\d+(?:\.\d+)+')
 # The tool that starts a worker. Claude Code called it Task before it was renamed.
 AGENT_TOOLS = ('Agent', 'Task')
 # How long Buddy reads an Ultra turn before it stops the CLI and every worker
@@ -122,6 +127,41 @@ def claude_effort(effort: str | None) -> str | None:
     if effort in EFFORT_LEVELS:
         return effort
     return None
+
+
+def cli_version(output: str | None) -> str:
+    """The version number in ``claude --version`` output, such as '2.1.295', or '' when it has none."""
+    match = VERSION_NUMBER.search(output or '')
+    if match is None:
+        return ''
+    return match.group(0)
+
+
+def version_runs_ultra(version: str | None) -> bool:
+    """Whether this Claude Code version can run Ultra turns. An unknown version can't."""
+    number = cli_version(version)
+    if not number:
+        return False
+    parts = tuple(int(part) for part in number.split('.'))
+    return parts >= ULTRA_MIN_VERSION
+
+
+async def _read_version(machine, cli: str, cwd: str) -> str:
+    """Claude Code's version number on the machine, or '' when it can't be read.
+
+    A failure only leaves the version unknown, so the status and the model
+    list still load.
+    """
+    try:
+        returncode, output, _ = await machine.run([cli, '--version'], cwd, 30)
+    except (OSError, TimeoutError, SubscriptionError, ProcessClosedError) as error:
+        log.warning('Could not read the Claude Code version: %s', error)
+        return ''
+    # A failing CLI may print other numbers, such as the Node.js version it needs.
+    if returncode != 0:
+        log.warning('Could not read the Claude Code version: it exited with code %s', returncode)
+        return ''
+    return cli_version(output)
 
 
 def ultra_env(options: UltraOptions) -> dict[str, str]:
@@ -934,13 +974,7 @@ class ClaudeCodeProvider:
         if not cli:
             return {'installed': False, 'signed_in': False, 'message': NOT_INSTALLED_MESSAGE}
         chat_dir = await machine.chat_dir()
-
-        version = ''
-        try:
-            _, version_output, _ = await machine.run([cli, '--version'], chat_dir, 30)
-            version = version_output.strip().split(' ')[0]
-        except (OSError, TimeoutError, SubscriptionError) as error:
-            log.warning('Could not read the Claude Code version: %s', error)
+        version = await _read_version(machine, cli, chat_dir)
 
         try:
             _, output, _ = await machine.run([cli, 'auth', 'status', '--json'], chat_dir, 30)
@@ -980,6 +1014,10 @@ class ClaudeCodeProvider:
 
     async def list_models(self, settings: ProviderSettings, machine) -> list[ProviderModel]:
         cli = await self._require_cli(settings, machine)
+        chat_dir = await machine.chat_dir()
+        # Ultra depends on the CLI, not the model: a recent enough Claude Code
+        # runs it with every model it lists.
+        cli_runs_ultra = version_runs_ultra(await _read_version(machine, cli, chat_dir))
         args = [
             cli,
             '-p',
@@ -995,7 +1033,7 @@ class ClaudeCodeProvider:
             '--tools',
             '',
         ]
-        process = await machine.start_process(args, await machine.chat_dir())
+        process = await machine.start_process(args, chat_dir)
         initialize = {
             'type': 'control_request',
             'request_id': 'buddy-models',
@@ -1020,10 +1058,11 @@ class ClaudeCodeProvider:
             process.close_stdin()
             process.kill()
 
-        models = models_from_initialize(entries)
+        models = models_from_initialize(entries, cli_runs_ultra)
         if models:
             return models
-        return list(FALLBACK_MODELS)
+        # Copies, so that the shared fallback list keeps no computer's flag.
+        return [dataclasses.replace(model, ultra=cli_runs_ultra) for model in FALLBACK_MODELS]
 
     async def start_login(self, settings: ProviderSettings, machine, method: str) -> dict:
         # method is unused: Claude Code only offers the paste-the-code flow.
@@ -1396,8 +1435,12 @@ class ClaudeAttempt:
         return None
 
 
-def models_from_initialize(entries: list) -> list[ProviderModel]:
-    """Build the model list from Claude Code's initialize response."""
+def models_from_initialize(entries: list, cli_runs_ultra: bool = False) -> list[ProviderModel]:
+    """Build the model list from Claude Code's initialize response.
+
+    ``cli_runs_ultra`` says whether that Claude Code can run Ultra turns, so
+    every model it lists can.
+    """
     models = []
     used_keys = set()
     for entry in entries or []:
@@ -1425,6 +1468,7 @@ def models_from_initialize(entries: list) -> list[ProviderModel]:
                 name=f'Claude {versioned_name}',
                 description=' · '.join(details),
                 efforts=list(entry.get('supportedEffortLevels') or []),
+                ultra=cli_runs_ultra,
             )
         )
     return models

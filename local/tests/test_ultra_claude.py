@@ -54,6 +54,8 @@ SAME_AS_CHAT = UltraOptions()
 TOO_OLD_STATUS = 'Ultra is off for this reply: Claude Code on Fixture PC is too old for Ultra.'
 MISSING_SESSION = 'No conversation found with session ID: old-session'
 ESSAY_STOPPED_REPLY = 'The essay worker was stopped, so there is no essay.'
+# What `claude --version` printed for the recordings.
+CLAUDE_CODE_VERSION = '2.1.295 (Claude Code)'
 
 
 def recorded(name: str) -> list[dict]:
@@ -214,6 +216,29 @@ class ReplayMachine:
         process.temp_files = temp_files
         self.started.append(process)
         return process
+
+
+class VersionedMachine(ReplayMachine):
+    """A ReplayMachine whose Claude Code is signed in to a plan and answers ``--version``.
+
+    ``version_output`` is what ``claude --version`` prints, or an error it
+    raises, and ``version_code`` its exit code.
+    """
+
+    def __init__(self, *processes, version_output=CLAUDE_CODE_VERSION, version_code=0):
+        super().__init__(*processes)
+        self.version_output = version_output
+        self.version_code = version_code
+
+    async def chat_dir(self):
+        return '.'
+
+    async def run(self, args, cwd, timeout, extra_env=None):
+        if '--version' in args:
+            if isinstance(self.version_output, Exception):
+                raise self.version_output
+            return self.version_code, self.version_output, ''
+        return 0, json.dumps({'loggedIn': True, 'authMethod': 'claude.ai'}), ''
 
 
 def ultra_turn(
@@ -955,6 +980,86 @@ class WorkerStateTests(unittest.TestCase):
         self.assertEqual(parser.handle(task_message('task_started', description='Check the fix')), [])
         parser.handle({'type': 'result', 'subtype': 'success', 'is_error': False, 'usage': {}})
         self.assertTrue(parser.finished)
+
+
+class UltraVersionTests(unittest.TestCase):
+    def test_the_version_number_is_read_from_the_version_output(self):
+        outputs = {
+            '2.1.295 (Claude Code)\n': '2.1.295',
+            'Claude Code 2.1.300': '2.1.300',
+            'v2.2.0': '2.2.0',
+            'unknown': '',
+            '': '',
+            None: '',
+        }
+        for output, version in outputs.items():
+            with self.subTest(output=output):
+                self.assertEqual(claude_code.cli_version(output), version)
+
+    def test_ultra_needs_claude_code_2_1_295_or_newer(self):
+        # Compared as numbers, so 2.1.1000 is newer and 2.1.29 older.
+        for version in ('2.1.295 (Claude Code)', '2.1.296', '2.1.1000', '2.2.0', '2.10', '3.0.0'):
+            with self.subTest(version=version):
+                self.assertTrue(claude_code.version_runs_ultra(version))
+        # A version that can't be read can't run it either.
+        for version in ('2.1.294 (Claude Code)', '2.1.29', '2.0.999', '1.99.999', '2.1', 'unknown', '', None):
+            with self.subTest(version=version):
+                self.assertFalse(claude_code.version_runs_ultra(version))
+
+
+class UltraModelListTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.provider = claude_code.ClaudeCodeProvider(Path(directory.name))
+        self.answer, _ = recorded_chat()
+
+    async def list_models(self, process, **version):
+        machine = VersionedMachine(process, **version)
+        return await self.provider.list_models(ProviderSettings(enable=True), machine)
+
+    async def test_a_recent_enough_claude_code_runs_ultra_with_every_model(self):
+        models = await self.list_models(ReplayProcess(self.answer))
+        self.assertEqual([model.key for model in models], ['opus', 'fable', 'sonnet', 'haiku'])
+        self.assertTrue(all(model.ultra for model in models))
+
+    async def test_an_older_or_unknown_claude_code_runs_ultra_with_no_model(self):
+        for output in ('2.1.294 (Claude Code)', 'unknown', ''):
+            with self.subTest(output=output):
+                models = await self.list_models(ReplayProcess(self.answer), version_output=output)
+                self.assertEqual(len(models), 4)
+                self.assertFalse(any(model.ultra for model in models))
+
+    async def test_a_version_that_cant_be_read_runs_ultra_with_no_model(self):
+        failures = [
+            # A failing CLI's message may name another version, such as the Node.js it needs.
+            {'version_output': 'Claude Code needs Node.js 18.0.0 or newer.', 'version_code': 1},
+            {'version_output': TimeoutError('claude did not finish within 30 seconds')},
+            {'version_output': ProcessClosedError('the computer closed the process')},
+        ]
+        for failure in failures:
+            with self.subTest(**failure):
+                with self.assertLogs(claude_code.log, 'WARNING'):
+                    models = await self.list_models(ReplayProcess(self.answer), **failure)
+                self.assertEqual(len(models), 4)
+                self.assertFalse(any(model.ultra for model in models))
+
+    async def test_the_fallback_models_follow_the_version_too(self):
+        # A Claude Code that never answers initialize leaves Buddy its fallback list.
+        models = await self.list_models(ReplayProcess())
+        self.assertEqual([model.key for model in models], ['opus', 'sonnet', 'haiku'])
+        self.assertTrue(all(model.ultra for model in models))
+        # The shared list keeps no computer's flag.
+        self.assertFalse(any(model.ultra for model in claude_code.FALLBACK_MODELS))
+        older = await self.list_models(ReplayProcess(), version_output='2.1.294 (Claude Code)')
+        self.assertFalse(any(model.ultra for model in older))
+
+    async def test_the_status_shows_the_version_number_that_ultra_is_judged_by(self):
+        for output in (CLAUDE_CODE_VERSION, 'Claude Code 2.1.295'):
+            with self.subTest(output=output):
+                machine = VersionedMachine(version_output=output)
+                status = await self.provider.status(ProviderSettings(enable=True), machine)
+                self.assertEqual(status['version'], '2.1.295')
 
 
 if __name__ == '__main__':
