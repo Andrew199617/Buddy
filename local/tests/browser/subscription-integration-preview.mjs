@@ -3629,6 +3629,15 @@ async function closeUltraMenu(page, profile) {
 	await ultraMenu(page).waitFor({ state: 'detached' });
 }
 
+/** Text in the menu that is cut short with an ellipsis. */
+async function truncatedTexts(menu) {
+	return menu.locator('.buddy-ultra-menu').evaluate((element) =>
+		Array.from(element.querySelectorAll('.truncate'))
+			.filter((text) => text.scrollWidth > text.clientWidth + 1)
+			.map((text) => text.textContent.trim())
+	);
+}
+
 async function radioNames(group) {
 	const names = await group.getByRole('menuitemradio').allInnerTexts();
 	return names.map((name) => name.trim());
@@ -3915,6 +3924,7 @@ async function chooseWorkersOnPhone(page, menu) {
 	const modelRow = menu.locator('button[data-opens="model"]');
 	const effortRow = menu.locator('button[data-opens="effort"]');
 	assert.ok((await modelRow.innerText()).includes(sameAsChatModel));
+	assert.deepEqual(await truncatedTexts(menu), [], 'The menu shows the worker model’s whole name');
 	await press(phone, modelRow);
 	const modelList = menu.getByRole('group', { name: 'Worker model', exact: true });
 	await modelList.waitFor();
@@ -3937,6 +3947,7 @@ async function chooseWorkersOnPhone(page, menu) {
 		async () => (await modelRow.innerText()).includes(ultraWorkerModel.name),
 		'Choosing a worker model goes back to the menu, which names it'
 	);
+	assert.deepEqual(await truncatedTexts(menu), [], 'The menu shows the chosen model’s whole name');
 
 	await press(phone, effortRow);
 	const effortList = menu.getByRole('group', { name: 'Worker thinking', exact: true });

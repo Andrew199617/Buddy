@@ -183,6 +183,20 @@
 	</div>
 {/snippet}
 
+<!-- A compact row that opens a list in place. The choice gets a line of its own under
+	the row's name, so a long model name shows whole. -->
+{#snippet listOpener(opens: MenuView, title: string, choice: string)}
+	<button type="button" class={rowClass} data-opens={opens} on:click={() => showView(opens)}>
+		<span class="flex min-w-0 flex-1 flex-col">
+			<span>{title}</span>
+			<span class="truncate text-xs leading-snug text-gray-500 dark:text-gray-400">
+				{choice}
+			</span>
+		</span>
+		<ChevronRight className="size-3.5 shrink-0" strokeWidth="2" />
+	</button>
+{/snippet}
+
 <Dropdown
 	bind:show
 	align="start"
@@ -244,34 +258,8 @@
 							{availability.reason}
 						</p>
 					{:else if compact}
-						<button
-							type="button"
-							class={rowClass}
-							data-opens="model"
-							on:click={() => showView('model')}
-						>
-							<span class="shrink-0">{$i18n.t('Worker model')}</span>
-							<span
-								class="min-w-0 flex-1 truncate text-right text-xs text-gray-500 dark:text-gray-400"
-							>
-								{modelChoice}
-							</span>
-							<ChevronRight className="size-3.5 shrink-0" strokeWidth="2" />
-						</button>
-						<button
-							type="button"
-							class={rowClass}
-							data-opens="effort"
-							on:click={() => showView('effort')}
-						>
-							<span class="shrink-0">{$i18n.t('Worker thinking')}</span>
-							<span
-								class="min-w-0 flex-1 truncate text-right text-xs text-gray-500 dark:text-gray-400"
-							>
-								{effortChoice}
-							</span>
-							<ChevronRight className="size-3.5 shrink-0" strokeWidth="2" />
-						</button>
+						{@render listOpener('model', $i18n.t('Worker model'), modelChoice)}
+						{@render listOpener('effort', $i18n.t('Worker thinking'), effortChoice)}
 					{:else}
 						<hr class="mx-1 my-0.5 border-gray-100 dark:border-gray-800" />
 					{/if}
