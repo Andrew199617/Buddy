@@ -772,3 +772,19 @@ export const saveComputerSettings = async (
 		settings
 	);
 };
+
+export type AgentFileText = { path: string; content: string };
+
+/**
+ * The agent files in a folder on This server, the chat's own folder. Agents on
+ * Buddy app computers are read through the relay instead. Throws the server's
+ * reason when they can't be read.
+ */
+export const getServerAgentFiles = async (
+	token: string,
+	machineId: string,
+	path: string
+): Promise<{ files: AgentFileText[]; left_out: number }> => {
+	const query = new URLSearchParams({ path });
+	return subscriptionRequest(token, `/machines/${encodeURIComponent(machineId)}/agents?${query}`);
+};

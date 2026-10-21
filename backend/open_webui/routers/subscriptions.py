@@ -352,6 +352,15 @@ async def save_computer_settings(
         raise _bad_request(error)
 
 
+@router.get('/machines/{machine_id}/agents')
+async def get_machine_agents(machine_id: str, path: str, user=Depends(get_machine_session_user)):
+    # Agent files are private project instructions; like browsing folders, this needs a signed-in session.
+    try:
+        return await service.server_agent_files(user, machine_id, path)
+    except SubscriptionError as error:
+        raise _bad_request(error)
+
+
 @router.get('/folders/{folder_id}/project')
 async def get_folder_project(folder_id: str, user=Depends(get_machine_user)):
     return await service.describe_folder_project(user, folder_id)

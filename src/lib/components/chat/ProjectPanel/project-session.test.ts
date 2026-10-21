@@ -11,6 +11,7 @@ import {
 	chatProjectTarget,
 	checkTerminalReply,
 	crumbsBelow,
+	isReadableGrant,
 	isTransientFailure,
 	isWithinProject,
 	mayHaveRun,
@@ -125,6 +126,22 @@ describe('the project folders a chat can open', () => {
 			own: folderChoice({ 'pc-1': { path: 'C:\\x', problem: 'computer_changed' } })
 		});
 		expect(projectTargets(chosen)[0].chooseAgain).toBe(true);
+	});
+
+	it('reads only shared folders the computer still has and lets it read', () => {
+		const shared = {
+			id: 'grant-code',
+			name: 'code',
+			path: 'C:\code',
+			capabilities: { read: true, write: false, execute: false },
+			available: true,
+			unavailableReason: null
+		};
+		expect(isReadableGrant(shared)).toBe(true);
+		expect(isReadableGrant({ ...shared, available: false })).toBe(false);
+		expect(
+			isReadableGrant({ ...shared, capabilities: { read: false, write: true, execute: false } })
+		).toBe(false);
 	});
 });
 

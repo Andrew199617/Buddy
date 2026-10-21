@@ -34,6 +34,7 @@ SUBSCRIPTIONS = ROOT / 'backend' / 'open_webui' / 'utils' / 'subscriptions'
 sys.path.insert(0, str(ROOT / 'backend'))
 
 from open_webui.utils.subscriptions.runner_transport import normalize_runner_url  # noqa: E402
+from open_webui.utils.subscriptions import project_agents  # noqa: E402
 from open_webui.utils.subscriptions.events import SubscriptionError  # noqa: E402
 from open_webui.utils.subscriptions.machines import TunnelMachine  # noqa: E402
 from open_webui.utils.subscriptions.tunnel_hub import RunnerCallError, RunnerHub  # noqa: E402
@@ -219,6 +220,12 @@ class MemoryRunTargets:
         own = [row for row in self.rows.values() if row.user_id == user_id and row.folder_mode == 'path']
         return sorted(own, key=lambda row: row.created_at, reverse=True)[:limit]
 
+    async def has_path(self, user_id, machine_id, path, db=None):
+        return any(
+            row.user_id == user_id and row.machine_id == machine_id and row.folder_mode == 'path' and row.path == path
+            for row in self.rows.values()
+        )
+
     async def copy_for_owner(self, source_chat_id, new_chat_id, user_id, db=None):
         source = self.rows.get(source_chat_id)
         if source is None or source.user_id != user_id:
@@ -251,6 +258,7 @@ def load_service(config, data_dir):
         'is_saved_chat_id': is_saved_chat_id,
         'is_temporary_chat_id': is_temporary_chat_id,
         'run_targets': run_targets,
+        'project_agents': project_agents,
         'asyncio': asyncio,
         'hashlib': hashlib,
         'hmac': hmac,

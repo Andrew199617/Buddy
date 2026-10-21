@@ -37,6 +37,7 @@ from open_webui.tasks import get_active_task_item_ids, get_response_streams_by_c
 from open_webui.utils.access_control import filter_allowed_access_grants, has_permission
 from open_webui.utils.access_control.folders import has_folder_write_access
 from open_webui.utils.auth import bearer_security, get_admin_user, get_current_user, get_verified_user
+from open_webui.utils.chat_agent import contents_for_owner, without_agent
 from open_webui.utils.chat_fork import build_fork_history
 from open_webui.utils.context_compaction import compact_chat_branch, get_chat_context_usage
 from open_webui.utils.misc import get_message_list
@@ -863,8 +864,13 @@ async def import_chats(
 ):
     await require_chat_import_permission(request, user, db)
 
+    # A file may come from anyone, so its chats start without a custom agent.
+    imported = [
+        form.model_copy(update={'chat': contents_for_owner(form.chat, None, user.id)}) for form in form_data.chats
+    ]
+
     try:
-        chats = await Chats.import_chats(user.id, form_data.chats, db=db)
+        chats = await Chats.import_chats(user.id, imported, db=db)
         # Imported chats keep their dates but start like new chats, not where chats from before targets ran.
         for chat in chats:
             await bind_imported_chat(user, chat.id)
@@ -1260,6 +1266,18 @@ async def get_shared_session_user_chat_list(
 ############################
 
 
+def _chat_response_for(user, chat) -> ChatResponse:
+    """The chat as this person may see it: someone else's chat comes without its custom agent.
+
+    Only the person who chose an agent sees its instructions, which come from their own
+    project files. That includes administrators reading another person's chat.
+    """
+    response = ChatResponse.model_validate(chat, from_attributes=True)
+    if chat.user_id != user.id:
+        response = response.model_copy(update={'chat': without_agent(response.chat)})
+    return response
+
+
 @router.get('/share/{share_id}', response_model=ChatResponse | None)
 async def get_shared_chat_by_id(
     share_id: str, user=Depends(get_optional_verified_user), db: AsyncSession = Depends(get_async_session)
@@ -1283,7 +1301,7 @@ async def get_shared_chat_by_id(
     if user is not None and user.role == 'admin' and ENABLE_ADMIN_CHAT_ACCESS:
         chat = await Chats.get_chat_by_id(share_id, db=db)
         if chat:
-            return ChatResponse.model_validate(chat, from_attributes=True)
+            return _chat_response_for(user, chat)
 
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=ERROR_MESSAGES.NOT_FOUND)
 
@@ -1391,7 +1409,7 @@ async def get_chat_by_id(
     )
 
     if chat:
-        data = ChatResponse.model_validate(chat, from_attributes=True).model_dump()
+        data = _chat_response_for(user, chat).model_dump()
         data = overlay_response_streams(
             data,
             await get_response_streams_by_chat_id(request.app.state.redis, id),
@@ -1517,7 +1535,7 @@ async def update_chat_message_by_id(
         subject_id=message_id,
         data={'chat_id': id, 'content_preview': form_data.content[:300]},
     )
-    return ChatResponse.model_validate(chat, from_attributes=True)
+    return _chat_response_for(user, chat)
 
 
 @router.delete('/{id}/messages/{message_id}', response_model=ChatResponse | None)
@@ -1556,7 +1574,7 @@ async def delete_chat_message_by_id(
         subject_id=message_id,
         data={'chat_id': id},
     )
-    return ChatResponse.model_validate(chat, from_attributes=True)
+    return _chat_response_for(user, chat)
 
 
 ############################
@@ -1929,8 +1947,9 @@ async def clone_shared_chat_by_id(
                 detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
             )
 
+    # Someone else's custom agent never comes along.
     updated_chat = {
-        **chat.chat,
+        **contents_for_owner(chat.chat, chat.user_id, user.id),
         'originalChatId': chat.id,
         'branchPointMessageId': chat.chat['history']['currentId'],
         'title': f'Clone of {chat.title}',
@@ -2117,7 +2136,7 @@ async def update_shared_chat_access_by_id(
 
     await AccessGrants.set_access_grants('shared_chat', id, form_data.access_grants, db=db)
 
-    return ChatResponse.model_validate(chat, from_attributes=True)
+    return _chat_response_for(user, chat)
 
 
 ############################

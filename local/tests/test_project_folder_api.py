@@ -4,11 +4,14 @@ Run from the repository root:
     python -m unittest discover -s local/tests -p test_project_folder_api.py -v
 """
 
+import tempfile
 import types
 from unittest.mock import patch
 import unittest
+from pathlib import Path
 
 from test_subscription_machines import (
+    ChatRunTargetModel,
     OWNER,
     OWNER_USER,
     ROOT,
@@ -368,6 +371,96 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
         with self.assertLogs(level='WARNING') as logged:
             await self.service.forget_deleted_user(MEMBER)
         self.assertIn('database is locked', logged.output[0])
+
+
+    # --- Agent files on This server -------------------------------------------
+
+    def agent_project(self):
+        """A folder on This server with one agent, not yet chosen for anything."""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        project = Path(temporary.name)
+        agents = project / '.github' / 'agents'
+        agents.mkdir(parents=True)
+        (agents / 'reviewer.agent.md').write_text('Review.', encoding='utf-8')
+        return project
+
+    async def server_path(self, project):
+        platform = await self.service._machine_platform(OWNER, 'local')
+        return self.service.project_folders.clean_project_path(str(project), platform)
+
+    async def chosen_agent_project(self):
+        """A folder on This server with one agent, chosen as a chat folder's project folder."""
+        project = self.agent_project()
+        folders = self.service.project_folders
+        saved = folders.SavedPath(await self.server_path(project), 'local')
+        await folders.save_choice(OWNER, 'website', 'folder', {'local': saved}, {'local'})
+        return project
+
+    async def test_the_owner_reads_the_agents_in_a_folder_on_this_server(self):
+        project = await self.chosen_agent_project()
+        files = await self.service.server_agent_files(OWNER_USER, 'local', str(project))
+        self.assertEqual(files, {
+            'files': [{'path': '.github/agents/reviewer.agent.md', 'content': 'Review.'}],
+            'left_out': 0,
+        })
+
+    async def test_only_the_server_owner_reads_this_server(self):
+        project = await self.chosen_agent_project()
+        with self.assertRaisesRegex(SubscriptionError, 'not available to you'):
+            await self.service.server_agent_files(MEMBER_USER, 'local', str(project))
+
+    async def test_nothing_is_read_while_the_policy_has_this_server_off(self):
+        project = await self.chosen_agent_project()
+        await self.service.save_policy({'server_machine': False})
+        with self.assertRaisesRegex(SubscriptionError, 'not available to you'):
+            await self.service.server_agent_files(OWNER_USER, 'local', str(project))
+
+    async def test_other_computers_are_read_through_the_buddy_app(self):
+        with self.assertRaisesRegex(SubscriptionError, 'through the Buddy app'):
+            await self.service.server_agent_files(OWNER_USER, 'pc-1', 'C:\\code\\site')
+        self.assertEqual(self.machine.path_checks, [])
+
+    async def test_a_relative_folder_is_refused(self):
+        with self.assertRaisesRegex(SubscriptionError, 'full path'):
+            await self.service.server_agent_files(OWNER_USER, 'local', 'code/site')
+
+    async def test_a_missing_folder_is_reported(self):
+        project = self.agent_project()
+        gone = project / 'gone'
+        folders = self.service.project_folders
+        saved = folders.SavedPath(await self.server_path(gone), 'local')
+        await folders.save_choice(OWNER, 'website', 'folder', {'local': saved}, {'local'})
+        with self.assertRaisesRegex(SubscriptionError, 'no longer exists on This server'):
+            await self.service.server_agent_files(OWNER_USER, 'local', str(gone))
+
+    async def test_a_folder_never_chosen_is_not_read(self):
+        # Even the owner cannot point the menu at any folder on the server.
+        project = self.agent_project()
+        with self.assertRaisesRegex(SubscriptionError, 'Choose this folder'):
+            await self.service.server_agent_files(OWNER_USER, 'local', str(project))
+        await self.chosen_agent_project()
+        with self.assertRaisesRegex(SubscriptionError, 'Choose this folder'):
+            await self.service.server_agent_files(OWNER_USER, 'local', str(project / '.github'))
+
+    async def test_the_exact_folder_a_chat_runs_in_can_be_read(self):
+        project = self.agent_project()
+        path = await self.server_path(project)
+        await self.service.ChatRunTargets.insert_if_absent(ChatRunTargetModel(
+            chat_id='chat-1', user_id=OWNER, kind='computer', machine_id='local', machine_revision='local',
+            folder_mode='path', path=path, access='chat', source='bar', created_at=1,
+        ))
+        files = await self.service.server_agent_files(OWNER_USER, 'local', str(project))
+        self.assertEqual(files['files'][0]['path'], '.github/agents/reviewer.agent.md')
+
+
+class AgentRouteTests(unittest.TestCase):
+    def test_reading_agents_needs_a_signed_in_session(self):
+        # An API key for the owner's account must not read private agent instructions.
+        router = (ROOT / 'backend' / 'open_webui' / 'routers' / 'subscriptions.py').read_text(encoding='utf-8')
+        route = router[router.index('async def get_machine_agents('):]
+        signature = route[: route.index(chr(10))]
+        self.assertIn('Depends(get_machine_session_user)', signature)
 
 
 if __name__ == '__main__':

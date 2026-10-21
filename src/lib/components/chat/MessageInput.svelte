@@ -112,6 +112,7 @@
 	import Knobs from '../icons/Knobs.svelte';
 	import RunTargetBar from './RunTarget/RunTargetBar.svelte';
 	import { planProvidersFor, type RunTargetDraft } from './RunTarget/run-target';
+	import type { ProjectTarget } from './ProjectPanel/project-session';
 	import { thisPcMachineId } from '$lib/desktop/this-pc';
 	import type {
 		ChatRunTarget,
@@ -126,6 +127,8 @@
 	import Expand from '../icons/Expand.svelte';
 	import QueuedMessageItem from './MessageInput/QueuedMessageItem.svelte';
 	import TaskList from './Messages/ResponseMessage/TaskList.svelte';
+	import AgentMenu from './ProjectAgents/AgentMenu.svelte';
+	import type { ChatAgent } from './ProjectAgents/chat-agent';
 
 	const i18n: any = getContext('i18n');
 
@@ -214,6 +217,13 @@
 	export let selectedToolIds: string[] = [];
 	export let selectedSkillIds: string[] = [];
 	export let selectedFilterIds: string[] = [];
+
+	// The chat folder whose project folder holds custom agents; null hides the agent button.
+	export let agentFolderId: string | null = null;
+	export let agentChatTarget: ProjectTarget | null = null;
+	export let selectedAgent: ChatAgent | null = null;
+	export let onAgentChange: (agent: ChatAgent | null) => void = () => {};
+	let agentMenuAvailable = false;
 
 	export let imageGenerationEnabled = false;
 	export let webSearchEnabled = false;
@@ -1143,6 +1153,14 @@
 		selectedModelIds.length === codeInterpreterCapableModels.length &&
 		$config?.features?.enable_code_interpreter &&
 		($_user.role === 'admin' || $_user?.permissions?.features?.code_interpreter);
+
+	$: showIntegrationsButton =
+		showWebSearchButton ||
+		showImageGenerationButton ||
+		showCodeInterpreterButton ||
+		showToolsButton ||
+		showSkillsButton ||
+		(toggleFilters && toggleFilters.length > 0);
 
 	// Disable code interpreter when terminal is active (mutually exclusive)
 	$: if ($selectedTerminalId && codeInterpreterEnabled) {
@@ -2649,7 +2667,7 @@
 										</button>
 									</InputMenu>
 
-									{#if showWebSearchButton || showImageGenerationButton || showCodeInterpreterButton || showToolsButton || showSkillsButton || (toggleFilters && toggleFilters.length > 0)}
+									{#if showIntegrationsButton || agentMenuAvailable}
 										<div
 											class="buddy-composer-divider flex self-center w-[0.0625rem] h-4 mx-1 bg-gray-200/50 dark:bg-gray-800/50 shrink-0"
 										/>
@@ -2658,7 +2676,7 @@
 									<div
 										class="buddy-composer-integrations flex flex-1 items-center min-w-0 overflow-x-auto scrollbar-none"
 									>
-										{#if showWebSearchButton || showImageGenerationButton || showCodeInterpreterButton || showToolsButton || showSkillsButton || (toggleFilters && toggleFilters.length > 0)}
+										{#if showIntegrationsButton}
 											<IntegrationsMenu
 												preserveComposerFocus={mobileComposer && !embedded}
 												selectedModels={selectedModelIds}
@@ -2698,6 +2716,16 @@
 												</button>
 											</IntegrationsMenu>
 										{/if}
+
+										<AgentMenu
+											bind:available={agentMenuAvailable}
+											folderId={agentFolderId}
+											chatTarget={agentChatTarget}
+											{selectedAgent}
+											onSelect={onAgentChange}
+											preserveComposerFocus={mobileComposer && !embedded}
+											onClose={restoreComposerAfterMenuClose}
+										/>
 
 										{#if selectedModelIds.length === 1 && $models.find((m) => m.id === selectedModelIds[0])?.has_user_valves}
 											<div class="ml-1 flex gap-1.5 shrink-0">

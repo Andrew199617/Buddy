@@ -2,7 +2,7 @@
 // open, how far its file browser may go, and how it reads command results.
 // No requests here.
 
-import { CompanionError, type CompanionTerminal } from '$lib/apis/companion';
+import { CompanionError, type CompanionGrant, type CompanionTerminal } from '$lib/apis/companion';
 import type {
 	ChatRunTargetDetails,
 	FolderProject,
@@ -73,6 +73,11 @@ export function targetProblem(target: ProjectTarget): TargetProblem {
 	if (target.computer.kind !== 'app') return 'not_browsable';
 	if (!target.computer.online) return 'offline';
 	return null;
+}
+
+/** A shared folder the computer still has and lets this page read. */
+export function isReadableGrant(grant: CompanionGrant): boolean {
+	return grant.available !== false && grant.capabilities.read;
 }
 
 /** The folder above `current`, or null at the project folder itself. Paths are '/'-separated. */
