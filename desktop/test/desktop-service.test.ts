@@ -276,6 +276,16 @@ test('an unreachable old server still lets the address change, and says what is 
 	assert.match(service.getStatus().message ?? '', /buddy\.example\.com did not remove this computer.*Settings → Machines/);
 });
 
+test('an unreadable credential on an address change says the computer was left behind', async () => {
+	const { service, credentials, settings, unenrollments } = setUp();
+	await service.connectThisPC('bde1_token', 'PC');
+	credentials.value = null;
+	await service.changeServer('https://other.example.com');
+	assert.equal(unenrollments.length, 0);
+	assert.equal(settings.saved.serverUrl, 'https://other.example.com');
+	assert.match(service.getStatus().message ?? '', /buddy\.example\.com did not remove this computer/);
+});
+
 test('a computer that cannot store the connection is never enrolled', async () => {
 	const { service, credentials, enrollments } = setUp();
 	credentials.storable = false;

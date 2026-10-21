@@ -228,6 +228,9 @@ export class DesktopService extends EventEmitter {
 			const credential = this.options.credentials.read();
 			if (oldServer && credential) {
 				leftBehind = !(await this.removeFromServer(oldServer, machine.id, credential));
+			} else {
+				// Without the credential the old server cannot be asked, so it still has this computer.
+				leftBehind = true;
 			}
 			await this.disconnectThisPC();
 		}
@@ -236,7 +239,7 @@ export class DesktopService extends EventEmitter {
 		if (leftBehind) {
 			this.ending = {
 				state: 'not_connected',
-				message: `${oldServer} did not remove this computer. Remove it in Settings → Machines there.`
+				message: `${oldServer || 'The old Buddy server'} did not remove this computer. Remove it in Settings → Machines there.`
 			};
 			this.emitStatus();
 		}
