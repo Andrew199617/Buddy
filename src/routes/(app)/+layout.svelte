@@ -86,6 +86,11 @@
 	let keyboardOpen = false;
 	let viewportHeight: number | null = null;
 	let viewportTop = 0;
+	// Below this visible height with the keyboard up, as on a phone on its side, a chat
+	// gives its draft the room: the header and the bar above the composer step aside.
+	const SHORT_KEYBOARD_VIEW = 320;
+	$: keyboardLeavesLittleRoom =
+		keyboardOpen && viewportHeight !== null && viewportHeight < SHORT_KEYBOARD_VIEW;
 
 	afterNavigate(() => {
 		if ($mobile) {
@@ -537,6 +542,7 @@
 			id="app-layout"
 			class="buddy-shell text-gray-700 dark:text-gray-100"
 			class:buddy-keyboard-open={keyboardOpen}
+			class:buddy-keyboard-short={keyboardLeavesLittleRoom}
 			class:buddy-sidebar-open={!$mobile && $showSidebar}
 			style:--buddy-visible-height={viewportHeight ? `${viewportHeight}px` : undefined}
 			style:height={viewportHeight ? `${viewportHeight}px` : undefined}

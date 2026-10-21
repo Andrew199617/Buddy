@@ -403,6 +403,23 @@
 		pointer-events: none;
 	}
 
+	/* With the keyboard up in a short window, as on a phone on its side, the header steps
+	   aside so the draft and Send fit above the keyboard, and comes back with the keyboard
+	   down. Its status stays for screen readers. */
+	:global(.buddy-keyboard-short) .buddy-chat-header {
+		height: 0;
+		min-height: 0;
+	}
+
+	:global(.buddy-keyboard-short) .buddy-header-fade,
+	:global(.buddy-keyboard-short) .buddy-header-left,
+	:global(.buddy-keyboard-short) .buddy-header-right,
+	:global(.buddy-keyboard-short) .buddy-temporary-note,
+	:global(.buddy-keyboard-short) .buddy-header-banners,
+	:global(.buddy-keyboard-short) .buddy-header-center > :global(:not([role='status'])) {
+		display: none;
+	}
+
 	.buddy-header-banners {
 		pointer-events: auto;
 	}

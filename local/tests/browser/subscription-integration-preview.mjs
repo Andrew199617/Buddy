@@ -4372,9 +4372,31 @@ async function checkUltraOffMessage(session, profile, fixtures) {
 	session.completions.splice(0);
 }
 
+/** Whether the composer's settings, draft and Send all show above the keyboard. */
+async function composerAboveKeyboard(page) {
+	return page.evaluate(() => {
+		const top = visualViewport.offsetTop;
+		const bottom = top + visualViewport.height;
+		function shows(selector) {
+			const rect = document.querySelector(selector).getBoundingClientRect();
+			return rect.height > 0 && rect.top >= top - 1 && rect.bottom <= bottom + 1;
+		}
+		return {
+			settings: shows('.buddy-composer-settings'),
+			draft: shows('#chat-input-container'),
+			send: shows('#send-message-button')
+		};
+	});
+}
+
+async function chatHeaderHeight(page) {
+	return page.locator('.buddy-chat-header').evaluate((header) => header.offsetHeight);
+}
+
 /**
- * A phone on its side with the keyboard up: the menu fits, with less room the rest
- * of it is a swipe away, and the draft keeps the keyboard throughout.
+ * A phone on its side with the keyboard up: the draft and Send fit, the menu fits
+ * too, and with less room the rest of the menu is a swipe away. The draft keeps the
+ * keyboard throughout.
  */
 async function checkLandscapeUltraMenu(page) {
 	const phone = { mobile: true };
@@ -4388,11 +4410,20 @@ async function checkLandscapeUltraMenu(page) {
 	await input.tap();
 	await input.fill('Keep this landscape draft');
 	await setVisibleHeight(page, 240);
+	// The chat's header and the bar above the composer step aside for the keyboard.
+	assert.deepEqual(
+		await composerAboveKeyboard(page),
+		{ settings: true, draft: true, send: true },
+		'The draft, its settings and Send fit above the landscape keyboard'
+	);
+	assert.equal(await chatHeaderHeight(page), 0, 'The header steps aside while the keyboard is up');
 	assert.equal(
 		await page.locator(ultraTrigger).locator('.buddy-ultra-label').isVisible(),
 		true,
 		'A phone on its side has room for the Ultra chip’s label'
 	);
+	await captureScreenshot(page, 'phone-ultra-landscape-draft');
+
 	await page.locator(ultraTrigger).tap();
 	await waitForMenu(menu);
 	await assertMenuInView(menu);
@@ -4402,7 +4433,7 @@ async function checkLandscapeUltraMenu(page) {
 	const fitsWhole = await scroller.evaluate(
 		(element) => element.scrollHeight <= element.clientHeight + 1
 	);
-	assert.ok(fitsWhole, 'Over the header, the whole menu fits above the keyboard');
+	assert.ok(fitsWhole, 'With the header aside, the whole menu fits above the keyboard');
 	await captureScreenshot(page, 'phone-ultra-landscape-keyboard');
 
 	// A taller keyboard leaves less room: the rest of the menu is a swipe away, never
@@ -4451,6 +4482,7 @@ async function checkLandscapeUltraMenu(page) {
 	await closeUltraMenu(page, phone);
 	assert.equal((await input.innerText()).trim(), 'Keep this landscape draft');
 	await setVisibleHeight(page, null);
+	assert.ok((await chatHeaderHeight(page)) > 0, 'The header comes back with the keyboard down');
 }
 
 async function ultraCase(browser, profile) {

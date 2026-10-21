@@ -597,6 +597,13 @@
 	display: none;
 }
 
+/* With the keyboard up in a short window, the bar above the composer (run target and
+   context) steps aside with the chat's header (Navbar.svelte), so the draft and Send
+   fit above the keyboard. */
+.buddy-keyboard-short .buddy-chat .buddy-run-target-slot {
+	display: none;
+}
+
 .buddy-chat .buddy-composer[data-expanded='false'] .buddy-composer-editor {
 	padding: 0;
 }
