@@ -68,6 +68,18 @@ async def may_change_account(actor, target) -> bool:
     return target.id != owner_id and not await is_super_user(target)
 
 
+async def forget_super_user(user_id: str) -> None:
+    """Drops someone from the super users when they stop being an administrator.
+
+    Otherwise being made an administrator again later would quietly bring it back.
+    """
+    named = await named_super_user_ids()
+    if user_id not in named:
+        return
+    remaining = [named_id for named_id in named if named_id != user_id]
+    await (await _config()).upsert({SUPER_USERS_CONFIG_KEY: remaining})
+
+
 async def describe_super_users() -> dict:
     return {'owner_id': await server_owner_id(), 'user_ids': await named_super_user_ids()}
 

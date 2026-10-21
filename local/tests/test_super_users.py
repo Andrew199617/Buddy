@@ -98,6 +98,16 @@ class SuperUserTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.module.may_change_account(other_admin, MEMBER))
         self.assertTrue(await self.module.may_change_account(ADMIN, other_admin))
 
+    async def test_a_demoted_super_user_is_not_one_again_when_promoted(self):
+        await self.module.set_super_user(OWNER, ADMIN, True)
+        await self.module.forget_super_user(ADMIN.id)
+        self.assertFalse(await self.module.is_super_user(ADMIN))
+        self.assertEqual(await self.module.named_super_user_ids(), [])
+        # Forgetting someone who was never named writes nothing.
+        self.config.values.clear()
+        await self.module.forget_super_user(MEMBER.id)
+        self.assertEqual(self.config.values, {})
+
     def test_config_files_never_carry_the_owner_or_super_users(self):
         imported = {
             self.module.SUPER_USERS_CONFIG_KEY: ['admin-2'],

@@ -1042,6 +1042,8 @@ async def update_user_by_id(
                 )
 
             if role_changed:
+                if updated_user.role != 'admin':
+                    await super_users.forget_super_user(user_id)
                 await publish_event(
                     request,
                     EVENTS.USER_ROLE_UPDATED,
