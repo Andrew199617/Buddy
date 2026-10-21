@@ -3693,11 +3693,14 @@ async function assertMenuInView(menu) {
 			const hit = document.elementFromPoint(row.x + row.width / 2, row.y + row.height / 2);
 			firstRowReceivesTap = Boolean(hit && firstRow.contains(hit));
 		}
+		const composer = document.querySelector('.buddy-composer').getBoundingClientRect();
 		return {
 			top: rect.top,
 			bottom: rect.bottom,
 			left: rect.left,
 			right: rect.right,
+			composerLeft: composer.left,
+			composerRight: composer.right,
 			viewportTop: viewport.offsetTop,
 			viewportHeight: viewport.height,
 			viewportWidth: viewport.width,
@@ -3712,6 +3715,12 @@ async function assertMenuInView(menu) {
 	assert.ok(
 		metrics.left >= 0 && metrics.right <= metrics.viewportWidth + 1,
 		'The menu fits across'
+	);
+	assert.ok(
+		Math.abs(metrics.left - metrics.composerLeft) <= 1 &&
+			Math.abs(metrics.right - metrics.composerRight) <= 1,
+		'The phone menu spans the composer, as its Model and Thinking pickers do: ' +
+			JSON.stringify(metrics)
 	);
 	assert.ok(metrics.firstRowReceivesTap, 'The menu’s first row takes taps');
 }

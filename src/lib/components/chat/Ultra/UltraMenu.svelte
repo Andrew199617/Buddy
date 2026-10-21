@@ -142,6 +142,14 @@
 			'border-transparent bg-transparent text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800';
 	}
 
+	// On phones the menu spans the composer, as its Model and Thinking pickers do.
+	let menuWidth = '';
+	$: if (preserveComposerFocus) {
+		menuWidth = 'w-full';
+	} else {
+		menuWidth = 'w-72 max-w-[calc(100vw-2rem)]';
+	}
+
 	const rowClass =
 		'flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left text-[0.8125rem] hover:bg-gray-50/60 focus-visible:bg-gray-50/60 dark:hover:bg-gray-800/60 dark:focus-visible:bg-gray-800/60';
 	const sectionClass =
@@ -234,7 +242,7 @@
 		can't: Svelte resets its overflow when the opening animation ends. -->
 	<div slot="content" class="max-h-[inherit]">
 		<DropdownMenu
-			className="buddy-ultra-menu w-72 max-w-[calc(100vw-2rem)] max-h-[inherit] overflow-y-auto overscroll-contain"
+			className="buddy-ultra-menu {menuWidth} max-h-[inherit] overflow-y-auto overscroll-contain"
 		>
 			<div bind:this={menuElement} class="flex flex-col">
 				{#if view === 'main'}

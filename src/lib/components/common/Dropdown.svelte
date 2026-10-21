@@ -291,12 +291,14 @@
 
 	/**
 	 * Above the composer and below the chat's header, or over the composer when too
-	 * little room is left above it (see getComposerMenuRoom).
+	 * little room is left above it (see getComposerMenuRoom). As wide as the
+	 * composer, like its Model and Thinking pickers.
 	 */
 	function positionContentByComposer(composer: HTMLElement) {
 		if (!contentEl) return;
 		const viewport = visualViewportRect();
 		const composerRect = composer.getBoundingClientRect();
+		contentEl.style.width = `${composerRect.width}px`;
 		const space: ComposerSpace = {
 			visibleTop: visibleTopAbove(composer, viewport.top),
 			visibleBottom: viewport.top + viewport.height,
