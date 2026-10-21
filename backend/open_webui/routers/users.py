@@ -943,6 +943,16 @@ async def get_user_active_status_by_id(
 ############################
 
 
+def _changes_account(form_data: UserUpdateForm, user: UserModel) -> bool:
+    """Whether the update changes how this person signs in or what they may do.
+
+    Edit User sends the email and role every time, so only a different value counts.
+    """
+    changes_email = form_data.email is not None and form_data.email.lower() != user.email
+    changes_role = form_data.role is not None and form_data.role != user.role
+    return bool(form_data.password) or changes_email or changes_role
+
+
 @router.post('/{user_id}/update', response_model=UserModel | None)
 async def update_user_by_id(
     request: Request,
@@ -982,8 +992,7 @@ async def update_user_by_id(
     user = await Users.get_user_by_id(user_id, db=db)
 
     if user:
-        changes_account = form_data.password or form_data.email is not None or form_data.role is not None
-        if changes_account and not await super_users.may_change_account(session_user, user):
+        if _changes_account(form_data, user) and not await super_users.may_change_account(session_user, user):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail='Only the server owner can change a super user\'s sign-in or role.',

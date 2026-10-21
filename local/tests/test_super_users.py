@@ -4,6 +4,7 @@ Run from the repository root:
     python -m unittest discover -s local/tests -p test_super_users.py -v
 """
 
+import ast
 import importlib.util
 import types
 import unittest
@@ -134,6 +135,42 @@ class SuperUserTests(unittest.IsolatedAsyncioTestCase):
     def test_the_owner_key_matches_the_subscription_service(self):
         service = (MODULE_PATH.parent / 'subscriptions' / 'service.py').read_text(encoding='utf-8')
         self.assertIn(f"SERVER_OWNER_CONFIG_KEY = '{self.module.SERVER_OWNER_CONFIG_KEY}'", service)
+
+
+
+def load_changes_account():
+    router = MODULE_PATH.parents[1] / 'routers' / 'users.py'
+    parsed = ast.parse(router.read_text(encoding='utf-8'))
+    selected = [node for node in parsed.body if getattr(node, 'name', None) == '_changes_account']
+    if len(selected) != 1:
+        raise AssertionError(f'_changes_account is missing from {router}')
+    for node in selected:
+        node.args.args[0].annotation = None
+        node.args.args[1].annotation = None
+    namespace = {}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[])), str(router), 'exec'), namespace)
+    return namespace['_changes_account']
+
+
+class ChangesAccountTests(unittest.TestCase):
+    def setUp(self):
+        self.changes_account = load_changes_account()
+        self.stored = types.SimpleNamespace(email='b@example.com', role='admin')
+
+    def form(self, **fields):
+        values = {'password': None, 'email': None, 'role': None, 'name': None}
+        values.update(fields)
+        return types.SimpleNamespace(**values)
+
+    def test_the_same_email_and_role_with_a_new_name_is_not_an_account_change(self):
+        # Edit User always sends both.
+        form = self.form(email='B@example.com', role='admin', name='Bea')
+        self.assertFalse(self.changes_account(form, self.stored))
+
+    def test_a_new_password_email_or_role_is(self):
+        self.assertTrue(self.changes_account(self.form(password='new-secret'), self.stored))
+        self.assertTrue(self.changes_account(self.form(email='other@example.com'), self.stored))
+        self.assertTrue(self.changes_account(self.form(role='user'), self.stored))
 
 
 if __name__ == '__main__':
