@@ -90,6 +90,9 @@ WORKER_SUMMARY_LIMIT = 4000
 WORKER_ENDED_WITH_CODEX = 'Stopped when Codex stopped.'
 # The summary of a worker that Buddy stopped for starting deeper than ultra.MAX_DEPTH.
 WORKER_TOO_DEEP = "Stopped: workers can start sub-workers, but sub-workers can't"
+# Seconds Buddy waits, when it stops an Ultra turn before it is over, for Codex
+# to report the turns it interrupted ended.
+STOP_WORKERS_GRACE = 5
 
 
 class CodexRpcError(SubscriptionError):
@@ -340,6 +343,10 @@ class CodexWorkers:
     ultra.MAX_DEPTH itself. A worker deeper than that is listed as stopped as
     soon as it is reported, and every turn its thread starts is to be
     interrupted at once; take_interrupts() hands those turns over.
+
+    Codex doesn't stop workers with the thread that started them either. So
+    Buddy stops a worker by interrupting its turn on its own thread:
+    interrupt() and interrupt_all() have those turns handed over too.
     """
 
     def __init__(self, options: UltraOptions):
@@ -359,6 +366,14 @@ class CodexWorkers:
         self._stopping: set[str] = set()
         # The turns to interrupt, as (thread id, turn id), until take_interrupts() hands them over.
         self._interrupts: list[tuple[str, str]] = []
+        # Every turn handed over to be interrupted, so that none is handed over twice.
+        self._interrupted: set[tuple[str, str]] = set()
+        # The workers that Buddy stops before their thread has named a turn:
+        # their next turn is interrupted as soon as it does.
+        self._interrupt_next_turn: set[str] = set()
+        # Whether Buddy is stopping the whole Ultra turn. Then every turn that a
+        # worker starts is interrupted, also of the workers that start meanwhile.
+        self.interrupting_all = False
 
     def running(self) -> bool:
         """Whether any worker has not ended yet, counting the too-deep workers that Buddy is still stopping."""
@@ -370,10 +385,37 @@ class CodexWorkers:
         return False
 
     def take_interrupts(self) -> list[tuple[str, str]]:
-        """The turns of too-deep workers to interrupt now, as (thread id, turn id). Each is handed over once."""
+        """The workers' turns to interrupt now, as (thread id, turn id). Each is handed over once.
+
+        They are the turns of too-deep workers, and of the workers that Buddy stops.
+        """
         interrupts = self._interrupts
         self._interrupts = []
         return interrupts
+
+    def interrupt(self, worker_id: str) -> bool:
+        """Have a running worker's turn interrupted, and the turns of the sub-workers it runs.
+
+        Returns False when no worker with this id is running. A worker whose
+        thread hasn't named its turn yet has it interrupted as soon as it does.
+        Each worker stays listed as running until its own thread reports its
+        turn ended.
+        """
+        worker = self._workers.get(worker_id)
+        if worker is None or worker.state != WORKER_RUNNING:
+            return False
+        self._interrupt_current_turn(worker_id)
+        # Codex doesn't stop sub-workers with the worker that started them.
+        for sub_worker_id in self._running_sub_workers(worker_id):
+            self.interrupt(sub_worker_id)
+        return True
+
+    def interrupt_all(self) -> None:
+        """Have every running worker's turn interrupted, and every turn that a worker starts from now on."""
+        self.interrupting_all = True
+        for worker_id, worker in self._workers.items():
+            if worker.state == WORKER_RUNNING:
+                self._interrupt_current_turn(worker_id)
 
     def usage_totals(self) -> list[dict]:
         """Each worker thread's latest token usage total.
@@ -442,6 +484,14 @@ class CodexWorkers:
             return None
         return self._threads_by_path.get(segments[:-1])
 
+    def _running_sub_workers(self, worker_id: str) -> list[str]:
+        """The ids of the running workers that this worker started."""
+        sub_workers = []
+        for sub_worker_id, sub_worker in self._workers.items():
+            if sub_worker.parent_id == worker_id and sub_worker.state == WORKER_RUNNING:
+                sub_workers.append(sub_worker_id)
+        return sub_workers
+
     def _started(self, item: dict) -> list:
         worker_id = item.get('agentThreadId')
         if not worker_id or worker_id in self._workers:
@@ -487,6 +537,8 @@ class CodexWorkers:
         worker = self._workers.get(worker_id)
         if worker is None or worker.state != WORKER_RUNNING or worker_id in self._turns:
             return []
+        # It ended without naming a turn, so there is none left to interrupt.
+        self._interrupt_next_turn.discard(worker_id)
         return self._change(worker_id, state=WORKER_DONE, activity=None)
 
     def _handle_too_deep(self, worker_id: str, method: str | None, params: dict) -> list:
@@ -516,11 +568,31 @@ class CodexWorkers:
         if not turn_id:
             return
         self._turns[worker_id] = turn_id
+        self._interrupt(worker_id, turn_id)
+
+    def _interrupt_current_turn(self, worker_id: str) -> None:
+        """Have a running worker's turn interrupted, or its next one when its thread hasn't named a turn yet."""
+        turn_id = self._turns.get(worker_id)
+        if turn_id:
+            self._interrupt(worker_id, turn_id)
+        else:
+            self._interrupt_next_turn.add(worker_id)
+
+    def _interrupt(self, worker_id: str, turn_id: str) -> None:
+        """Hand a worker's turn over to be interrupted, unless it was already."""
+        if (worker_id, turn_id) in self._interrupted:
+            return
+        self._interrupted.add((worker_id, turn_id))
         self._interrupts.append((worker_id, turn_id))
 
     def _turn_started(self, worker_id: str, turn: dict) -> list:
-        if turn.get('id'):
-            self._turns[worker_id] = turn['id']
+        turn_id = turn.get('id')
+        if turn_id:
+            self._turns[worker_id] = turn_id
+            if self.interrupting_all or worker_id in self._interrupt_next_turn:
+                # Buddy stopped the worker before its thread named this turn.
+                self._interrupt_next_turn.discard(worker_id)
+                self._interrupt(worker_id, turn_id)
         # A worker that ended runs again when it is given more to do.
         return self._change(worker_id, state=WORKER_RUNNING, activity='Working')
 
@@ -575,8 +647,8 @@ class CodexTurnParser:
     turn's workers. Their own threads' notifications reach the same queue,
     and only the orchestrator's thread writes the reply. Such a turn is over
     once the orchestrator's turn has completed and no worker still runs.
-    take_interrupts() hands over the turns of workers that started too deep,
-    which the caller interrupts.
+    take_interrupts() hands over the workers' turns that the caller is to
+    interrupt: of workers that started too deep, and of workers Buddy stops.
     """
 
     def __init__(self, turn_id: str, thread_id: str | None = None):
@@ -616,7 +688,10 @@ class CodexTurnParser:
         return self.workers.stop_running()
 
     def take_interrupts(self) -> list[tuple[str, str]]:
-        """The turns of workers that started too deep, to interrupt now, as (thread id, turn id)."""
+        """The workers' turns to interrupt now, as (thread id, turn id).
+
+        They are the turns of too-deep workers, and of the workers that Buddy stops.
+        """
         if self.workers is None:
             return []
         return self.workers.take_interrupts()
@@ -983,6 +1058,28 @@ class LiveThread:
         return self.ultra == turn.ultra
 
 
+class CodexUltraRun:
+    """A live Ultra turn, through which Buddy stops its workers.
+
+    Codex doesn't stop workers with their orchestrator, or sub-workers with
+    their worker. Buddy stops each one by interrupting its turn on its own
+    thread.
+    """
+
+    def __init__(self, turn: TurnRequest, server: CodexAppServer, queue: asyncio.Queue, parser: CodexTurnParser):
+        # The request that was passed to run_turn, which stop_worker() is given.
+        self.turn = turn
+        self.server = server
+        # The notifications of the orchestrator's thread and of its workers' threads.
+        self.queue = queue
+        self.parser = parser
+        self._generation = server.generation
+
+    def server_running(self) -> bool:
+        """Whether the app-server that runs this turn still runs. Its threads end with it."""
+        return self.server.running and self.server.generation == self._generation
+
+
 class CodexLogin:
     def __init__(self, machine_id: str, method: str, login_id: str, url: str, user_code: str | None):
         self.machine_id = machine_id
@@ -1020,6 +1117,33 @@ class CodexProvider:
         # Set by the service before each use: which sign-in Codex should be using.
         self.credential_mode = CREDENTIAL_MACHINE
         self._api_key: str | None = None
+        # The Ultra turns that are running, so that their workers can be stopped one by one.
+        self._ultra_runs: list[CodexUltraRun] = []
+
+    async def stop_worker(self, turn: TurnRequest, worker_id: str) -> bool:
+        """Stop one running worker of a live Ultra turn, with the sub-workers it runs.
+
+        ``turn`` is the request that was passed to run_turn. Returns False when
+        that turn has ended, its app-server has stopped, or the worker isn't
+        running any more. Buddy interrupts the worker's turn on its own thread,
+        or the turn it starts next when its thread hasn't named one yet. Codex
+        then reports the worker stopped in the turn's own events. Stopping the
+        whole turn cancels run_turn instead, which stops every worker.
+        """
+        run = self._ultra_run(turn)
+        if run is None or not run.server_running():
+            return False
+        if not run.parser.workers.interrupt(worker_id):
+            return False
+        self._interrupt_workers(run.server, run.parser)
+        return True
+
+    def _ultra_run(self, turn: TurnRequest) -> CodexUltraRun | None:
+        """The running Ultra turn of this very request, or None once it has ended."""
+        for run in self._ultra_runs:
+            if run.turn is turn:
+                return run
+        return None
 
     def _on_notification(self, message: dict) -> None:
         method = message.get('method')
@@ -1375,8 +1499,60 @@ class CodexProvider:
             return
         asyncio.create_task(self._request_interrupt(server, thread_id, turn_id))
 
+    def _interrupt_workers(self, server: CodexAppServer, parser: CodexTurnParser) -> None:
+        """Interrupt the workers' turns that the turn's parser hands over, each on its worker's own thread."""
+        for worker_thread, worker_turn in parser.take_interrupts():
+            self._interrupt_worker(server, worker_thread, worker_turn)
+
+    async def _stop_ultra_turn(self, run: CodexUltraRun) -> list:
+        """Stop an Ultra turn that ends before it is over, and return its workers' updates meanwhile.
+
+        Codex doesn't stop workers with their orchestrator. So Buddy interrupts
+        the orchestrator's turn first, so that it starts no more workers, and
+        then the turn of each running worker on its own thread. It then reads
+        the turn's notifications until all of those turns have ended, for at
+        most STOP_WORKERS_GRACE seconds. A turn that a worker starts meanwhile
+        is interrupted too, such as that of a worker whose thread hadn't named
+        its turn yet. The reply has ended, so only the workers' updates are
+        kept. Does nothing when the turn is over, is being stopped already, or
+        its app-server has stopped, which ends its workers.
+        """
+        parser = run.parser
+        workers = parser.workers
+        if parser.turn_over() or workers.interrupting_all or not run.server_running():
+            return []
+        workers.interrupt_all()
+        updates = []
+        try:
+            async with asyncio.timeout(STOP_WORKERS_GRACE):
+                if not parser.finished:
+                    await self._request_interrupt(run.server, parser.thread_id, parser.turn_id)
+                self._interrupt_workers(run.server, parser)
+                while not parser.turn_over():
+                    message = await run.queue.get()
+                    if isinstance(message, SubscriptionError):
+                        # The app-server ended, and its workers with it.
+                        updates.extend(parser.stop_workers())
+                        break
+                    for event in parser.handle(message):
+                        if isinstance(event, WorkerUpdate):
+                            updates.append(event)
+                    self._interrupt_workers(run.server, parser)
+        except TimeoutError:
+            log.warning(
+                'Codex on %s did not report its Ultra turn stopped within %s seconds',
+                run.turn.machine.name,
+                STOP_WORKERS_GRACE,
+            )
+        return updates
+
     async def run_turn(self, turn: TurnRequest):
-        """Run one chat turn and yield its events."""
+        """Run one chat turn and yield its events.
+
+        Meanwhile stop_worker() can stop an Ultra turn's workers one by one.
+        When an Ultra turn ends before it is over, as when the person stops the
+        reply or at its time limit, Buddy stops the workers still running.
+        """
         machine = turn.machine
         server = await self._server_for(turn.settings, machine)
         await self._ensure_effort_models(server, turn)
@@ -1398,6 +1574,8 @@ class CodexProvider:
             # Each worker reports its turn under its own thread, which joins this queue.
             server.follow_workers(thread_id)
         parser = None
+        # An Ultra turn once it has started, through which its workers are stopped.
+        run = None
         completed = False
         timed_out = False
         try:
@@ -1411,6 +1589,8 @@ class CodexProvider:
             parser = CodexTurnParser(result['turn']['id'], thread_id)
             if turn.ultra is not None:
                 parser.track_workers(turn.ultra)
+                run = CodexUltraRun(turn, server, queue, parser)
+                self._ultra_runs.append(run)
 
             deadline = _reply_deadline(turn)
             while not parser.turn_over():
@@ -1426,40 +1606,52 @@ class CodexProvider:
                         yield event
                     raise message
                 events = parser.handle(message)
-                for worker_thread, worker_turn in parser.take_interrupts():
-                    # A worker that started too deep is stopped before anything else.
-                    self._interrupt_worker(server, worker_thread, worker_turn)
+                # Workers that started too deep, or that Buddy stops, are stopped before anything else.
+                self._interrupt_workers(server, parser)
                 for event in events:
                     yield event
 
+            # The orchestrator's own error, from before Buddy stops anything.
+            error = parser.error
+            if timed_out:
+                # Codex doesn't stop workers with the reply, so Buddy stops them, and the list shows how they ended.
+                for event in await self._stop_ultra_turn(run):
+                    yield event
             usage = parser.reply_usage(previous_usage)
             if usage:
                 yield usage
-            if parser.error:
-                yield TurnFailed(parser.error)
+            if error:
+                yield TurnFailed(error)
             elif timed_out:
                 yield TurnFailed(ULTRA_TIME_LIMIT_MESSAGE)
             else:
                 completed = True
         finally:
-            server.unsubscribe(thread_id)
-            if completed and not turn.is_task:
-                answered = conversation.history + [conversation.prompt, ChatTurn('assistant', parser.reply_text)]
-                next_key = f'{machine.id}|{conversation_key(answered, conversation.system)}'
-                live = LiveThread(
-                    thread_id,
-                    machine.id,
-                    server.generation,
-                    turn.access,
-                    turn.cwd,
-                    parser.usage_total,
-                    ultra=turn.ultra,
-                )
-                self._keep_live_thread(next_key, live)
-            elif parser and not parser.finished:
-                self._interrupt_turn(server, thread_id, parser.turn_id)
-            else:
-                self._release_thread(server, thread_id)
+            try:
+                if run is not None:
+                    self._ultra_runs.remove(run)
+                    # The person stopped the reply, or something failed: Codex doesn't stop workers with it.
+                    await self._stop_ultra_turn(run)
+            finally:
+                # Runs even when a second cancellation interrupts the stop.
+                server.unsubscribe(thread_id)
+                if completed and not turn.is_task:
+                    answered = conversation.history + [conversation.prompt, ChatTurn('assistant', parser.reply_text)]
+                    next_key = f'{machine.id}|{conversation_key(answered, conversation.system)}'
+                    live = LiveThread(
+                        thread_id,
+                        machine.id,
+                        server.generation,
+                        turn.access,
+                        turn.cwd,
+                        parser.usage_total,
+                        ultra=turn.ultra,
+                    )
+                    self._keep_live_thread(next_key, live)
+                elif parser and not parser.finished:
+                    self._interrupt_turn(server, thread_id, parser.turn_id)
+                else:
+                    self._release_thread(server, thread_id)
 
     def stop_machine(self, machine_id: str) -> None:
         """Stop one computer's app-server and forget its threads; other computers keep theirs."""

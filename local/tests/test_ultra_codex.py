@@ -17,6 +17,8 @@ and each worker's own thread report under their own thread ids. The recording
 session sent the interrupts, not Buddy, and their answers were left out. So
 were the notifications a turn doesn't read that carry the account's rate limits
 or the computer's remote-control status, and paths name the user "fixture".
+Where Buddy interrupts a turn, InterruptibleProcess ends it the way Codex ended
+the turns that the recording session interrupted.
 
 Run from the repository root:
     python -m unittest discover -s local/tests -p test_ultra_codex.py -v
@@ -217,6 +219,63 @@ class ReplayProcess:
     def sent(self, method: str) -> list[dict]:
         return [params for sent_method, params in self.requests if sent_method == method]
 
+    def drained(self) -> bool:
+        """Whether Buddy has read everything it has written so far."""
+        return self._lines.empty()
+
+
+def interrupted_completion(thread_id: str, turn_id: str) -> dict:
+    """The turn/completed with which Codex ends a turn that turn/interrupt stopped.
+
+    That is how codex-stop-children.jsonl recorded it, without its times.
+    """
+    turn = {'id': turn_id, 'items': [], 'itemsView': 'notLoaded', 'status': 'interrupted', 'error': None}
+    return {'method': 'turn/completed', 'params': {'threadId': thread_id, 'turn': turn}}
+
+
+class InterruptibleProcess(ReplayProcess):
+    """A replayed app-server that ends a turn when Buddy interrupts it, as Codex did.
+
+    It answers Buddy's turn/interrupt, and then ends that turn with a
+    turn/completed whose status is 'interrupted', unless the turn has ended
+    already. The turns of ``waiting`` threads that the recording session
+    interrupted end only that way: each one's recorded turn/completed is
+    held back until Buddy interrupts it.
+    """
+
+    def __init__(self, messages: list[dict], waiting=()):
+        # The recorded turn/completed of each held-back turn, by (thread id, turn id).
+        self._held_back = {}
+        replayed = []
+        for message in messages:
+            turn = (message.get('params') or {}).get('turn') or {}
+            if message.get('method') == 'turn/completed' and thread_of(message) in waiting:
+                if turn.get('status') == 'interrupted':
+                    self._held_back[(thread_of(message), turn['id'])] = message
+                    continue
+            replayed.append(message)
+        super().__init__(replayed)
+        # The turns that end in what it replays, which it writes out as soon as the turn starts.
+        self._ended = set()
+        for message in replayed:
+            if message.get('method') == 'turn/completed':
+                self._ended.add((thread_of(message), message['params']['turn']['id']))
+
+    async def write(self, text):
+        message = json.loads(text)
+        if message.get('method') != 'turn/interrupt':
+            await super().write(text)
+            return
+        params = message['params']
+        self.requests.append(('turn/interrupt', params))
+        self._answer(message['id'], {})
+        turn = (params['threadId'], params['turnId'])
+        if turn in self._ended:
+            return
+        self._ended.add(turn)
+        completion = self._held_back.pop(turn, None) or interrupted_completion(*turn)
+        self._lines.put_nowait(json.dumps(completion))
+
 
 class ReplayMachine:
     id = 'fixture-pc'
@@ -381,6 +440,46 @@ def first_update_index(events: list, worker_id: str, state: str) -> int:
 
 def text_input(text: str) -> dict:
     return {'type': 'text', 'text': text, 'text_elements': []}
+
+
+def start_report(messages: list[dict], worker_id: str) -> dict:
+    """The notification in which the thread that started a worker first reports it."""
+    for message in messages:
+        item = (message.get('params') or {}).get('item') or {}
+        if message.get('method') != 'item/started' or item.get('type') != 'subAgentActivity':
+            continue
+        if item['kind'] == 'started' and item['agentThreadId'] == worker_id:
+            return message
+    raise AssertionError(f'The recording never reports {worker_id} started')
+
+
+def ultra_parser(messages: list[dict]) -> codex.CodexTurnParser:
+    """A parser for a recorded Ultra turn that follows its workers."""
+    turn_id = recorded_answer(messages, 'turn/start')['result']['turn']['id']
+    parser = codex.CodexTurnParser(turn_id, orchestrator_thread(messages))
+    parser.track_workers(SAME_AS_CHAT)
+    return parser
+
+
+def feed(parser: codex.CodexTurnParser, messages: list[dict]) -> list[tuple[dict, tuple[str, str]]]:
+    """Hand recorded notifications to a parser.
+
+    Returns each turn that it hands over to interrupt, with the notification after which it did.
+    """
+    handed_over = []
+    for message in messages:
+        if 'method' not in message:
+            continue
+        parser.handle(message)
+        for interrupt in parser.take_interrupts():
+            handed_over.append((message, interrupt))
+    return handed_over
+
+
+async def until(condition) -> None:
+    """Let the other tasks run until ``condition()`` holds."""
+    while not condition():
+        await asyncio.sleep(0)
 
 
 class FakeMachine:
@@ -782,13 +881,22 @@ class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):
         messages = recorded('codex-p.jsonl')
         primes = recorded_workers(messages)['/root/primes']
         primes_end = turn_completion(messages, primes)
-        # The primes worker's turn never ends here.
+        # The primes worker's turn never ends here, unless Buddy interrupts it.
         never_ends = [message for message in messages if message is not primes_end]
+        process = InterruptibleProcess(never_ends)
+        turn = ultra_turn(ReplayMachine(process), options=SAME_AS_CHAT, effort=None)
         with patch.object(codex, 'ULTRA_TIME_LIMIT', 0.2):
             with self.assertLogs(codex.log, level='WARNING'):
-                events = await self.replay(never_ends)
+                events = await collect(self.provider.run_turn(turn))
 
         self.assertEqual(failures(events), [codex.ULTRA_TIME_LIMIT_MESSAGE])
+        # Codex doesn't stop workers with the reply, so Buddy interrupted the
+        # primes worker's turn, and the list shows it stopped before the reply ends.
+        primes_turn = turn_start(messages, primes)['params']['turn']['id']
+        self.assertEqual(process.sent('turn/interrupt'), [{'threadId': primes, 'turnId': primes_turn}])
+        self.assertEqual(states(events, primes), [WORKER_RUNNING, WORKER_STOPPED])
+        self.assertLess(first_update_index(events, primes, WORKER_STOPPED), events.index(usages(events)[0]))
+        self.assertIsInstance(events[-1], TurnFailed)
         # The orchestrator's reply is all there, with its usage, but its thread isn't kept.
         self.assertTrue(reply(events).endswith(final_answer(messages, orchestrator_thread(messages))))
         self.assertEqual(len(usages(events)), 1)
@@ -907,6 +1015,258 @@ class UltraDepthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(process.sent('turn/interrupt'), [])
         self.assertEqual(states(events, self.level3), [WORKER_STOPPED])
         self.assertEqual(failures(events), [])
+
+
+class UltraStopTests(unittest.IsolatedAsyncioTestCase):
+    """Stopping one worker of a live Ultra turn, and stopping the whole turn.
+
+    Codex doesn't stop workers with their orchestrator: in
+    codex-stop-children.jsonl the workers wrote on after the orchestrator's
+    turn was interrupted, until each one was interrupted on its own thread.
+    """
+
+    def setUp(self):
+        self.provider = codex.CodexProvider()
+        # Ends a replayed app-server, and so its reader.
+        self.addCleanup(self.provider.stop)
+        # A turn held open by mistake then fails within seconds instead of hours.
+        time_limit = patch.object(codex, 'ULTRA_TIME_LIMIT', 5)
+        time_limit.start()
+        self.addCleanup(time_limit.stop)
+        self.messages = recorded('codex-stop-children.jsonl')
+        self.orchestrator = orchestrator_thread(self.messages)
+        workers = recorded_workers(self.messages)
+        self.rivers = workers['/root/rivers_essay']
+        self.mountains = workers['/root/mountains_essay']
+
+    def interrupt_of(self, thread_id: str) -> dict:
+        """The turn/interrupt that stops a thread's recorded turn."""
+        turn_id = turn_start(self.messages, thread_id)['params']['turn']['id']
+        return {'threadId': thread_id, 'turnId': turn_id}
+
+    def without_worker_ends(self) -> list[dict]:
+        """The recording without the workers' turn/completed, so that they write on."""
+        workers = (self.rivers, self.mountains)
+        return [
+            message
+            for message in self.messages
+            if message.get('method') != 'turn/completed' or thread_of(message) not in workers
+        ]
+
+    async def start(self, process: ReplayProcess):
+        """Run an Ultra turn in a task, until Buddy has handled all that the replayed app-server wrote.
+
+        Returns the turn, the task, and the list that the turn's events are added to as they come.
+        """
+        turn = ultra_turn(ReplayMachine(process), options=SAME_AS_CHAT, effort=None)
+        events = []
+
+        async def run():
+            async for event in self.provider.run_turn(turn):
+                events.append(event)
+
+        task = asyncio.create_task(run())
+        self.addAsyncCleanup(self.finish, task)
+        await self.eventually(lambda: self.handled(process))
+        return turn, task, events
+
+    def handled(self, process: ReplayProcess) -> bool:
+        """Whether Buddy has read and handled all that the replayed app-server wrote once the turn started."""
+        server = self.provider._servers.get(ReplayMachine.id)
+        if server is None or not process.sent('turn/start'):
+            return False
+        if not process.drained():
+            return False
+        return all(queue.empty() for queue in server._thread_queues.values())
+
+    async def eventually(self, condition) -> None:
+        await asyncio.wait_for(until(condition), 5)
+
+    async def finish(self, task: asyncio.Task):
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def stop_reply(self, task: asyncio.Task):
+        """Stop the reply as Stop does: cancel it and wait until it has ended."""
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5)
+
+    def unloaded_threads(self, process: ReplayProcess) -> list[str]:
+        return [params['threadId'] for params in process.sent('thread/unsubscribe')]
+
+    def test_a_turn_that_buddy_interrupts_ends_as_the_recorded_ones_did(self):
+        recorded_end = turn_completion(self.messages, self.rivers)
+        turn = dict(recorded_end['params']['turn'])
+        for timing in ('startedAt', 'completedAt', 'durationMs'):
+            del turn[timing]
+        self.assertEqual(
+            {'method': recorded_end['method'], 'params': {**recorded_end['params'], 'turn': turn}},
+            interrupted_completion(self.rivers, turn['id']),
+        )
+
+    async def test_stopping_one_worker_interrupts_its_turn_on_its_own_thread(self):
+        # The orchestrator's turn has ended, and here each worker writes on until Buddy interrupts it.
+        process = InterruptibleProcess(self.messages, waiting=[self.rivers, self.mountains])
+        turn, task, events = await self.start(process)
+        latest = latest_workers(events)
+        self.assertEqual([latest[self.rivers].state, latest[self.mountains].state], [WORKER_RUNNING, WORKER_RUNNING])
+
+        self.assertTrue(await self.provider.stop_worker(turn, self.rivers))
+        await self.eventually(lambda: latest_workers(events)[self.rivers].state == WORKER_STOPPED)
+
+        self.assertEqual(process.sent('turn/interrupt'), [self.interrupt_of(self.rivers)])
+        self.assertEqual(latest_workers(events)[self.mountains].state, WORKER_RUNNING)
+        self.assertFalse(task.done())
+        # Once Codex has reported it stopped, it can't be stopped again.
+        self.assertFalse(await self.provider.stop_worker(turn, self.rivers))
+
+        self.assertTrue(await self.provider.stop_worker(turn, self.mountains))
+        # Then no worker is left, so the turn is over.
+        await asyncio.wait_for(task, 5)
+        interrupts = [self.interrupt_of(self.rivers), self.interrupt_of(self.mountains)]
+        self.assertEqual(process.sent('turn/interrupt'), interrupts)
+        self.assertEqual(states(events, self.mountains), [WORKER_RUNNING, WORKER_STOPPED])
+        # The reply failed as the orchestrator's interrupted turn did.
+        self.assertEqual(failures(events), ['The reply was stopped.'])
+        self.assertFalse(await self.provider.stop_worker(turn, self.mountains))
+        # A worker's interrupt leaves its thread loaded; only the orchestrator's thread is unloaded.
+        await asyncio.sleep(0)
+        self.assertEqual(self.unloaded_threads(process), [self.orchestrator])
+
+    async def test_only_a_running_worker_of_a_live_turn_can_be_stopped(self):
+        messages = recorded('codex-p.jsonl')
+        workers = recorded_workers(messages)
+        multiply = workers['/root/multiply']
+        primes = workers['/root/primes']
+        # Here the recording stops after the multiply worker has finished, while the primes worker runs.
+        primes_reported_done = completion_reports(messages, primes)[0]
+        process = InterruptibleProcess(messages[: messages.index(primes_reported_done)])
+        turn, _, events = await self.start(process)
+        latest = latest_workers(events)
+        self.assertEqual([latest[multiply].state, latest[primes].state], [WORKER_DONE, WORKER_RUNNING])
+
+        self.assertFalse(await self.provider.stop_worker(turn, multiply))
+        self.assertFalse(await self.provider.stop_worker(turn, 'no-such-worker'))
+        # The orchestrator is not one of its own workers.
+        self.assertFalse(await self.provider.stop_worker(turn, orchestrator_thread(messages)))
+        # The turn is found by the very request that was passed to run_turn, not an equal copy.
+        self.assertFalse(await self.provider.stop_worker(dataclasses.replace(turn), primes))
+        # Nor once its app-server has exited, which ends its workers with it.
+        process.returncode = 0
+        self.assertFalse(await self.provider.stop_worker(turn, primes))
+        await asyncio.sleep(0)
+        self.assertEqual(process.sent('turn/interrupt'), [])
+
+    async def test_stopping_the_reply_interrupts_the_orchestrator_and_then_every_running_worker(self):
+        # Here the orchestrator still waits for both workers when the person stops the reply.
+        waiting = [self.orchestrator, self.rivers, self.mountains]
+        process = InterruptibleProcess(self.messages, waiting=waiting)
+        turn, task, events = await self.start(process)
+        self.assertEqual(len(latest_workers(events)), 2)
+
+        await self.stop_reply(task)
+
+        # The orchestrator's first, so that it starts no more workers, then each worker's on its own thread.
+        self.assertEqual(process.sent('turn/interrupt'), [self.interrupt_of(thread) for thread in waiting])
+        # Buddy read until Codex reported all three turns ended, so it interrupted none of them twice.
+        self.assertTrue(process.drained())
+        await asyncio.sleep(0)
+        self.assertEqual(self.unloaded_threads(process), [self.orchestrator])
+        self.assertFalse(await self.provider.stop_worker(turn, self.rivers))
+        server = self.provider._servers[ReplayMachine.id]
+        self.assertEqual(server._thread_queues, {})
+        self.assertEqual(server._worker_routes, {})
+
+    async def test_the_reply_ends_soon_when_codex_does_not_report_its_workers_stopped(self):
+        # Here Codex only answers the interrupts.
+        process = ReplayProcess(self.without_worker_ends())
+        _, task, _ = await self.start(process)
+
+        with patch.object(codex, 'STOP_WORKERS_GRACE', 0.05):
+            with self.assertLogs(codex.log, level='WARNING'):
+                await self.stop_reply(task)
+
+        # The orchestrator's turn had ended, so only the workers' turns were interrupted.
+        interrupts = [self.interrupt_of(self.rivers), self.interrupt_of(self.mountains)]
+        self.assertEqual(process.sent('turn/interrupt'), interrupts)
+        self.assertEqual(self.provider._servers[ReplayMachine.id]._thread_queues, {})
+
+    async def test_stopping_again_while_workers_stop_ends_the_reply_at_once(self):
+        process = ReplayProcess(self.without_worker_ends())
+        _, task, _ = await self.start(process)
+
+        with patch.object(codex, 'STOP_WORKERS_GRACE', 60):
+            task.cancel()
+            # Buddy waits for Codex to report the workers stopped, and the person presses Stop again.
+            await self.eventually(lambda: len(process.sent('turn/interrupt')) == 2)
+            await self.stop_reply(task)
+
+        server = self.provider._servers[ReplayMachine.id]
+        self.assertEqual(server._thread_queues, {})
+        self.assertEqual(server._worker_routes, {})
+        await asyncio.sleep(0)
+        self.assertEqual(self.unloaded_threads(process), [self.orchestrator])
+
+
+class WorkerInterruptTests(unittest.TestCase):
+    """Which workers' turns the parser hands over to interrupt when Buddy stops workers."""
+
+    def test_a_worker_stopped_before_its_thread_names_its_turn_is_interrupted_once_it_does(self):
+        messages = recorded('codex-stop-children.jsonl')
+        mountains = recorded_workers(messages)['/root/mountains_essay']
+        mountains_start = turn_start(messages, mountains)
+        parser = ultra_parser(messages)
+        # The orchestrator has reported the worker, but its own thread hasn't named its turn yet.
+        reported = messages.index(start_report(messages, mountains)) + 1
+        self.assertLess(reported, messages.index(mountains_start))
+        self.assertEqual(feed(parser, messages[:reported]), [])
+
+        self.assertTrue(parser.workers.interrupt(mountains))
+        self.assertEqual(parser.take_interrupts(), [])
+
+        # The turn is handed over the moment the worker's thread names it, and only once.
+        mountains_turn = mountains_start['params']['turn']['id']
+        self.assertEqual(feed(parser, messages[reported:]), [(mountains_start, (mountains, mountains_turn))])
+
+    def test_stopping_the_whole_turn_interrupts_every_turn_that_starts_from_then_on(self):
+        messages = recorded('codex-stop-children.jsonl')
+        workers = recorded_workers(messages)
+        rivers = workers['/root/rivers_essay']
+        mountains = workers['/root/mountains_essay']
+        rivers_start = turn_start(messages, rivers)
+        mountains_start = turn_start(messages, mountains)
+        parser = ultra_parser(messages)
+        # The rivers worker's turn has started, and the mountains worker isn't reported yet.
+        cut = messages.index(rivers_start) + 1
+        self.assertLess(cut, messages.index(start_report(messages, mountains)))
+        feed(parser, messages[:cut])
+
+        parser.workers.interrupt_all()
+        self.assertEqual(parser.take_interrupts(), [(rivers, rivers_start['params']['turn']['id'])])
+
+        # The mountains worker starts after that, and its turn is handed over the moment its thread names it.
+        mountains_turn = mountains_start['params']['turn']['id']
+        self.assertEqual(feed(parser, messages[cut:]), [(mountains_start, (mountains, mountains_turn))])
+
+    def test_stopping_a_worker_stops_the_sub_workers_it_runs(self):
+        messages = recorded('codex-depth.jsonl')
+        workers = recorded_workers(messages)
+        level1 = workers['/root/level1']
+        level2 = workers['/root/level1/level2']
+        level1_turn = turn_start(messages, level1)['params']['turn']['id']
+        level2_start = turn_start(messages, level2)
+        parser = ultra_parser(messages)
+        # Both have started their turns, and the sub-worker hasn't started a worker of its own yet.
+        feed(parser, messages[: messages.index(level2_start) + 1])
+
+        self.assertTrue(parser.workers.interrupt(level1))
+        # Codex doesn't stop a sub-worker with the worker that started it.
+        level2_turn = level2_start['params']['turn']['id']
+        self.assertEqual(parser.take_interrupts(), [(level1, level1_turn), (level2, level2_turn)])
+        # Each turn is handed over once, however often Buddy is asked.
+        self.assertTrue(parser.workers.interrupt(level2))
+        self.assertEqual(parser.take_interrupts(), [])
 
 
 if __name__ == '__main__':
