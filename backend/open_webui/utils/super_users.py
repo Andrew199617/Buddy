@@ -36,6 +36,12 @@ async def _config():
     return Config
 
 
+def _admin_chat_access() -> bool:
+    from open_webui.config import ENABLE_ADMIN_CHAT_ACCESS
+
+    return bool(ENABLE_ADMIN_CHAT_ACCESS)
+
+
 async def server_owner_id() -> str | None:
     from open_webui.utils.subscriptions.service import server_owner_id as owner_id
 
@@ -56,6 +62,15 @@ async def is_super_user(user) -> bool:
     if user.id == await server_owner_id():
         return True
     return user.id in await named_super_user_ids()
+
+
+async def may_change_others_chat(user) -> bool:
+    """Whether this person may write into someone else's chat: messages, turns or tool answers.
+
+    A chat's history is what its owner's next turn sends to their plan, which may act on
+    their files, so only super users may, and only while administrators may see chats.
+    """
+    return _admin_chat_access() and await is_super_user(user)
 
 
 async def may_change_account(actor, target) -> bool:

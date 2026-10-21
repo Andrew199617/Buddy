@@ -40,6 +40,7 @@ def load_module(config):
 
     module._config = fake_config
     module.server_owner_id = fake_owner
+    module._admin_chat_access = lambda: True
     return module
 
 
@@ -107,6 +108,20 @@ class SuperUserTests(unittest.IsolatedAsyncioTestCase):
         self.config.values.clear()
         await self.module.forget_super_user(MEMBER.id)
         self.assertEqual(self.config.values, {})
+
+    async def test_only_a_super_user_writes_into_someone_elses_chat(self):
+        await self.module.set_super_user(OWNER, ADMIN, True)
+        other_admin = types.SimpleNamespace(id='admin-3', role='admin')
+        self.assertTrue(await self.module.may_change_others_chat(ADMIN))
+        self.assertTrue(await self.module.may_change_others_chat(OWNER))
+        self.assertFalse(await self.module.may_change_others_chat(other_admin))
+        self.assertFalse(await self.module.may_change_others_chat(MEMBER))
+
+    async def test_nobody_does_while_admins_may_not_see_chats(self):
+        await self.module.set_super_user(OWNER, ADMIN, True)
+        self.module._admin_chat_access = lambda: False
+        self.assertFalse(await self.module.may_change_others_chat(ADMIN))
+        self.assertFalse(await self.module.may_change_others_chat(OWNER))
 
     def test_config_files_never_carry_the_owner_or_super_users(self):
         imported = {
