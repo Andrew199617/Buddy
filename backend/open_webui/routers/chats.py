@@ -41,6 +41,7 @@ from open_webui.utils.chat_fork import build_fork_history
 from open_webui.utils.context_compaction import compact_chat_branch, get_chat_context_usage
 from open_webui.utils.misc import get_message_list
 from open_webui.utils.models import get_all_models
+from open_webui.utils.super_users import is_super_user
 from open_webui.utils.subscriptions.service import (
     API_KEY_TARGET_MESSAGE,
     bind_chat_target,
@@ -1457,6 +1458,15 @@ class MessageForm(BaseModel):
     content: str
 
 
+async def _may_change_others_chat(user) -> bool:
+    """Whether this person may edit or delete messages in someone else's chat.
+
+    A chat's history is what its owner's next turn sends to their plan, which may act on
+    their files, so only super users may, and only while administrators may see chats.
+    """
+    return ENABLE_ADMIN_CHAT_ACCESS and await is_super_user(user)
+
+
 @router.post('/{id}/messages/{message_id}', response_model=ChatResponse | None)
 async def update_chat_message_by_id(
     request: Request,
@@ -1474,7 +1484,7 @@ async def update_chat_message_by_id(
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
         )
 
-    if chat.user_id != user.id and user.role != 'admin':
+    if chat.user_id != user.id and not await _may_change_others_chat(user):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
@@ -1535,7 +1545,7 @@ async def delete_chat_message_by_id(
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
         )
 
-    if chat.user_id != user.id and user.role != 'admin':
+    if chat.user_id != user.id and not await _may_change_others_chat(user):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
@@ -1583,7 +1593,8 @@ async def send_chat_message_event_by_id(
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
         )
 
-    if chat.user_id != user.id and user.role != 'admin':
+    # Events act in the owner's open page (running code, answering confirmations), so only the owner sends them.
+    if chat.user_id != user.id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
