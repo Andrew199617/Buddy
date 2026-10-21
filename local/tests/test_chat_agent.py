@@ -1,6 +1,7 @@
 """A chat's custom agent and Ultra setting stay with the person who chose them.
 
-A share link lists the chat's Ultra workers without what they were doing or found.
+A share link, and anyone but the owner who reads the chat, lists its Ultra workers
+without what they were doing or found.
 
 Run from the repository root:
     python -m unittest discover -s local/tests -p test_chat_agent.py -v
@@ -243,7 +244,7 @@ def load_chat_response_for():
     selected = [node for node in parsed.body if getattr(node, 'name', None) == '_chat_response_for']
     if len(selected) != 1:
         raise AssertionError(f'_chat_response_for is missing from {router}')
-    namespace = {'ChatResponse': ChatResponse, 'without_agent': chat_agent.without_agent}
+    namespace = {'ChatResponse': ChatResponse, 'contents_for_share': chat_agent.contents_for_share}
     exec(compile(ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[])), str(router), 'exec'), namespace)
     return namespace['_chat_response_for']
 
@@ -263,6 +264,22 @@ class ChatResponseForTests(unittest.TestCase):
         self.assertNotIn('agent', response.chat)
         self.assertEqual(response.chat['title'], 'Plan')
         self.assertEqual(CHAT['agent'], AGENT)
+
+    def test_the_owner_sees_what_their_workers_were_doing_and_found(self):
+        owner = types.SimpleNamespace(id='owner')
+        chat = types.SimpleNamespace(id='chat-1', user_id='owner', chat=CHAT_WITH_WORKERS)
+        response = self.response_for(owner, chat)
+        self.assertEqual(response.chat['history']['messages']['reply']['workers'], REPLY['workers'])
+
+    def test_someone_the_chat_is_shared_with_reads_its_workers_as_the_share_shows_them(self):
+        # A share grant also lets them read the chat itself, by the id its share carries.
+        reader = types.SimpleNamespace(id='reader', role='user')
+        chat = types.SimpleNamespace(id='chat-1', user_id='owner', chat=CHAT_WITH_WORKERS)
+        response = self.response_for(reader, chat)
+        self.assertEqual(response.chat['history']['messages']['reply']['workers'], SHARED_WORKERS)
+        self.assertEqual(response.chat['messages'][1]['workers'], SHARED_WORKERS)
+        self.assertNotIn('agent', response.chat)
+        self.assertEqual(CHAT_WITH_WORKERS['history']['messages']['reply']['workers'], REPLY['workers'])
 
 
 class SavedChat:

@@ -10,9 +10,9 @@ agent stays with the person who chose it:
   and its Ultra setting ('ultra'), since its new owner never chose to spend their plan
   on workers;
 - share links and other people reading the chat never see it, since the instructions
-  come from the owner's private project files. A share link also lists each reply's
-  Ultra workers without what they were doing or what they found, which can name
-  private project details too.
+  come from the owner's private project files. They also list each reply's Ultra workers
+  without what they were doing or what they found, which can name private project
+  details too.
 """
 
 AGENT_KEY = 'agent'
@@ -71,10 +71,11 @@ def contents_for_owner(chat: dict, source_owner_id: str | None, owner_id: str) -
 
 
 def contents_for_share(chat):
-    """The chat's contents for a share link; anything that isn't a dict is returned as is.
+    """The chat's contents for a share link, or for anyone but its owner who reads the chat.
 
-    The link leaves out the custom agent, and each reply's Ultra workers keep only
+    They leave out the custom agent, and each reply's Ultra workers keep only
     SHARED_WORKER_FIELDS, in the history and in the list of the shown branch.
+    Anything that isn't a dict is returned as is.
     """
     if not isinstance(chat, dict):
         return chat
