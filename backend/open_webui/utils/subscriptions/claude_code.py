@@ -660,6 +660,18 @@ class ClaudeCodeProvider:
             args.extend(['--setting-sources', 'project,local'])
         return args
 
+    def _turn_env(self, turn: TurnRequest) -> dict[str, str]:
+        """Environment variables for this turn's ``claude -p``, on top of the computer's own."""
+        env = {}
+        if not turn.is_task and turn.ultra is None:
+            # A normal turn is read only up to its first result, and then the
+            # CLI is ended. An agent left running in the background would be
+            # stopped without anyone seeing it, so agents stay in the
+            # foreground. Ultra turns allow background workers, because they
+            # are read and listed until every worker ends.
+            env['CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'] = '1'
+        return env
+
     def _instructions(self, turn: TurnRequest) -> str:
         system = turn.conversation.system
         if turn.access == ACCESS_CHAT:
@@ -684,6 +696,7 @@ class ClaudeCodeProvider:
         process = await turn.machine.start_process(
             self._turn_args(cli, turn, resume_id, temp_file_arg(INSTRUCTIONS_FILE)),
             turn.cwd,
+            extra_env=self._turn_env(turn),
             temp_files={INSTRUCTIONS_FILE: self._instructions(turn)},
         )
         # Stays False when the caller stops the reply (Stop, a closed chat) or

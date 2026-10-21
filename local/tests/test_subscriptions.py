@@ -351,6 +351,85 @@ class ClaudeStreamTests(unittest.TestCase):
             resume_index = resume_args.index('--resume')
             self.assertEqual(resume_args[resume_index + 1 : resume_index + 3], ['session-1', '--fork-session'])
 
+    def test_only_ultra_turns_may_leave_agents_running_in_the_background(self):
+        """A normal turn ends the CLI at its first result, so a background agent would be stopped unseen."""
+        with tempfile.TemporaryDirectory() as directory:
+            provider = claude_code.ClaudeCodeProvider(Path(directory))
+            conversation = parse_messages([{'role': 'user', 'content': 'Fix the tests'}])
+
+            def turn_env(access, **turn_options):
+                turn = TurnRequest(
+                    model='opus',
+                    conversation=conversation,
+                    settings=ProviderSettings(enable=True, access=access),
+                    cwd=directory,
+                    **turn_options,
+                )
+                return provider._turn_env(turn)
+
+            for access in ('chat', 'read', 'full'):
+                with self.subTest(access=access):
+                    self.assertEqual(turn_env(access), {'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS': '1'})
+                    # Ultra turns read on past the first result and list every worker.
+                    ultra_env = turn_env(access, ultra_options=UltraOptions())
+                    self.assertNotIn('CLAUDE_CODE_DISABLE_BACKGROUND_TASKS', ultra_env)
+
+            # Titles and follow-ups run with no tools, so they cannot start agents.
+            self.assertEqual(turn_env('full', is_task=True), {})
+            self.assertEqual(turn_env('full', is_task=True, ultra_options=UltraOptions()), {})
+
+    def test_the_turn_environment_reaches_the_cli(self):
+        started_env = []
+
+        class AnsweredProcess:
+            def __init__(self):
+                self._lines = [
+                    json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'Done.'}]}}),
+                    json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'session_id': 'new-id'}),
+                ]
+
+            async def write(self, text):
+                pass
+
+            async def read_line(self):
+                if self._lines:
+                    return self._lines.pop(0)
+                return None
+
+            async def finish_output(self, timeout):
+                return None
+
+            def stderr_text(self):
+                return ''
+
+            def close_stdin(self):
+                pass
+
+            def kill(self):
+                pass
+
+        class FakeMachine:
+            id = 'fake'
+            name = 'Fake machine'
+
+            async def find_tool(self, tool, configured_path=''):
+                return 'claude'
+
+            async def start_process(self, args, cwd, extra_env=None, temp_files=None):
+                started_env.append(extra_env)
+                return AnsweredProcess()
+
+        async def run():
+            with tempfile.TemporaryDirectory() as directory:
+                provider = claude_code.ClaudeCodeProvider(Path(directory))
+                conversation = parse_messages([{'role': 'user', 'content': 'Run the tests'}])
+                settings = ProviderSettings(enable=True, access='full')
+                turn = TurnRequest('opus', conversation, settings, directory, machine=FakeMachine())
+                return await collect(provider.run_turn(turn))
+
+        self.assertEqual(asyncio.run(run()), [TextDelta('Done.')])
+        self.assertEqual(started_env, [{'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS': '1'}])
+
     def test_rebuilt_session_resends_earlier_images(self):
         history = [ChatTurn('user', 'Remember this chart', [PNG_DATA_URL]), ChatTurn('assistant', 'Got it.')]
         message = claude_code.transcript_message(history, ChatTurn('user', 'What did the chart show?'))
