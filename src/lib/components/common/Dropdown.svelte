@@ -40,10 +40,10 @@
 	export let composerMenu = 'dropdown';
 	/**
 	 * For a phone composer menu (visualViewportAware with preserveComposerFocus): the
-	 * least room, in pixels, the menu needs between the chat's header and the
-	 * composer. The menu then stays below the header, and with less room, as in a
-	 * short landscape window with the keyboard up, it covers the composer instead.
-	 * 0 keeps the usual placement.
+	 * least room, in pixels, the menu needs above the composer, up to the top of the
+	 * chat's header. The menu then sits above the composer, over the header when it
+	 * needs that room, and with less room, as in a short landscape window with the
+	 * keyboard up, it covers the composer instead. 0 keeps the usual placement.
 	 */
 	export let minRoomAboveComposer = 0;
 	/** Plus and Tools use an adaptive, frosted menu on mobile. */
@@ -282,17 +282,20 @@
 		return triggerEl.closest<HTMLElement>('.buddy-composer');
 	}
 
-	/** The top of the visible area: below the chat's header, which already clears the notch. */
+	/**
+	 * The top of the visible area: the top of the chat's header, which already clears
+	 * the notch. A menu may cover the header, whose buttons wait until it closes.
+	 */
 	function visibleTopAbove(composer: HTMLElement, viewportTop: number): number {
 		const header = composer.closest('.buddy-chat')?.querySelector('.buddy-chat-header');
 		if (!header) return viewportTop;
-		return Math.max(viewportTop, header.getBoundingClientRect().bottom);
+		return Math.max(viewportTop, header.getBoundingClientRect().top);
 	}
 
 	/**
-	 * Above the composer and below the chat's header, or over the composer when too
-	 * little room is left above it (see getComposerMenuRoom). As wide as the
-	 * composer, like its Model and Thinking pickers.
+	 * Above the composer, over the chat's header when it needs that room, or over the
+	 * composer when too little room is left above it (see getComposerMenuRoom). As
+	 * wide as the composer, like its Model and Thinking pickers.
 	 */
 	function positionContentByComposer(composer: HTMLElement) {
 		if (!contentEl) return;

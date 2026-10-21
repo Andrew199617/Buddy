@@ -245,7 +245,7 @@ test('zero-size viewport and menu fixtures produce finite nonnegative values', (
 // Ultra's menu needs this much room above the composer before it covers the composer.
 const smallestRoom = 132;
 
-test('a composer menu opens between the chat header and the composer when it fits', () => {
+test('a composer menu opens above the composer, up to the top of the chat header', () => {
 	const space = { visibleTop: 56, visibleBottom: 464, composerTop: 330, composerBottom: 450 };
 	const room = getComposerMenuRoom(space, smallestRoom);
 	assert.deepEqual(room, { coversComposer: false, maxHeight: 260 });
@@ -263,7 +263,7 @@ test('a composer menu covers the composer only below its smallest room', () => {
 	assert.equal(getComposerMenuRoom(belowMinimum, smallestRoom).coversComposer, true);
 });
 
-test('a short landscape keyboard puts the composer menu over the composer below the header', () => {
+test('a short landscape keyboard puts the composer menu over the composer', () => {
 	// 844x390 with a 240px visual viewport: only 33px is left above the composer.
 	const space = { visibleTop: 48, visibleBottom: 240, composerTop: 95, composerBottom: 229 };
 	const room = getComposerMenuRoom(space, smallestRoom);

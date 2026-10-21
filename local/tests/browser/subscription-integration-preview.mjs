@@ -3725,6 +3725,46 @@ async function assertMenuInView(menu) {
 	assert.ok(metrics.firstRowReceivesTap, 'The menu’s first row takes taps');
 }
 
+/** Waits until the open menu stops moving: the dropdown places it again a frame after it changes. */
+async function waitForMenuToSettle(menu) {
+	await menu.evaluate(async (element) => {
+		let last = '';
+		let steadyFrames = 0;
+		while (steadyFrames < 2) {
+			await new Promise((resolve) => requestAnimationFrame(resolve));
+			const rect = element.getBoundingClientRect();
+			const now = [rect.top, rect.bottom, rect.left, rect.right].join();
+			if (now === last) {
+				steadyFrames += 1;
+			} else {
+				steadyFrames = 0;
+			}
+			last = now;
+		}
+	});
+}
+
+/**
+ * The whole phone menu shows at once, its last line included, and ends above the
+ * composer: it may rise over the chat's header for the room.
+ */
+async function assertMenuShowsWhole(menu) {
+	await waitForMenuToSettle(menu);
+	const metrics = await menu.locator('.buddy-ultra-menu').evaluate((element) => {
+		const composer = document.querySelector('.buddy-composer').getBoundingClientRect();
+		return {
+			scrolls: element.scrollHeight > element.clientHeight + 1,
+			bottom: element.getBoundingClientRect().bottom,
+			composerTop: composer.top
+		};
+	});
+	assert.equal(metrics.scrolls, false, 'The phone menu shows whole, without scrolling');
+	assert.ok(
+		metrics.bottom <= metrics.composerTop,
+		'The phone menu ends above the composer: ' + JSON.stringify(metrics)
+	);
+}
+
 /**
  * Opens the composer as a person would, by its draft. Closing the model picker from its
  * own button leaves an empty desktop composer at rest.
@@ -4053,6 +4093,7 @@ async function checkUltraMenu(page, profile) {
 	);
 	if (profile.mobile) {
 		await assertMenuInView(menu);
+		await assertMenuShowsWhole(menu);
 		await assertTouchRows(menu);
 		assert.equal(await draftHasFocus(page), true, 'The open menu keeps the keyboard');
 		await captureScreenshot(page, 'phone-ultra-menu');
@@ -4314,7 +4355,10 @@ async function checkUltraOffMessage(session, profile, fixtures) {
 	session.completions.splice(0);
 }
 
-/** A phone on its side with the keyboard up: the menu fits, scrolls, and keeps the draft. */
+/**
+ * A phone on its side with the keyboard up: the menu fits, with less room the rest
+ * of it is a swipe away, and the draft keeps the keyboard throughout.
+ */
 async function checkLandscapeUltraMenu(page) {
 	const phone = { mobile: true };
 	const input = page.locator('#chat-input');
@@ -4337,10 +4381,17 @@ async function checkLandscapeUltraMenu(page) {
 	await assertMenuInView(menu);
 	await assertTouchRows(menu);
 	assert.equal(await draftHasFocus(page), true, 'The landscape menu keeps the keyboard');
+	const scroller = menu.locator('.buddy-ultra-menu');
+	const fitsWhole = await scroller.evaluate(
+		(element) => element.scrollHeight <= element.clientHeight + 1
+	);
+	assert.ok(fitsWhole, 'Over the header, the whole menu fits above the keyboard');
 	await captureScreenshot(page, 'phone-ultra-landscape-keyboard');
 
-	// The rest of the menu is a swipe away, never behind the keyboard.
-	const scroller = menu.locator('.buddy-ultra-menu');
+	// A taller keyboard leaves less room: the rest of the menu is a swipe away, never
+	// behind the keyboard.
+	await setVisibleHeight(page, 180);
+	await assertMenuInView(menu);
 	const scrollable = await scroller.evaluate(
 		(element) => element.scrollHeight > element.clientHeight + 1
 	);
@@ -4369,6 +4420,7 @@ async function checkLandscapeUltraMenu(page) {
 	assert.equal(await draftHasFocus(page), true, 'Swiping the menu keeps the keyboard');
 	await closeUltraMenu(page, phone);
 	assert.equal((await input.innerText()).trim(), 'Keep this landscape draft');
+	await setVisibleHeight(page, null);
 }
 
 async function ultraCase(browser, profile) {

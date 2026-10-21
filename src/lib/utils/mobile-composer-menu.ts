@@ -73,7 +73,7 @@ export function getMobileComposerMenuPosition(
 
 /** The visible area around a phone composer, in client pixels. */
 export type ComposerSpace = {
-	// The top of the visible area: the chat header's bottom edge, or the visual viewport's top.
+	// The top of the visible area: the chat header's top edge, or the visual viewport's top.
 	visibleTop: number;
 	// The bottom of the visible area: the visual viewport's bottom edge, above the keyboard.
 	visibleBottom: number;
@@ -92,11 +92,11 @@ export type ComposerMenuRoom = {
 const composerGap = 6;
 
 /**
- * The room for a menu opened from a phone composer: above the composer and below
- * the chat's header. When that room is shorter than minimumHeight, as in a short
- * landscape window with the keyboard up, the menu covers the composer instead,
- * from just below the header down to the composer's bottom edge, so its rows stay
- * reachable.
+ * The room for a menu opened from a phone composer: above the composer, up to the
+ * top of the chat's header, which the menu may cover. When that room is shorter
+ * than minimumHeight, as in a short landscape window with the keyboard up, the
+ * menu covers the composer instead, from the top of the visible area down to the
+ * composer's bottom edge, so its rows stay reachable.
  */
 export function getComposerMenuRoom(space: ComposerSpace, minimumHeight: number): ComposerMenuRoom {
 	const highestTop = space.visibleTop + viewportGutter;
@@ -111,8 +111,8 @@ export function getComposerMenuRoom(space: ComposerSpace, minimumHeight: number)
 
 /**
  * The top edge of a menu in the room getComposerMenuRoom gave it, once the menu
- * shows at menuHeight: just above the composer, or just below the header when it
- * covers the composer.
+ * shows at menuHeight: just above the composer, or at the top of the visible area
+ * when it covers the composer.
  */
 export function getComposerMenuTop(
 	space: ComposerSpace,
