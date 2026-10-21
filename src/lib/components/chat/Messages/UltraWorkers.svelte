@@ -362,12 +362,14 @@
 		{/if}
 	</div>
 	{#if !touchLayout && expanded && details !== null}
-		<p
+		<!-- A div: app.css shows paragraphs in list items inline, which would indent only the
+			report's first line. -->
+		<div
 			id={detailsId}
 			class="mb-1 ml-8 mr-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-gray-600 dark:text-gray-300"
 		>
 			{details}
-		</p>
+		</div>
 	{/if}
 {/snippet}
 
