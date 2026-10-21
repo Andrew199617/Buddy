@@ -14,10 +14,14 @@ initialize request that defined Buddy's worker types; the rest is the turn:
 
 The answers' account details were removed, and paths name the user "fixture".
 
-The recordings were made without CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, which
-Ultra turns set, so they lack the message that reports Claude Code's session
-idle. Tests that need it add SESSION_IDLE, in the shape of Claude Code
-2.1.295's session_state_changed message.
+- claude-background-idle.jsonl: recorded on 2026-10-21 with
+  CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, as Ultra turns run. Buddy stopped the
+  essay worker with stop_task after the second result; Claude Code confirmed it,
+  the orchestrator answered a third time, and only then reported its session idle.
+
+The other recordings were made without CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, so
+they lack the message that reports Claude Code's session idle. Tests that need it
+add SESSION_IDLE, shaped like the real one in claude-background-idle.jsonl.
 
 Run from the repository root:
     python -m unittest discover -s local/tests -p test_ultra_claude.py -v
@@ -835,6 +839,22 @@ class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             last_usage(events), TokenUsage(input_tokens=18670, output_tokens=714, cached_input_tokens=12629)
         )
+
+    async def test_the_recorded_idle_ends_a_turn_whose_worker_was_stopped(self):
+        # The whole stream as Claude Code wrote it: running, two results, the stop's
+        # confirmation, a third result, then idle. Nothing is added to it.
+        events, process, turn_output = await self.replay('claude-background-idle.jsonl', idle=False)
+        essay, math = system_messages(turn_output, 'task_started')
+        first, second, third = results(turn_output)
+        states = [message['state'] for message in system_messages(turn_output, 'session_state_changed')]
+        self.assertEqual(states, ['running', 'idle'])
+
+        self.assertEqual(reply(events), f"{first['result']}\n\n{second['result']}\n\n{third['result']}")
+        self.assertEqual(process.unread_lines(), 0)
+        self.assertEqual(failures(events), [])
+        self.assertTrue(process.killed)
+        self.assertEqual(latest_workers(events)[essay['task_id']].state, WORKER_STOPPED)
+        self.assertEqual(latest_workers(events)[math['task_id']].state, WORKER_DONE)
 
     async def test_a_report_that_arrives_while_the_orchestrator_writes_gets_a_turn_of_its_own(self):
         answer, turn_output = recorded_turn('claude-background.jsonl')
