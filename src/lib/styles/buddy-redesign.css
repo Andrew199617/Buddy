@@ -516,16 +516,9 @@
 		font-size: 16px;
 	}
 
-	/* Ultra's menu stays between the chat header and the composer, clear of the notch and home bar. */
-	[data-composer-menu='ultra'] .buddy-ultra-menu {
-		max-height: min(
-			var(--buddy-ultra-room, 100dvh),
-			calc(
-				100dvh - var(--buddy-safe-top, env(safe-area-inset-top, 0px)) -
-					var(--buddy-safe-bottom, env(safe-area-inset-bottom, 0px)) - 16px
-			)
-		);
-		overflow-y: auto;
+	/* Ultra's menu scrolls as one box. The dropdown keeps it below the chat header, which
+	   clears the notch, and above the composer, which clears the home bar and keyboard. */
+	[data-composer-menu='ultra'] {
 		overscroll-behavior: contain;
 	}
 }

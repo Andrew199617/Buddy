@@ -5,7 +5,7 @@
 	// with the chat and sends it with the next message. On phones and short windows
 	// each list opens in place with a Back header, so the menu stays short above the
 	// keyboard.
-	import { getContext, onDestroy, tick } from 'svelte';
+	import { getContext, tick } from 'svelte';
 
 	import type { SubscriptionAccess } from '$lib/apis/subscriptions';
 	import Dropdown from '$lib/components/common/Dropdown.svelte';
@@ -57,19 +57,14 @@
 
 	// Windows shorter than this show each list on its own view, as phones do.
 	const SHORT_WINDOW_HEIGHT = 640;
-	// The dropdown's gap above the composer and its padding at the screen's edge.
-	const COMPOSER_GAP = 12;
-	// Three rows: the menu stays usable even when the keyboard leaves less room.
+	// Three rows. With less room above the composer, as in a short landscape window
+	// with the keyboard up, the phone menu covers the composer instead.
 	const SMALLEST_ROOM = 132;
 
 	let show = false;
 	let view: MenuView = 'main';
 	let compact = false;
-	let triggerButton: HTMLButtonElement | null = null;
 	let menuElement: HTMLElement | null = null;
-	// On phones, the height between the chat's header and the composer, in pixels.
-	let room: number | null = null;
-	let roomFrame: number | undefined;
 
 	$: active = state.on && availability.available;
 	$: modelOptions = workerModelOptions($i18n, chatModel, models);
@@ -97,61 +92,12 @@
 		return height < SHORT_WINDOW_HEIGHT;
 	}
 
-	/**
-	 * The visible height above the composer and below the chat's header, which already
-	 * clears the status bar and the notch. The dropdown keeps the menu within the
-	 * visual viewport; this keeps it out from under the header too.
-	 */
-	function measureRoom() {
-		room = null;
-		if (!preserveComposerFocus || !triggerButton) return;
-		const composer = triggerButton.closest('.buddy-composer');
-		if (!composer) return;
-		let visibleTop = window.visualViewport?.offsetTop ?? 0;
-		const header = composer.closest('.buddy-chat')?.querySelector('.buddy-chat-header');
-		if (header) {
-			visibleTop = Math.max(visibleTop, header.getBoundingClientRect().bottom);
-		}
-		const space = composer.getBoundingClientRect().top - visibleTop - COMPOSER_GAP;
-		room = Math.max(SMALLEST_ROOM, Math.floor(space));
-	}
-
-	function scheduleRoom() {
-		if (roomFrame !== undefined) cancelAnimationFrame(roomFrame);
-		roomFrame = requestAnimationFrame(() => {
-			roomFrame = undefined;
-			measureRoom();
-		});
-	}
-
-	function followViewport(follow: boolean) {
-		const viewport = window.visualViewport;
-		if (!viewport) return;
-		if (follow) {
-			viewport.addEventListener('resize', scheduleRoom);
-			viewport.addEventListener('scroll', scheduleRoom);
-			return;
-		}
-		viewport.removeEventListener('resize', scheduleRoom);
-		viewport.removeEventListener('scroll', scheduleRoom);
-		if (roomFrame !== undefined) cancelAnimationFrame(roomFrame);
-		roomFrame = undefined;
-	}
-
-	function menuStyle(height: number | null): string {
-		if (height === null) return '';
-		return `--buddy-ultra-room: ${height}px;`;
-	}
-
 	function openChanged(open: boolean) {
-		followViewport(open);
 		if (open) {
 			view = 'main';
 			compact = listsOneAtATime();
-			measureRoom();
 			return;
 		}
-		room = null;
 		onClose();
 	}
 
@@ -185,8 +131,6 @@
 		onChange({ worker_effort: value });
 		if (compact) void showView('main');
 	}
-
-	onDestroy(() => followViewport(false));
 
 	let triggerClass = '';
 	$: if (active) {
@@ -245,11 +189,11 @@
 	{preserveComposerFocus}
 	composerMenu="ultra"
 	visualViewportAware={preserveComposerFocus}
+	minRoomAboveComposer={SMALLEST_ROOM}
 	onOpenChange={openChanged}
 >
 	<Tooltip content={triggerLabel} placement="top" touch={false}>
 		<button
-			bind:this={triggerButton}
 			type="button"
 			id="ultra-menu-button"
 			class="buddy-ultra-chip flex h-[1.875rem] shrink-0 items-center gap-1 rounded-full border px-2 text-[0.8125rem] outline-hidden transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-sky-500/60 {triggerClass}"
@@ -264,10 +208,7 @@
 	</Tooltip>
 
 	<div slot="content">
-		<DropdownMenu
-			className="buddy-ultra-menu w-72 max-w-[calc(100vw-2rem)]"
-			style={menuStyle(room)}
-		>
+		<DropdownMenu className="buddy-ultra-menu w-72 max-w-[calc(100vw-2rem)]">
 			<div bind:this={menuElement} class="flex flex-col">
 				{#if view === 'main'}
 					<button
