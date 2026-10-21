@@ -425,6 +425,126 @@ key to the browser. Changing a provider's machine clears its paths and access
 and disables it until you configure that machine. Removing a machine disables
 affected providers and never switches execution to This server.
 
+## Ultra
+
+**Ultra** hands a reply to workers on your plan. With it on, the Claude or
+ChatGPT plan model becomes an orchestrator: instead of doing the work itself,
+it plans it, starts workers, checks what they report and writes the reply. It
+works in stages:
+
+1. **Research**: workers look into the questions that don't depend on each
+   other, all at the same time.
+2. **Fix or build**: workers make the changes, or write them up when they
+   can't change the project.
+3. **Verify**: after each fix, fresh workers that didn't write it check it
+   independently, by running tests, reviewing it or reproducing the problem.
+   While verification fails, the orchestrator has the problems fixed and
+   verified again.
+
+It still answers greetings and quick questions itself, without workers.
+
+### Turn Ultra on
+
+The **Ultra** button comes after the model picker and the thinking chip in the
+message box. On a phone it is in the row with the model, at the top of the
+message box while you write. Open it, turn on **Ultra**, and choose what the
+workers run on:
+
+- **Worker model**: **Same as chat**, or another model of the same plan that
+  can run workers.
+- **Worker thinking**: **Same as chat**, or one of that model's thinking
+  levels.
+
+On a phone or a short window, each list opens in place, with a back button.
+With Ultra on, the empty message box says **Message Buddy · Ultra**, and on a
+phone the collapsed message box has a tinted edge. Changes made while a reply
+is being written apply to your next message.
+
+Each chat saves its own Ultra choice. New chats start with Ultra off, with your
+last worker model and thinking. Turning Ultra on or off in a chat starts a
+fresh CLI session that is given the chat so far.
+
+Ultra needs exactly one model selected, and it must be a plan model that can
+run workers (see [Minimum versions](#minimum-versions)). It isn't offered in
+temporary chats, channels or the Notes side chat; the menu says why in place
+of the switch. Requests made with a Buddy API key can't use it.
+
+### What workers may do
+
+Workers get the chat's access (see
+[What the models may do](#what-the-models-may-do)), and the menu says which:
+
+- **Chat only**: workers can only think. They have no files, commands or web.
+- **Read files**: workers can read the project.
+- **Full access**: workers can edit the project and run commands, as you.
+
+The orchestrator may give a worker less access than the chat, never more. On
+Claude, with Read files or Full access, it starts a worker that only needs to
+read as **buddy-reader**, which can only read and search, never changes
+anything and can't start sub-workers. The others are **buddy-worker**, with the
+chat's access. Codex can't narrow a worker: **Codex workers share the chat's
+access**, so Buddy can only tell a worker that should only read not to change
+anything.
+
+Workers don't see the chat. The orchestrator gives each one its task and what
+to report back.
+
+### Limits and your plan
+
+- **No worker limit by default.** The orchestrator uses as many workers as the
+  work needs, running them at the same time where it can, so **Ultra uses your
+  plan faster** than a normal reply. With an API key, it costs more.
+- **Sub-workers, once.** The orchestrator's workers may start sub-workers of
+  their own, and sub-workers can't start any. Claude Code holds workers to
+  that; on Codex, Buddy stops any worker started deeper at once.
+- **An optional cap.** An administrator can limit how many workers run at once
+  with `BUDDY_ULTRA_MAX_WORKERS` in the Buddy server's environment: a whole
+  number, where anything below 1 counts as 1. Unset, or not a whole number,
+  means no limit. Claude Code applies the cap itself; Codex's orchestrator is
+  only asked to keep to it.
+- **Six hours.** Buddy stops an Ultra reply, and any workers still running,
+  after 6 hours.
+
+Without Ultra, Codex threads can't start workers, and Claude Code can't leave
+any running in the background after a reply.
+
+### Watch and stop workers
+
+A status line says when each worker starts and ends. Under the reply's status,
+a card lists every worker: its state, its name, its model and thinking, and
+what it is doing now, with sub-workers under the worker that started them. The
+header reads like **Ultra · 3 workers · 2 running**. On desktop, open a row to
+read the worker's report; on a phone, tap it to open the report in a sheet.
+
+- **Stop** on a running worker's row stops that worker alone. Only the chat's
+  owner has it.
+- **Stop** in the message box stops the reply and every worker in it,
+  sub-workers included.
+
+The orchestrator may finish writing while workers still run. The card then
+stays open, says how many are **still running**, and keeps each one's Stop
+until it ends. Once all have ended, it collapses to **Used 3 workers** and
+how long they took. An Ultra reply that needed none says **Answered without
+workers**.
+
+A copy of a chat someone else shared starts with Ultra off. Share links, and
+anyone else who reads your chat, see each worker's name, state and model, but
+not what it did or found.
+
+### Minimum versions
+
+Ultra is offered only with a CLI that can run workers:
+
+- **Claude**: Claude Code **2.1.295** or later.
+- **ChatGPT**: Codex **0.153.4** or later, and only with models that run
+  Codex's v2 workers, as Codex's model list reports them.
+
+Otherwise the switch is unavailable, and the menu says that the plan on your
+computer can't run workers with that model. If a chat runs on a computer whose
+CLI is too old, the reply runs without Ultra and starts with **Ultra is off for
+this reply** and the reason. Update the CLI on that computer to use Ultra
+there.
+
 ## Buddy in Docker
 
 `docker/buddy/compose.yaml` runs Buddy as two containers: the backend (with
