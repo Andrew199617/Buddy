@@ -12,6 +12,7 @@ import sys
 import tempfile
 import types
 import unittest
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,8 +24,10 @@ from test_subscription_machines import OWNER, FakeGroups, FakeUsers, MemoryCrede
 from buddy_runner import runner  # noqa: E402
 from open_webui.utils.subscriptions import claude_code, codex, streaming  # noqa: E402
 from open_webui.utils.subscriptions.common import (  # noqa: E402
+    ProviderModel,
     ProviderSettings,
     TurnRequest,
+    UltraOptions,
     requested_effort,
 )
 from open_webui.utils.subscriptions.conversation import (  # noqa: E402
@@ -35,12 +38,15 @@ from open_webui.utils.subscriptions.conversation import (  # noqa: E402
     parse_messages,
 )
 from open_webui.utils.subscriptions.events import (  # noqa: E402
+    WORKER_RUNNING,
+    WORKER_STATES,
     ReasoningDelta,
     StatusUpdate,
     SubscriptionError,
     TextDelta,
     TokenUsage,
     TurnFailed,
+    WorkerUpdate,
 )
 from open_webui.utils.subscriptions.machines import (  # noqa: E402
     AiohttpProcessChannel,
@@ -173,6 +179,41 @@ class CommonTests(unittest.TestCase):
         first_url = [ChatTurn('user', 'Look', ['https://example.invalid/first.png'])]
         edited_url = [ChatTurn('user', 'Look', ['https://example.invalid/edited.png'])]
         self.assertNotEqual(conversation_key(first_url), conversation_key(edited_url))
+
+    def test_ultra_reaches_chat_turns_but_never_task_turns(self):
+        conversation = parse_messages([{'role': 'user', 'content': 'Fix the tests'}])
+        options = UltraOptions(worker_model='sonnet', worker_label='Claude Sonnet', worker_effort='high')
+
+        chat_turn = TurnRequest('opus', conversation, ProviderSettings(), '.', ultra_options=options)
+        self.assertIs(chat_turn.ultra, options)
+
+        # A title or follow-up request carries the chat's choices but must not start workers.
+        task_turn = TurnRequest('opus', conversation, ProviderSettings(), '.', is_task=True, ultra_options=options)
+        self.assertIsNone(task_turn.ultra)
+
+        plain_turn = TurnRequest('opus', conversation, ProviderSettings(), '.')
+        self.assertIsNone(plain_turn.ultra)
+
+    def test_ultra_options_cannot_change_during_a_turn(self):
+        options = UltraOptions()
+        self.assertIsNone(options.worker_model)
+        self.assertIsNone(options.worker_effort)
+        # No cap unless the admin sets one.
+        self.assertIsNone(options.max_workers)
+        with self.assertRaises(FrozenInstanceError):
+            options.max_workers = 3
+
+    def test_models_lack_ultra_until_a_provider_turns_it_on(self):
+        self.assertFalse(ProviderModel(key='opus', value='opus', name='Claude Opus').ultra)
+
+    def test_worker_update_starts_with_only_what_a_launch_reports(self):
+        update = WorkerUpdate('task-1', None, 1, 'Research the parser', WORKER_RUNNING)
+        self.assertIn(update.state, WORKER_STATES)
+        self.assertIsNone(update.model)
+        self.assertIsNone(update.effort)
+        self.assertIsNone(update.activity)
+        self.assertIsNone(update.summary)
+        self.assertIsNone(update.tokens)
 
 
 class ClaudeStreamTests(unittest.TestCase):
