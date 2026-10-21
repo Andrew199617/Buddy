@@ -31,8 +31,10 @@ import {
 	workersElapsed,
 	workersHeader,
 	workersModel,
+	workersSnapshot,
 	workersStillRunning,
 	workersUsed,
+	withCurrentWorkers,
 	type UltraModel,
 	type UltraState,
 	type WorkerItem
@@ -581,6 +583,56 @@ describe('savedWorkers', () => {
 		expect(savedWorkers(undefined)).toEqual([]);
 		expect(savedWorkers([worker()])).toEqual([]);
 		expect(savedWorkers({ items: 'task-1' })).toEqual([]);
+	});
+});
+
+describe('workersSnapshot', () => {
+	it('keeps a snapshot as the server sent it', () => {
+		const snapshot = { items: [worker({ state: 'running' })], running: 1 };
+		expect(workersSnapshot(snapshot)).toBe(snapshot);
+		const none = { items: [], running: 0 };
+		expect(workersSnapshot(none)).toBe(none);
+	});
+
+	it('refuses anything the server would not save as a snapshot', () => {
+		expect(workersSnapshot(null)).toBeNull();
+		expect(workersSnapshot(undefined)).toBeNull();
+		expect(workersSnapshot('running')).toBeNull();
+		expect(workersSnapshot([worker()])).toBeNull();
+		expect(workersSnapshot({ running: 1 })).toBeNull();
+		expect(workersSnapshot({ items: { 'task-1': worker() } })).toBeNull();
+	});
+});
+
+describe('withCurrentWorkers', () => {
+	const running = { items: [worker({ state: 'running' })], running: 1 };
+	const finished = { items: [worker({ state: 'done' })], running: 0 };
+
+	it('saves a copy taken before the last snapshot with the newer workers', () => {
+		const current = { id: 'reply-1', content: 'Done.', workers: finished };
+		const rated = { id: 'reply-1', content: 'Done.', workers: running, annotation: { rating: 1 } };
+		expect(withCurrentWorkers(rated, current)).toEqual({ ...rated, workers: finished });
+		// The copy itself is left as it was.
+		expect(rated.workers).toBe(running);
+	});
+
+	it('saves a copy taken before the first snapshot with the workers', () => {
+		const current = { id: 'reply-1', workers: running };
+		const rated = { id: 'reply-1', annotation: { rating: 1 } };
+		expect(withCurrentWorkers(rated, current)).toEqual({ ...rated, workers: running });
+	});
+
+	it('changes nothing when there are no newer workers to carry over', () => {
+		const message = { id: 'reply-1', workers: finished };
+		expect(withCurrentWorkers(message, message)).toBe(message);
+
+		const copy = { ...message, annotation: { rating: 1 } };
+		expect(withCurrentWorkers(copy, message)).toBe(copy);
+
+		const withoutWorkers = { id: 'reply-1', content: 'Hi' };
+		expect(withCurrentWorkers(copy, withoutWorkers)).toBe(copy);
+		expect(withCurrentWorkers(copy, undefined)).toBe(copy);
+		expect(withCurrentWorkers(copy, null)).toBe(copy);
 	});
 });
 

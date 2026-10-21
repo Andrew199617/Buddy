@@ -450,6 +450,42 @@ export function savedWorkers(value: unknown): WorkerItem[] {
 	return workers;
 }
 
+/** A reply's `message.workers`: every worker so far, in the order they started. */
+export type WorkersSnapshot = { items: unknown[]; running?: unknown };
+
+/** A chat message, as far as its workers go; its other fields are carried as they are. */
+type MessageWithWorkers = { workers?: unknown; [field: string]: unknown };
+
+/**
+ * A chat:message:workers event's snapshot, or null when it isn't shaped like one.
+ * Each snapshot lists every worker in the reply, so it replaces the message's
+ * copy. The server saves only snapshots, and the page keeps only those too, so a
+ * stray event can't replace the saved workers when the page saves the chat.
+ */
+export function workersSnapshot(data: unknown): WorkersSnapshot | null {
+	if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+	const items = (data as Record<string, unknown>).items;
+	if (!Array.isArray(items)) return null;
+	return data as WorkersSnapshot;
+}
+
+/**
+ * The message the page is about to save, with the workers of the message the
+ * chat holds now. Worker snapshots update the message in the chat's history, so
+ * a copy taken earlier, as a rating takes one and then waits on the network, can
+ * hold an older snapshot or none. A chat save replaces each message it sends, so
+ * saving that copy would replace the workers the server saved. Returns `saving`
+ * itself when there is nothing to carry over.
+ */
+export function withCurrentWorkers<T extends MessageWithWorkers>(
+	saving: T,
+	current: MessageWithWorkers | null | undefined
+): T {
+	if (!current || current === saving) return saving;
+	if (!current.workers || current.workers === saving.workers) return saving;
+	return { ...saving, workers: current.workers };
+}
+
 /** A plan model's name without its provider's word: 'Claude Sonnet 4.5' becomes 'Sonnet 4.5'. */
 export function shortModelName(name: string): string {
 	if (name.startsWith('Claude ')) return name.slice('Claude '.length);

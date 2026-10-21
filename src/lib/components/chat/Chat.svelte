@@ -63,6 +63,8 @@
 		loadedUltra,
 		startingUltra,
 		ultraForReply,
+		withCurrentWorkers,
+		workersSnapshot,
 		type UltraChange,
 		type UltraState
 	} from '$lib/components/chat/Ultra/ultra';
@@ -1508,6 +1510,12 @@
 					message.files = data.files;
 				} else if (type === 'chat:message:tasks') {
 					chatTasks = data.tasks;
+				} else if (type === 'chat:message:workers') {
+					// Each snapshot lists every Ultra worker in the reply, so it replaces the last one.
+					const workers = workersSnapshot(data);
+					if (workers) {
+						message.workers = workers;
+					}
 				} else if (type === 'chat:message:embeds' || type === 'embeds') {
 					message.embeds = data.embeds;
 
@@ -1650,7 +1658,11 @@
 					console.log('Unknown message type', data);
 				}
 
-				history.messages[event.message_id] = message;
+				// Some events reload the chat while they are handled; keep the reloaded message's workers.
+				history.messages[event.message_id] = withCurrentWorkers(
+					message,
+					history.messages[event.message_id]
+				);
 			}
 		} else {
 			// Non-active chat completion: queue stays in the global store.
