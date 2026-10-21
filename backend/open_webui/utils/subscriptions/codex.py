@@ -376,6 +376,24 @@ def _worker_activity(item: dict) -> str | None:
     return describe_item(item)
 
 
+@dataclass(frozen=True)
+class EarlierWorker:
+    """A worker that an earlier Ultra turn on a kept thread started.
+
+    Codex keeps a thread's workers when its turn ends, and the thread's next
+    turn may give one of them more to do, with followup_task for example.
+    """
+
+    # Its last update in the earlier turn.
+    update: WorkerUpdate
+    # The segments of its agent path below /root.
+    path: tuple[str, ...]
+    # Its thread's token usage total when the earlier turn ended, or None when it reported none.
+    usage_total: dict | None
+    # Whether Buddy stops each of its turns, since it started deeper than ultra.MAX_DEPTH.
+    too_deep: bool
+
+
 class CodexWorkers:
     """The workers of one Ultra turn, followed through Codex's notifications.
 
@@ -398,19 +416,28 @@ class CodexWorkers:
     Codex doesn't stop workers with the thread that started them either. So
     Buddy stops a worker by interrupting its turn on its own thread:
     interrupt() and interrupt_all() have those turns handed over too.
+
+    On a kept thread, the workers of its earlier Ultra turns are known from
+    the start, as ``earlier``. They are listed again once their own thread
+    starts a turn, and only what they use from then on counts.
     """
 
-    def __init__(self, options: UltraOptions):
+    def __init__(self, options: UltraOptions, earlier: tuple[EarlierWorker, ...] = ()):
         self._options = options
         self._workers: dict[str, WorkerUpdate] = {}
         # The thread of each worker, by the segments of its agent path.
         self._threads_by_path: dict[tuple[str, ...], str] = {}
-        # Each worker's latest turn, from its own thread's turn/started.
+        # Each worker's latest turn in this Ultra turn, from its own thread's turn/started.
         self._turns: dict[str, str] = {}
         # Each worker thread's latest token usage total.
         self._usage_totals: dict[str, dict] = {}
+        # The token usage total of each earlier worker's thread when this Ultra turn started.
+        self._usage_baselines: dict[str, dict] = {}
         # The workers deeper than ultra.MAX_DEPTH, which Buddy stops.
         self._too_deep: set[str] = set()
+        # The too-deep earlier workers not listed in this Ultra turn yet. Each
+        # one is listed again, as stopped, when its thread starts a turn.
+        self._too_deep_unlisted: set[str] = set()
         # The too-deep workers whose turn hasn't ended yet. Until it does, they
         # keep the Ultra turn open, so none runs unseen, even before Codex
         # names the turn to interrupt.
@@ -425,6 +452,37 @@ class CodexWorkers:
         # Whether Buddy is stopping the whole Ultra turn. Then every turn that a
         # worker starts is interrupted, also of the workers that start meanwhile.
         self.interrupting_all = False
+        for worker in earlier:
+            self._know_earlier_worker(worker)
+
+    def _know_earlier_worker(self, earlier: EarlierWorker) -> None:
+        """Know a worker of an earlier Ultra turn on this thread, without listing it yet."""
+        worker_id = earlier.update.worker_id
+        update = dataclasses.replace(earlier.update, activity=None, tokens=None)
+        if earlier.too_deep:
+            self._too_deep.add(worker_id)
+            self._too_deep_unlisted.add(worker_id)
+        else:
+            # What it reported then is not what it does now.
+            update = dataclasses.replace(update, summary=None)
+        self._workers[worker_id] = update
+        if earlier.path:
+            self._threads_by_path[earlier.path] = worker_id
+        if earlier.usage_total is not None:
+            self._usage_baselines[worker_id] = earlier.usage_total
+
+    def earlier_workers(self) -> tuple[EarlierWorker, ...]:
+        """Every worker this Ultra turn knows, as the thread's next Ultra turn is to know it."""
+        paths = {worker_id: path for path, worker_id in self._threads_by_path.items()}
+        earlier = []
+        for worker_id, update in self._workers.items():
+            usage_total = self._usage_totals.get(worker_id)
+            if usage_total is None:
+                # It used nothing in this Ultra turn.
+                usage_total = self._usage_baselines.get(worker_id)
+            too_deep = worker_id in self._too_deep
+            earlier.append(EarlierWorker(update, paths.get(worker_id, ()), usage_total, too_deep))
+        return tuple(earlier)
 
     def running(self) -> bool:
         """Whether any worker has not ended yet, counting the too-deep workers that Buddy is still stopping."""
@@ -468,13 +526,17 @@ class CodexWorkers:
             if worker.state == WORKER_RUNNING:
                 self._interrupt_current_turn(worker_id)
 
-    def usage_totals(self) -> list[dict]:
-        """Each worker thread's latest token usage total.
+    def usage(self) -> TokenUsage | None:
+        """What the workers' threads used in this Ultra turn, or None when they reported nothing.
 
-        A worker's thread starts with the worker, so its total counts
-        everything the worker used.
+        A worker's thread starts with the worker, so the total of a worker
+        that this turn started counts everything it used. An earlier worker's
+        counts only what it used since this turn started.
         """
-        return list(self._usage_totals.values())
+        usage = None
+        for worker_id, total in self._usage_totals.items():
+            usage = _usage_sum(usage, _usage_difference(total, self._usage_baselines.get(worker_id)))
+        return usage
 
     def sub_agent_activity(self, item: dict) -> list:
         """WorkerUpdate events for a subAgentActivity item from the orchestrator's thread or a worker's."""
@@ -602,7 +664,7 @@ class CodexWorkers:
         """
         if method == 'turn/started':
             self._stop_turn(worker_id, (params.get('turn') or {}).get('id'))
-            return []
+            return self._list_too_deep_again(worker_id)
         if method == 'turn/completed':
             self._stopping.discard(worker_id)
             return []
@@ -612,6 +674,13 @@ class CodexWorkers:
         if item.get('type') == 'subAgentActivity':
             return self.sub_agent_activity(item)
         return []
+
+    def _list_too_deep_again(self, worker_id: str) -> list:
+        """A too-deep earlier worker, as stopped, the first time it starts a turn in this Ultra turn."""
+        if worker_id not in self._too_deep_unlisted:
+            return []
+        self._too_deep_unlisted.discard(worker_id)
+        return [self._workers[worker_id]]
 
     def _stop_turn(self, worker_id: str, turn_id: str | None) -> None:
         """Have a too-deep worker's turn interrupted. A turn it starts when given more to do is stopped too."""
@@ -677,6 +746,10 @@ class CodexWorkers:
         tokens = total.get('totalTokens')
         if not isinstance(tokens, int):
             return []
+        # An earlier worker shows only what it used in this Ultra turn.
+        earlier_tokens = (self._usage_baselines.get(worker_id) or {}).get('totalTokens')
+        if isinstance(earlier_tokens, int):
+            tokens = max(0, tokens - earlier_tokens)
         return self._change(worker_id, tokens=tokens)
 
     def _turn_completed(self, worker_id: str, turn: dict) -> list:
@@ -718,9 +791,9 @@ class CodexTurnParser:
         self._new_message = False
         self._new_reasoning = False
 
-    def track_workers(self, options: UltraOptions) -> None:
-        """Follow an Ultra turn's workers."""
-        self.workers = CodexWorkers(options)
+    def track_workers(self, options: UltraOptions, earlier: tuple[EarlierWorker, ...] = ()) -> None:
+        """Follow an Ultra turn's workers, including those of earlier Ultra turns on its thread."""
+        self.workers = CodexWorkers(options, earlier)
 
     def turn_over(self) -> bool:
         """Whether the turn is over: the orchestrator's turn has completed, and none of its workers still runs.
@@ -751,15 +824,13 @@ class CodexTurnParser:
         """The reply's token usage, or None when Codex reported none.
 
         That is the orchestrator's thread's usage since ``previous_total``,
-        its total when the thread's turn before this one ended, plus all that
-        each worker's thread used.
+        its total when the thread's turn before this one ended, plus what the
+        workers' threads used in this turn.
         """
         usage = _usage_difference(self.usage_total, previous_total)
         if self.workers is None:
             return usage
-        for total in self.workers.usage_totals():
-            usage = _usage_sum(usage, _usage_difference(total, None))
-        return usage
+        return _usage_sum(usage, self.workers.usage())
 
     def handle(self, message: dict) -> list:
         method = message.get('method')
@@ -974,6 +1045,15 @@ class CodexAppServer:
         """
         self._worker_routes[thread_id] = thread_id
 
+    def follow_worker(self, thread_id: str, worker_thread: str) -> None:
+        """Send the notifications of a worker that a followed thread started in an earlier turn to its queue too.
+
+        That thread's turn may give the worker more to do, which Codex reports
+        only under the worker's own thread id. The sub-workers it starts follow
+        it there.
+        """
+        self._route_worker(thread_id, worker_thread)
+
     def unsubscribe(self, thread_id: str) -> None:
         queue = self._thread_queues.pop(thread_id, None)
         for followed, subscribed in list(self._worker_routes.items()):
@@ -1045,15 +1125,15 @@ class CodexAppServer:
         thread_id = params.get('threadId')
         queue = self._thread_queues.get(thread_id)
         if queue:
-            self._route_new_worker(thread_id, params, queue)
+            self._route_new_worker(thread_id, params)
             queue.put_nowait(message)
         try:
             self._on_notification(message)
         except Exception:
             log.exception('Codex notification handler failed')
 
-    def _route_new_worker(self, thread_id: str, params: dict, queue: asyncio.Queue) -> None:
-        """Send a worker's notifications to ``queue`` from now on, when the thread that started it is followed.
+    def _route_new_worker(self, thread_id: str, params: dict) -> None:
+        """Send a new worker's notifications to the queue of the thread that started it, if its workers are followed.
 
         This runs as the notification is read, so none of the worker's own
         notifications that follow are missed.
@@ -1062,7 +1142,14 @@ class CodexAppServer:
         if subscribed is None:
             return
         worker_thread = started_worker_thread(params)
-        if worker_thread is None or worker_thread in self._thread_queues:
+        if worker_thread is None:
+            return
+        self._route_worker(subscribed, worker_thread)
+
+    def _route_worker(self, subscribed: str, worker_thread: str) -> None:
+        """Send a worker thread's notifications to the queue of the subscribed thread that follows its workers."""
+        queue = self._thread_queues.get(subscribed)
+        if queue is None or worker_thread in self._thread_queues:
             return
         self._thread_queues[worker_thread] = queue
         # The sub-workers it starts follow it there.
@@ -1098,6 +1185,8 @@ class LiveThread:
     usage_total: dict | None
     # The Ultra choice the thread started with, or None when it started without Ultra.
     ultra: UltraOptions | None = None
+    # The workers its Ultra turns started. Its next turn may give one of them more to do.
+    workers: tuple[EarlierWorker, ...] = ()
 
     def can_run(self, turn: TurnRequest, generation: int) -> bool:
         """Whether this kept thread can run the turn.
@@ -1637,9 +1726,12 @@ class CodexProvider:
         live = None
         if not turn.is_task:
             live = self._take_live_thread(history_key, turn, server.generation)
+        # The workers that the kept thread's earlier Ultra turns started.
+        earlier_workers = ()
         if live:
             thread_id = live.thread_id
             previous_usage = live.usage_total
+            earlier_workers = live.workers
         else:
             thread_id = await self._start_thread(server, turn)
             previous_usage = None
@@ -1648,6 +1740,8 @@ class CodexProvider:
         if turn.ultra is not None:
             # Each worker reports its turn under its own thread, which joins this queue.
             server.follow_workers(thread_id)
+            for worker in earlier_workers:
+                server.follow_worker(thread_id, worker.update.worker_id)
         parser = None
         # An Ultra turn once it has started, through which its workers are stopped.
         run = None
@@ -1663,7 +1757,7 @@ class CodexProvider:
             result = await server.request('turn/start', params)
             parser = CodexTurnParser(result['turn']['id'], thread_id)
             if turn.ultra is not None:
-                parser.track_workers(turn.ultra)
+                parser.track_workers(turn.ultra, earlier_workers)
                 run = CodexUltraRun(turn, server, queue, parser)
                 self._ultra_runs.append(run)
 
@@ -1713,6 +1807,9 @@ class CodexProvider:
                 if completed and not turn.is_task:
                     answered = conversation.history + [conversation.prompt, ChatTurn('assistant', parser.reply_text)]
                     next_key = f'{machine.id}|{conversation_key(answered, conversation.system)}'
+                    kept_workers = ()
+                    if parser.workers is not None:
+                        kept_workers = parser.workers.earlier_workers()
                     live = LiveThread(
                         thread_id,
                         machine.id,
@@ -1721,6 +1818,7 @@ class CodexProvider:
                         turn.cwd,
                         parser.usage_total,
                         ultra=turn.ultra,
+                        workers=kept_workers,
                     )
                     self._keep_live_thread(next_key, live)
                 elif parser and not parser.finished:

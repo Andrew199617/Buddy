@@ -11,6 +11,10 @@ thread with a read-only sandbox:
 - codex-depth.jsonl: a worker that starts a sub-worker, which starts one more.
   Nothing interrupted that third level, which ran to the end.
 
+Codex keeps a thread's workers when its turn ends, and the thread's next turn
+may give one of them more to do. No such turn was recorded, so follow_up()
+writes one for codex-p.jsonl's thread from the shape of the recorded turns.
+
 Each one answers initialize, model/list (codex-p.jsonl only), thread/start and
 turn/start, in that order, and then streams the turn. The orchestrator's thread
 and each worker's own thread report under their own thread ids. The recording
@@ -354,6 +358,31 @@ class PausedProcess(InterruptibleProcess):
             self._lines.put_nowait(json.dumps(message))
 
 
+class FollowUpProcess(InterruptibleProcess):
+    """An interruptible replayed app-server whose thread runs one more turn after the recorded one.
+
+    That turn writes ``follow_up``, whose first message answers its turn/start.
+    """
+
+    def __init__(self, messages: list[dict], follow_up: list[dict]):
+        super().__init__(messages)
+        self.follow_up = follow_up
+        self._turns_written = 0
+        for message in follow_up:
+            if message.get('method') == 'turn/completed':
+                self._ended.add((thread_of(message), message['params']['turn']['id']))
+
+    def _write_turn(self, request_id) -> None:
+        self._turns_written += 1
+        if self._turns_written == 1:
+            super()._write_turn(request_id)
+            return
+        answer, *rest = self.follow_up
+        self._lines.put_nowait(json.dumps({**answer, 'id': request_id}))
+        for message in rest:
+            self._lines.put_nowait(json.dumps(message))
+
+
 class ReplayMachine:
     id = 'fixture-pc'
     name = 'Fixture PC'
@@ -529,6 +558,84 @@ def start_report(messages: list[dict], worker_id: str) -> dict:
         if item['kind'] == 'started' and item['agentThreadId'] == worker_id:
             return message
     raise AssertionError(f'The recording never reports {worker_id} started')
+
+
+# The person's next message, and what follow_up() has the orchestrator and its worker write.
+FOLLOW_UP_PROMPT = 'And 18 times 23?'
+FOLLOW_UP_REPORT = '18 \u00d7 23 = 414.'
+FOLLOW_UP_REPLY = '18 \u00d7 23 = **414**.'
+# The turns that follow_up() writes on the orchestrator's thread and on its worker's.
+FOLLOW_UP_TURN = 'follow-up-turn'
+FOLLOW_UP_WORKER_TURN = 'follow-up-worker-turn'
+
+
+def last_usage_total(messages: list[dict], thread_id: str) -> dict:
+    """A thread's last token usage total in a recording."""
+    totals = [
+        message['params']['tokenUsage']['total']
+        for message in messages
+        if message.get('method') == 'thread/tokenUsage/updated' and thread_of(message) == thread_id
+    ]
+    return totals[-1]
+
+
+def grown(total: dict, input_tokens: int, output_tokens: int) -> dict:
+    """A thread's token usage total once it has used this many more tokens."""
+    return {
+        **total,
+        'inputTokens': total['inputTokens'] + input_tokens,
+        'outputTokens': total['outputTokens'] + output_tokens,
+        'totalTokens': total['totalTokens'] + input_tokens + output_tokens,
+    }
+
+
+def usage_update(thread_id: str, turn_id: str, total: dict) -> dict:
+    """The notification in which a thread reports its token usage total."""
+    token_usage = {'total': total, 'last': None, 'modelContextWindow': 258400}
+    return {
+        'method': 'thread/tokenUsage/updated',
+        'params': {'threadId': thread_id, 'turnId': turn_id, 'tokenUsage': token_usage},
+    }
+
+
+def follow_up(messages: list[dict], worker_id: str, ends: bool = True) -> list[dict]:
+    """The next turn on a recorded Ultra turn's thread, which gives one of its workers more to do.
+
+    Codex 0.153.4 does that with its followup_task tool, but no turn of it
+    was recorded. So the orchestrator's thread here reports only its own
+    turn, and the worker's thread a turn shaped like its recorded one: it
+    writes FOLLOW_UP_REPORT, using 2000 tokens in and 10 out, and the
+    orchestrator then uses 3000 in and 20 out to reply. With ``ends`` False,
+    the stream stops once the worker's turn has started, while both turns run.
+    """
+    orchestrator = orchestrator_thread(messages)
+    turn = {'id': FOLLOW_UP_TURN, 'items': [], 'itemsView': 'notLoaded', 'status': 'inProgress', 'error': None}
+    worker_turn = {**turn, 'id': FOLLOW_UP_WORKER_TURN}
+    report = {'type': 'agentMessage', 'id': 'follow-up-report', 'text': ''}
+    stream = [
+        {'id': None, 'result': {'turn': turn}},
+        {'method': 'turn/started', 'params': {'threadId': orchestrator, 'turn': turn}},
+        {'method': 'turn/started', 'params': {'threadId': worker_id, 'turn': worker_turn}},
+        {'method': 'item/started', 'params': {'threadId': worker_id, 'turnId': FOLLOW_UP_WORKER_TURN, 'item': report}},
+    ]
+    if not ends:
+        return stream
+    worker_total = grown(last_usage_total(messages, worker_id), 2000, 10)
+    orchestrator_total = grown(last_usage_total(messages, orchestrator), 3000, 20)
+    reported = {**report, 'text': FOLLOW_UP_REPORT}
+    delta = {'threadId': orchestrator, 'turnId': FOLLOW_UP_TURN, 'itemId': 'follow-up-reply', 'delta': FOLLOW_UP_REPLY}
+    stream += [
+        {
+            'method': 'item/completed',
+            'params': {'threadId': worker_id, 'turnId': FOLLOW_UP_WORKER_TURN, 'item': reported},
+        },
+        usage_update(worker_id, FOLLOW_UP_WORKER_TURN, worker_total),
+        {'method': 'turn/completed', 'params': {'threadId': worker_id, 'turn': {**worker_turn, 'status': 'completed'}}},
+        {'method': 'item/agentMessage/delta', 'params': delta},
+        usage_update(orchestrator, FOLLOW_UP_TURN, orchestrator_total),
+        {'method': 'turn/completed', 'params': {'threadId': orchestrator, 'turn': {**turn, 'status': 'completed'}}},
+    ]
+    return stream
 
 
 def ultra_parser(messages: list[dict]) -> codex.CodexTurnParser:
@@ -1355,6 +1462,105 @@ class UltraStopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.unloaded_threads(process), [self.orchestrator])
 
 
+class UltraFollowUpTests(unittest.IsolatedAsyncioTestCase):
+    """A kept Ultra thread's next turn that gives a worker from its first turn more to do."""
+
+    def setUp(self):
+        self.provider = codex.CodexProvider()
+        # Ends a replayed app-server, and so its reader.
+        self.addCleanup(self.provider.stop)
+        # A turn held open by mistake then fails within seconds instead of hours.
+        time_limit = patch.object(codex, 'ULTRA_TIME_LIMIT', 5)
+        time_limit.start()
+        self.addCleanup(time_limit.stop)
+        self.messages = recorded('codex-p.jsonl')
+        self.orchestrator = orchestrator_thread(self.messages)
+        self.multiply = recorded_workers(self.messages)['/root/multiply']
+
+    async def first_turn(self, machine) -> list:
+        """Run the recorded turn, which the next one continues."""
+        turn = ultra_turn(machine, options=SAME_AS_CHAT, effort=None)
+        return await collect(self.provider.run_turn(turn))
+
+    def next_turn(self, machine, first: list) -> TurnRequest:
+        earlier = [{'role': 'user', 'content': PROMPT}, {'role': 'assistant', 'content': reply(first)}]
+        return ultra_turn(machine, options=SAME_AS_CHAT, effort=None, earlier=earlier, prompt=FOLLOW_UP_PROMPT)
+
+    async def test_a_worker_given_more_to_do_is_listed_again_and_counted(self):
+        process = FollowUpProcess(self.messages, follow_up(self.messages, self.multiply))
+        # One machine for both turns, so the provider keeps its app-server and the thread.
+        machine = ReplayMachine(process)
+        first = await self.first_turn(machine)
+        events = await collect(self.provider.run_turn(self.next_turn(machine, first)))
+
+        self.assertEqual([params['threadId'] for params in process.sent('turn/start')], [self.orchestrator] * 2)
+        # Only the worker that works again is listed, where it was, with its new report.
+        self.assertEqual(list(latest_workers(events)), [self.multiply])
+        self.assertEqual(states(events, self.multiply), [WORKER_RUNNING, WORKER_DONE])
+        latest = latest_workers(events)[self.multiply]
+        self.assertEqual((latest.label, latest.depth, latest.parent_id), ('Multiply', 1, None))
+        self.assertEqual(worker_updates(events, self.multiply)[0].summary, None)
+        # Its tokens, and the reply's usage, are what each thread used in this turn.
+        self.assertEqual((latest.summary, latest.tokens), (FOLLOW_UP_REPORT, 2010))
+        self.assertEqual(usages(events), [TokenUsage(input_tokens=5000, output_tokens=30, cached_input_tokens=0)])
+        self.assertEqual(reply(events), FOLLOW_UP_REPLY)
+        self.assertEqual(failures(events), [])
+
+    async def test_stopping_the_reply_stops_a_worker_given_more_to_do(self):
+        process = FollowUpProcess(self.messages, follow_up(self.messages, self.multiply, ends=False))
+        machine = ReplayMachine(process)
+        first = await self.first_turn(machine)
+        turn = self.next_turn(machine, first)
+        events = []
+
+        async def run():
+            async for event in self.provider.run_turn(turn):
+                events.append(event)
+
+        task = asyncio.create_task(run())
+        server = self.provider._servers[ReplayMachine.id]
+        await asyncio.wait_for(until(lambda: len(process.sent('turn/start')) == 2 and process.drained()), 5)
+        await asyncio.wait_for(until(lambda: all(queue.empty() for queue in server._thread_queues.values())), 5)
+        self.assertEqual(latest_workers(events)[self.multiply].state, WORKER_RUNNING)
+
+        with self.assertNoLogs(codex.log, level='WARNING'):
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 5)
+
+        # Codex doesn't stop it with the orchestrator, so Buddy interrupted its turn on its own thread too.
+        interrupts = [
+            {'threadId': self.orchestrator, 'turnId': FOLLOW_UP_TURN},
+            {'threadId': self.multiply, 'turnId': FOLLOW_UP_WORKER_TURN},
+        ]
+        self.assertEqual(process.sent('turn/interrupt'), interrupts)
+
+    def test_earlier_workers_keep_their_place_and_the_depth_limit(self):
+        messages = recorded('codex-depth.jsonl')
+        workers = recorded_workers(messages)
+        level1 = workers['/root/level1']
+        level3 = workers['/root/level1/level2/level3']
+        first = ultra_parser(messages)
+        feed(first, messages)
+        parser = codex.CodexTurnParser(FOLLOW_UP_TURN, orchestrator_thread(messages))
+        parser.track_workers(SAME_AS_CHAT, first.workers.earlier_workers())
+
+        # The third level starts another turn: it is listed again as stopped, and its turn is interrupted at once.
+        turn = {'id': 'level3-again', 'status': 'inProgress'}
+        [again] = parser.handle({'method': 'turn/started', 'params': {'threadId': level3, 'turn': turn}})
+        self.assertEqual((again.state, again.summary, again.depth), (WORKER_STOPPED, codex.WORKER_TOO_DEEP, 3))
+        self.assertEqual(parser.take_interrupts(), [(level3, 'level3-again')])
+        # A sub-worker that the first level starts now is placed under it.
+        item = {
+            'type': 'subAgentActivity',
+            'kind': 'started',
+            'agentThreadId': 'review',
+            'agentPath': '/root/level1/review',
+        }
+        [review] = parser.handle({'method': 'item/started', 'params': {'threadId': level1, 'item': item}})
+        self.assertEqual((review.parent_id, review.depth, review.state), (level1, 2, WORKER_RUNNING))
+
+
 class WorkerInterruptTests(unittest.TestCase):
     """Which workers' turns the parser hands over to interrupt when Buddy stops workers."""
 
@@ -1481,7 +1687,9 @@ class UltraModelListTests(unittest.IsolatedAsyncioTestCase):
             else:
                 # An entry that names no workers at all.
                 del entry['multiAgentVersion']
-        models = await self.provider().list_models(ProviderSettings(enable=True), ReplayMachine(ReplayProcess(messages)))
+        models = await self.provider().list_models(
+            ProviderSettings(enable=True), ReplayMachine(ReplayProcess(messages))
+        )
         self.assertEqual(self.ultra_models(models), [LUNA])
 
     async def test_an_older_or_unknown_codex_runs_ultra_with_no_model(self):
