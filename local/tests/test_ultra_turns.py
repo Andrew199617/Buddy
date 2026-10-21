@@ -8,7 +8,7 @@ import os
 import time
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from test_provider_host_transitions import (
     ActionCodexProvider,
@@ -37,7 +37,6 @@ from open_webui.utils.subscriptions.conversation import parse_messages  # noqa: 
 from open_webui.utils.subscriptions.events import StatusUpdate  # noqa: E402
 
 PROJECT = 'C:\\code\\site'
-REVISION_A = 'fixture-revision-runner-a'
 CHAT_MODEL_ID = 'claude-code.fixture-model'
 WORKER_MODEL_ID = 'claude-code.fixture-worker'
 CODEX_MODEL_ID = 'codex.fixture-codex'
@@ -46,6 +45,9 @@ OFF_FOR_CHAT_MODEL = "Ultra is off for this reply: Claude on your computer can't
 OFF_FOR_WORKER_MODEL = "Ultra is off for this reply: Claude on your computer can't run workers with Fixture Worker."
 OTHER_PROVIDER_MESSAGE = "Ultra's workers run on this chat's Claude plan. Choose one of its models for them."
 NOT_OFFERED_MESSAGE = "Claude on your computer does not offer the workers' model. Choose another worker model."
+OFF_UNLISTED = "Ultra is off for this reply: Claude on your computer hasn't listed this chat's model yet."
+# What another user's computer reported under the same model IDs.
+OTHER_USERS_TEXT = 'Text from another user for your orchestrator'
 
 
 def plan_model(key, name, efforts, ultra=True):
@@ -113,25 +115,39 @@ class UltraTurnTests(unittest.IsolatedAsyncioTestCase):
         """A model registry entry, built the way the server builds them from a model list."""
         return self.service._model_entry(provider_id, plan_model(key, name, efforts, ultra))
 
-    def signed_in(self, provider_id, models):
-        on_computer = self.service.ProviderRef(OWNER, provider_id).on('runner-a')
+    def other_users_entry(self, key, ultra=True):
+        """The shared registry's entry after another user's computer listed a model under the same ID."""
+        model = ProviderModel(key=key, value='other-user-cli', name=OTHER_USERS_TEXT, efforts=['other'], ultra=ultra)
+        return self.service._model_entry('claude', model)
+
+    def add_computer(self, machine_id):
+        """Another of the person's computers. Model lists ask only the plan's own computer."""
+        config = machine_config(machine_id, f'host-{machine_id}')
+        self.config.values['subscriptions.machines'].append(config)
+        self.machines[machine_id] = ProcessMachine(config)
+        self.service._remote_machines[machine_id] = self.machines[machine_id]
+
+    def signed_in(self, provider_id, models, machine_id='runner-a'):
+        """The plan is signed in on the computer, which listed these models, or none when models is None."""
+        on_computer = self.service.ProviderRef(OWNER, provider_id).on(machine_id)
         self.service.status_cache._entries[on_computer] = self.service._CacheEntry(
             {'installed': True, 'signed_in': True, 'api_billing': False}, time.monotonic() + 60
         )
-        self.service.models_cache._entries[on_computer] = self.service._CacheEntry(models, time.monotonic() + 60)
+        if models is not None:
+            self.service.models_cache._entries[on_computer] = self.service._CacheEntry(models, time.monotonic() + 60)
 
     def forget_model_list(self, provider_id):
         """As right after a restart, before the computer's model list loads again."""
         on_computer = self.service.ProviderRef(OWNER, provider_id).on('runner-a')
         del self.service.models_cache._entries[on_computer]
 
-    async def bind(self, access='full', path=PROJECT):
+    async def bind(self, access='full', path=PROJECT, machine_id='runner-a'):
         folder = {'mode': 'auto'}
         if path is not None:
             folder = {'mode': 'path', 'path': path}
         request = {
-            'kind': 'computer', 'machine_id': 'runner-a', 'expected_revision': REVISION_A, 'folder': folder,
-            'access': access,
+            'kind': 'computer', 'machine_id': machine_id, 'expected_revision': f'fixture-revision-{machine_id}',
+            'folder': folder, 'access': access,
         }
         await self.service.bind_chat_target(OWNER_USER, 'chat-1', request)
 
@@ -180,7 +196,7 @@ class UltraTurnTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_worker_model_from_another_provider_or_a_preset_is_refused(self):
         await self.bind()
-        for worker_model in (CODEX_MODEL_ID, 'fixture-preset', 'claude-code.not-listed'):
+        for worker_model in (CODEX_MODEL_ID, 'fixture-preset'):
             events = await self.chat({'worker_model': worker_model, 'worker_effort': None})
             self.assertEqual(events, [{'error': OTHER_PROVIDER_MESSAGE}])
         self.assertEqual(self.turns, [])
@@ -189,21 +205,60 @@ class UltraTurnTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_worker_model_the_computer_does_not_offer_is_refused(self):
         await self.bind()
         self.signed_in('claude', self.claude_models[:1])
-        events = await self.chat({'worker_model': WORKER_MODEL_ID, 'worker_effort': None})
-        self.assertEqual(events, [{'error': NOT_OFFERED_MESSAGE}])
+        # The shared registry knows the first, but this computer offers neither.
+        for worker_model in (WORKER_MODEL_ID, 'claude-code.not-listed'):
+            events = await self.chat({'worker_model': worker_model, 'worker_effort': None})
+            self.assertEqual(events, [{'error': NOT_OFFERED_MESSAGE}])
         self.assertEqual(self.turns, [])
 
-    async def test_before_the_model_list_loads_the_registry_decides(self):
+    async def test_ultra_never_takes_a_model_or_name_from_the_shared_registry(self):
+        await self.bind()
+        self.registry[CHAT_MODEL_ID] = self.other_users_entry('fixture-model', ultra=False)
+        self.registry[WORKER_MODEL_ID] = self.other_users_entry('fixture-worker')
+        await self.chat({'worker_model': WORKER_MODEL_ID, 'worker_effort': 'max'})
+        turn = self.turns[0]
+        options = self.options(worker_model='fixture-worker-cli', worker_label='Fixture Worker', worker_effort='max')
+        self.assertEqual(turn.ultra_options, options)
+        self.assertNotIn(OTHER_USERS_TEXT, turn.conversation.system)
+
+    async def test_why_ultra_is_off_names_the_model_as_the_computer_lists_it(self):
+        await self.bind()
+        self.claude_models[0].ultra = False
+        self.registry[CHAT_MODEL_ID] = self.other_users_entry('fixture-model')
+        events = await self.chat()
+        self.assertIsNone(self.turns[0].ultra_options)
+        self.assertEqual(events[0], StatusUpdate(OFF_FOR_CHAT_MODEL))
+
+    async def test_after_a_restart_the_computer_lists_its_models_for_ultra(self):
         await self.bind()
         self.forget_model_list('claude')
+        self.registry[WORKER_MODEL_ID] = self.other_users_entry('fixture-worker')
+        self.providers['claude'].models_hook = AsyncMock(return_value=self.claude_models)
         await self.chat({'worker_model': WORKER_MODEL_ID, 'worker_effort': 'max'})
-        options = self.turns[0].ultra_options
-        self.assertEqual((options.worker_model, options.worker_effort), ('fixture-worker-cli', 'max'))
-        # The registry says the chat's model can't run Ultra, so the reply runs without it.
-        self.registry[CHAT_MODEL_ID] = self.registry_entry('claude', 'fixture-model', 'Fixture', ['low'], ultra=False)
+        options = self.options(worker_model='fixture-worker-cli', worker_label='Fixture Worker', worker_effort='max')
+        self.assertEqual(self.turns[0].ultra_options, options)
+        self.assertIn(('list_models', 'runner-a', 'runner-a'), self.providers['claude'].calls)
+
+    async def test_on_a_computer_without_a_model_list_the_persons_own_list_decides(self):
+        self.add_computer('runner-b')
+        self.signed_in('claude', None, 'runner-b')
+        await self.bind(machine_id='runner-b')
+        self.registry[WORKER_MODEL_ID] = self.other_users_entry('fixture-worker')
+        await self.chat({'worker_model': WORKER_MODEL_ID, 'worker_effort': 'max'})
+        turn = self.turns[0]
+        self.assertEqual(turn.settings.machine_id, 'runner-b')
+        # The plan's own computer listed the workers' model.
+        options = self.options(worker_model='fixture-worker-cli', worker_label='Fixture Worker', worker_effort='max')
+        self.assertEqual(turn.ultra_options, options)
+        self.assertNotIn(('list_models', 'runner-b', 'runner-b'), self.providers['claude'].calls)
+
+    async def test_ultra_is_off_while_no_model_list_has_the_chats_model(self):
+        await self.bind()
+        self.forget_model_list('claude')
+        # The CLI lists nothing, so only the shared registry knows the chat's model.
         events = await self.chat()
-        self.assertIsNone(self.turns[1].ultra_options)
-        self.assertEqual(events[0], StatusUpdate(OFF_FOR_CHAT_MODEL))
+        self.assertIsNone(self.turns[0].ultra_options)
+        self.assertEqual(events, [StatusUpdate(OFF_UNLISTED), {'text': 'fixture response'}])
 
     async def test_the_model_list_says_which_models_run_ultra(self):
         # The composer offers Ultra, and lists workers' models, from these flags.

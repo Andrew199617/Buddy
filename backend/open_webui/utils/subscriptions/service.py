@@ -3603,54 +3603,53 @@ def _turn_model(machine_ref: MachineRef, model_id: str, subscription: dict) -> t
     if own_models is not None:
         for model in own_models:
             if _model_id(provider_id, model) == model_id:
-                return model.value, [effort for effort in model.efforts if isinstance(effort, str) and effort]
+                return model.value, _effort_names(model.efforts)
         raise SubscriptionError(
             f'{PROVIDER_LABELS[provider_id]} on your computer does not offer this model. Choose another model.'
         )
-    efforts = subscription.get('efforts')
+    return subscription['model'], _effort_names(subscription.get('efforts'))
+
+
+def _effort_names(efforts) -> list[str]:
+    """A model's reasoning levels, leaving out anything that is not a level's name."""
     if not isinstance(efforts, list):
-        efforts = []
-    return subscription['model'], [effort for effort in efforts if isinstance(effort, str) and effort]
+        return []
+    return [effort for effort in efforts if isinstance(effort, str) and effort]
 
 
 ULTRA_OFF_STATUS = 'Ultra is off for this reply: {reason}'
 ULTRA_UNSUPPORTED_REASON = "{label} on your computer can't run workers with {model}."
+ULTRA_UNLISTED_REASON = "{label} on your computer hasn't listed this chat's model yet."
 ULTRA_WORKER_PROVIDER_MESSAGE = "Ultra's workers run on this chat's {label} plan. Choose one of its models for them."
 ULTRA_WORKER_MISSING_MESSAGE = "{label} on your computer does not offer the workers' model. Choose another worker model."
 
 
-def _offers_ultra(machine_ref: MachineRef, model_id: str, subscription: dict) -> bool:
-    """Whether the CLI on the computer running a turn can run Ultra with this model.
+async def _ultra_models(machine_ref: MachineRef) -> dict[str, dict]:
+    """The models an Ultra turn may use, as model list entries by model ID.
 
-    As in _turn_model, the computer's own model list decides once it is
-    loaded, and the registry entry until then.
+    Ultra writes the workers' model and its name into the turn's
+    instructions, so they come only from the person's own model lists, never
+    from the shared model registry: it holds what any user's computer last
+    reported under the same model IDs. As in _turn_model, the computer running
+    the turn decides once its list is loaded. Until then, for example right
+    after a restart or on a computer other than the plan's own, which model
+    lists never ask, the person's model list stands in: the models their plan
+    offers on their computers.
     """
+    provider_id = machine_ref.provider_id
     own_models = models_cache.cached(machine_ref)
     if own_models is not None:
-        for model in own_models:
-            if _model_id(machine_ref.provider_id, model) == model_id:
-                return model.ultra
-        return False
-    return subscription.get('ultra') is True
+        entries = [_model_entry(provider_id, model) for model in own_models]
+    else:
+        entries = await _listed_models(machine_ref.ref)
+    return {entry['id']: entry for entry in entries}
 
 
-def _model_name(models: dict, model_id: str) -> str:
-    entry = models.get(model_id) or {}
-    return entry.get('name') or model_id
+def _runs_ultra(entry: dict) -> bool:
+    return entry['subscription'].get('ultra') is True
 
 
-def _worker_subscription(models: dict, provider_id: str, worker_model_id: str) -> dict:
-    """The registry entry of the workers' model, which must be a plan model of the chat's own provider."""
-    entry = models.get(worker_model_id) or {}
-    subscription = entry.get('subscription')
-    if not isinstance(subscription, dict) or subscription.get('provider') != provider_id:
-        raise SubscriptionError(ULTRA_WORKER_PROVIDER_MESSAGE.format(label=PROVIDER_LABELS[provider_id]))
-    return subscription
-
-
-def _turn_ultra(
-    machine_ref: MachineRef, metadata: dict, models: dict, model_id: str, subscription: dict, efforts: list[str]
-) -> tuple[UltraOptions | None, str | None]:
+async def _turn_ultra(machine_ref: MachineRef, metadata: dict, model_id: str) -> tuple[UltraOptions | None, str | None]:
     """The person's Ultra choice for this turn, resolved on the computer that runs it.
 
     Returns the options, or None when the turn runs without Ultra, and the
@@ -3660,6 +3659,7 @@ def _turn_ultra(
     A worker model from another provider, or one the computer does not offer,
     is refused. A worker thinking level the workers' model does not offer is
     dropped. None for the model or the level means the workers use the chat's own.
+    The models, their levels and their names come from _ultra_models.
     """
     choice = metadata.get('ultra')
     if metadata.get('task') or not isinstance(choice, dict):
@@ -3667,22 +3667,28 @@ def _turn_ultra(
         return None, None
     provider_id = machine_ref.provider_id
     label = PROVIDER_LABELS[provider_id]
-    if not _offers_ultra(machine_ref, model_id, subscription):
-        return None, ULTRA_UNSUPPORTED_REASON.format(label=label, model=_model_name(models, model_id))
+    models = await _ultra_models(machine_ref)
+    chat_entry = models.get(model_id)
+    if chat_entry is None:
+        return None, ULTRA_UNLISTED_REASON.format(label=label)
+    if not _runs_ultra(chat_entry):
+        return None, ULTRA_UNSUPPORTED_REASON.format(label=label, model=chat_entry['name'])
 
     worker_model = None
     worker_label = None
-    worker_efforts = efforts
+    worker_efforts = _effort_names(chat_entry['subscription'].get('efforts'))
     worker_model_id = choice.get('worker_model')
     if worker_model_id:
-        worker_subscription = _worker_subscription(models, provider_id, worker_model_id)
-        try:
-            worker_model, worker_efforts = _turn_model(machine_ref, worker_model_id, worker_subscription)
-        except SubscriptionError:
-            raise SubscriptionError(ULTRA_WORKER_MISSING_MESSAGE.format(label=label)) from None
-        worker_label = _model_name(models, worker_model_id)
-        if not _offers_ultra(machine_ref, worker_model_id, worker_subscription):
+        if _provider_for_model_id(worker_model_id) != provider_id:
+            raise SubscriptionError(ULTRA_WORKER_PROVIDER_MESSAGE.format(label=label))
+        worker_entry = models.get(worker_model_id)
+        if worker_entry is None:
+            raise SubscriptionError(ULTRA_WORKER_MISSING_MESSAGE.format(label=label))
+        worker_label = worker_entry['name']
+        if not _runs_ultra(worker_entry):
             return None, ULTRA_UNSUPPORTED_REASON.format(label=label, model=worker_label)
+        worker_model = worker_entry['subscription']['model']
+        worker_efforts = _effort_names(worker_entry['subscription'].get('efforts'))
 
     worker_effort = choice.get('worker_effort')
     if worker_effort not in worker_efforts:
@@ -3885,9 +3891,7 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
         _require_plan(ref.provider_id, await status_cache.get(on_computer, serve_expired=False))
         cli_model, model_efforts = _turn_model(on_computer, model_id, subscription)
         access = await _turn_access(user, target, metadata, foreign_preset)
-        ultra_options, ultra_off_reason = _turn_ultra(
-            on_computer, metadata, models, model_id, subscription, model_efforts
-        )
+        ultra_options, ultra_off_reason = await _turn_ultra(on_computer, metadata, model_id)
         async with _provider_lock(ref):
             if generation != _provider_generations.get(ref, 0):
                 raise SubscriptionError('The provider machine changed; refresh before starting another turn.')
