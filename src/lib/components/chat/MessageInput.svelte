@@ -112,6 +112,7 @@
 	import Knobs from '../icons/Knobs.svelte';
 	import RunTargetBar from './RunTarget/RunTargetBar.svelte';
 	import { planProvidersFor, type RunTargetDraft } from './RunTarget/run-target';
+	import type { ProjectTarget } from './ProjectPanel/project-session';
 	import { thisPcMachineId } from '$lib/desktop/this-pc';
 	import type {
 		ChatRunTarget,
@@ -219,6 +220,7 @@
 
 	// The chat folder whose project folder holds custom agents; null hides the agent button.
 	export let agentFolderId: string | null = null;
+	export let agentChatTarget: ProjectTarget | null = null;
 	export let selectedAgent: ChatAgent | null = null;
 	export let onAgentChange: (agent: ChatAgent | null) => void = () => {};
 	let agentMenuAvailable = false;
@@ -2718,6 +2720,7 @@
 										<AgentMenu
 											bind:available={agentMenuAvailable}
 											folderId={agentFolderId}
+											chatTarget={agentChatTarget}
 											{selectedAgent}
 											onSelect={onAgentChange}
 											preserveComposerFocus={mobileComposer && !embedded}

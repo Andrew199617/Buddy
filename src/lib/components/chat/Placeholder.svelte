@@ -23,6 +23,7 @@
 	import FolderPlaceholder from './Placeholder/FolderPlaceholder.svelte';
 	import type { RunTargetOptions } from '$lib/apis/subscriptions';
 	import type { RunTargetDraft } from './RunTarget/run-target';
+	import type { ProjectTarget } from './ProjectPanel/project-session';
 	import FolderTitle from './Placeholder/FolderTitle.svelte';
 
 	const i18n: any = getContext('i18n');
@@ -47,6 +48,7 @@
 	export let pendingOAuthTools = [];
 
 	export let agentFolderId: string | null = null;
+	export let agentChatTarget: ProjectTarget | null = null;
 	export let selectedAgent: ChatAgent | null = null;
 	export let onAgentChange: (agent: ChatAgent | null) => void = () => {};
 
@@ -175,6 +177,7 @@
 				bind:selectedSkillIds
 				bind:selectedFilterIds
 				{agentFolderId}
+				{agentChatTarget}
 				{selectedAgent}
 				{onAgentChange}
 				bind:imageGenerationEnabled

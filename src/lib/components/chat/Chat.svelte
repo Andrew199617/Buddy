@@ -935,6 +935,21 @@
 		return target;
 	}
 
+	// The agent menu reads the folder this chat runs in, before its chat folder's project
+	// folder: the bar's choice for a saved chat, and the draft's for a new one.
+	$: agentChatTarget = chatProjectTarget(
+		boundDetails(shownRunTarget) ?? draftDetails(runTargetDraft, runTargetOptions),
+		runTargetOptions?.computers ?? []
+	);
+
+	function draftDetails(
+		draft: RunTargetDraft | null,
+		options: RunTargetOptions | null
+	): ChatRunTargetDetails | null {
+		if (!draft || !options) return null;
+		return detailsFromDraft(draft, options);
+	}
+
 	const onSelectedModelIdsChange = () => {
 		resetInput();
 		oldSelectedModelIds = structuredClone(selectedModelIds);
@@ -4707,6 +4722,7 @@
 										bind:selectedSkillIds
 										bind:selectedFilterIds
 										agentFolderId={sidePanelFolderId}
+										{agentChatTarget}
 										{selectedAgent}
 										onAgentChange={changeAgent}
 										bind:imageGenerationEnabled
@@ -4867,6 +4883,7 @@
 									bind:selectedSkillIds
 									bind:selectedFilterIds
 									agentFolderId={sidePanelFolderId}
+									{agentChatTarget}
 									{selectedAgent}
 									onAgentChange={changeAgent}
 									bind:imageGenerationEnabled
