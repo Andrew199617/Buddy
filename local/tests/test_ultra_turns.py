@@ -52,12 +52,6 @@ def plan_model(key, name, efforts, ultra=True):
     return ProviderModel(key=key, value=f'{key}-cli', name=name, efforts=list(efforts), ultra=ultra)
 
 
-def registry_entry(provider, key, name, efforts, ultra=True):
-    """A model list entry, as the server's model registry holds it."""
-    subscription = {'provider': provider, 'model': f'{key}-cli', 'efforts': list(efforts), 'ultra': ultra}
-    return {'name': name, 'subscription': subscription}
-
-
 class UltraTurnTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.config = MemoryConfig({
@@ -90,9 +84,9 @@ class UltraTurnTests(unittest.IsolatedAsyncioTestCase):
         self.signed_in('claude', self.claude_models)
         self.signed_in('codex', self.codex_models)
         self.registry = {
-            CHAT_MODEL_ID: registry_entry('claude', 'fixture-model', 'Fixture', ['low', 'medium', 'high']),
-            WORKER_MODEL_ID: registry_entry('claude', 'fixture-worker', 'Fixture Worker', ['low', 'max']),
-            CODEX_MODEL_ID: registry_entry('codex', 'fixture-codex', 'Fixture Codex', ['low', 'xhigh']),
+            CHAT_MODEL_ID: self.registry_entry('claude', 'fixture-model', 'Fixture', ['low', 'medium', 'high']),
+            WORKER_MODEL_ID: self.registry_entry('claude', 'fixture-worker', 'Fixture Worker', ['low', 'max']),
+            CODEX_MODEL_ID: self.registry_entry('codex', 'fixture-codex', 'Fixture Codex', ['low', 'xhigh']),
             # A Workspace preset carries no plan details of its own.
             'fixture-preset': {'name': 'Fixture preset', 'preset': True},
         }
@@ -114,6 +108,10 @@ class UltraTurnTests(unittest.IsolatedAsyncioTestCase):
         environment_patch = patch.dict(os.environ, environment, clear=True)
         environment_patch.start()
         self.addCleanup(environment_patch.stop)
+
+    def registry_entry(self, provider_id, key, name, efforts, ultra=True):
+        """A model registry entry, built the way the server builds them from a model list."""
+        return self.service._model_entry(provider_id, plan_model(key, name, efforts, ultra))
 
     def signed_in(self, provider_id, models):
         on_computer = self.service.ProviderRef(OWNER, provider_id).on('runner-a')
@@ -201,11 +199,18 @@ class UltraTurnTests(unittest.IsolatedAsyncioTestCase):
         await self.chat({'worker_model': WORKER_MODEL_ID, 'worker_effort': 'max'})
         options = self.turns[0].ultra_options
         self.assertEqual((options.worker_model, options.worker_effort), ('fixture-worker-cli', 'max'))
-        # A registry entry from before Ultra has no flag, so the reply runs without it.
-        del self.registry[CHAT_MODEL_ID]['subscription']['ultra']
+        # The registry says the chat's model can't run Ultra, so the reply runs without it.
+        self.registry[CHAT_MODEL_ID] = self.registry_entry('claude', 'fixture-model', 'Fixture', ['low'], ultra=False)
         events = await self.chat()
         self.assertIsNone(self.turns[1].ultra_options)
         self.assertEqual(events[0], StatusUpdate(OFF_FOR_CHAT_MODEL))
+
+    async def test_the_model_list_says_which_models_run_ultra(self):
+        # The composer offers Ultra, and lists workers' models, from these flags.
+        self.claude_models[1].ultra = False
+        models = await self.service.get_user_subscription_models(OWNER_USER)
+        flags = {model['id']: model['subscription']['ultra'] for model in models}
+        self.assertEqual(flags, {CHAT_MODEL_ID: True, WORKER_MODEL_ID: False, CODEX_MODEL_ID: True})
 
     async def test_a_chat_model_without_ultra_runs_normally_and_says_why(self):
         await self.bind()

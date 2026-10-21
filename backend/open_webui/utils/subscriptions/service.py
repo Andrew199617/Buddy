@@ -3319,6 +3319,8 @@ def _model_entry(provider_id: str, model: ProviderModel, credential_mode: str = 
             'model': model.value,
             'description': model.description,
             'efforts': model.efforts,
+            # Whether the CLI can run Ultra with this model; the composer offers Ultra only then.
+            'ultra': model.ultra,
         },
     }
 

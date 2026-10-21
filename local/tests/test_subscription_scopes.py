@@ -41,7 +41,7 @@ def member_machine(machine_id, user_id):
 
 def signed_in_model():
     return types.SimpleNamespace(key='fixture-model', value='fixture-model', name='Fixture model',
-                                 description='', efforts=[])
+                                 description='', efforts=[], ultra=False)
 
 
 class SubscriptionScopeTests(unittest.IsolatedAsyncioTestCase):
