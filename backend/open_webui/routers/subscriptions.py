@@ -353,7 +353,8 @@ async def save_computer_settings(
 
 
 @router.get('/machines/{machine_id}/agents')
-async def get_machine_agents(machine_id: str, path: str, user=Depends(get_machine_user)):
+async def get_machine_agents(machine_id: str, path: str, user=Depends(get_machine_session_user)):
+    # Agent files are private project instructions; like browsing folders, this needs a signed-in session.
     try:
         return await service.server_agent_files(user, machine_id, path)
     except SubscriptionError as error:

@@ -453,5 +453,15 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
         files = await self.service.server_agent_files(OWNER_USER, 'local', str(project))
         self.assertEqual(files['files'][0]['path'], '.github/agents/reviewer.agent.md')
 
+
+class AgentRouteTests(unittest.TestCase):
+    def test_reading_agents_needs_a_signed_in_session(self):
+        # An API key for the owner's account must not read private agent instructions.
+        router = (ROOT / 'backend' / 'open_webui' / 'routers' / 'subscriptions.py').read_text(encoding='utf-8')
+        route = router[router.index('async def get_machine_agents('):]
+        signature = route[: route.index(chr(10))]
+        self.assertIn('Depends(get_machine_session_user)', signature)
+
+
 if __name__ == '__main__':
     unittest.main()
