@@ -1,21 +1,30 @@
 import { describe, expect, it } from 'vitest';
 
-import type { FolderPlan, FolderProject, ProjectFolderComputer } from '$lib/apis/subscriptions';
+import type { FolderProject, ProjectFolderComputer } from '$lib/apis/subscriptions';
 import {
 	chipState,
-	claudeReadHint,
+	choiceFromDraft,
+	draftForSharing,
 	draftFromProject,
+	draftProblem,
+	draftWithOffered,
+	draftWithoutOffered,
+	draftWithRunOn,
 	effectiveChoice,
-	fileAccessNeed,
+	emptyDraft,
 	grantContaining,
+	instructionsShared,
 	joinSharedPath,
 	lastSegment,
 	lastUsedAgo,
 	needsAttention,
 	parentWithinRoot,
-	plansToAllow,
-	plansWithoutComputer,
+	planAccesses,
+	plansReadingAnywhere,
+	projectSummary,
+	runOnValue,
 	sameDraft,
+	sharedPlanAccess,
 	suggestionTools,
 	waitsForOwnChoice
 } from './project-folders';
@@ -32,22 +41,6 @@ const workPc: ProjectFolderComputer = {
 	recent_paths: []
 };
 
-const claudePlan: FolderPlan = {
-	id: 'claude',
-	name: 'Claude',
-	enable: true,
-	access: 'full',
-	machine: { id: 'pc-1', name: 'Work PC', revision: 'rev-1' }
-};
-
-const chatGptPlan: FolderPlan = {
-	id: 'codex',
-	name: 'ChatGPT',
-	enable: false,
-	access: 'chat',
-	machine: null
-};
-
 function project(overrides: Partial<FolderProject> = {}): FolderProject {
 	return {
 		folder_id: 'website',
@@ -55,8 +48,8 @@ function project(overrides: Partial<FolderProject> = {}): FolderProject {
 		own: null,
 		inherited: null,
 		shared_instructions: false,
+		others_can_edit: false,
 		has_plans: true,
-		plans: [claudePlan, chatGptPlan],
 		computers: [workPc],
 		...overrides
 	};
@@ -78,7 +71,12 @@ describe('the effective choice', () => {
 	it('is the folder’s own, then its parent’s, then Let the AI choose', () => {
 		expect(effectiveChoice(project()).mode).toBe('auto');
 		const inherited = project({ inherited: choice('chat', {}, 'Work') });
-		expect(effectiveChoice(inherited)).toEqual({ mode: 'chat', paths: {}, fromFolderName: 'Work' });
+		expect(effectiveChoice(inherited)).toEqual({
+			mode: 'chat',
+			paths: {},
+			machineId: '',
+			fromFolderName: 'Work'
+		});
 		const own = project({ own: choice('auto'), inherited: choice('chat', {}, 'Work') });
 		expect(effectiveChoice(own).fromFolderName).toBe('');
 	});
@@ -91,10 +89,27 @@ describe('a folder whose instructions others can change', () => {
 		expect(effectiveChoice(shared).mode).toBe('chat');
 		// Nothing is selected, so choosing "No files, just chat" is a change that gets saved.
 		expect(draftFromProject(shared).mode).toBe('unchosen');
-		expect(sameDraft(draftFromProject(shared), { mode: 'chat', paths: {} })).toBe(false);
+		expect(sameDraft(draftFromProject(shared), emptyDraft('chat'))).toBe(false);
 		const chosen = project({ shared_instructions: true, own: choice('auto') });
 		expect(waitsForOwnChoice(chosen)).toBe(false);
 		expect(effectiveChoice(chosen).mode).toBe('auto');
+	});
+
+	it('counts instructions added in the folder dialog', () => {
+		const editable = project({ others_can_edit: true });
+		expect(instructionsShared(editable, true)).toBe(true);
+		expect(instructionsShared(editable, false)).toBe(false);
+		expect(instructionsShared(project(), true)).toBe(false);
+		// Without the dialog's instructions, the server's answer counts.
+		expect(instructionsShared(project({ shared_instructions: true }), null)).toBe(true);
+	});
+
+	it('stops following the parent while the instructions are shared', () => {
+		expect(draftForSharing(emptyDraft('inherit'), true).mode).toBe('unchosen');
+		expect(draftForSharing(emptyDraft('unchosen'), false).mode).toBe('inherit');
+		const chosen = { ...emptyDraft('auto'), machineId: 'pc-1' };
+		expect(draftForSharing(chosen, true)).toBe(chosen);
+		expect(draftForSharing(emptyDraft('chat'), false).mode).toBe('chat');
 	});
 });
 
@@ -121,6 +136,49 @@ describe('the chip', () => {
 		expect(needsAttention(otherComputer)).toBe(true);
 	});
 
+	it('checks and names the folder on the chosen computer', () => {
+		const homePc = { ...workPc, machine_id: 'pc-2', name: 'Home PC' };
+		const site = { path: 'D:\\site', problem: null };
+		const onHome = project({
+			computers: [workPc, homePc],
+			own: { ...choice('folder', { 'pc-2': site }), machine_id: 'pc-2' }
+		});
+		expect(needsAttention(onHome)).toBe(false);
+		expect(chipState(onHome).label).toBe('Home PC · site');
+		// Another computer's old folder doesn't change where new chats start.
+		const withOld = project({
+			computers: [workPc, homePc],
+			own: {
+				...choice('folder', {
+					'pc-1': { path: 'C:\\old', problem: 'computer_changed' as const },
+					'pc-2': site
+				}),
+				machine_id: 'pc-2'
+			}
+		});
+		expect(needsAttention(withOld)).toBe(false);
+		expect(chipState(withOld).label).toBe('Home PC · site');
+		// The chosen computer has no folder yet.
+		const missing = project({
+			computers: [workPc, homePc],
+			own: {
+				...choice('folder', { 'pc-1': { path: 'C:\\code\\site', problem: null } }),
+				machine_id: 'pc-2'
+			}
+		});
+		expect(needsAttention(missing)).toBe(true);
+	});
+
+	it('lets Buddy pick any computer that has the folder', () => {
+		const homePc = { ...workPc, machine_id: 'pc-2', name: 'Home PC' };
+		const oneOfTwo = project({
+			computers: [workPc, homePc],
+			own: choice('folder', { 'pc-2': { path: 'D:\\site', problem: null } })
+		});
+		expect(needsAttention(oneOfTwo)).toBe(false);
+		expect(chipState(oneOfTwo).label).toBe('Home PC · site');
+	});
+
 	it('asks for attention when every computer with a folder was removed', () => {
 		const removed = project({ own: choice('folder', {}), computers: [] });
 		expect(chipState(removed)).toEqual({
@@ -131,82 +189,14 @@ describe('the chip', () => {
 	});
 
 	it('describes the other modes and where they come from', () => {
-		expect(chipState(project()).label).toBe('AI chooses where to work');
+		expect(chipState(project()).label).toBe('Project folder not set');
+		expect(chipState(project({ own: choice('auto') })).label).toBe('AI chooses where to work');
 		const inherited = chipState(project({ inherited: choice('chat', {}, 'Work') }));
 		expect(inherited).toEqual({
-			label: 'Just chat, no files',
+			label: 'Detached',
 			tone: 'normal',
 			fromFolderName: 'Work'
 		});
-	});
-});
-
-describe('hints', () => {
-	it('warns that Read files keeps Claude inside its start folder', () => {
-		const reading = project({
-			computers: [{ ...workPc, providers: [{ id: 'claude', name: 'Claude', access: 'read' }] }]
-		});
-		expect(claudeReadHint(reading)).toBe(true);
-		expect(claudeReadHint(project())).toBe(false);
-	});
-});
-
-describe('file access', () => {
-	const chatOnlyClaude = { ...claudePlan, access: 'chat' as const };
-
-	it('is ready while a plan can open folders on some computer', () => {
-		expect(fileAccessNeed(project())).toBe('ready');
-		// A Chat-only plan beside it is still offered.
-		const mixed = project({
-			plans: [claudePlan, { ...chatGptPlan, enable: true, machine: claudePlan.machine }]
-		});
-		expect(fileAccessNeed(mixed)).toBe('ready');
-		expect(plansToAllow(mixed).map((plan) => plan.id)).toEqual(['codex']);
-	});
-
-	it('asks to allow a Chat-only plan that is on and has a computer', () => {
-		const chatOnly = project({ plans: [chatOnlyClaude, chatGptPlan], computers: [] });
-		expect(fileAccessNeed(chatOnly)).toBe('allow');
-		expect(plansToAllow(chatOnly)).toEqual([chatOnlyClaude]);
-	});
-
-	it('never offers a plan that is off or has no computer it can use', () => {
-		const off = { ...chatOnlyClaude, enable: false };
-		const homeless = { ...chatOnlyClaude, machine: null };
-		expect(plansToAllow(project({ plans: [off, homeless] }))).toEqual([]);
-	});
-
-	it('needs a computer when the plans that are on have none they can use', () => {
-		const homeless = project({
-			plans: [{ ...claudePlan, machine: null }, chatGptPlan],
-			computers: []
-		});
-		expect(fileAccessNeed(homeless)).toBe('computer');
-		expect(plansWithoutComputer(homeless).map((plan) => plan.id)).toEqual(['claude']);
-	});
-
-	it('names a plan with files but no computer beside one that can be allowed', () => {
-		const mixed = project({
-			plans: [
-				{ ...claudePlan, machine: null },
-				{ ...chatGptPlan, enable: true, machine: claudePlan.machine }
-			],
-			computers: []
-		});
-		expect(fileAccessNeed(mixed)).toBe('allow');
-		expect(plansWithoutComputer(mixed).map((plan) => plan.id)).toEqual(['claude']);
-		// A Chat-only plan without a computer has nothing to open folders with anyway.
-		const chatOnlyHomeless = { ...chatGptPlan, enable: true, machine: null };
-		expect(plansWithoutComputer(project({ plans: [chatOnlyHomeless] }))).toEqual([]);
-	});
-
-	it('needs a plan turned on when none is', () => {
-		const none = project({
-			has_plans: false,
-			plans: [{ ...claudePlan, enable: false }, chatGptPlan],
-			computers: []
-		});
-		expect(fileAccessNeed(none)).toBe('turn_on');
 	});
 });
 
@@ -250,19 +240,244 @@ describe('paths inside shared folders', () => {
 describe('drafts', () => {
 	it('start from the folder’s own choice, or follow the parent', () => {
 		const own = project({ own: choice('folder', { 'pc-1': { path: 'C:\\a', problem: null } }) });
-		expect(draftFromProject(own)).toEqual({ mode: 'folder', paths: { 'pc-1': 'C:\\a' } });
-		expect(draftFromProject(project({ inherited: choice('chat') }))).toEqual({
-			mode: 'inherit',
-			paths: {}
+		expect(draftFromProject(own)).toEqual({
+			mode: 'folder',
+			paths: { 'pc-1': 'C:\\a' },
+			machineId: '',
+			access: '',
+			offered: {}
 		});
-		expect(draftFromProject(project())).toEqual({ mode: 'auto', paths: {} });
+		expect(draftFromProject(project({ inherited: choice('chat') }))).toEqual(emptyDraft('inherit'));
+		// No own choice and no parent: new chats start detached until one is made.
+		expect(draftFromProject(project())).toEqual(emptyDraft('inherit'));
 	});
 
-	it('compare by mode and paths', () => {
-		expect(sameDraft({ mode: 'auto', paths: {} }, { mode: 'auto', paths: {} })).toBe(true);
-		expect(
-			sameDraft({ mode: 'folder', paths: { a: 'x' } }, { mode: 'folder', paths: { a: 'y' } })
-		).toBe(false);
+	it('carry where new chats start, their access and the folders offered', () => {
+		const own = {
+			...choice('auto'),
+			machine_id: 'pc-1',
+			access: 'full' as const,
+			offered: { 'pc-1': [{ path: 'C:\\docs', problem: null }] }
+		};
+		const draft = draftFromProject(project({ own }));
+		expect(draft).toEqual({
+			mode: 'auto',
+			paths: {},
+			machineId: 'pc-1',
+			access: 'full',
+			offered: { 'pc-1': ['C:\\docs'] }
+		});
+	});
+
+	it('compare every field', () => {
+		const base = { ...emptyDraft('auto'), offered: { 'pc-1': ['C:\\a'] } };
+		expect(sameDraft(base, { ...base, offered: { 'pc-1': ['C:\\a'] } })).toBe(true);
+		expect(sameDraft(base, { ...base, machineId: 'pc-1' })).toBe(false);
+		expect(sameDraft(base, { ...base, access: 'read' })).toBe(false);
+		expect(sameDraft(base, { ...base, offered: { 'pc-1': ['C:\\b'] } })).toBe(false);
+		const folder = { ...emptyDraft('folder'), paths: { a: 'x' } };
+		expect(sameDraft(folder, { ...folder, paths: { a: 'y' } })).toBe(false);
+		// Left over from an earlier pick, but not saved for these modes.
+		for (const mode of ['inherit', 'unchosen', 'chat'] as const) {
+			expect(sameDraft(emptyDraft(mode), { ...emptyDraft(mode), machineId: 'pc-1' })).toBe(true);
+		}
+	});
+});
+
+describe('where new chats run', () => {
+	it('reads from the draft', () => {
+		expect(runOnValue(emptyDraft('unchosen'))).toBeNull();
+		expect(runOnValue(emptyDraft('inherit'))).toBe('inherit');
+		expect(runOnValue(emptyDraft('chat'))).toBe('detached');
+		expect(runOnValue(emptyDraft('auto'))).toBe('automatic');
+		expect(runOnValue({ ...emptyDraft('folder'), machineId: 'pc-1' })).toBe('pc-1');
+	});
+
+	it('keeps a folder choice when the computer changes, and lets the AI choose otherwise', () => {
+		const folder = { ...emptyDraft('folder'), paths: { 'pc-1': 'C:\\site' } };
+		expect(draftWithRunOn(folder, 'pc-1')).toEqual({ ...folder, machineId: 'pc-1' });
+		expect(draftWithRunOn(emptyDraft('chat'), 'automatic')).toEqual(emptyDraft('auto'));
+		expect(draftWithRunOn(emptyDraft('inherit'), 'pc-1').mode).toBe('auto');
+		expect(draftWithRunOn(folder, 'detached').mode).toBe('chat');
+		expect(draftWithRunOn(folder, 'inherit').mode).toBe('inherit');
+	});
+
+	it('comes back to a specific folder after passing through detached or the parent', () => {
+		const folder = { ...emptyDraft('folder'), paths: { 'pc-1': 'C:\site' }, machineId: 'pc-1' };
+		for (const via of ['detached', 'inherit']) {
+			const back = draftWithRunOn(draftWithRunOn(folder, via), 'pc-1');
+			expect(back).toEqual(folder);
+		}
+		const automatic = draftWithRunOn(draftWithRunOn(folder, 'detached'), 'automatic');
+		expect(automatic.mode).toBe('folder');
+		// A computer with no folder picked yet lets the AI choose.
+		expect(draftWithRunOn(draftWithRunOn(folder, 'detached'), 'pc-2').mode).toBe('auto');
+	});
+
+	it('needs a folder on the chosen computer before saving a specific folder', () => {
+		const folder = { ...emptyDraft('folder'), paths: { 'pc-2': 'D:\\x' }, machineId: 'pc-1' };
+		expect(draftProblem(folder)).toEqual({ kind: 'needs_folder', machineId: 'pc-1' });
+		expect(draftProblem({ ...emptyDraft('folder') })).toEqual({
+			kind: 'needs_folder',
+			machineId: ''
+		});
+		expect(draftProblem({ ...folder, machineId: 'pc-2' })).toBeNull();
+		expect(draftProblem(emptyDraft('auto'))).toBeNull();
+	});
+});
+
+describe('the plans’ default access', () => {
+	it('is shared when every plan that is on starts the same, and listed otherwise', () => {
+		const both = {
+			...workPc,
+			providers: [
+				{ id: 'claude' as const, name: 'Claude', access: 'full' as const },
+				{ id: 'codex' as const, name: 'ChatGPT', access: 'read' as const }
+			]
+		};
+		const differing = planAccesses(project({ computers: [both] }));
+		expect(differing).toEqual([
+			{ id: 'claude', name: 'Claude', access: 'full' },
+			{ id: 'codex', name: 'ChatGPT', access: 'read' }
+		]);
+		expect(sharedPlanAccess(differing)).toBeNull();
+		// Codex's read-only sandbox reads anywhere; Claude Code's reads stay in the folder.
+		expect(plansReadingAnywhere(differing).map((plan) => plan.name)).toEqual(['ChatGPT']);
+		expect(sharedPlanAccess(planAccesses(project()))).toBe('full');
+		expect(sharedPlanAccess(planAccesses(project({ computers: [] })))).toBeNull();
+	});
+});
+
+describe('the row summary', () => {
+	it('names the folder, the computer and the access', () => {
+		const draft = {
+			...emptyDraft('folder'),
+			paths: { 'pc-1': 'C:\\code\\site' },
+			machineId: 'pc-1',
+			access: 'full' as const
+		};
+		expect(projectSummary(draft, project())).toEqual({
+			kind: 'set',
+			folder: 'site',
+			missingFolder: false,
+			computer: workPc,
+			access: 'full'
+		});
+		expect(projectSummary(emptyDraft('auto'), project())).toEqual({
+			kind: 'set',
+			folder: null,
+			missingFolder: false,
+			computer: null,
+			access: ''
+		});
+	});
+
+	it('never names another computer’s folder for the chosen one', () => {
+		const elsewhere = {
+			...emptyDraft('folder'),
+			paths: { 'pc-2': 'D:\\docs' },
+			machineId: 'pc-1'
+		};
+		const summary = projectSummary(elsewhere, project());
+		expect(summary).toMatchObject({ kind: 'set', folder: null, missingFolder: true });
+	});
+
+	it('says when the folder follows its parent, has no choice, or is detached', () => {
+		const inherited = project({ inherited: choice('chat', {}, 'Work') });
+		expect(projectSummary(emptyDraft('inherit'), inherited)).toEqual({
+			kind: 'inherit',
+			folderName: 'Work'
+		});
+		expect(projectSummary(emptyDraft('inherit'), project())).toEqual({ kind: 'unset' });
+		expect(projectSummary(emptyDraft('chat'), project())).toEqual({ kind: 'detached' });
+		expect(projectSummary(emptyDraft('unchosen'), project())).toEqual({ kind: 'unchosen' });
+	});
+});
+
+describe('folders to offer', () => {
+	it('adds up to five per computer without repeats, and removes them', () => {
+		let draft = emptyDraft('auto');
+		for (const path of ['a', 'b', 'c', 'd', 'e', 'f', 'a']) {
+			draft = draftWithOffered(draft, 'pc-1', 'C:\\' + path);
+		}
+		expect(draft.offered['pc-1']).toEqual(['C:\\a', 'C:\\b', 'C:\\c', 'C:\\d', 'C:\\e']);
+		draft = draftWithoutOffered(draft, 'pc-1', 'C:\\a');
+		expect(draft.offered['pc-1']).toHaveLength(4);
+		for (const path of ['b', 'c', 'd', 'e']) {
+			draft = draftWithoutOffered(draft, 'pc-1', 'C:\\' + path);
+		}
+		expect(draft.offered).toEqual({});
+	});
+});
+
+describe('the choice to save', () => {
+	const draft = {
+		mode: 'folder' as const,
+		paths: { 'pc-1': 'C:\\site' },
+		machineId: 'pc-1',
+		access: 'full' as const,
+		offered: { 'pc-1': ['C:\\docs'], 'pc-2': [] }
+	};
+
+	it('always sends every field, so nothing saved is lost', () => {
+		expect(choiceFromDraft(draft, 'folder', [workPc])).toEqual({
+			mode: 'folder',
+			paths: { 'pc-1': 'C:\\site' },
+			machine_id: 'pc-1',
+			access: 'full',
+			offered: { 'pc-1': ['C:\\docs'] }
+		});
+		expect(choiceFromDraft(draft, 'auto', [workPc]).paths).toEqual({});
+	});
+
+	it('keeps nothing else for detached chats', () => {
+		expect(choiceFromDraft(draft, 'chat', [workPc])).toEqual({
+			mode: 'chat',
+			paths: {},
+			machine_id: '',
+			access: '',
+			offered: {}
+		});
+	});
+
+	it('forgets a computer that was removed, but keeps this server', () => {
+		expect(choiceFromDraft({ ...draft, machineId: 'gone' }, 'auto', [workPc]).machine_id).toBe('');
+		expect(choiceFromDraft({ ...draft, machineId: 'local' }, 'auto', [workPc]).machine_id).toBe(
+			'local'
+		);
+		const removedSince = {
+			...draft,
+			paths: { 'pc-1': 'C:\\site', gone: 'D:\\x', local: '/srv/site' },
+			offered: { gone: ['D:\\y'], local: ['/srv/docs'] }
+		};
+		// With Automatic, every computer still listed keeps its folder.
+		const saved = choiceFromDraft({ ...removedSince, machineId: '' }, 'folder', [workPc]);
+		expect(saved.paths).toEqual({ 'pc-1': 'C:\\site', local: '/srv/site' });
+		expect(saved.offered).toEqual({ local: ['/srv/docs'] });
+	});
+
+	it('saves only the chosen computer’s folder', () => {
+		const homePc = { ...workPc, machine_id: 'pc-2', name: 'Home PC' };
+		const both = {
+			...draft,
+			machineId: 'pc-2',
+			paths: { 'pc-1': 'C:\site', 'pc-2': 'D:\site' },
+			offered: { 'pc-1': ['C:\docs'], 'pc-2': ['D:\docs'] }
+		};
+		const saved = choiceFromDraft(both, 'folder', [workPc, homePc]);
+		expect(saved.paths).toEqual({ 'pc-2': 'D:\site' });
+		// Folders to offer are checked on their own computer, and each is shown there.
+		expect(saved.offered).toEqual({ 'pc-1': ['C:\docs'], 'pc-2': ['D:\docs'] });
+		// With Automatic, every computer's folder is kept.
+		const automatic = choiceFromDraft({ ...both, machineId: '' }, 'folder', [workPc, homePc]);
+		expect(Object.keys(automatic.paths)).toEqual(['pc-1', 'pc-2']);
+	});
+
+	it('starts a draft without a computer that was removed since', () => {
+		const own = { ...choice('auto'), machine_id: 'gone' };
+		expect(draftFromProject(project({ own })).machineId).toBe('');
+		const server = { ...choice('auto'), machine_id: 'local' };
+		expect(draftFromProject(project({ own: server })).machineId).toBe('local');
 	});
 });
 

@@ -37,7 +37,7 @@
 <Modal size="sm" bind:show>
 	<div class="flex flex-col gap-3 px-4 pt-3 pb-4 dark:text-gray-200">
 		<div class="flex items-center justify-between gap-2">
-			<h2 class="min-w-0 truncate text-sm">
+			<h2 id="project-folder-modal-title-{folderId}" class="min-w-0 truncate text-sm">
 				{$i18n.t('Project folder for “{{name}}”', { name: folderName })}
 			</h2>
 			<button
@@ -51,7 +51,13 @@
 		</div>
 
 		{#if show}
-			<ProjectFolderSection bind:this={section} {folderId} bind:error bind:loadError />
+			<ProjectFolderSection
+				bind:this={section}
+				{folderId}
+				labelledBy="project-folder-modal-title-{folderId}"
+				bind:error
+				bind:loadError
+			/>
 		{/if}
 
 		<div

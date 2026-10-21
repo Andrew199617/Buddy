@@ -126,65 +126,6 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(computer['providers'], [{'id': 'claude', 'name': 'Claude', 'access': 'full'}])
         self.assertEqual(self.machine.path_checks, [])
 
-    async def test_describing_lists_each_plan_with_its_computer(self):
-        project = await self.service.describe_folder_project(OWNER_USER, 'website')
-        self.assertEqual(project['plans'], [
-            {
-                'id': 'claude', 'name': 'Claude', 'enable': True, 'access': 'full',
-                'machine': {'id': 'pc-1', 'name': 'Test pc-1', 'revision': 'fixture-revision-pc-1'},
-            },
-            {
-                'id': 'codex', 'name': 'ChatGPT', 'enable': False, 'access': 'chat',
-                'machine': {'id': 'local', 'name': 'This server', 'revision': 'local'},
-            },
-        ])
-        self.assertEqual(self.machine.path_checks, [])
-
-    async def test_a_chat_only_plan_is_listed_with_its_computer(self):
-        # Its access is where new chats start, so the folder settings can offer to raise it.
-        self.config.values['subscriptions.claude'] = {**enabled_settings('pc-1'), 'access': 'chat'}
-        project = await self.service.describe_folder_project(OWNER_USER, 'website')
-        claude = project['plans'][0]
-        self.assertEqual((claude['enable'], claude['access'], claude['machine']['id']), (True, 'chat', 'pc-1'))
-        self.assertTrue(project['has_plans'])
-
-    async def test_a_plan_without_a_usable_computer_has_none(self):
-        self.config.values['subscriptions.claude'] = enabled_settings('removed-pc')
-        await self.service.save_policy({'server_machine': False})
-        project = await self.service.describe_folder_project(OWNER_USER, 'website')
-        self.assertEqual([plan['machine'] for plan in project['plans']], [None, None])
-
-    async def test_a_computer_added_by_address_without_its_key_is_not_usable(self):
-        # As after a config import onto a server where that computer's address changed.
-        del self.config.values['subscriptions.machines'][0]['key']
-        project = await self.service.describe_folder_project(OWNER_USER, 'website')
-        self.assertIsNone(project['plans'][0]['machine'])
-
-    async def test_a_described_plan_saves_with_the_computer_it_reports(self):
-        self.config.values['subscriptions.claude'] = {
-            'enable': True, 'access': 'chat', 'workspace': '', 'cli_path': '', 'machine_id': 'pc-1'
-        }
-        project = await self.service.describe_folder_project(OWNER_USER, 'website')
-        for plan in project['plans']:
-            with self.subTest(plan=plan['id']):
-                machine = plan['machine']
-                saved = await self.service.save_settings(
-                    OWNER, plan['id'], {'access': 'read'}, machine['id'], machine['revision']
-                )
-                self.assertEqual((saved.access, saved.machine_id), ('read', machine['id']))
-
-    async def test_a_members_plans_name_only_their_own_computers(self):
-        self.config.values['subscriptions.users.member-1.claude'] = enabled_settings('pc-1')
-        self.config.values['subscriptions.users.member-1.codex'] = {
-            **enabled_settings('member-pc'), 'access': 'chat'
-        }
-        project = await self.service.describe_folder_project(MEMBER_USER, 'website')
-        [claude, codex] = project['plans']
-        self.assertIsNone(claude['machine'])
-        self.assertEqual(codex['machine'], {
-            'id': 'member-pc', 'name': 'Test member-pc', 'revision': 'fixture-revision-member-pc'
-        })
-
     async def test_chat_only_plans_still_list_every_computer(self):
         # A plan's access is only where new chats start, so a folder can still be chosen.
         self.config.values['subscriptions.claude']['access'] = 'chat'
@@ -257,6 +198,13 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(member_view['shared_instructions'])
         self.assertFalse(owner_view['shared_instructions'])
 
+    async def test_whether_others_can_edit_is_reported_without_instructions(self):
+        # Instructions added in the folder dialog would be shared, so the dialog needs to know.
+        member_view = await self.service.describe_folder_project(MEMBER_USER, 'website')
+        owner_view = await self.service.describe_folder_project(OWNER_USER, 'website')
+        self.assertEqual((member_view['shared_instructions'], member_view['others_can_edit']), (False, True))
+        self.assertFalse(owner_view['others_can_edit'])
+
     async def test_a_member_of_a_shared_folder_chooses_for_themselves_only(self):
         await self.save(MEMBER_USER, 'folder', {'member-pc': 'D:\\member\\site'})
         member_view = await self.service.describe_folder_project(MEMBER_USER, 'website')
@@ -272,6 +220,42 @@ class ProjectFolderApiTests(unittest.IsolatedAsyncioTestCase):
         project = await self.service.clear_folder_project(OWNER_USER, 'website')
         self.assertIsNone(project['own'])
         self.assertEqual((project['inherited']['folder_name'], project['inherited']['mode']), ('Work', 'chat'))
+
+    # --- A folder about to be created ---------------------------------------------
+
+    async def test_a_new_subfolder_starts_from_its_parents_choice(self):
+        await self.save(OWNER_USER, 'folder', {'pc-1': 'C:\\code\\site'})
+        project = await self.service.describe_new_folder_project(OWNER_USER, 'website')
+        self.assertEqual((project['folder_id'], project['own'], project['shared_instructions']), ('', None, False))
+        inherited = project['inherited']
+        self.assertEqual((inherited['folder_name'], inherited['mode']), ('Website', 'folder'))
+        self.assertEqual(inherited['paths']['pc-1']['path'], 'C:\\code\\site')
+        self.assertEqual(self.computer(project)['name'], 'Test pc-1')
+        self.assertEqual(self.machine.path_checks, [('C:\\code\\site', 'dir')])
+
+    async def test_a_new_subfolder_follows_what_its_parent_follows(self):
+        self.service.project_folders.Folders.add('work', user_id=OWNER, name='Work')
+        self.service.project_folders.Folders.rows['website'].parent_id = 'work'
+        await self.save(OWNER_USER, 'chat', folder_id='work')
+        project = await self.service.describe_new_folder_project(OWNER_USER, 'website')
+        self.assertEqual((project['inherited']['folder_name'], project['inherited']['mode']), ('Work', 'chat'))
+
+    async def test_a_new_subfolder_can_be_edited_by_whoever_edits_its_parent(self):
+        member_view = await self.service.describe_new_folder_project(MEMBER_USER, 'website')
+        owner_view = await self.service.describe_new_folder_project(OWNER_USER, 'website')
+        self.assertTrue(member_view['others_can_edit'])
+        self.assertFalse(owner_view['others_can_edit'])
+
+    async def test_a_new_top_level_folder_starts_with_no_choice(self):
+        project = await self.service.describe_new_folder_project(OWNER_USER, None)
+        self.assertEqual((project['own'], project['inherited'], project['others_can_edit']), (None, None, False))
+        self.assertTrue(project['has_plans'])
+        self.assertEqual(self.computer(project)['machine_id'], 'pc-1')
+
+    async def test_a_new_folder_under_a_folder_you_cannot_read_is_not_found(self):
+        with self.assertRaises(self.service.HTTPException) as refused:
+            await self.service.describe_new_folder_project(OUTSIDER_USER, 'website')
+        self.assertEqual(refused.exception.status_code, 404)
 
     async def test_this_servers_folders_survive_the_policy_turning_it_off_for_a_while(self):
         folders = self.service.project_folders

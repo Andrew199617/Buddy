@@ -140,10 +140,11 @@
 		saveAs(blob, `folder-${folder.name}-export-${Date.now()}.json`);
 	};
 
+	/** Creates a subfolder; returns it, or null when it could not be made. */
 	const createSubFolderHandler = async ({ name, meta, data, parent_id }) => {
 		if (name === '') {
 			toast.error($i18n.t('Folder name cannot be empty.'));
-			return;
+			return null;
 		}
 
 		name = name.trim();
@@ -162,6 +163,7 @@
 			toast.success($i18n.t('Folder created successfully'));
 			onUpdate();
 		}
+		return res;
 	};
 </script>
 
