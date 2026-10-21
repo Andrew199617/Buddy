@@ -110,6 +110,16 @@ class ChatRunTargetTable:
                 return None
             return ChatRunTargetModel.model_validate(row)
 
+    async def has_path(self, user_id: str, machine_id: str, path: str, db: Optional[AsyncSession] = None) -> bool:
+        """Whether one of the person's chats runs in this exact folder on this computer."""
+        async with get_async_db_context(db) as session:
+            result = await session.execute(
+                select(ChatRunTarget.chat_id)
+                .filter_by(user_id=user_id, machine_id=machine_id, folder_mode=FOLDER_PATH, path=path)
+                .limit(1)
+            )
+            return result.first() is not None
+
     async def recent_paths(
         self, user_id: str, limit: int = 12, db: Optional[AsyncSession] = None
     ) -> list[ChatRunTargetModel]:

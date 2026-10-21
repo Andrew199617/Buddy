@@ -17,6 +17,7 @@ from open_webui.models.chat_messages import ChatMessage, ChatMessages
 from open_webui.models.chat_run_targets import ChatRunTarget
 from open_webui.models.folders import Folders
 from open_webui.models.tags import Tag, TagModel, Tags
+from open_webui.utils.chat_agent import without_agent
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.misc import get_output_text, sanitize_data_for_db, sanitize_text_for_db
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -1764,7 +1765,8 @@ class ChatTable:
                     id=shared.id,
                     user_id=shared.user_id,
                     title=shared.title,
-                    chat=shared.chat,
+                    # Snapshots are saved without the agent; this also covers older ones.
+                    chat=without_agent(shared.chat),
                     created_at=shared.created_at,
                     updated_at=shared.updated_at,
                     share_id=shared.id,

@@ -1417,6 +1417,20 @@ async def authenticate_runner(machine_id, credential) -> dict | None:
     return {**config, 'user_id': _machine_owner(config, await server_owner_id())}
 
 
+async def unenroll_runner(machine_id, credential) -> bool:
+    """A computer removes itself with its own credential, as if its owner removed it.
+
+    The Buddy app does this when it can't keep a credential it was just given, and
+    before it moves to another Buddy server. False when no computer matches, so a
+    removal that was already done reads the same as one that never could be.
+    """
+    machine = await authenticate_runner(machine_id, credential)
+    if machine is None:
+        return False
+    await delete_machine(machine['user_id'], machine['id'])
+    return True
+
+
 async def record_runner_connected(machine_id: str, info: dict) -> None:
     """Save what a connecting computer reports about itself, and when it was seen."""
     async with _machine_lock:
@@ -2648,13 +2662,23 @@ async def describe_chat_run_target(user, chat_id: str) -> dict:
 AGENT_READ_TIMEOUT_SECONDS = 15
 
 
+async def _chose_server_path(user, path: str) -> bool:
+    """Whether the person already chose this folder on This server, for a chat folder or a chat."""
+    for choice in (await project_folders.load_choices(user.id)).values():
+        saved = choice.paths.get(LOCAL_MACHINE_ID)
+        if saved is not None and saved.path == path:
+            return True
+    return await ChatRunTargets.has_path(user.id, LOCAL_MACHINE_ID, path)
+
+
 async def server_agent_files(user, machine_id: str, path) -> dict:
     """The agent files in a folder on This server, for the composer's agent menu.
 
-    The folder is the chat's own: the one its bar picked, or its chat folder's project
-    folder. Agents on Buddy app computers are read through the relay instead. Only
-    someone who may use This server, which the policy limits to its owner, reads it,
-    and only the agent folders inside it are read.
+    The folder must be one the person already chose there: a chat folder's project
+    folder, or the exact folder one of their chats runs in. Agents on Buddy app
+    computers are read through the relay instead. Only someone who may use This
+    server, which the policy limits to its owner, reads it, and only the agent
+    folders inside it are read.
     """
     if machine_id != LOCAL_MACHINE_ID:
         raise SubscriptionError('Agents on that computer are read through the Buddy app.')
@@ -2663,6 +2687,8 @@ async def server_agent_files(user, machine_id: str, path) -> dict:
     if not isinstance(path, str):
         raise SubscriptionError("Enter the folder's full path.")
     cleaned = project_folders.clean_project_path(path, await _machine_platform(user.id, LOCAL_MACHINE_ID))
+    if not await _chose_server_path(user, cleaned):
+        raise SubscriptionError('Choose this folder for the chat or its chat folder first, then pick an agent.')
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(project_agents.read_agent_files, cleaned), AGENT_READ_TIMEOUT_SECONDS
@@ -2851,6 +2877,18 @@ async def forget_user(user_id: str) -> None:
     for machine_id in removed_runner_ids:
         _tunnel_machines.pop(machine_id, None)
         await HUB.disconnect(machine_id, CLOSE_UNKNOWN_MACHINE, REMOVED_MACHINE_MESSAGE)
+
+
+async def forget_deleted_user(user_id: str) -> None:
+    """forget_user for an account that is already deleted, from any delete route.
+
+    The account is gone either way, so a failed cleanup is only logged: its
+    machines simply stop being usable.
+    """
+    try:
+        await forget_user(user_id)
+    except Exception as error:
+        log.warning('Could not clean up the machines of deleted user %s: %s', user_id, error)
 
 
 # Stored sign-ins and API keys

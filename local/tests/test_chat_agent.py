@@ -4,9 +4,13 @@ Run from the repository root:
     python -m unittest discover -s local/tests -p test_chat_agent.py -v
 """
 
+import ast
 import importlib.util
+import types
 import unittest
 from pathlib import Path
+
+from pydantic import BaseModel
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / 'backend' / 'open_webui' / 'utils' / 'chat_agent.py'
 spec = importlib.util.spec_from_file_location('chat_agent', MODULE_PATH)
@@ -19,7 +23,13 @@ AGENT = {
     'path': '.github/agents/reviewer.agent.md',
     'instructions': 'Review the diff.',
 }
-CHAT = {'title': 'Plan', 'params': {'system': 'Be brief.'}, 'history': {}, 'agent': AGENT}
+CHAT = {
+    'title': 'Plan',
+    'system': 'Be brief.',
+    'params': {'system': 'Be brief.', 'temperature': 0.2},
+    'history': {},
+    'agent': AGENT,
+}
 
 
 class WithoutAgentTests(unittest.TestCase):
@@ -40,19 +50,72 @@ class ContentsForOwnerTests(unittest.TestCase):
     def test_a_copy_of_someone_elses_chat_starts_without_one(self):
         copied = chat_agent.contents_for_owner(CHAT, 'someone-else', 'owner')
         self.assertNotIn('agent', copied)
-        self.assertEqual(copied['params'], {'system': 'Be brief.'})
         self.assertEqual(copied['title'], 'Plan')
 
+    def test_a_copy_of_someone_elses_chat_loses_its_hidden_system_prompt(self):
+        # The page sends params.system as the system message, which a Full-access plan follows.
+        copied = chat_agent.contents_for_owner(CHAT, 'someone-else', 'owner')
+        self.assertNotIn('system', copied)
+        self.assertEqual(copied['params'], {'temperature': 0.2})
+
     def test_a_chat_brought_in_from_a_file_starts_without_one(self):
-        self.assertNotIn('agent', chat_agent.contents_for_owner(CHAT, None, 'owner'))
+        imported = chat_agent.contents_for_owner(CHAT, None, 'owner')
+        self.assertNotIn('agent', imported)
+        self.assertNotIn('system', imported)
+        self.assertNotIn('system', imported['params'])
+
+    def test_a_copy_of_ones_own_chat_keeps_its_system_prompt(self):
+        own = chat_agent.contents_for_owner(CHAT, 'owner', 'owner')
+        self.assertEqual(own['params']['system'], 'Be brief.')
 
     def test_the_original_chat_is_left_as_it_was(self):
         chat_agent.contents_for_owner(CHAT, 'someone-else', 'owner')
         self.assertEqual(CHAT['agent'], AGENT)
+        self.assertEqual(CHAT['params'], {'system': 'Be brief.', 'temperature': 0.2})
+        self.assertEqual(CHAT['system'], 'Be brief.')
 
     def test_a_chat_without_an_agent_is_unchanged(self):
         plain = {'title': 'Plan'}
         self.assertEqual(chat_agent.contents_for_owner(plain, None, 'owner'), plain)
+
+    def test_params_that_are_not_a_dict_are_left_alone(self):
+        odd = {'title': 'Plan', 'params': None}
+        self.assertEqual(chat_agent.contents_for_owner(odd, None, 'owner'), odd)
+
+
+
+class ChatResponse(BaseModel):
+    id: str
+    user_id: str
+    chat: dict
+
+
+def load_chat_response_for():
+    router = MODULE_PATH.parents[1] / 'routers' / 'chats.py'
+    parsed = ast.parse(router.read_text(encoding='utf-8'))
+    selected = [node for node in parsed.body if getattr(node, 'name', None) == '_chat_response_for']
+    if len(selected) != 1:
+        raise AssertionError(f'_chat_response_for is missing from {router}')
+    namespace = {'ChatResponse': ChatResponse, 'without_agent': chat_agent.without_agent}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[])), str(router), 'exec'), namespace)
+    return namespace['_chat_response_for']
+
+
+class ChatResponseForTests(unittest.TestCase):
+    def setUp(self):
+        self.response_for = load_chat_response_for()
+        self.chat = types.SimpleNamespace(id='chat-1', user_id='owner', chat=CHAT)
+
+    def test_the_owner_sees_their_agent(self):
+        owner = types.SimpleNamespace(id='owner')
+        self.assertEqual(self.response_for(owner, self.chat).chat['agent'], AGENT)
+
+    def test_anyone_else_including_an_administrator_does_not(self):
+        admin = types.SimpleNamespace(id='admin', role='admin')
+        response = self.response_for(admin, self.chat)
+        self.assertNotIn('agent', response.chat)
+        self.assertEqual(response.chat['title'], 'Plan')
+        self.assertEqual(CHAT['agent'], AGENT)
 
 
 if __name__ == '__main__':

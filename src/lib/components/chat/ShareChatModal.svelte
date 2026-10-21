@@ -11,6 +11,7 @@
 		updateChatAccessGrants
 	} from '$lib/apis/chats';
 	import { copyToClipboard } from '$lib/utils';
+	import { withoutAgent } from './ProjectAgents/chat-agent';
 
 	import Modal from '../common/Modal.svelte';
 	import Link from '../icons/Link.svelte';
@@ -36,7 +37,8 @@
 	};
 
 	const shareChat = async () => {
-		const _chat = chat.chat;
+		// The agent's instructions come from the owner's private project files.
+		const _chat = withoutAgent(chat.chat);
 		console.log('share', _chat);
 
 		// LICENSE covers this Open WebUI Community wordmark.

@@ -23,6 +23,7 @@
 	import FolderPlaceholder from './Placeholder/FolderPlaceholder.svelte';
 	import type { RunTargetOptions } from '$lib/apis/subscriptions';
 	import type { RunTargetDraft } from './RunTarget/run-target';
+	import type { ProjectTarget } from './ProjectPanel/project-session';
 	import FolderTitle from './Placeholder/FolderTitle.svelte';
 
 	const i18n: any = getContext('i18n');
@@ -47,6 +48,7 @@
 	export let pendingOAuthTools = [];
 
 	export let agentFolderId: string | null = null;
+	export let agentChatTarget: ProjectTarget | null = null;
 	export let selectedAgent: ChatAgent | null = null;
 	export let onAgentChange: (agent: ChatAgent | null) => void = () => {};
 
@@ -104,6 +106,13 @@
 		$selectedFolder != null &&
 		$selectedFolder.user_id !== $user?.id &&
 		!$selectedFolder.write_access;
+
+	// Editing a folder and starting chats in it are separate: a super user may edit someone else's
+	// folder, but a new chat there would run with the owner's instructions, so it takes a write grant.
+	$: folderAcceptsNewChats =
+		$selectedFolder == null ||
+		$selectedFolder.user_id === $user?.id ||
+		$selectedFolder.can_add_chats === true;
 </script>
 
 <div class="buddy-chat-welcome">
@@ -161,7 +170,7 @@
 			{/if}
 		{/if}
 	</div>
-	{#if !($selectedFolder && folderReadOnly)}
+	{#if folderAcceptsNewChats}
 		<div class="buddy-welcome-composer">
 			<MessageInput
 				bind:this={messageInput}
@@ -174,6 +183,7 @@
 				bind:selectedSkillIds
 				bind:selectedFilterIds
 				{agentFolderId}
+				{agentChatTarget}
 				{selectedAgent}
 				{onAgentChange}
 				bind:imageGenerationEnabled

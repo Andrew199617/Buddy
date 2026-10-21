@@ -1,6 +1,7 @@
 <script lang="ts">
-	// The composer's robot button. It picks one of the custom agents in the chat
-	// folder's project folder: this person's own choice for the folder. Agents on a
+	// The composer's robot button. It picks one of the custom agents in the folder the
+	// chat runs in: the exact folder its Run Target bar chose, or else the chat folder's
+	// project folder, this person's own choice for the folder. Agents on a
 	// Buddy app computer are read through the relay; Buddy reads This server itself.
 	// It shows for a chat folder with a project folder it can read, and while the
 	// chat has an agent so that it can be cleared.
@@ -34,6 +35,8 @@
 	const i18n: any = getContext('i18n');
 
 	export let folderId: string | null = null;
+	// The exact folder the chat runs in, from its Run Target bar; it wins over the folder's.
+	export let chatTarget: ProjectTarget | null = null;
 	export let selectedAgent: ChatAgent | null = null;
 	export let onSelect: (agent: ChatAgent | null) => void = () => {};
 	export let preserveComposerFocus = false;
@@ -49,12 +52,13 @@
 
 	let dropdown: Dropdown;
 	let show = false;
-	let target: ProjectTarget | null = null;
+	let folderTarget: ProjectTarget | null = null;
 	let targetFor: string | null = null;
 	let targetRequest = 0;
 	let list: AgentList = { phase: 'loading' };
 	let listRequest = 0;
 
+	$: target = chatTarget ?? folderTarget;
 	// No button for a folder only on computers whose agents can never be read.
 	$: available = target !== null || selectedAgent !== null;
 	$: projectName = target ? lastSegment(target.path) : '';
@@ -64,14 +68,14 @@
 		if (id !== targetFor) {
 			// Another chat folder: no button until its project folder arrives.
 			targetFor = id;
-			target = null;
+			folderTarget = null;
 		}
 		if (!id) return;
 		try {
 			const project = await getFolderProject(localStorage.token, id);
 			if (request !== targetRequest) return;
-			target = null;
-			if (project) target = agentTarget(projectTargets(project));
+			folderTarget = null;
+			if (project) folderTarget = agentTarget(projectTargets(project));
 		} catch {
 			// Keeps what is shown; opening the menu loads it again.
 		}
@@ -134,10 +138,10 @@
 	async function loadAgents() {
 		const request = ++listRequest;
 		list = { phase: 'loading' };
-		await loadTarget(folderId);
+		if (!chatTarget) await loadTarget(folderId);
 		if (request !== listRequest) return;
 
-		const opened = target;
+		const opened = chatTarget ?? folderTarget;
 		if (!opened) {
 			list = {
 				phase: 'blocked',

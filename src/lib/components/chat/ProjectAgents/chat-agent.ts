@@ -30,6 +30,16 @@ export function savedAgent(value: unknown): ChatAgent | null {
 	};
 }
 
+/**
+ * A chat's contents without its agent, for anything that leaves this server, such
+ * as the community share. The instructions come from the owner's private files.
+ */
+export function withoutAgent<T extends Record<string, unknown>>(contents: T): Omit<T, 'agent'> {
+	const rest: Record<string, unknown> = { ...contents };
+	delete rest.agent;
+	return rest as Omit<T, 'agent'>;
+}
+
 type LoadedChat = { user_id?: string; chat?: { agent?: unknown } } | null;
 
 /**

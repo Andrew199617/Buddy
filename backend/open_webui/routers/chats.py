@@ -42,6 +42,7 @@ from open_webui.utils.chat_fork import build_fork_history
 from open_webui.utils.context_compaction import compact_chat_branch, get_chat_context_usage
 from open_webui.utils.misc import get_message_list
 from open_webui.utils.models import get_all_models
+from open_webui.utils.super_users import may_change_others_chat
 from open_webui.utils.subscriptions.service import (
     API_KEY_TARGET_MESSAGE,
     bind_chat_target,
@@ -1265,6 +1266,18 @@ async def get_shared_session_user_chat_list(
 ############################
 
 
+def _chat_response_for(user, chat) -> ChatResponse:
+    """The chat as this person may see it: someone else's chat comes without its custom agent.
+
+    Only the person who chose an agent sees its instructions, which come from their own
+    project files. That includes administrators reading another person's chat.
+    """
+    response = ChatResponse.model_validate(chat, from_attributes=True)
+    if chat.user_id != user.id:
+        response = response.model_copy(update={'chat': without_agent(response.chat)})
+    return response
+
+
 @router.get('/share/{share_id}', response_model=ChatResponse | None)
 async def get_shared_chat_by_id(
     share_id: str, user=Depends(get_optional_verified_user), db: AsyncSession = Depends(get_async_session)
@@ -1288,7 +1301,7 @@ async def get_shared_chat_by_id(
     if user is not None and user.role == 'admin' and ENABLE_ADMIN_CHAT_ACCESS:
         chat = await Chats.get_chat_by_id(share_id, db=db)
         if chat:
-            return ChatResponse.model_validate(chat, from_attributes=True)
+            return _chat_response_for(user, chat)
 
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=ERROR_MESSAGES.NOT_FOUND)
 
@@ -1396,10 +1409,7 @@ async def get_chat_by_id(
     )
 
     if chat:
-        data = ChatResponse.model_validate(chat, from_attributes=True).model_dump()
-        if chat.user_id != user.id:
-            # Only the person who chose a custom agent sees its instructions.
-            data['chat'] = without_agent(data['chat'])
+        data = _chat_response_for(user, chat).model_dump()
         data = overlay_response_streams(
             data,
             await get_response_streams_by_chat_id(request.app.state.redis, id),
@@ -1483,7 +1493,7 @@ async def update_chat_message_by_id(
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
         )
 
-    if chat.user_id != user.id and user.role != 'admin':
+    if chat.user_id != user.id and not await may_change_others_chat(user):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
@@ -1525,7 +1535,7 @@ async def update_chat_message_by_id(
         subject_id=message_id,
         data={'chat_id': id, 'content_preview': form_data.content[:300]},
     )
-    return ChatResponse.model_validate(chat, from_attributes=True)
+    return _chat_response_for(user, chat)
 
 
 @router.delete('/{id}/messages/{message_id}', response_model=ChatResponse | None)
@@ -1544,7 +1554,7 @@ async def delete_chat_message_by_id(
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
         )
 
-    if chat.user_id != user.id and user.role != 'admin':
+    if chat.user_id != user.id and not await may_change_others_chat(user):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
@@ -1564,7 +1574,7 @@ async def delete_chat_message_by_id(
         subject_id=message_id,
         data={'chat_id': id},
     )
-    return ChatResponse.model_validate(chat, from_attributes=True)
+    return _chat_response_for(user, chat)
 
 
 ############################
@@ -1592,7 +1602,8 @@ async def send_chat_message_event_by_id(
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
         )
 
-    if chat.user_id != user.id and user.role != 'admin':
+    # Events act in the owner's open page (running code, answering confirmations), so only the owner sends them.
+    if chat.user_id != user.id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
@@ -2125,7 +2136,7 @@ async def update_shared_chat_access_by_id(
 
     await AccessGrants.set_access_grants('shared_chat', id, form_data.access_grants, db=db)
 
-    return ChatResponse.model_validate(chat, from_attributes=True)
+    return _chat_response_for(user, chat)
 
 
 ############################
