@@ -515,12 +515,6 @@
 	[data-composer-menu='integrations'] input {
 		font-size: 16px;
 	}
-
-	/* Ultra's menu scrolls as one box. The dropdown keeps it below the chat header, which
-	   clears the notch, and above the composer, which clears the home bar and keyboard. */
-	[data-composer-menu='ultra'] {
-		overscroll-behavior: contain;
-	}
 }
 
 /* Model and thinking stay together above the draft, away from send actions. */

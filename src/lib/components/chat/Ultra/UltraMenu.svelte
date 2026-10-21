@@ -207,8 +207,12 @@
 		</button>
 	</Tooltip>
 
-	<div slot="content">
-		<DropdownMenu className="buddy-ultra-menu w-72 max-w-[calc(100vw-2rem)]">
+	<!-- The menu scrolls itself, within the height the dropdown leaves it. The dropdown
+		can't: Svelte resets its overflow when the opening animation ends. -->
+	<div slot="content" class="max-h-[inherit]">
+		<DropdownMenu
+			className="buddy-ultra-menu w-72 max-w-[calc(100vw-2rem)] max-h-[inherit] overflow-y-auto overscroll-contain"
+		>
 			<div bind:this={menuElement} class="flex flex-col">
 				{#if view === 'main'}
 					<button
