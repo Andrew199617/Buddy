@@ -982,6 +982,13 @@ async def update_user_by_id(
     user = await Users.get_user_by_id(user_id, db=db)
 
     if user:
+        changes_account = form_data.password or form_data.email is not None or form_data.role is not None
+        if changes_account and not await super_users.may_change_account(session_user, user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail='Only the server owner can change a super user\'s sign-in or role.',
+            )
+
         if form_data.email is not None and form_data.email.lower() != user.email:
             email_user = await Users.get_user_by_email(form_data.email.lower(), db=db)
             if email_user:
@@ -1092,6 +1099,13 @@ async def delete_user_by_id(
         )
 
     if user.id != user_id:
+        target = await Users.get_user_by_id(user_id, db=db)
+        if target and not await super_users.may_change_account(user, target):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail='Only the server owner can delete a super user.',
+            )
+
         result = await Auths.delete_auth_by_id(user_id, db=db)
 
         if result:

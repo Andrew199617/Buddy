@@ -87,6 +87,17 @@ class SuperUserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.module.named_super_user_ids(), ['admin-2'])
 
 
+    async def test_only_the_owner_or_the_person_changes_a_super_users_account(self):
+        await self.module.set_super_user(OWNER, ADMIN, True)
+        other_admin = types.SimpleNamespace(id='admin-3', role='admin')
+        self.assertFalse(await self.module.may_change_account(other_admin, ADMIN))
+        self.assertFalse(await self.module.may_change_account(other_admin, OWNER))
+        self.assertTrue(await self.module.may_change_account(OWNER, ADMIN))
+        self.assertTrue(await self.module.may_change_account(ADMIN, ADMIN))
+        # Ordinary accounts stay with every administrator.
+        self.assertTrue(await self.module.may_change_account(other_admin, MEMBER))
+        self.assertTrue(await self.module.may_change_account(ADMIN, other_admin))
+
     def test_config_files_never_carry_the_owner_or_super_users(self):
         imported = {
             self.module.SUPER_USERS_CONFIG_KEY: ['admin-2'],

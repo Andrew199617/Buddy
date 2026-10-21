@@ -5,7 +5,12 @@ knowledge reach every chat in it, and a plan with file access acts on them, so
 other administrators can read other people's folders but not change them.
 
 Only the server owner may name or remove super users. The owner always is one,
-and someone who stops being an administrator stops being one too.
+and someone who stops being an administrator stops being one too. Only the owner,
+or the person themselves, may change a super user's password, email or role, so
+another administrator cannot sign in as one.
+
+This guards against everyday administration, not a hostile administrator: any
+administrator can still install Functions and Tools, which run code on the server.
 """
 
 SUPER_USERS_CONFIG_KEY = 'users.super_user_ids'
@@ -51,6 +56,16 @@ async def is_super_user(user) -> bool:
     if user.id == await server_owner_id():
         return True
     return user.id in await named_super_user_ids()
+
+
+async def may_change_account(actor, target) -> bool:
+    """Whether actor may change target's password, email or role, or delete them."""
+    if actor.id == target.id:
+        return True
+    owner_id = await server_owner_id()
+    if actor.id == owner_id:
+        return True
+    return target.id != owner_id and not await is_super_user(target)
 
 
 async def describe_super_users() -> dict:
