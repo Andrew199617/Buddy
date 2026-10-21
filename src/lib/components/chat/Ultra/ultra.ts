@@ -398,14 +398,16 @@ export function ultraButtonLabel(
  * The access the chat's next reply runs with, which its workers share: the chat's
  * own target once it has one, else where its next message would bind it, else
  * the new chat's draft in the composer's bar. Chat only until one is known.
+ * A target is read by its bound flag, so an answer of another shape leaves the
+ * access to the draft instead of breaking the composer.
  */
 export function nextReplyAccess(
 	target: ChatRunTarget | null,
 	draft: RunTargetDraft | null,
 	options: RunTargetOptions | null
 ): SubscriptionAccess {
-	if (target && target.bound) return target.access;
-	if (target) return target.would_bind.access;
+	if (target?.bound === true) return target.access;
+	if (target?.bound === false && target.would_bind) return target.would_bind.access;
 	if (draft && options) return detailsFromDraft(draft, options).access;
 	return 'chat';
 }

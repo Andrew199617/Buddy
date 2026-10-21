@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type {
+	ChatRunTarget,
 	ChatRunTargetDetails,
 	RunTargetComputer,
 	RunTargetOptions
@@ -545,6 +546,15 @@ describe('nextReplyAccess', () => {
 	it('is chat only until where the chat runs is known', () => {
 		expect(nextReplyAccess(null, null, null)).toBe('chat');
 		expect(nextReplyAccess(null, draft(), null)).toBe('chat');
+	});
+
+	it('leaves a target of another shape to the draft instead of breaking', () => {
+		// The server never answers like this, but the composer must still open.
+		const notATarget = [] as unknown as ChatRunTarget;
+		expect(nextReplyAccess(notATarget, null, null)).toBe('chat');
+		expect(nextReplyAccess(notATarget, draft({ access: 'full' }), options)).toBe('full');
+		const noDetails = { bound: false } as unknown as ChatRunTarget;
+		expect(nextReplyAccess(noDetails, null, null)).toBe('chat');
 	});
 });
 
