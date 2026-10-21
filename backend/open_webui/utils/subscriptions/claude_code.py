@@ -22,8 +22,10 @@ from open_webui.utils.subscriptions.common import (
     ProviderModel,
     ProviderSettings,
     TurnRequest,
+    UltraOptions,
     model_key,
 )
+from open_webui.utils.subscriptions import ultra
 from open_webui.utils.subscriptions.conversation import (
     ChatTurn,
     SessionStore,
@@ -52,6 +54,9 @@ NOT_SIGNED_IN_MESSAGE = 'Claude is not signed in. Sign in under Settings → Mac
 EFFORT_LEVELS = ('low', 'medium', 'high', 'xhigh', 'max')
 # No WebFetch: a prompt in the folder could make it send file contents to any URL.
 READ_ONLY_TOOLS = 'Read,Grep,Glob,WebSearch'
+# Ultra turns add the Agent tool, which starts workers, to the turn's own tools.
+ULTRA_CHAT_TOOLS = 'Agent'
+ULTRA_READ_TOOLS = 'Read,Grep,Glob,WebSearch,Agent'
 TRANSCRIPT_INTRO = 'Here is our conversation so far. Continue it by replying to my latest message.'
 INSTRUCTIONS_FILE = 'instructions'
 LOGIN_URL = re.compile(r'https://\S+/oauth/authorize\?\S+')
@@ -76,6 +81,22 @@ def claude_effort(effort: str | None) -> str | None:
     if effort in EFFORT_LEVELS:
         return effort
     return None
+
+
+def ultra_env(options: UltraOptions) -> dict[str, str]:
+    """Environment variables that set how an Ultra turn's workers run."""
+    # The orchestrator's workers may start sub-workers, and those may not start any.
+    env = {'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH': str(ultra.MAX_DEPTH)}
+    if options.worker_model:
+        # Sub-workers may start as Claude Code's own general-purpose type
+        # instead of Buddy's, so the person's model is forced on every worker.
+        env['CLAUDE_CODE_SUBAGENT_MODEL'] = options.worker_model
+        env['CLAUDE_CODE_SUBAGENT_MODEL_FORCE'] = '1'
+    if options.max_workers is not None:
+        env['CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS'] = str(options.max_workers)
+    # CLAUDE_CODE_EFFORT_LEVEL stays unset: it would set the orchestrator's
+    # thinking level too, not only the workers'.
+    return env
 
 
 def _image_block(url: str) -> dict | None:
@@ -639,7 +660,12 @@ class ClaudeCodeProvider:
             args.extend(['--system-prompt-file', instructions_path])
             args.extend(['--strict-mcp-config', '--disable-slash-commands'])
             args.extend(['--setting-sources', ''])
-            args.extend(['--tools', ''])
+            if turn.ultra is not None:
+                # The orchestrator gets only the Agent tool. Workers inherit
+                # it, so they can only think and start sub-workers.
+                args.extend(['--tools', ULTRA_CHAT_TOOLS])
+            else:
+                args.extend(['--tools', ''])
         elif turn.access == ACCESS_READ:
             # The working folder may be someone else's repository. Its
             # .claude/settings.json hooks and .mcp.json servers would run as
@@ -649,8 +675,14 @@ class ClaudeCodeProvider:
             args.append('--restricted')
             args.extend(['--strict-mcp-config', '--disable-slash-commands'])
             args.extend(['--setting-sources', ''])
-            args.extend(['--tools', READ_ONLY_TOOLS])
-            args.extend(['--allowedTools', 'WebSearch'])
+            if turn.ultra is not None:
+                # The read tools plus Agent, which starts workers. Agent is
+                # approved up front, like WebSearch.
+                args.extend(['--tools', ULTRA_READ_TOOLS])
+                args.extend(['--allowedTools', 'WebSearch,Agent'])
+            else:
+                args.extend(['--tools', READ_ONLY_TOOLS])
+                args.extend(['--allowedTools', 'WebSearch'])
         else:
             args.extend(['--append-system-prompt-file', instructions_path])
             args.append('--dangerously-skip-permissions')
@@ -662,15 +694,17 @@ class ClaudeCodeProvider:
 
     def _turn_env(self, turn: TurnRequest) -> dict[str, str]:
         """Environment variables for this turn's ``claude -p``, on top of the computer's own."""
-        env = {}
-        if not turn.is_task and turn.ultra is None:
-            # A normal turn is read only up to its first result, and then the
-            # CLI is ended. An agent left running in the background would be
-            # stopped without anyone seeing it, so agents stay in the
-            # foreground. Ultra turns allow background workers, because they
-            # are read and listed until every worker ends.
-            env['CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'] = '1'
-        return env
+        if turn.is_task:
+            # Titles and follow-ups run with no tools, so they cannot start agents.
+            return {}
+        if turn.ultra is not None:
+            # Ultra turns allow background workers, because they are read and
+            # listed until every worker ends.
+            return ultra_env(turn.ultra)
+        # A normal turn is read only up to its first result, and then the CLI
+        # is ended. An agent left running in the background would be stopped
+        # without anyone seeing it, so agents stay in the foreground.
+        return {'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS': '1'}
 
     def _instructions(self, turn: TurnRequest) -> str:
         system = turn.conversation.system

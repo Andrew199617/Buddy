@@ -351,6 +351,58 @@ class ClaudeStreamTests(unittest.TestCase):
             resume_index = resume_args.index('--resume')
             self.assertEqual(resume_args[resume_index + 1 : resume_index + 3], ['session-1', '--fork-session'])
 
+    def test_ultra_turns_add_the_agent_tool_at_their_access_level(self):
+        """Ultra adds only the Agent tool, which starts workers; everything else stays as the access level sets it."""
+        with tempfile.TemporaryDirectory() as directory:
+            provider = claude_code.ClaudeCodeProvider(Path(directory))
+            conversation = parse_messages([{'role': 'user', 'content': 'Fix the tests'}])
+            options = UltraOptions(worker_model='haiku', worker_label='Claude Haiku', worker_effort='low')
+
+            def turn_args(access, **turn_options):
+                turn = TurnRequest(
+                    model='opus',
+                    conversation=conversation,
+                    settings=ProviderSettings(enable=True, access=access),
+                    cwd=directory,
+                    **turn_options,
+                )
+                return provider._turn_args('claude', turn, None, 'instructions.md')
+
+            # Chat: Agent is the only tool, so workers can only think.
+            chat_args = turn_args('chat', ultra_options=options)
+            self.assertEqual(chat_args[chat_args.index('--tools') + 1], 'Agent')
+            self.assertEqual(chat_args[chat_args.index('--system-prompt-file') + 1], 'instructions.md')
+            self.assertEqual(chat_args[chat_args.index('--setting-sources') + 1], '')
+            self.assertIn('--strict-mcp-config', chat_args)
+            self.assertIn('--disable-slash-commands', chat_args)
+            self.assertNotIn('--allowedTools', chat_args)
+            expected_chat_args = turn_args('chat')
+            expected_chat_args[expected_chat_args.index('--tools') + 1] = 'Agent'
+            self.assertEqual(chat_args, expected_chat_args)
+
+            # Read: the read tools plus Agent, still restricted to the folder and without WebFetch.
+            read_args = turn_args('read', ultra_options=options)
+            self.assertEqual(read_args[read_args.index('--tools') + 1], 'Read,Grep,Glob,WebSearch,Agent')
+            self.assertEqual(read_args[read_args.index('--allowedTools') + 1], 'WebSearch,Agent')
+            self.assertIn('--restricted', read_args)
+            self.assertIn('--strict-mcp-config', read_args)
+            self.assertEqual(read_args[read_args.index('--setting-sources') + 1], '')
+            self.assertNotIn('WebFetch', read_args[read_args.index('--tools') + 1])
+            expected_read_args = turn_args('read')
+            expected_read_args[expected_read_args.index('--tools') + 1] = 'Read,Grep,Glob,WebSearch,Agent'
+            expected_read_args[expected_read_args.index('--allowedTools') + 1] = 'WebSearch,Agent'
+            self.assertEqual(read_args, expected_read_args)
+
+            # Full: Agent is already among Claude Code's default tools.
+            full_args = turn_args('full', ultra_options=options)
+            self.assertEqual(full_args, turn_args('full'))
+            self.assertNotIn('--tools', full_args)
+            self.assertEqual(full_args[full_args.index('--setting-sources') + 1], 'project,local')
+
+            # Titles and follow-ups never start workers, even while Ultra is on.
+            task_args = turn_args('full', is_task=True, ultra_options=options)
+            self.assertEqual(task_args[task_args.index('--tools') + 1], '')
+
     def test_only_ultra_turns_may_leave_agents_running_in_the_background(self):
         """A normal turn ends the CLI at its first result, so a background agent would be stopped unseen."""
         with tempfile.TemporaryDirectory() as directory:
@@ -377,6 +429,47 @@ class ClaudeStreamTests(unittest.TestCase):
             # Titles and follow-ups run with no tools, so they cannot start agents.
             self.assertEqual(turn_env('full', is_task=True), {})
             self.assertEqual(turn_env('full', is_task=True, ultra_options=UltraOptions()), {})
+
+    def test_ultra_turns_set_the_workers_depth_model_and_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            provider = claude_code.ClaudeCodeProvider(Path(directory))
+            conversation = parse_messages([{'role': 'user', 'content': 'Fix the tests'}])
+
+            def turn_env(access, options):
+                turn = TurnRequest(
+                    model='opus',
+                    conversation=conversation,
+                    settings=ProviderSettings(enable=True, access=access),
+                    cwd=directory,
+                    ultra_options=options,
+                )
+                return provider._turn_env(turn)
+
+            chosen = UltraOptions(worker_model='claude-fable-5-1[1m]', worker_label='Claude Fable', worker_effort='low')
+            capped = UltraOptions(max_workers=3)
+            for access in ('chat', 'read', 'full'):
+                with self.subTest(access=access):
+                    # Workers may start sub-workers, and those may not start any.
+                    self.assertEqual(turn_env(access, UltraOptions()), {'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH': '2'})
+                    # Every worker, Buddy's types and Claude Code's own, uses the chosen model.
+                    # The chosen level is not set as CLAUDE_CODE_EFFORT_LEVEL, which would
+                    # change the orchestrator's own too.
+                    self.assertEqual(
+                        turn_env(access, chosen),
+                        {
+                            'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH': '2',
+                            'CLAUDE_CODE_SUBAGENT_MODEL': 'claude-fable-5-1[1m]',
+                            'CLAUDE_CODE_SUBAGENT_MODEL_FORCE': '1',
+                        },
+                    )
+                    # Only the admin's cap limits workers at once.
+                    self.assertEqual(
+                        turn_env(access, capped),
+                        {
+                            'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH': '2',
+                            'CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS': '3',
+                        },
+                    )
 
     def test_the_turn_environment_reaches_the_cli(self):
         started_env = []
