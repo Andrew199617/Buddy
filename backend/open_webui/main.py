@@ -1351,7 +1351,10 @@ async def chat_completion(
         # Ultra, from the composer's button. It goes in metadata only: params are
         # forwarded to providers, and features are copied into child runs.
         ultra = _pop_ultra(form_data, request)
-        if ultra is not None:
+        # A request that names several models runs one turn per model, even
+        # for the same model twice side by side. One chat must never run
+        # several Ultra turns at once, so those replies run without Ultra.
+        if ultra is not None and len(message_ids) == 1:
             metadata['ultra'] = ultra
 
         initial_title_generation = None

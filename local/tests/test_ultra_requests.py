@@ -5,6 +5,8 @@ Run from the repository root:
 
 The route keeps the choice in metadata['ultra'] only, so it never reaches
 params, features or the provider payload, and API keys can't turn Ultra on.
+A request that names several models runs one turn per model, so it runs
+without Ultra.
 """
 
 import asyncio
@@ -18,6 +20,7 @@ from fastapi import Depends, HTTPException, status
 from test_subscription_preset_rows import MAIN_PATH, MISC_PATH, load_functions, subscription_model
 
 MODEL_ID = 'claude-code.fixture-opus'
+OTHER_MODEL_ID = 'codex.fixture-gpt'
 CHOICE = {'worker_model': 'claude-code.fixture-sonnet', 'worker_effort': 'high'}
 
 
@@ -166,9 +169,40 @@ class ChatRouteUltraTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('ultra', reached['form_data'])
         self.assertNotIn('ultra', reached['metadata'])
 
+    async def test_a_request_naming_one_model_keeps_the_choice(self):
+        message_ids = [{'model_id': MODEL_ID, 'message_id': 'fixture-reply'}]
+        reached = await self.send({'ultra': dict(CHOICE), 'message_ids': message_ids})
+        self.assertEqual(reached['metadata']['ultra'], CHOICE)
+
+    async def test_a_request_naming_several_models_runs_without_ultra(self):
+        # Each entry runs its own turn, so one chat would run several Ultra turns at once.
+        several = {
+            'two models': [
+                {'model_id': MODEL_ID, 'message_id': 'fixture-reply-1'},
+                {'model_id': OTHER_MODEL_ID, 'message_id': 'fixture-reply-2'},
+            ],
+            'one model twice side by side': [
+                {'model_id': MODEL_ID, 'message_id': 'fixture-reply-1'},
+                {'model_id': MODEL_ID, 'message_id': 'fixture-reply-2'},
+            ],
+            'the older form': {MODEL_ID: 'fixture-reply-1', OTHER_MODEL_ID: 'fixture-reply-2'},
+        }
+        for name, message_ids in several.items():
+            with self.subTest(name):
+                reached = await self.send({'ultra': dict(CHOICE), 'message_ids': message_ids})
+                self.assertNotIn('ultra', reached['form_data'])
+                self.assertNotIn('ultra', reached['metadata'])
+
     async def test_an_api_key_request_with_a_choice_is_refused(self):
         with self.assertRaises(HTTPException) as refused:
             await self.call_route({'ultra': dict(CHOICE)}, auth_type='api_key')
+        self.assertEqual(refused.exception.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertIsNone(self.reached)
+
+    async def test_an_api_key_request_naming_several_models_is_still_refused(self):
+        message_ids = {MODEL_ID: 'fixture-reply-1', OTHER_MODEL_ID: 'fixture-reply-2'}
+        with self.assertRaises(HTTPException) as refused:
+            await self.call_route({'ultra': dict(CHOICE), 'message_ids': message_ids}, auth_type='api_key')
         self.assertEqual(refused.exception.status_code, status.HTTP_403_FORBIDDEN)
         self.assertIsNone(self.reached)
 
