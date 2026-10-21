@@ -17,7 +17,13 @@ export type UltraModel = {
 	id: string;
 	name?: string;
 	owned_by?: string;
-	subscription?: { provider?: string; efforts?: unknown; ultra?: unknown };
+	subscription?: {
+		provider?: string;
+		efforts?: unknown;
+		ultra?: unknown;
+		// The admin's cap on Ultra workers at once; null for no limit.
+		ultra_max_workers?: unknown;
+	};
 };
 
 /** The chat the composer is in. */
@@ -418,6 +424,16 @@ export function workersAccessLine(i18n: Translator, access: SubscriptionAccess):
 export function workersAccessNote(i18n: Translator, chatModel: UltraModel | null): string | null {
 	if (planProvider(chatModel) !== 'codex') return null;
 	return i18n.t("Codex workers share the chat's access.");
+}
+
+/**
+ * The admin's cap on workers at once, as the chat's model's list entry gives it,
+ * or null for no limit.
+ */
+export function workerLimit(chatModel: UltraModel | null): number | null {
+	const limit = chatModel?.subscription?.ultra_max_workers;
+	if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1) return null;
+	return limit;
 }
 
 /** How many workers run at once: no limit unless an admin set one. */

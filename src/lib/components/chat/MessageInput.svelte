@@ -135,6 +135,7 @@
 		fitUltra,
 		nextReplyAccess,
 		startingUltra,
+		workerLimit,
 		type UltraChange,
 		type UltraState
 	} from './Ultra/ultra';
@@ -249,6 +250,8 @@
 	$: ultraActive = ultraOffered && shownUltra.on && ultraAvailability.available;
 	// Workers get the access the chat's next reply runs with.
 	$: ultraAccess = nextReplyAccess(runTarget, runTargetDraft, runTargetOptions);
+	// The admin's cap on workers at once, which the server lists with each plan model.
+	$: ultraMaxWorkers = workerLimit(ultraChatModel);
 
 	export let imageGenerationEnabled = false;
 	export let webSearchEnabled = false;
@@ -1979,6 +1982,7 @@
 				chatModel={ultraChatModel}
 				models={$models}
 				access={ultraAccess}
+				maxWorkers={ultraMaxWorkers}
 				generating={isActive}
 				onChange={onUltraChange}
 				preserveComposerFocus={mobileComposer && !embedded}

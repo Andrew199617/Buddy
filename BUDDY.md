@@ -501,7 +501,8 @@ to report back.
   with `BUDDY_ULTRA_MAX_WORKERS` in the Buddy server's environment: a whole
   number, where anything below 1 counts as 1. Unset, or not a whole number,
   means no limit. Claude Code applies the cap itself; Codex's orchestrator is
-  only asked to keep to it.
+  only asked to keep to it. With a cap set, the Ultra menu says so, such as
+  **Up to 3 workers at once**.
 - **Six hours.** Buddy stops an Ultra reply, and any workers still running,
   after 6 hours.
 

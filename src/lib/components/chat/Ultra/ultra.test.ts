@@ -29,6 +29,7 @@ import {
 	ultraForReply,
 	workerDetails,
 	workerEffortOptions,
+	workerLimit,
 	workerLimitLine,
 	workerLine,
 	workerModelOptions,
@@ -567,6 +568,28 @@ describe('menu footer', () => {
 		expect(workerLimitLine(i18n, 0)).toBe(noLimit);
 		expect(workerLimitLine(i18n, 1)).toBe('Up to 1 worker at once');
 		expect(workerLimitLine(i18n, 4)).toBe('Up to 4 workers at once');
+	});
+
+	it('reads the admin’s worker limit from the chat’s model', () => {
+		const capped: UltraModel = {
+			...opus,
+			subscription: { ...opus.subscription, ultra_max_workers: 3 }
+		};
+		expect(workerLimit(capped)).toBe(3);
+		expect(workerLimitLine(i18n, workerLimit(capped))).toBe('Up to 3 workers at once');
+	});
+
+	it('reads no worker limit when the model lists none', () => {
+		function withLimit(limit: unknown): UltraModel {
+			return { ...opus, subscription: { ...opus.subscription, ultra_max_workers: limit } };
+		}
+		expect(workerLimit(opus)).toBeNull();
+		expect(workerLimit(null)).toBeNull();
+		expect(workerLimit(llama)).toBeNull();
+		expect(workerLimit(withLimit(null))).toBeNull();
+		expect(workerLimit(withLimit(0))).toBeNull();
+		expect(workerLimit(withLimit(2.5))).toBeNull();
+		expect(workerLimit(withLimit('3'))).toBeNull();
 	});
 });
 
