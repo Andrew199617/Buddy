@@ -163,6 +163,7 @@
 	};
 
 	$: isWritable = !folders[folderId]?.shared || folders[folderId]?.permission === 'write';
+	$: allowDelete = !folders[folderId]?.shared || folders[folderId]?.can_delete === true;
 
 	const onDragOver = (e) => {
 		e.stopPropagation();
@@ -881,6 +882,7 @@
 						class="absolute z-10 right-2 hover-reveal self-center flex items-center dark:text-gray-300"
 					>
 						<FolderMenu
+							{allowDelete}
 							onEdit={() => {
 								showFolderModal = true;
 							}}
