@@ -88,6 +88,8 @@ ULTRA_TIME_LIMIT_MESSAGE = f'Buddy stopped this Ultra reply after {ULTRA_TIME_LI
 WORKER_SUMMARY_LIMIT = 4000
 # The summary of a worker that was still running when its app-server ended.
 WORKER_ENDED_WITH_CODEX = 'Stopped when Codex stopped.'
+# The summary of a worker that Buddy stopped for starting deeper than ultra.MAX_DEPTH.
+WORKER_TOO_DEEP = "Stopped: workers can start sub-workers, but sub-workers can't"
 
 
 class CodexRpcError(SubscriptionError):
@@ -333,6 +335,11 @@ class CodexWorkers:
 
     A worker's depth is the number of segments of its path below /root, and
     its parent is the worker whose path is the rest of it.
+
+    Codex ignores its agents.max_depth setting, so Buddy holds workers to
+    ultra.MAX_DEPTH itself. A worker deeper than that is listed as stopped as
+    soon as it is reported, and every turn its thread starts is to be
+    interrupted at once; take_interrupts() hands those turns over.
     """
 
     def __init__(self, options: UltraOptions):
@@ -344,13 +351,29 @@ class CodexWorkers:
         self._turns: dict[str, str] = {}
         # Each worker thread's latest token usage total.
         self._usage_totals: dict[str, dict] = {}
+        # The workers deeper than ultra.MAX_DEPTH, which Buddy stops.
+        self._too_deep: set[str] = set()
+        # The too-deep workers whose turn hasn't ended yet. Until it does, they
+        # keep the Ultra turn open, so none runs unseen, even before Codex
+        # names the turn to interrupt.
+        self._stopping: set[str] = set()
+        # The turns to interrupt, as (thread id, turn id), until take_interrupts() hands them over.
+        self._interrupts: list[tuple[str, str]] = []
 
     def running(self) -> bool:
-        """Whether any worker has not ended yet."""
+        """Whether any worker has not ended yet, counting the too-deep workers that Buddy is still stopping."""
+        if self._stopping:
+            return True
         for worker in self._workers.values():
             if worker.state == WORKER_RUNNING:
                 return True
         return False
+
+    def take_interrupts(self) -> list[tuple[str, str]]:
+        """The turns of too-deep workers to interrupt now, as (thread id, turn id). Each is handed over once."""
+        interrupts = self._interrupts
+        self._interrupts = []
+        return interrupts
 
     def usage_totals(self) -> list[dict]:
         """Each worker thread's latest token usage total.
@@ -376,6 +399,8 @@ class CodexWorkers:
         worker_id = params.get('threadId')
         if worker_id not in self._workers:
             return []
+        if worker_id in self._too_deep:
+            return self._handle_too_deep(worker_id, method, params)
         if method == 'turn/started':
             return self._turn_started(worker_id, params.get('turn') or {})
         if method == 'item/started':
@@ -422,15 +447,25 @@ class CodexWorkers:
         if not worker_id or worker_id in self._workers:
             return []
         segments = _agent_path_segments(item.get('agentPath'))
+        depth = max(len(segments), 1)
+        state = WORKER_RUNNING
+        summary = None
+        if depth > ultra.MAX_DEPTH:
+            # Codex started it anyway. Its turn is interrupted once its thread names it.
+            state = WORKER_STOPPED
+            summary = WORKER_TOO_DEEP
+            self._too_deep.add(worker_id)
+            self._stopping.add(worker_id)
         worker = WorkerUpdate(
             worker_id=worker_id,
             parent_id=self._parent(segments),
-            depth=max(len(segments), 1),
+            depth=depth,
             label=_worker_label(segments),
-            state=WORKER_RUNNING,
+            state=state,
             # Every worker runs on the person's choices, or the chat's own when both are None.
             model=self._options.worker_label or self._options.worker_model,
             effort=self._options.worker_effort,
+            summary=summary,
         )
         if segments:
             self._threads_by_path[segments] = worker_id
@@ -445,10 +480,43 @@ class CodexWorkers:
         thread has reported no turn here.
         """
         worker_id = item.get('agentThreadId')
+        if worker_id in self._too_deep:
+            # Its turn has ended, so there is nothing left to stop.
+            self._stopping.discard(worker_id)
+            return []
         worker = self._workers.get(worker_id)
         if worker is None or worker.state != WORKER_RUNNING or worker_id in self._turns:
             return []
         return self._change(worker_id, state=WORKER_DONE, activity=None)
+
+    def _handle_too_deep(self, worker_id: str, method: str | None, params: dict) -> list:
+        """Stop each turn of a too-deep worker, which stays listed as stopped.
+
+        Its turn is interrupted as soon as its thread's turn/started names it.
+        What the worker does and writes until the interrupt lands doesn't change
+        the list, except for the tokens it uses and any sub-worker it starts,
+        which is too deep as well.
+        """
+        if method == 'turn/started':
+            self._stop_turn(worker_id, (params.get('turn') or {}).get('id'))
+            return []
+        if method == 'turn/completed':
+            self._stopping.discard(worker_id)
+            return []
+        if method == 'thread/tokenUsage/updated':
+            return self._usage_updated(worker_id, params.get('tokenUsage') or {})
+        item = params.get('item') or {}
+        if item.get('type') == 'subAgentActivity':
+            return self.sub_agent_activity(item)
+        return []
+
+    def _stop_turn(self, worker_id: str, turn_id: str | None) -> None:
+        """Have a too-deep worker's turn interrupted. A turn it starts when given more to do is stopped too."""
+        self._stopping.add(worker_id)
+        if not turn_id:
+            return
+        self._turns[worker_id] = turn_id
+        self._interrupts.append((worker_id, turn_id))
 
     def _turn_started(self, worker_id: str, turn: dict) -> list:
         if turn.get('id'):
@@ -507,6 +575,8 @@ class CodexTurnParser:
     turn's workers. Their own threads' notifications reach the same queue,
     and only the orchestrator's thread writes the reply. Such a turn is over
     once the orchestrator's turn has completed and no worker still runs.
+    take_interrupts() hands over the turns of workers that started too deep,
+    which the caller interrupts.
     """
 
     def __init__(self, turn_id: str, thread_id: str | None = None):
@@ -544,6 +614,12 @@ class CodexTurnParser:
         if self.workers is None:
             return []
         return self.workers.stop_running()
+
+    def take_interrupts(self) -> list[tuple[str, str]]:
+        """The turns of workers that started too deep, to interrupt now, as (thread id, turn id)."""
+        if self.workers is None:
+            return []
+        return self.workers.take_interrupts()
 
     def reply_usage(self, previous_total: dict | None) -> TokenUsage | None:
         """The reply's token usage, or None when Codex reported none.
@@ -1277,18 +1353,27 @@ class CodexProvider:
 
         asyncio.create_task(unsubscribe())
 
+    async def _request_interrupt(self, server: CodexAppServer, thread_id: str, turn_id: str) -> None:
+        try:
+            await server.request('turn/interrupt', {'threadId': thread_id, 'turnId': turn_id}, timeout=10)
+        except SubscriptionError as error:
+            log.debug('Could not interrupt Codex turn %s: %s', turn_id, error)
+
     def _interrupt_turn(self, server: CodexAppServer, thread_id: str, turn_id: str) -> None:
         if not server.running:
             return
 
         async def interrupt():
-            try:
-                await server.request('turn/interrupt', {'threadId': thread_id, 'turnId': turn_id}, timeout=10)
-            except SubscriptionError as error:
-                log.debug('Could not interrupt Codex turn %s: %s', turn_id, error)
+            await self._request_interrupt(server, thread_id, turn_id)
             self._release_thread(server, thread_id)
 
         asyncio.create_task(interrupt())
+
+    def _interrupt_worker(self, server: CodexAppServer, thread_id: str, turn_id: str) -> None:
+        """Interrupt a worker's turn. Its thread stays loaded, since the thread that started it still holds it."""
+        if not server.running:
+            return
+        asyncio.create_task(self._request_interrupt(server, thread_id, turn_id))
 
     async def run_turn(self, turn: TurnRequest):
         """Run one chat turn and yield its events."""
@@ -1340,7 +1425,11 @@ class CodexProvider:
                     for event in parser.stop_workers():
                         yield event
                     raise message
-                for event in parser.handle(message):
+                events = parser.handle(message)
+                for worker_thread, worker_turn in parser.take_interrupts():
+                    # A worker that started too deep is stopped before anything else.
+                    self._interrupt_worker(server, worker_thread, worker_turn)
+                for event in events:
                     yield event
 
             usage = parser.reply_usage(previous_usage)

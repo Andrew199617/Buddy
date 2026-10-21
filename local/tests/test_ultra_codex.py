@@ -9,6 +9,7 @@ thread with a read-only sandbox:
   orchestrator's turn was interrupted while they wrote, and they wrote on until
   each one was interrupted too.
 - codex-depth.jsonl: a worker that starts a sub-worker, which starts one more.
+  Nothing interrupted that third level, which ran to the end.
 
 Each one answers initialize, model/list (codex-p.jsonl only), thread/start and
 turn/start, in that order, and then streams the turn. The orchestrator's thread
@@ -103,6 +104,14 @@ def turn_completion(messages: list[dict], thread_id: str) -> dict:
         if message.get('method') == 'turn/completed' and thread_of(message) == thread_id:
             return message
     raise AssertionError(f'The recording has no completed turn on thread {thread_id}')
+
+
+def turn_start(messages: list[dict], thread_id: str) -> dict:
+    """The recording's turn/started for a thread's turn."""
+    for message in messages:
+        if message.get('method') == 'turn/started' and thread_of(message) == thread_id:
+            return message
+    raise AssertionError(f'The recording has no started turn on thread {thread_id}')
 
 
 def agent_messages(messages: list[dict], thread_id: str) -> list[str]:
@@ -708,12 +717,15 @@ class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):
         level3 = workers['/root/level1/level2/level3']
 
         # Each worker's own thread reports the sub-worker it starts. Codex
-        # doesn't limit how deep they go, so the third level ran too.
+        # doesn't limit how deep they go, so a third level started too.
         placed = {level1: (None, 1, 'Level1'), level2: (level1, 2, 'Level2'), level3: (level2, 3, 'Level3')}
         self.assertEqual(list(latest_workers(events)), list(placed))
         for worker_id, (parent_id, depth, label) in placed.items():
             first = worker_updates(events, worker_id)[0]
             self.assertEqual((first.parent_id, first.depth, first.label), (parent_id, depth, label))
+        # The first two levels end with their last message as their report.
+        # Buddy stops the third, as UltraDepthTests shows.
+        for worker_id in (level1, level2):
             latest = latest_workers(events)[worker_id]
             self.assertEqual((latest.state, latest.summary), (WORKER_DONE, agent_messages(messages, worker_id)[-1]))
         # A worker that waits for its sub-worker says so.
@@ -793,6 +805,108 @@ class UltraWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(usages(events), [TokenUsage(input_tokens=71584, output_tokens=180, cached_input_tokens=56320)])
         self.assertEqual(failures(events), [])
         self.assertEqual(self.provider._servers[ReplayMachine.id]._worker_routes, {})
+
+
+class UltraDepthTests(unittest.IsolatedAsyncioTestCase):
+    """Codex ignores agents.max_depth, so Buddy stops the workers that sub-workers start.
+
+    In codex-depth.jsonl nothing interrupted the third level, so here its
+    recorded turn runs on after Buddy's interrupt, which gets an empty answer.
+    """
+
+    def setUp(self):
+        self.provider = codex.CodexProvider()
+        # Ends a replayed app-server, and so its reader.
+        self.addCleanup(self.provider.stop)
+        # A turn held open by mistake then fails within seconds instead of hours.
+        time_limit = patch.object(codex, 'ULTRA_TIME_LIMIT', 5)
+        time_limit.start()
+        self.addCleanup(time_limit.stop)
+        self.messages = recorded('codex-depth.jsonl')
+        workers = recorded_workers(self.messages)
+        self.level1 = workers['/root/level1']
+        self.level2 = workers['/root/level1/level2']
+        self.level3 = workers['/root/level1/level2/level3']
+        self.level3_turn = turn_start(self.messages, self.level3)['params']['turn']['id']
+
+    async def replay(self, messages: list[dict]) -> tuple[list, ReplayProcess]:
+        """Run an Ultra turn against a recorded stream; return its events and the replayed app-server."""
+        process = ReplayProcess(messages)
+        turn = ultra_turn(ReplayMachine(process), options=SAME_AS_CHAT, effort=None)
+        events = await collect(self.provider.run_turn(turn))
+        # Let the interrupts' tasks send their requests.
+        await asyncio.sleep(0)
+        return events, process
+
+    def about_level3(self, message: dict) -> bool:
+        """Whether a message is the third level's own, or its parent's report that its turn is over."""
+        if thread_of(message) == self.level3:
+            return True
+        item = (message.get('params') or {}).get('item') or {}
+        if item.get('type') != 'subAgentActivity' or item.get('kind') != 'completed':
+            return False
+        return item.get('agentThreadId') == self.level3
+
+    async def test_a_worker_that_a_sub_worker_starts_is_interrupted(self):
+        events, process = await self.replay(self.messages)
+
+        # Only the third level's turn was interrupted, on its own thread.
+        self.assertEqual(process.sent('turn/interrupt'), [{'threadId': self.level3, 'turnId': self.level3_turn}])
+        # It is listed as stopped from the moment its parent reports it.
+        stopped = WorkerUpdate(
+            worker_id=self.level3,
+            parent_id=self.level2,
+            depth=3,
+            label='Level3',
+            state=WORKER_STOPPED,
+            summary=codex.WORKER_TOO_DEEP,
+        )
+        self.assertEqual(worker_updates(events, self.level3)[0], stopped)
+        # What it did and wrote before the interrupt landed doesn't change that, but its tokens count.
+        self.assertEqual(states(events, self.level3), [WORKER_STOPPED])
+        latest = latest_workers(events)[self.level3]
+        self.assertEqual((latest.summary, latest.activity, latest.tokens), (codex.WORKER_TOO_DEEP, None, 13995))
+        # The orchestrator's worker and its sub-worker ran to the end.
+        for worker_id in (self.level1, self.level2):
+            self.assertEqual(states(events, worker_id), [WORKER_RUNNING, WORKER_DONE])
+        self.assertEqual(failures(events), [])
+
+    def test_the_interrupt_is_handed_over_as_soon_as_the_workers_turn_starts(self):
+        turn_id = recorded_answer(self.messages, 'turn/start')['result']['turn']['id']
+        parser = codex.CodexTurnParser(turn_id, orchestrator_thread(self.messages))
+        parser.track_workers(SAME_AS_CHAT)
+        handed_over = []
+        for index, message in enumerate(self.messages):
+            if 'method' not in message:
+                continue
+            parser.handle(message)
+            for interrupt in parser.take_interrupts():
+                handed_over.append((index, interrupt))
+
+        # Not when its parent reports it, since Codex hasn't named its turn yet, and only once.
+        level3_start = self.messages.index(turn_start(self.messages, self.level3))
+        self.assertEqual(handed_over, [(level3_start, (self.level3, self.level3_turn))])
+
+    async def test_the_turn_stays_open_until_the_worker_is_stopped(self):
+        # Here the third level's turn starts only after the orchestrator's has completed.
+        late = [message for message in self.messages if self.about_level3(message)]
+        reordered = [message for message in self.messages if not self.about_level3(message)] + late
+        events, process = await self.replay(reordered)
+
+        self.assertEqual(process.sent('turn/interrupt'), [{'threadId': self.level3, 'turnId': self.level3_turn}])
+        # Its tokens, reported after the orchestrator's turn completed, reached the list.
+        self.assertEqual(latest_workers(events)[self.level3].tokens, 13995)
+        self.assertEqual(failures(events), [])
+        self.assertEqual(len(self.provider._live_threads), 1)
+
+    async def test_a_worker_whose_own_thread_reports_nothing_ends_when_its_parent_says_so(self):
+        silent = [message for message in self.messages if thread_of(message) != self.level3]
+        events, process = await self.replay(silent)
+
+        # Codex never named its turn, so there was none to interrupt, and the turn didn't wait for one.
+        self.assertEqual(process.sent('turn/interrupt'), [])
+        self.assertEqual(states(events, self.level3), [WORKER_STOPPED])
+        self.assertEqual(failures(events), [])
 
 
 if __name__ == '__main__':
