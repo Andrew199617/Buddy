@@ -14,6 +14,7 @@ ephemeral thread.
 """
 
 import asyncio
+import dataclasses
 import json
 import logging
 from collections import OrderedDict
@@ -35,12 +36,17 @@ from open_webui.utils.subscriptions.common import (
 )
 from open_webui.utils.subscriptions.conversation import ChatTurn, conversation_key
 from open_webui.utils.subscriptions.events import (
+    WORKER_DONE,
+    WORKER_FAILED,
+    WORKER_RUNNING,
+    WORKER_STOPPED,
     ReasoningDelta,
     StatusUpdate,
     SubscriptionError,
     TextDelta,
     TokenUsage,
     TurnFailed,
+    WorkerUpdate,
 )
 from buddy_runner.discovery import TOOL_CODEX
 from buddy_runner.process import OutputLimitError, ProcessClosedError
@@ -68,6 +74,20 @@ UNEXPECTED_SIGN_IN_URL_MESSAGE = (
     'Codex gave a sign-in link that does not go to OpenAI, so Buddy did not show it. '
     'Check the Codex CLI on the selected computer.'
 )
+# The first segment of every agent path. An Ultra turn's orchestrator is /root,
+# its workers add a segment each, such as /root/research, and their
+# sub-workers one more.
+ROOT_AGENT = 'root'
+# How long Buddy follows an Ultra turn. Workers may outlive the orchestrator's
+# reply and take hours; this only ends a turn that never would.
+ULTRA_TIME_LIMIT_HOURS = 6
+ULTRA_TIME_LIMIT = ULTRA_TIME_LIMIT_HOURS * 60 * 60
+ULTRA_TIME_LIMIT_MESSAGE = f'Buddy stopped this Ultra reply after {ULTRA_TIME_LIMIT_HOURS} hours.'
+# A worker's report is kept to this many characters, since every snapshot of the
+# turn's workers carries it.
+WORKER_SUMMARY_LIMIT = 4000
+# The summary of a worker that was still running when its app-server ended.
+WORKER_ENDED_WITH_CODEX = 'Stopped when Codex stopped.'
 
 
 class CodexRpcError(SubscriptionError):
@@ -199,6 +219,36 @@ def _shorten(text, limit: int = 160) -> str:
     return text
 
 
+def _clip(text, limit: int) -> str:
+    """Text cut to at most ``limit`` characters, keeping its lines."""
+    text = str(text or '').strip()
+    if len(text) > limit:
+        return text[: limit - 1].rstrip() + '…'
+    return text
+
+
+def describe_item(item: dict) -> str | None:
+    """One line describing a command, file edit, web search or tool call that a thread starts; None for others."""
+    item_type = item.get('type')
+    if item_type == 'commandExecution':
+        return f'Running `{_shorten(item.get("command"))}`'
+    if item_type == 'fileChange':
+        return 'Editing files'
+    if item_type == 'webSearch':
+        return f'Searching the web for {_shorten(item.get("query"), 100)}'
+    if item_type == 'mcpToolCall':
+        return f'Using {item.get("server")}.{item.get("tool")}'
+    return None
+
+
+def started_worker_thread(params: dict) -> str | None:
+    """The thread of the worker that a subAgentActivity item reports started, or None for any other notification."""
+    item = params.get('item') or {}
+    if item.get('type') != 'subAgentActivity' or item.get('kind') != 'started':
+        return None
+    return item.get('agentThreadId') or None
+
+
 def _usage_difference(total: dict | None, previous: dict | None) -> TokenUsage | None:
     if not isinstance(total, dict):
         return None
@@ -215,23 +265,306 @@ def _usage_difference(total: dict | None, previous: dict | None) -> TokenUsage |
     )
 
 
-class CodexTurnParser:
-    """Turns app-server notifications for one turn into turn events."""
+def _usage_sum(first: TokenUsage | None, second: TokenUsage | None) -> TokenUsage | None:
+    """Two usages added up, where None is no usage reported."""
+    if first is None:
+        return second
+    if second is None:
+        return first
+    return TokenUsage(
+        input_tokens=first.input_tokens + second.input_tokens,
+        output_tokens=first.output_tokens + second.output_tokens,
+        cached_input_tokens=first.cached_input_tokens + second.cached_input_tokens,
+        reasoning_tokens=first.reasoning_tokens + second.reasoning_tokens,
+    )
 
-    def __init__(self, turn_id: str):
+
+def _agent_path_segments(path) -> tuple[str, ...]:
+    """The segments of an agent path below /root, such as ('research', 'tests') for /root/research/tests."""
+    segments = tuple(segment for segment in str(path or '').split('/') if segment)
+    if segments and segments[0] == ROOT_AGENT:
+        return segments[1:]
+    return segments
+
+
+def _worker_label(segments: tuple[str, ...]) -> str:
+    """A worker's name in the list: the last segment of its path, made readable, such as 'Rivers essay'."""
+    if not segments:
+        return 'Worker'
+    words = _shorten(segments[-1].replace('_', ' ').replace('-', ' '), 100)
+    if not words:
+        return 'Worker'
+    return words[0].upper() + words[1:]
+
+
+def _worker_state(status) -> str | None:
+    """The state of a worker whose turn ended with this Codex status, or None for a turn that has not ended."""
+    if status == 'completed':
+        return WORKER_DONE
+    if status == 'interrupted':
+        return WORKER_STOPPED
+    if status == 'failed':
+        return WORKER_FAILED
+    return None
+
+
+def _worker_activity(item: dict) -> str | None:
+    """What a worker is doing once its thread starts this item, in one short line, or None to keep the last one."""
+    item_type = item.get('type')
+    if item_type == 'reasoning':
+        return 'Thinking'
+    if item_type == 'agentMessage':
+        return 'Writing'
+    if item_type == 'collabAgentToolCall' and item.get('tool') == 'wait':
+        return 'Waiting for its workers'
+    return describe_item(item)
+
+
+class CodexWorkers:
+    """The workers of one Ultra turn, followed through Codex's notifications.
+
+    The thread that starts a worker reports it with subAgentActivity items:
+    kind 'started', with the worker's own thread and its agent path, such as
+    /root/rivers_essay, and kind 'completed' when a turn of the worker ends.
+    The orchestrator's thread reports its workers, and each worker's thread
+    the sub-workers it starts. Each worker's thread reports its own turns
+    under its own thread id: turn/started, its items, its token usage, and
+    turn/completed with how the turn ended. A worker's id is its thread id.
+
+    A worker's depth is the number of segments of its path below /root, and
+    its parent is the worker whose path is the rest of it.
+    """
+
+    def __init__(self, options: UltraOptions):
+        self._options = options
+        self._workers: dict[str, WorkerUpdate] = {}
+        # The thread of each worker, by the segments of its agent path.
+        self._threads_by_path: dict[tuple[str, ...], str] = {}
+        # Each worker's latest turn, from its own thread's turn/started.
+        self._turns: dict[str, str] = {}
+        # Each worker thread's latest token usage total.
+        self._usage_totals: dict[str, dict] = {}
+
+    def running(self) -> bool:
+        """Whether any worker has not ended yet."""
+        for worker in self._workers.values():
+            if worker.state == WORKER_RUNNING:
+                return True
+        return False
+
+    def usage_totals(self) -> list[dict]:
+        """Each worker thread's latest token usage total.
+
+        A worker's thread starts with the worker, so its total counts
+        everything the worker used.
+        """
+        return list(self._usage_totals.values())
+
+    def sub_agent_activity(self, item: dict) -> list:
+        """WorkerUpdate events for a subAgentActivity item from the orchestrator's thread or a worker's."""
+        kind = item.get('kind')
+        if kind == 'started':
+            return self._started(item)
+        if kind == 'completed':
+            return self._completed(item)
+        return []
+
+    def handle(self, message: dict) -> list:
+        """WorkerUpdate events for one notification from a worker's own thread."""
+        method = message.get('method')
+        params = message.get('params') or {}
+        worker_id = params.get('threadId')
+        if worker_id not in self._workers:
+            return []
+        if method == 'turn/started':
+            return self._turn_started(worker_id, params.get('turn') or {})
+        if method == 'item/started':
+            return self._item_started(worker_id, params.get('item') or {})
+        if method == 'item/completed':
+            return self._item_completed(worker_id, params.get('item') or {})
+        if method == 'thread/tokenUsage/updated':
+            return self._usage_updated(worker_id, params.get('tokenUsage') or {})
+        if method == 'turn/completed':
+            return self._turn_completed(worker_id, params.get('turn') or {})
+        return []
+
+    def stop_running(self) -> list:
+        """Every worker still running, as stopped: they end with their app-server."""
+        events = []
+        for worker_id, worker in list(self._workers.items()):
+            if worker.state == WORKER_RUNNING:
+                events.extend(
+                    self._change(worker_id, state=WORKER_STOPPED, activity=None, summary=WORKER_ENDED_WITH_CODEX)
+                )
+        return events
+
+    def _change(self, worker_id: str, **changes) -> list:
+        """Apply changes to a worker, and report it when anything changed.
+
+        Each change makes a new WorkerUpdate, so an update already reported
+        keeps what it said.
+        """
+        worker = self._workers[worker_id]
+        changed = dataclasses.replace(worker, **changes)
+        if changed == worker:
+            return []
+        self._workers[worker_id] = changed
+        return [changed]
+
+    def _parent(self, segments: tuple[str, ...]) -> str | None:
+        """The worker whose path is the rest of this one's, or None for the orchestrator's own workers."""
+        if len(segments) < 2:
+            return None
+        return self._threads_by_path.get(segments[:-1])
+
+    def _started(self, item: dict) -> list:
+        worker_id = item.get('agentThreadId')
+        if not worker_id or worker_id in self._workers:
+            return []
+        segments = _agent_path_segments(item.get('agentPath'))
+        worker = WorkerUpdate(
+            worker_id=worker_id,
+            parent_id=self._parent(segments),
+            depth=max(len(segments), 1),
+            label=_worker_label(segments),
+            state=WORKER_RUNNING,
+            # Every worker runs on the person's choices, or the chat's own when both are None.
+            model=self._options.worker_label or self._options.worker_model,
+            effort=self._options.worker_effort,
+        )
+        if segments:
+            self._threads_by_path[segments] = worker_id
+        self._workers[worker_id] = worker
+        return [worker]
+
+    def _completed(self, item: dict) -> list:
+        """End a worker that the thread which started it reports done.
+
+        That report doesn't say how the worker's turn ended, and its own
+        thread's turn/completed does. So it ends only a worker whose own
+        thread has reported no turn here.
+        """
+        worker_id = item.get('agentThreadId')
+        worker = self._workers.get(worker_id)
+        if worker is None or worker.state != WORKER_RUNNING or worker_id in self._turns:
+            return []
+        return self._change(worker_id, state=WORKER_DONE, activity=None)
+
+    def _turn_started(self, worker_id: str, turn: dict) -> list:
+        if turn.get('id'):
+            self._turns[worker_id] = turn['id']
+        # A worker that ended runs again when it is given more to do.
+        return self._change(worker_id, state=WORKER_RUNNING, activity='Working')
+
+    def _item_started(self, worker_id: str, item: dict) -> list:
+        if item.get('type') == 'subAgentActivity':
+            # A worker reports the sub-workers it starts, as the orchestrator reports its workers.
+            return self.sub_agent_activity(item)
+        if self._workers[worker_id].state != WORKER_RUNNING:
+            return []
+        activity = _worker_activity(item)
+        if activity is None:
+            return []
+        return self._change(worker_id, activity=activity)
+
+    def _item_completed(self, worker_id: str, item: dict) -> list:
+        if item.get('type') == 'subAgentActivity':
+            return self.sub_agent_activity(item)
+        if item.get('type') != 'agentMessage':
+            return []
+        # The worker's latest message. Its last one is its report to the thread that started it.
+        summary = _clip(item.get('text'), WORKER_SUMMARY_LIMIT)
+        if not summary:
+            return []
+        return self._change(worker_id, summary=summary)
+
+    def _usage_updated(self, worker_id: str, token_usage: dict) -> list:
+        total = token_usage.get('total')
+        if not isinstance(total, dict):
+            return []
+        self._usage_totals[worker_id] = total
+        tokens = total.get('totalTokens')
+        if not isinstance(tokens, int):
+            return []
+        return self._change(worker_id, tokens=tokens)
+
+    def _turn_completed(self, worker_id: str, turn: dict) -> list:
+        state = _worker_state(turn.get('status'))
+        if state is None:
+            return []
+        changes = {'state': state, 'activity': None}
+        if state == WORKER_FAILED:
+            message = readable_codex_error((turn.get('error') or {}).get('message'))
+            if message:
+                changes['summary'] = _clip(message, WORKER_SUMMARY_LIMIT)
+        return self._change(worker_id, **changes)
+
+
+class CodexTurnParser:
+    """Turns app-server notifications for one turn into turn events.
+
+    On Ultra turns, once track_workers() is called, it also reports the
+    turn's workers. Their own threads' notifications reach the same queue,
+    and only the orchestrator's thread writes the reply. Such a turn is over
+    once the orchestrator's turn has completed and no worker still runs.
+    """
+
+    def __init__(self, turn_id: str, thread_id: str | None = None):
         self.turn_id = turn_id
+        # The orchestrator's thread. An Ultra turn's other threads are its workers'.
+        self.thread_id = thread_id
         self.reply_text = ''
         self.error: str | None = None
+        # Whether the orchestrator's own turn has completed.
         self.finished = False
         self.usage_total: dict | None = None
+        # An Ultra turn's workers; None on other turns.
+        self.workers: CodexWorkers | None = None
         self._reasoning_text = ''
         self._streamed_message_ids = set()
         self._new_message = False
         self._new_reasoning = False
 
+    def track_workers(self, options: UltraOptions) -> None:
+        """Follow an Ultra turn's workers."""
+        self.workers = CodexWorkers(options)
+
+    def turn_over(self) -> bool:
+        """Whether the turn is over: the orchestrator's turn has completed, and none of its workers still runs.
+
+        Workers may outlive the orchestrator's reply. They stay listed until
+        each one ends, since Codex doesn't stop them with it.
+        """
+        if not self.finished:
+            return False
+        return self.workers is None or not self.workers.running()
+
+    def stop_workers(self) -> list:
+        """Workers still running when the app-server ends, as stopped with it."""
+        if self.workers is None:
+            return []
+        return self.workers.stop_running()
+
+    def reply_usage(self, previous_total: dict | None) -> TokenUsage | None:
+        """The reply's token usage, or None when Codex reported none.
+
+        That is the orchestrator's thread's usage since ``previous_total``,
+        its total when the thread's turn before this one ended, plus all that
+        each worker's thread used.
+        """
+        usage = _usage_difference(self.usage_total, previous_total)
+        if self.workers is None:
+            return usage
+        for total in self.workers.usage_totals():
+            usage = _usage_sum(usage, _usage_difference(total, None))
+        return usage
+
     def handle(self, message: dict) -> list:
         method = message.get('method')
         params = message.get('params') or {}
+        if self.workers is not None and params.get('threadId') != self.thread_id:
+            # A worker's own thread: it updates the worker list, never the reply.
+            return self.workers.handle(message)
         turn_id = params.get('turnId') or (params.get('turn') or {}).get('id')
         if turn_id and turn_id != self.turn_id:
             return []
@@ -291,18 +624,18 @@ class CodexTurnParser:
         if item_type == 'reasoning':
             self._new_reasoning = True
             return []
-        if item_type == 'commandExecution':
-            return self._activity(f'Running `{_shorten(item.get("command"))}`')
-        if item_type == 'fileChange':
-            return self._activity('Editing files')
-        if item_type == 'webSearch':
-            return self._activity(f'Searching the web for {_shorten(item.get("query"), 100)}')
-        if item_type == 'mcpToolCall':
-            return self._activity(f'Using {item.get("server")}.{item.get("tool")}')
+        if item_type == 'subAgentActivity' and self.workers is not None:
+            # A worker gets its own status line when it starts.
+            return self.workers.sub_agent_activity(item)
+        description = describe_item(item)
+        if description:
+            return self._activity(description)
         return []
 
     def _item_completed(self, item: dict) -> list:
         item_type = item.get('type')
+        if item_type == 'subAgentActivity' and self.workers is not None:
+            return self.workers.sub_agent_activity(item)
         if item_type == 'agentMessage' and item.get('id') not in self._streamed_message_ids:
             # No deltas arrived for this message; show its full text.
             self._new_message = True
@@ -348,6 +681,9 @@ class CodexAppServer:
         self._reader: asyncio.Task | None = None
         self._pending: dict[int, asyncio.Future] = {}
         self._thread_queues: dict[str, asyncio.Queue] = {}
+        # The threads whose workers' notifications go to a subscribed thread's
+        # queue too, each with the subscribed thread whose queue that is.
+        self._worker_routes: dict[str, str] = {}
         self._next_id = 0
         self._start_lock = asyncio.Lock()
         self.generation = 0
@@ -421,8 +757,24 @@ class CodexAppServer:
         self._thread_queues[thread_id] = queue
         return queue
 
+    def follow_workers(self, thread_id: str) -> None:
+        """Send the notifications of the workers that a subscribed thread starts to its queue too.
+
+        Codex reports each worker's turn under the worker's own thread id. A
+        worker's thread joins the queue as soon as the thread that starts it
+        reports it, before any turn of its own, and so do the sub-workers it
+        starts. Unsubscribing the thread ends all of that.
+        """
+        self._worker_routes[thread_id] = thread_id
+
     def unsubscribe(self, thread_id: str) -> None:
-        self._thread_queues.pop(thread_id, None)
+        queue = self._thread_queues.pop(thread_id, None)
+        for followed, subscribed in list(self._worker_routes.items()):
+            if subscribed != thread_id:
+                continue
+            del self._worker_routes[followed]
+            if self._thread_queues.get(followed) is queue:
+                del self._thread_queues[followed]
 
     async def _read_messages(self, process) -> None:
         """Handle the app-server's messages until they end, for any reason."""
@@ -483,13 +835,31 @@ class CodexAppServer:
 
     def _dispatch_notification(self, message: dict) -> None:
         params = message.get('params') or {}
-        queue = self._thread_queues.get(params.get('threadId'))
+        thread_id = params.get('threadId')
+        queue = self._thread_queues.get(thread_id)
         if queue:
+            self._route_new_worker(thread_id, params, queue)
             queue.put_nowait(message)
         try:
             self._on_notification(message)
         except Exception:
             log.exception('Codex notification handler failed')
+
+    def _route_new_worker(self, thread_id: str, params: dict, queue: asyncio.Queue) -> None:
+        """Send a worker's notifications to ``queue`` from now on, when the thread that started it is followed.
+
+        This runs as the notification is read, so none of the worker's own
+        notifications that follow are missed.
+        """
+        subscribed = self._worker_routes.get(thread_id)
+        if subscribed is None:
+            return
+        worker_thread = started_worker_thread(params)
+        if worker_thread is None or worker_thread in self._thread_queues:
+            return
+        self._thread_queues[worker_thread] = queue
+        # The sub-workers it starts follow it there.
+        self._worker_routes[worker_thread] = subscribed
 
     async def _decline_server_request(self, message: dict) -> None:
         # Buddy starts threads with approvals turned off, so Codex should not
@@ -939,8 +1309,12 @@ class CodexProvider:
             previous_usage = None
 
         queue = server.subscribe(thread_id)
+        if turn.ultra is not None:
+            # Each worker reports its turn under its own thread, which joins this queue.
+            server.follow_workers(thread_id)
         parser = None
         completed = False
+        timed_out = False
         try:
             # Thread setup also sends RPCs and may restart the app-server.
             await self._ensure_effort_models(server, turn)
@@ -949,21 +1323,33 @@ class CodexProvider:
             if effort:
                 params['effort'] = effort
             result = await server.request('turn/start', params)
-            parser = CodexTurnParser(result['turn']['id'])
+            parser = CodexTurnParser(result['turn']['id'], thread_id)
+            if turn.ultra is not None:
+                parser.track_workers(turn.ultra)
 
-            while not parser.finished:
-                message = await queue.get()
+            deadline = _reply_deadline(turn)
+            while not parser.turn_over():
+                try:
+                    message = await _next_message(queue, deadline)
+                except TimeoutError:
+                    log.warning('Stopping an Ultra turn on %s that ran past its time limit', machine.name)
+                    timed_out = True
+                    break
                 if isinstance(message, SubscriptionError):
-                    # The app-server ended; its reader says why.
+                    # The app-server ended, and its workers with it; its reader says why.
+                    for event in parser.stop_workers():
+                        yield event
                     raise message
                 for event in parser.handle(message):
                     yield event
 
-            usage = _usage_difference(parser.usage_total, previous_usage)
+            usage = parser.reply_usage(previous_usage)
             if usage:
                 yield usage
             if parser.error:
                 yield TurnFailed(parser.error)
+            elif timed_out:
+                yield TurnFailed(ULTRA_TIME_LIMIT_MESSAGE)
             else:
                 completed = True
         finally:
@@ -1004,3 +1390,18 @@ class CodexProvider:
         self._model_efforts.clear()
         self._model_efforts_server = None
         self._model_efforts_generation = None
+
+
+def _reply_deadline(turn: TurnRequest) -> float | None:
+    """When Buddy stops following an Ultra turn that started now, on the event loop's clock; None for other turns."""
+    if turn.ultra is None:
+        return None
+    return asyncio.get_running_loop().time() + ULTRA_TIME_LIMIT
+
+
+async def _next_message(queue: asyncio.Queue, deadline: float | None):
+    """The next message of a turn's queue. Raises TimeoutError when the deadline passes first."""
+    if deadline is None:
+        return await queue.get()
+    async with asyncio.timeout_at(deadline):
+        return await queue.get()
