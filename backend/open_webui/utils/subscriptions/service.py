@@ -2648,13 +2648,23 @@ async def describe_chat_run_target(user, chat_id: str) -> dict:
 AGENT_READ_TIMEOUT_SECONDS = 15
 
 
+async def _chose_server_path(user, path: str) -> bool:
+    """Whether the person already chose this folder on This server, for a chat folder or a chat."""
+    for choice in (await project_folders.load_choices(user.id)).values():
+        saved = choice.paths.get(LOCAL_MACHINE_ID)
+        if saved is not None and saved.path == path:
+            return True
+    return await ChatRunTargets.has_path(user.id, LOCAL_MACHINE_ID, path)
+
+
 async def server_agent_files(user, machine_id: str, path) -> dict:
     """The agent files in a folder on This server, for the composer's agent menu.
 
-    The folder is the chat's own: the one its bar picked, or its chat folder's project
-    folder. Agents on Buddy app computers are read through the relay instead. Only
-    someone who may use This server, which the policy limits to its owner, reads it,
-    and only the agent folders inside it are read.
+    The folder must be one the person already chose there: a chat folder's project
+    folder, or the exact folder one of their chats runs in. Agents on Buddy app
+    computers are read through the relay instead. Only someone who may use This
+    server, which the policy limits to its owner, reads it, and only the agent
+    folders inside it are read.
     """
     if machine_id != LOCAL_MACHINE_ID:
         raise SubscriptionError('Agents on that computer are read through the Buddy app.')
@@ -2663,6 +2673,8 @@ async def server_agent_files(user, machine_id: str, path) -> dict:
     if not isinstance(path, str):
         raise SubscriptionError("Enter the folder's full path.")
     cleaned = project_folders.clean_project_path(path, await _machine_platform(user.id, LOCAL_MACHINE_ID))
+    if not await _chose_server_path(user, cleaned):
+        raise SubscriptionError('Choose this folder for the chat or its chat folder first, then pick an agent.')
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(project_agents.read_agent_files, cleaned), AGENT_READ_TIMEOUT_SECONDS

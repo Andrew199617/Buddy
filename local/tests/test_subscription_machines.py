@@ -219,6 +219,12 @@ class MemoryRunTargets:
         own = [row for row in self.rows.values() if row.user_id == user_id and row.folder_mode == 'path']
         return sorted(own, key=lambda row: row.created_at, reverse=True)[:limit]
 
+    async def has_path(self, user_id, machine_id, path, db=None):
+        return any(
+            row.user_id == user_id and row.machine_id == machine_id and row.folder_mode == 'path' and row.path == path
+            for row in self.rows.values()
+        )
+
     async def copy_for_owner(self, source_chat_id, new_chat_id, user_id, db=None):
         source = self.rows.get(source_chat_id)
         if source is None or source.user_id != user_id:
