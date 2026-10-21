@@ -247,6 +247,33 @@ async def _send_stopped_workers(workers: WorkerSnapshots, emit_when_stopped) -> 
         log.exception("Could not send the chat a stopped reply's Ultra workers")
 
 
+def stopped_saved_workers(saved, ended_at: int) -> dict | None:
+    """A message's saved workers snapshot, with each worker it lists as running stopped.
+
+    For a reply that ended without its stream, as when the server restarted
+    while it ran: nothing will report its workers again. None when the
+    snapshot lists no worker as running, or isn't a snapshot.
+    """
+    if not isinstance(saved, dict) or not isinstance(saved.get('items'), list):
+        return None
+    items = []
+    stopped_any = False
+    for item in saved['items']:
+        if isinstance(item, dict) and item.get('state') == WORKER_RUNNING:
+            item = {
+                **item,
+                'state': WORKER_STOPPED,
+                'activity': None,
+                'summary': WORKER_STOPPED_WITH_REPLY,
+                'ended_at': ended_at,
+            }
+            stopped_any = True
+        items.append(item)
+    if not stopped_any:
+        return None
+    return {'items': items, 'running': 0}
+
+
 async def collect_events(events, model_id: str) -> dict:
     """Run a turn to the end and return a non-streaming chat completion.
 

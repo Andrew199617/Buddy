@@ -503,6 +503,44 @@ class StoppedReplyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.turn.after_stop, ['turn closed'])
 
 
+def saved_workers() -> dict:
+    """A message's saved workers: a worker that was writing on, and a sub-worker that had finished."""
+    workers = streaming.WorkerSnapshots(clock=FakeClock())
+    workers.update(research_worker(activity='Reading parser.py'))
+    workers.update(sub_worker())
+    workers.update(sub_worker(state=WORKER_DONE, summary='Read them.'))
+    return workers.snapshot()['event']['data']
+
+
+class StoppedSavedWorkersTests(unittest.TestCase):
+    """A reply that ended without its stream, as after a server restart, keeps no worker running."""
+
+    def test_each_worker_saved_as_running_is_stopped(self):
+        saved = saved_workers()
+        stopped = streaming.stopped_saved_workers(saved, 1_800_000_100)
+        self.assertEqual(stopped['running'], 0)
+        research, sub = stopped['items']
+        self.assertEqual(research['state'], WORKER_STOPPED)
+        self.assertIsNone(research['activity'])
+        self.assertEqual(research['summary'], streaming.WORKER_STOPPED_WITH_REPLY)
+        self.assertEqual(research['ended_at'], 1_800_000_100)
+        self.assertEqual(research['started_at'], saved['items'][0]['started_at'])
+        # A worker that had ended keeps how it ended, and the saved snapshot is left as it was.
+        self.assertEqual(sub, saved['items'][1])
+        self.assertEqual(saved['items'][0]['state'], WORKER_RUNNING)
+
+    def test_a_snapshot_without_running_workers_needs_no_change(self):
+        saved = saved_workers()
+        saved['items'] = saved['items'][1:]
+        saved['running'] = 0
+        self.assertIsNone(streaming.stopped_saved_workers(saved, 1_800_000_100))
+
+    def test_anything_that_is_not_a_snapshot_is_left_alone(self):
+        for saved in (None, [], {'running': 1}, {'items': 'task-research'}):
+            with self.subTest(saved=saved):
+                self.assertIsNone(streaming.stopped_saved_workers(saved, 1_800_000_100))
+
+
 class StandInSocketServer:
     """The Socket.IO server, recording what the emitter sends to the person's browser."""
 

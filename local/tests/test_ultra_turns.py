@@ -48,7 +48,7 @@ import test_ultra_codex as codex_replay
 from open_webui.utils.subscriptions import claude_code, codex, streaming, ultra  # noqa: E402
 from open_webui.utils.subscriptions.common import ProviderModel  # noqa: E402
 from open_webui.utils.subscriptions.conversation import parse_messages  # noqa: E402
-from open_webui.utils.subscriptions.events import StatusUpdate, SubscriptionError  # noqa: E402
+from open_webui.utils.subscriptions.events import StatusUpdate, SubscriptionError, WorkerUpdate  # noqa: E402
 
 PROJECT = 'C:\\code\\site'
 CHAT_MODEL_ID = 'claude-code.fixture-model'
@@ -734,6 +734,7 @@ class StopWorkerRouteTests(LiveUltraTurnTestCase):
 
 
 TASKS_PATH = ROOT / 'backend' / 'open_webui' / 'tasks.py'
+MAIN_PATH = ROOT / 'backend' / 'open_webui' / 'main.py'
 MIDDLEWARE_PATH = ROOT / 'backend' / 'open_webui' / 'utils' / 'middleware.py'
 CHAT_STOPPED = 'All tasks for item chat-1 stopped.'
 
@@ -1095,6 +1096,117 @@ class ChatStopTests(UltraServiceTestCase):
         self.assertIsNone(self.service._stopped_reply_emitter({'chat_id': 'chat-1'}))
         self.assertIsNone(self.service._stopped_reply_emitter({'message_id': 'message-1'}))
         self.assertIsNotNone(self.service._stopped_reply_emitter({'chat_id': 'chat-1', 'message_id': 'message-1'}))
+
+
+STOPPED_AT = 1_800_000_100
+
+
+class SavedChatRows:
+    """The saved chat and its chat_message rows, as main.py's stop route reads and writes them.
+
+    The rows have no column for a message's Ultra workers; only the chat's own copy keeps them.
+    """
+
+    def __init__(self, reply_workers):
+        question = {'id': 'question', 'role': 'user', 'content': 'Fix the parser.', 'done': True}
+        reply = {'id': 'message-1', 'parentId': 'question', 'role': 'assistant', 'content': 'Fixed.', 'done': False}
+        self.rows = {'question': question, 'message-1': reply}
+        saved_reply = dict(reply)
+        if reply_workers is not None:
+            saved_reply['workers'] = reply_workers
+        history = {'currentId': 'message-1', 'messages': {'question': question, 'message-1': saved_reply}}
+        self.chat = types.SimpleNamespace(id='chat-1', user_id=OWNER, chat={'history': history})
+        self.upserts = []
+
+    async def get_chat_by_id(self, chat_id):
+        return self.chat
+
+    async def get_messages_map_by_chat_id(self, chat_id):
+        return {message_id: dict(row) for message_id, row in self.rows.items()}
+
+    async def upsert_message_to_chat_by_id_and_message_id(self, chat_id, message_id, message, *, touch=True):
+        self.upserts.append((message_id, message, touch))
+
+
+def load_chat_stop_route(chats, sent):
+    """main.py's stop route for a chat, with Redis, Socket.IO and the database left out.
+
+    Its chat has no running task, as after a server restart.
+    """
+    tree = ast.parse(MAIN_PATH.read_text(encoding='utf-8'))
+    nodes = [node for node in tree.body if getattr(node, 'name', None) == 'stop_tasks_by_chat_id_endpoint']
+    if len(nodes) != 1:
+        raise AssertionError('main.py no longer defines stop_tasks_by_chat_id_endpoint')
+    nodes[0].decorator_list = []
+
+    async def no_tasks_found(redis, chat_id):
+        return {'status': True, 'message': f'No tasks found for item {chat_id}.'}
+
+    async def chat_event_emitter(request_info, update_db=True):
+        async def emit(event):
+            sent.append(event)
+
+        return emit
+
+    async def may_not_change_others_chat(user):
+        return False
+
+    namespace = {
+        'Depends': lambda dependency: None,
+        'get_verified_user': None,
+        'get_temporary_chat_session_id': lambda chat_id: None,
+        'Chats': chats,
+        'may_change_others_chat': may_not_change_others_chat,
+        'stop_item_tasks': no_tasks_found,
+        'get_event_emitter': chat_event_emitter,
+        'stopped_saved_workers': streaming.stopped_saved_workers,
+        'WORKERS_EVENT_TYPE': streaming.WORKERS_EVENT_TYPE,
+        'time': types.SimpleNamespace(time=lambda: STOPPED_AT + 0.5),
+    }
+    # Its annotations then stay unevaluated.
+    future_annotations = ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0)
+    module = ast.fix_missing_locations(ast.Module(body=[future_annotations, *nodes], type_ignores=[]))
+    exec(compile(module, str(MAIN_PATH), 'exec'), namespace)
+    return namespace['stop_tasks_by_chat_id_endpoint']
+
+
+class StopAfterRestartTests(unittest.IsolatedAsyncioTestCase):
+    """Stop finishes a reply whose task is gone, as after a server restart, and stops the workers it lists."""
+
+    def setUp(self):
+        workers = streaming.WorkerSnapshots(clock=lambda: STOPPED_AT - 60)
+        workers.update(WorkerUpdate(CLAUDE_WORKER_ID, None, 1, 'Write the essay', 'running'))
+        workers.update(WorkerUpdate(OTHER_CLAUDE_WORKER_ID, None, 1, 'Check the facts', 'done'))
+        self.saved_workers = workers.snapshot()['event']['data']
+        self.sent = []
+
+    async def stop(self, reply_workers):
+        chats = SavedChatRows(reply_workers)
+        route = load_chat_stop_route(chats, self.sent)
+        request = types.SimpleNamespace(app=types.SimpleNamespace(state=types.SimpleNamespace(redis=None)))
+        await route(request, 'chat-1', OWNER_USER)
+        return chats
+
+    async def test_the_workers_still_listed_as_running_are_saved_and_sent_as_stopped(self):
+        chats = await self.stop(self.saved_workers)
+        [(message_id, finished, touch)] = chats.upserts
+        self.assertEqual(message_id, 'message-1')
+        self.assertFalse(touch)
+        self.assertTrue(finished['done'])
+        workers = finished['workers']
+        self.assertEqual(workers['running'], 0)
+        essay, facts = workers['items']
+        self.assertEqual((essay['id'], essay['state'], essay['ended_at']), (CLAUDE_WORKER_ID, 'stopped', STOPPED_AT))
+        self.assertEqual(facts, self.saved_workers['items'][1])
+        # The open chat is told, between the reply finishing and its tasks ending.
+        types_sent = [event['type'] for event in self.sent]
+        self.assertEqual(types_sent, ['chat:completion', streaming.WORKERS_EVENT_TYPE, 'chat:tasks:cancel'])
+        self.assertEqual(self.sent[1]['data'], workers)
+
+    async def test_a_reply_without_workers_is_only_finished(self):
+        chats = await self.stop(None)
+        self.assertEqual(chats.upserts, [('message-1', {'done': True}, False)])
+        self.assertEqual([event['type'] for event in self.sent], ['chat:completion', 'chat:tasks:cancel'])
 
 
 if __name__ == '__main__':

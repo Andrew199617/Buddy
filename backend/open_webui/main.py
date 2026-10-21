@@ -281,6 +281,7 @@ from open_webui.utils.subscriptions.service import (
     is_conflicting_preset_row,
     mark_run_targets_started,
 )
+from open_webui.utils.subscriptions.streaming import WORKERS_EVENT_TYPE, stopped_saved_workers
 from open_webui.utils.super_users import may_change_others_chat
 from open_webui.utils.tool_approval import (
     ResolveToolCallForm,
@@ -2243,6 +2244,8 @@ async def stop_tasks_by_chat_id_endpoint(request: Request, chat_id: str, user=De
 
     if not socket_id and str(result.get('message', '')).startswith('No tasks found'):
         messages_map = await Chats.get_messages_map_by_chat_id(chat_id) or {}
+        # Only the chat's own copy of each message keeps its Ultra workers.
+        saved_messages = ((chat.chat or {}).get('history') or {}).get('messages') or {}
         for message_id, message in messages_map.items():
             if message.get('role') != 'assistant' or message.get('done') is not False:
                 continue
@@ -2258,10 +2261,19 @@ async def stop_tasks_by_chat_id_endpoint(request: Request, chat_id: str, user=De
                         item['status'] = 'rejected'
                         item.pop('approved', None)
 
+            # The reply's task is gone, as after a server restart, and its workers with it.
+            saved_workers = (saved_messages.get(message_id) or {}).get('workers')
+            workers = stopped_saved_workers(saved_workers, int(time.time()))
+
+            finished = {'done': True}
+            if isinstance(output, list):
+                finished['output'] = output
+            if workers is not None:
+                finished['workers'] = workers
             await Chats.upsert_message_to_chat_by_id_and_message_id(
                 chat_id,
                 message_id,
-                {'done': True, **({'output': output} if isinstance(output, list) else {})},
+                finished,
                 touch=False,
             )
             result = {
@@ -2279,6 +2291,8 @@ async def stop_tasks_by_chat_id_endpoint(request: Request, chat_id: str, user=De
             )
             if event_emitter:
                 await event_emitter({'type': 'chat:completion', 'data': {'done': True, 'output': output}})
+                if workers is not None:
+                    await event_emitter({'type': WORKERS_EVENT_TYPE, 'data': workers})
                 await event_emitter({'type': 'chat:tasks:cancel'})
 
     return result
