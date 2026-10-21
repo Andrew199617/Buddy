@@ -3617,7 +3617,6 @@ def _effort_names(efforts) -> list[str]:
     return [effort for effort in efforts if isinstance(effort, str) and effort]
 
 
-ULTRA_OFF_STATUS = 'Ultra is off for this reply: {reason}'
 ULTRA_UNSUPPORTED_REASON = "{label} on your computer can't run workers with {model}."
 ULTRA_UNLISTED_REASON = "{label} on your computer hasn't listed this chat's model yet."
 ULTRA_WORKER_PROVIDER_MESSAGE = "Ultra's workers run on this chat's {label} plan. Choose one of its models for them."
@@ -3843,10 +3842,7 @@ def _with_start_note(conversation, cwd: str):
 
 def _with_ultra_note(conversation, provider_id: str, access: str, options: UltraOptions):
     """Tell an Ultra turn to orchestrate workers, ahead of the rest of its instructions."""
-    note = ultra.orchestrator_note(provider_id, access, options)
-    system = note
-    if conversation.system:
-        system = f'{note}\n\n{conversation.system}'
+    system = ultra.with_orchestrator_note(conversation.system, provider_id, access, options)
     return replace(conversation, system=system)
 
 
@@ -3931,7 +3927,7 @@ async def generate_subscription_chat_completion(request, form_data: dict, user, 
     else:
         events = _tracked_turn(ref, provider, turn, generation)
         if ultra_off_reason:
-            events = _after_status(ULTRA_OFF_STATUS.format(reason=ultra_off_reason), events)
+            events = _after_status(ultra.OFF_STATUS.format(reason=ultra_off_reason), events)
 
     response_model_id = form_data.get('model') or model_id
     if payload.get('stream'):

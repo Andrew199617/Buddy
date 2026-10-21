@@ -7,6 +7,7 @@ subscription's limits.
 """
 
 import asyncio
+import dataclasses
 import json
 import logging
 import re
@@ -57,6 +58,22 @@ READ_ONLY_TOOLS = 'Read,Grep,Glob,WebSearch'
 # Ultra turns add the Agent tool, which starts workers, to the turn's own tools.
 ULTRA_CHAT_TOOLS = 'Agent'
 ULTRA_READ_TOOLS = 'Read,Grep,Glob,WebSearch,Agent'
+# Ultra turns define Buddy's worker types in an initialize request, before the prompt.
+WORKERS_REQUEST_ID = 'buddy-ultra'
+# Seconds to wait for Claude Code's answer, as when listing models.
+WORKERS_ANSWER_TIMEOUT = 30
+WORKER_DESCRIPTION = (
+    'A Buddy worker with the same access as this turn. Use it for most tasks, '
+    'including any task that may need sub-workers.'
+)
+READER_DESCRIPTION = (
+    'A Buddy worker that can only read and search, in the project and on the web, and never '
+    'changes anything. Use it for tasks that only need to read.'
+)
+# A reader has the read-only turn's tools. They leave out Agent, so a reader
+# can't start sub-workers.
+READER_TOOLS = READ_ONLY_TOOLS.split(',')
+ULTRA_TOO_OLD_REASON = 'Claude Code on {computer} is too old for Ultra.'
 TRANSCRIPT_INTRO = 'Here is our conversation so far. Continue it by replying to my latest message.'
 INSTRUCTIONS_FILE = 'instructions'
 LOGIN_URL = re.compile(r'https://\S+/oauth/authorize\?\S+')
@@ -97,6 +114,79 @@ def ultra_env(options: UltraOptions) -> dict[str, str]:
     # CLAUDE_CODE_EFFORT_LEVEL stays unset: it would set the orchestrator's
     # thinking level too, not only the workers'.
     return env
+
+
+def without_ultra(turn: TurnRequest) -> TurnRequest:
+    """The same turn without Ultra: no workers, and no note that asks for them."""
+    system = ultra.without_orchestrator_note(turn.conversation.system, PROVIDER_ID, turn.access, turn.ultra)
+    conversation = dataclasses.replace(turn.conversation, system=system)
+    return dataclasses.replace(turn, conversation=conversation, ultra_options=None)
+
+
+def _worker_prompt(turn: TurnRequest) -> str:
+    """The system prompt of an Ultra turn's workers.
+
+    Workers don't see the orchestrator's instructions, so the chat's own, such
+    as a chosen project agent's and the person's, follow Buddy's worker
+    prompt. The orchestrator note stays out: workers do their task themselves.
+    """
+    chat_system = ultra.without_orchestrator_note(turn.conversation.system, PROVIDER_ID, turn.access, turn.ultra)
+    if not chat_system:
+        return ultra.WORKER_PROMPT
+    return f'{ultra.WORKER_PROMPT}\n\n{chat_system}'
+
+
+def _worker_type(turn: TurnRequest, description: str) -> dict:
+    """One Claude Code agent definition for an Ultra turn's workers."""
+    options = turn.ultra
+    definition = {
+        'description': description,
+        'prompt': _worker_prompt(turn),
+        # 'inherit' runs the workers on the chat's own model.
+        'model': options.worker_model or 'inherit',
+    }
+    # The chat's own thinking level, unless the person chose one for the workers.
+    effort = claude_effort(options.worker_effort) or claude_effort(turn.effort)
+    if effort:
+        definition['effort'] = effort
+    return definition
+
+
+def worker_types(turn: TurnRequest) -> dict:
+    """Buddy's worker types for an Ultra turn, as the agents of Claude Code's initialize request.
+
+    A buddy-worker names no tools, so it has the turn's own: the same access
+    as the orchestrator. A buddy-reader can only read and search. Chat turns
+    have no file tools for a reader to keep, so they get only buddy-worker.
+    """
+    agents = {ultra.WORKER_AGENT: _worker_type(turn, WORKER_DESCRIPTION)}
+    if turn.access != ACCESS_CHAT:
+        reader = _worker_type(turn, READER_DESCRIPTION)
+        reader['tools'] = list(READER_TOOLS)
+        agents[ultra.READER_AGENT] = reader
+    return agents
+
+
+def _control_answer(message: dict, request_id: str) -> dict | None:
+    """Claude Code's answer to the control request with this id, or None for any other message."""
+    if message.get('type') != 'control_response':
+        return None
+    response = message.get('response') or {}
+    if response.get('request_id') != request_id:
+        return None
+    # An error answer has none, as if nothing were listed.
+    return response.get('response') or {}
+
+
+def _agent_names(answer: dict) -> list[str]:
+    """The agent types an initialize answer lists."""
+    names = []
+    for agent in answer.get('agents') or []:
+        if isinstance(agent, dict) and agent.get('name'):
+            names.append(agent['name'])
+        elif isinstance(agent, str):
+            names.append(agent)
+    return names
 
 
 def _image_block(url: str) -> dict | None:
@@ -150,6 +240,23 @@ def transcript_message(history: list[ChatTurn], prompt: ChatTurn) -> dict:
     content.append(_text_block(f'</conversation>\n\nMy latest message:\n{prompt.text}'))
     content.extend(_image_blocks(prompt.images))
     return _stream_user_message(content)
+
+
+def turn_message(turn: TurnRequest, resume_id: str | None) -> dict:
+    """The message that asks for this turn's reply.
+
+    A resumed session already holds the chat, so it gets only the new prompt;
+    a fresh one gets the whole chat. An Ultra turn's message ends with
+    ULTRA_TURN_NOTE, added here so the chat itself never holds it.
+    """
+    prompt = turn.conversation.prompt
+    if resume_id:
+        message = user_message(prompt.text, prompt.images)
+    else:
+        message = transcript_message(turn.conversation.history, prompt)
+    if turn.ultra is not None:
+        message['message']['content'].append(_text_block(ultra.ULTRA_TURN_NOTE))
+    return message
 
 
 def _shorten(text, limit: int = 160) -> str:
@@ -717,15 +824,53 @@ class ClaudeCodeProvider:
         # session can only be resumed where it was created.
         return f'{turn.machine.id}|{turn.cwd}|{conversation_key(turns)}'
 
-    async def _run_attempt(
-        self,
-        cli: str,
-        turn: TurnRequest,
-        resume_id: str | None,
-        message: dict,
-        attempt: 'ClaudeAttempt',
-    ):
-        """Run ``claude -p`` once, yielding events and recording the outcome in ``attempt``."""
+    async def _define_workers(self, process, turn: TurnRequest) -> list[str] | None:
+        """Define Buddy's worker types for an Ultra turn, before its prompt is sent.
+
+        Returns the agent types Claude Code then lists, or None when its output
+        ends before it answers. When it doesn't answer within
+        WORKERS_ANSWER_TIMEOUT seconds, nothing counts as listed.
+        """
+        request = {
+            'type': 'control_request',
+            'request_id': WORKERS_REQUEST_ID,
+            'request': {'subtype': 'initialize', 'hooks': None, 'agents': worker_types(turn)},
+        }
+        await process.write(json.dumps(request) + '\n')
+        try:
+            async with asyncio.timeout(WORKERS_ANSWER_TIMEOUT):
+                while True:
+                    line = await process.read_line()
+                    if line is None:
+                        return None
+                    answer = _control_answer(_parse_json_line(line), WORKERS_REQUEST_ID)
+                    if answer is not None:
+                        return _agent_names(answer)
+        except TimeoutError:
+            log.warning('Claude Code on %s did not answer the request that defines Ultra workers', turn.machine.name)
+            return []
+
+    async def _run_attempt(self, cli: str, turn: TurnRequest, resume_id: str | None, attempt: 'ClaudeAttempt'):
+        """Run the reply once, yielding events and recording the outcome in ``attempt``.
+
+        When Claude Code on that computer can't run Ultra's workers, the reply
+        runs again without Ultra, after a status line that says why.
+        """
+        async for event in self._run_cli(cli, turn, resume_id, attempt):
+            yield event
+        if attempt.ultra_off_reason is None:
+            return
+        yield StatusUpdate(ultra.OFF_STATUS.format(reason=attempt.ultra_off_reason))
+        async for event in self._run_cli(cli, without_ultra(turn), resume_id, attempt):
+            yield event
+
+    async def _run_cli(self, cli: str, turn: TurnRequest, resume_id: str | None, attempt: 'ClaudeAttempt'):
+        """Run ``claude -p`` once, yielding events and recording the outcome in ``attempt``.
+
+        An Ultra turn first defines Buddy's worker types. When Claude Code then
+        doesn't list buddy-worker, the run ends before the prompt is sent, with
+        the reason in ``attempt.ultra_off_reason``.
+        """
         parser = attempt.parser
         process = await turn.machine.start_process(
             self._turn_args(cli, turn, resume_id, temp_file_arg(INSTRUCTIONS_FILE)),
@@ -738,7 +883,16 @@ class ClaudeCodeProvider:
         # then it is killed at once instead of being given time to exit.
         output_ended = False
         try:
-            await process.write(json.dumps(message) + '\n')
+            if turn.ultra is not None:
+                agents = await self._define_workers(process, turn)
+                if agents is None:
+                    # Claude Code ended before it answered; its stderr says why.
+                    output_ended = True
+                    return
+                if ultra.WORKER_AGENT not in agents:
+                    attempt.ultra_off_reason = ULTRA_TOO_OLD_REASON.format(computer=turn.machine.name)
+                    return
+            await process.write(json.dumps(turn_message(turn, resume_id)) + '\n')
             while not parser.finished:
                 line = await process.read_line()
                 if line is None:
@@ -773,17 +927,18 @@ class ClaudeCodeProvider:
 
         attempt = ClaudeAttempt()
         if resume_id:
-            message = user_message(conversation.prompt.text, conversation.prompt.images)
-            async for event in self._run_attempt(cli, turn, resume_id, message, attempt):
+            async for event in self._run_attempt(cli, turn, resume_id, attempt):
                 yield event
+            if attempt.ultra_off_reason:
+                # Claude Code there can't run Ultra, so a fresh session runs without it too.
+                turn = without_ultra(turn)
             if attempt.session_missing():
                 log.info('Claude session %s no longer exists; starting from the chat text', resume_id)
                 resume_id = None
                 attempt = ClaudeAttempt()
 
         if not resume_id:
-            message = transcript_message(conversation.history, conversation.prompt)
-            async for event in self._run_attempt(cli, turn, None, message, attempt):
+            async for event in self._run_attempt(cli, turn, None, attempt):
                 yield event
 
         failure = attempt.failure()
@@ -796,12 +951,14 @@ class ClaudeCodeProvider:
 
 
 class ClaudeAttempt:
-    """What one ``claude -p`` run produced."""
+    """What one attempt at the reply produced."""
 
     def __init__(self):
         self.parser = ClaudeStreamParser()
         self.stderr = ''
         self.exited_early = False
+        # Why the reply ran without Ultra although the person turned it on.
+        self.ultra_off_reason: str | None = None
 
     def session_missing(self) -> bool:
         """The resumed session was deleted or belongs to another folder."""

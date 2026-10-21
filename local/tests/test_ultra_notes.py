@@ -236,6 +236,34 @@ class OrchestratorNoteTests(unittest.TestCase):
         self.assertNotIn('buddy-reader', note)
 
 
+class NotePlacementTests(unittest.TestCase):
+    def test_the_note_leads_the_turns_instructions(self):
+        note = ultra.orchestrator_note(claude_code.PROVIDER_ID, ACCESS_READ, SONNET)
+        noted = ultra.with_orchestrator_note('Folder instructions.', claude_code.PROVIDER_ID, ACCESS_READ, SONNET)
+        self.assertEqual(noted, f'{note}\n\nFolder instructions.')
+        self.assertEqual(ultra.with_orchestrator_note('', claude_code.PROVIDER_ID, ACCESS_READ, SONNET), note)
+
+    def test_taking_the_note_off_gives_back_the_chats_own_instructions(self):
+        for provider_id in PROVIDERS:
+            for system in ('', 'Folder instructions.', 'A project agent.\n\nFolder instructions.'):
+                with self.subTest(provider_id=provider_id, system=system):
+                    noted = ultra.with_orchestrator_note(system, provider_id, ACCESS_FULL, ASTRA)
+                    self.assertEqual(ultra.without_orchestrator_note(noted, provider_id, ACCESS_FULL, ASTRA), system)
+
+    def test_instructions_without_the_note_stay_as_they_are(self):
+        self.assertEqual(
+            ultra.without_orchestrator_note('Folder instructions.', claude_code.PROVIDER_ID, ACCESS_CHAT, SONNET),
+            'Folder instructions.',
+        )
+
+    def test_the_off_status_names_the_reason(self):
+        reason = 'Claude Code on Fixture PC is too old for Ultra.'
+        self.assertEqual(
+            ultra.OFF_STATUS.format(reason=reason),
+            'Ultra is off for this reply: Claude Code on Fixture PC is too old for Ultra.',
+        )
+
+
 class WorkerPromptTests(unittest.TestCase):
     def test_workers_stick_to_their_task_and_report_what_they_checked(self):
         prompt = ultra.WORKER_PROMPT

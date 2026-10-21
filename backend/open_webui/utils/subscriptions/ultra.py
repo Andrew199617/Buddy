@@ -34,6 +34,9 @@ READER_AGENT = 'buddy-reader'
 # Added to the person's message on Ultra turns.
 ULTRA_TURN_NOTE = 'Ultra is on: orchestrate workers for this request.'
 
+# The status line that starts a reply the person turned Ultra on for, when it runs without Ultra.
+OFF_STATUS = 'Ultra is off for this reply: {reason}'
+
 # The system prompt of buddy-worker and buddy-reader.
 WORKER_PROMPT = '\n'.join(
     [
@@ -213,3 +216,23 @@ def orchestrator_note(provider_id: str, access: str, options: UltraOptions) -> s
     paragraphs.append(_choice_paragraph(provider_id, options))
     paragraphs.append(DIRECT_REPLY_NOTE)
     return '\n\n'.join(paragraphs)
+
+
+def with_orchestrator_note(system: str, provider_id: str, access: str, options: UltraOptions) -> str:
+    """A turn's instructions with orchestrator_note() ahead of them."""
+    note = orchestrator_note(provider_id, access, options)
+    if not system:
+        return note
+    return f'{note}\n\n{system}'
+
+
+def without_orchestrator_note(system: str, provider_id: str, access: str, options: UltraOptions) -> str:
+    """A turn's instructions without the note that with_orchestrator_note() put ahead of them.
+
+    Workers get the chat's own instructions without it, since they do their
+    task themselves, and so does a reply that runs without Ultra after all.
+    """
+    note = orchestrator_note(provider_id, access, options)
+    if system == note:
+        return ''
+    return system.removeprefix(f'{note}\n\n')
