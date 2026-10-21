@@ -1,40 +1,74 @@
 <script lang="ts">
-	import { getContext, createEventDispatcher, onMount, tick } from 'svelte';
+	// Create Folder / Edit Folder: a name and background image, instructions,
+	// and two quiet rows that open in place: Knowledge and the Project folder.
+	import { getContext, tick } from 'svelte';
 
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import XMark from '../icons/XMark.svelte';
 
 	import { toast } from 'svelte-sonner';
-	import { page } from '$app/stores';
-	import { goto } from '$app/navigation';
-	import { user, config } from '$lib/stores';
+	import { user, config, mobile } from '$lib/stores';
 
 	import Textarea from '$lib/components/common/Textarea.svelte';
 	import Knowledge from '$lib/components/workspace/Models/Knowledge.svelte';
 	import ProjectFolderSection from '$lib/components/projectFolders/ProjectFolderSection.svelte';
 	import { getFolderById } from '$lib/apis/folders';
-	const i18n = getContext('i18n');
+	const i18n: any = getContext('i18n');
+
+	type FolderForm = {
+		name: string;
+		meta: FolderMeta;
+		data: FolderData;
+		parent_id?: string | null;
+	};
+	// Kept whole on save: they also hold settings set elsewhere, like the folder's icon.
+	type FolderMeta = { background_image_url: string | null; [key: string]: unknown };
+	type FolderData = { system_prompt: string; files: any[]; [key: string]: unknown };
 
 	export let show = false;
-	export let onSubmit: Function = (e) => {};
+	// Saves the folder; when creating, resolves to the new folder, or null if none was made.
+	export let onSubmit: (form: FolderForm) => unknown = () => null;
 
 	export let folderId = null;
 	export let parentId = null;
 	export let edit = false;
 
-	let folder = null;
+	let folder: { name?: string; meta?: FolderMeta; data?: FolderData } | null = null;
 	let name = '';
-	let meta = {
+	let meta: FolderMeta = {
 		background_image_url: null
 	};
-	let data = {
+	let data: FolderData = {
 		system_prompt: '',
 		files: []
 	};
 
 	let loading = false;
 	let projectSection: ProjectFolderSection;
+	let knowledgeOpen = false;
+	let projectOpen = false;
+	let projectSummary = '';
+	let projectError = '';
+	let projectLoadError = '';
+	let dialogRoot: HTMLElement | null = null;
+	let projectPicking = false;
+	// Phones show the folder on one screen and each row's settings on their own.
+	type Screen = 'main' | 'knowledge' | 'project';
+	let screen: Screen = 'main';
+	// Set once the project folder section knows this person may use computers.
+	let projectAvailable = false;
+
+	$: canEditInstructions =
+		$user?.role === 'admin' || ($user?.permissions?.chat?.system_prompt ?? true);
+	$: knowledgeCount = (data?.files ?? []).length;
+	// A save the project folder refused shows its reason where the choice is made.
+	$: formId = `folder-form-${folderId ?? 'new'}`;
+	$: projectKey = folderId ?? 'new';
+	// Edit Folder holds the section for its folder; Create Folder for the one it will make.
+	$: projectHosted = !edit || Boolean(folderId);
+	$: if (!$mobile) screen = 'main';
+	$: layout = layoutFor($mobile, shownOnMain($mobile, screen));
 
 	const submitHandler = async () => {
 		loading = true;
@@ -56,34 +90,50 @@
 		}
 
 		// The project folder is saved first: if it is refused, nothing else changes.
-		const projectSaved = await projectSection?.save();
-		if (projectSaved === false) {
+		// A new folder's is checked now and saved once the folder exists.
+		let projectReady = true;
+		if (edit) projectReady = (await projectSection?.save()) !== false;
+		else if (projectSection) projectReady = projectSection.check();
+		if (!projectReady) {
+			// Show why, every time: on a phone the reason is on the project screen.
+			openProjectSettings();
 			loading = false;
 			return;
 		}
 
-		await onSubmit({
+		const result = await onSubmit({
 			name,
 			meta,
 			data,
 			parent_id: edit ? undefined : parentId
 		});
+		// A folder that could not be made keeps the dialog open, with what was typed.
+		if (!edit && !result) {
+			loading = false;
+			return;
+		}
+		const created = result as { id?: string } | null;
+		if (!edit && created?.id) await saveNewFolderProject(created.id);
 		show = false;
 		loading = false;
 	};
 
 	const init = async () => {
+		projectError = '';
+		knowledgeOpen = false;
+		projectOpen = false;
+		screen = 'main';
 		if (folderId) {
 			folder = await getFolderById(localStorage.token, folderId).catch((error) => {
 				toast.error(`${error}`);
 				return null;
 			});
 
-			name = folder.name;
-			meta = folder.meta || {
+			name = folder?.name ?? '';
+			meta = folder?.meta || {
 				background_image_url: null
 			};
-			data = folder.data || {
+			data = folder?.data || {
 				system_prompt: '',
 				files: []
 			};
@@ -93,6 +143,8 @@
 	};
 
 	const focusInput = async () => {
+		// On a phone that would bring up the keyboard before the person asked.
+		if ($mobile) return;
 		await tick();
 		const input = document.getElementById('folder-name') as HTMLInputElement;
 		if (input) {
@@ -100,6 +152,192 @@
 			input.select();
 		}
 	};
+
+	function chooseBackgroundImage() {
+		document.getElementById('folder-background-image-input')?.click();
+	}
+
+	function removeBackgroundImage() {
+		meta.background_image_url = null;
+	}
+
+	function readBackgroundImage(event: Event) {
+		const input = event.target as HTMLInputElement;
+		const file = input.files?.[0];
+		const accepted = ['image/gif', 'image/webp', 'image/jpeg', 'image/png'];
+		if (!file || !accepted.includes(file.type)) {
+			// Clear the input so the same file can be tried again.
+			input.value = '';
+			return;
+		}
+		const reader = new FileReader();
+		reader.onload = (loaded) => {
+			meta.background_image_url = `${loaded.target?.result}`;
+		};
+		reader.readAsDataURL(file);
+	}
+
+	function imageTileStyle(url: string | null): string {
+		if (!url) return '';
+		return `background-image: url(${url})`;
+	}
+
+	function imageTileLabel(url: string | null): string {
+		if (url) return $i18n.t('Change background image');
+		return $i18n.t('Add background image');
+	}
+
+	/** A new folder's project defaults are saved once it exists. */
+	async function saveNewFolderProject(newFolderId: string) {
+		if (!projectSection) return;
+		const saved = await projectSection.save(newFolderId);
+		if (saved) return;
+		toast.error(
+			$i18n.t(
+				'“{{name}}” was created, but its project folder wasn’t saved: {{reason}} Open Edit folder to try again.',
+				{ name: name.trim(), reason: projectError }
+			)
+		);
+	}
+
+	function openProjectSettings() {
+		projectOpen = true;
+		if ($mobile) screen = 'project';
+	}
+
+	/** Leaving the project settings also leaves a folder picker open in them. */
+	async function leavePicker() {
+		if (projectPicking) await projectSection?.closePicker(false);
+	}
+
+	async function toggleProjectRow() {
+		if (projectOpen) await leavePicker();
+		projectOpen = !projectOpen;
+	}
+
+	async function openScreen(next: Screen) {
+		screen = next;
+		await tick();
+		document.getElementById(`${formId}-back`)?.focus();
+	}
+
+	async function backToFolder() {
+		const leaving = screen;
+		await leavePicker();
+		screen = 'main';
+		await tick();
+		document.getElementById(`${formId}-row-${leaving}`)?.focus();
+	}
+
+	function projectRowSummary(summary: string, loadError: string): string {
+		if (loadError) return $i18n.t('Couldn’t load');
+		return summary;
+	}
+
+	// People who may not use computers have nothing to set here; a load error still shows.
+	function projectRowShown(available: boolean, loadError: string): boolean {
+		return available || Boolean(loadError);
+	}
+
+	// As the server counts it: a system prompt or knowledge files reach the folder's chats.
+	function folderAddsInstructions(form: FolderData): boolean {
+		if ((form.system_prompt ?? '').trim()) return true;
+		return (form.files ?? []).length > 0;
+	}
+
+	function shownOnMain(phone: boolean, current: Screen): boolean {
+		return !phone || current === 'main';
+	}
+
+	function panelShown(phone: boolean, current: Screen, panel: Screen, open: boolean): boolean {
+		if (phone) return current === panel;
+		return open;
+	}
+
+	type Layout = {
+		modalSize: 'full' | 'md';
+		modalContainer: string;
+		modalSurface: string;
+		root: string;
+		form: string;
+		body: string;
+		rows: string;
+		knowledgePanel: string;
+		projectPanel: string;
+	};
+
+	// A full-screen sheet on phones, a centered dialog elsewhere.
+	function layoutFor(phone: boolean, onMain: boolean): Layout {
+		let rows = '';
+		if (onMain) rows = 'border-t border-gray-100 dark:border-gray-850';
+		if (phone) {
+			return {
+				modalSize: 'full',
+				modalContainer: '',
+				modalSurface: 'h-full bg-white dark:bg-gray-900',
+				root: 'h-full',
+				form: 'min-h-0 flex-1 overflow-y-auto',
+				body: 'px-5 pt-5 pb-[max(env(safe-area-inset-bottom),2rem)]',
+				rows,
+				knowledgePanel: '',
+				projectPanel: ''
+			};
+		}
+		return {
+			modalSize: 'md',
+			modalContainer: 'p-3',
+			modalSurface: 'bg-white dark:bg-gray-900 rounded-4xl',
+			root: '',
+			form: '',
+			body: 'px-7 pt-3',
+			rows,
+			knowledgePanel: 'border-b border-gray-100 pt-1 pb-4 pl-[50px] dark:border-gray-850',
+			projectPanel: 'pt-1 pb-4 pl-[50px]'
+		};
+	}
+
+	// Phones go to a screen; wider screens open the row in place.
+	function rowChevronClass(phone: boolean, open: boolean): string {
+		if (phone) return '-rotate-90';
+		if (open) return 'rotate-180';
+		return '';
+	}
+
+	function screenTitle(current: Screen): string {
+		if (current === 'knowledge') return $i18n.t('Knowledge');
+		if (current === 'project') return $i18n.t('Project folder');
+		if (edit) return $i18n.t('Edit folder');
+		return $i18n.t('New folder');
+	}
+
+	/** Whether this dialog is the top one, not under Settings or a confirmation opened from it. */
+	function isTopDialog(): boolean {
+		const own = dialogRoot?.closest('.modal');
+		const modals = document.getElementsByClassName('modal');
+		return Boolean(own) && modals[modals.length - 1] === own;
+	}
+
+	/** Escape first leaves a folder picker or a phone screen, before it closes the dialog. */
+	function stepBackOnEscape(event: KeyboardEvent) {
+		if (!show || event.key !== 'Escape' || !isTopDialog()) return;
+		if (projectPicking) {
+			event.stopPropagation();
+			event.preventDefault();
+			void projectSection?.closePicker();
+			return;
+		}
+		if ($mobile && screen !== 'main') {
+			event.stopPropagation();
+			event.preventDefault();
+			void backToFolder();
+		}
+	}
+
+	function knowledgeSummary(count: number): string {
+		if (count === 0) return $i18n.t('None yet');
+		if (count === 1) return $i18n.t('1 source');
+		return $i18n.t('{{count}} sources', { count });
+	}
 
 	$: if (show) {
 		init();
@@ -117,163 +355,347 @@
 	}
 </script>
 
-<Modal size="md" bind:show>
-	<div>
-		<div class=" flex justify-between dark:text-gray-300 px-4 pt-3 pb-1">
-			<div class=" text-sm self-center">
-				{#if edit}
-					{$i18n.t('Edit Folder')}
+<svelte:window on:keydown|capture={stepBackOnEscape} />
+
+<Modal
+	size={layout.modalSize}
+	containerClassName={layout.modalContainer}
+	className={layout.modalSurface}
+	bind:show
+>
+	<div bind:this={dialogRoot} class="flex flex-col text-gray-900 dark:text-gray-100 {layout.root}">
+		{#if $mobile}
+			<div
+				class="grid shrink-0 grid-cols-3 items-center border-b border-gray-100 px-2 pt-[max(env(safe-area-inset-top),0.75rem)] pb-2 dark:border-gray-850"
+			>
+				{#if screen === 'main'}
+					<button
+						type="button"
+						class="h-11 justify-self-start px-3 text-base text-gray-700 dark:text-gray-300"
+						on:click={() => {
+							show = false;
+						}}
+					>
+						{$i18n.t('Cancel')}
+					</button>
 				{:else}
-					{$i18n.t('Create Folder')}
+					<button
+						type="button"
+						id="{formId}-back"
+						class="flex h-11 items-center gap-0.5 justify-self-start px-2.5 text-base text-gray-700 dark:text-gray-300"
+						aria-label={$i18n.t('Back to folder')}
+						on:click={backToFolder}
+					>
+						<svg
+							aria-hidden="true"
+							class="size-5"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						>
+							<path d="M15 6l-6 6 6 6" />
+						</svg>
+						{$i18n.t('Folder')}
+					</button>
+				{/if}
+				<h2 class="truncate text-center text-base font-semibold">{screenTitle(screen)}</h2>
+				{#if screen === 'main'}
+					<button
+						type="submit"
+						form={formId}
+						class="flex h-11 items-center gap-2 justify-self-end rounded-full bg-gray-900 px-5 text-[0.9375rem] font-medium text-white disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900"
+						disabled={loading}
+					>
+						{#if edit}
+							{$i18n.t('Save')}
+						{:else}
+							{$i18n.t('Create')}
+						{/if}
+						{#if loading}
+							<Spinner className="size-4" />
+						{/if}
+					</button>
 				{/if}
 			</div>
-			<button
-				aria-label={$i18n.t('Close')}
-				class="self-center rounded-lg p-1 text-gray-500 transition hover:bg-gray-50 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
-				on:click={() => {
-					show = false;
-				}}
-			>
-				<XMark className={'size-4'} />
-			</button>
-		</div>
-
-		<div class="flex flex-col md:flex-row w-full px-4 pb-4 md:space-x-4 dark:text-gray-200">
-			<div class=" flex flex-col w-full sm:flex-row sm:justify-center sm:space-x-6">
-				<form
-					class="flex flex-col w-full"
-					on:submit|preventDefault={() => {
-						submitHandler();
+		{:else}
+			<div class="flex items-center justify-between gap-2 pt-5 pr-5 pb-1 pl-7">
+				<h2 class="text-[1.0625rem] font-semibold">{screenTitle('main')}</h2>
+				<button
+					type="button"
+					aria-label={$i18n.t('Close')}
+					class="flex size-10 items-center justify-center rounded-xl text-gray-600 transition hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-850"
+					on:click={() => {
+						show = false;
 					}}
 				>
-					<div class="flex flex-col w-full mt-1">
-						<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Folder Name')}</div>
+					<XMark className={'size-[18px]'} />
+				</button>
+			</div>
+		{/if}
 
-						<div class="flex-1">
+		<form
+			id={formId}
+			class="flex flex-col {layout.form}"
+			on:submit|preventDefault={() => {
+				submitHandler();
+			}}
+		>
+			<div class="flex flex-col gap-5 {layout.body}">
+				<input
+					id="folder-background-image-input"
+					type="file"
+					hidden
+					accept="image/*"
+					on:change={readBackgroundImage}
+				/>
+
+				<div class="flex flex-col gap-1.5" hidden={!shownOnMain($mobile, screen)}>
+					<div class="flex items-center gap-3.5">
+						<button
+							type="button"
+							class="flex size-[52px] shrink-0 items-center justify-center overflow-hidden rounded-[14px] border border-dashed border-gray-300 bg-gray-50 bg-cover bg-center text-gray-600 transition hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-850 dark:text-gray-400"
+							style={imageTileStyle(meta?.background_image_url)}
+							aria-label={imageTileLabel(meta?.background_image_url)}
+							on:click={chooseBackgroundImage}
+						>
+							{#if !meta?.background_image_url}
+								<svg
+									aria-hidden="true"
+									class="size-5"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="1.8"
+									stroke-linecap="round"
+									stroke-linejoin="round"
+								>
+									<rect x="3" y="4" width="18" height="16" rx="3" />
+									<circle cx="9" cy="10" r="1.6" />
+									<path d="M21 16l-5-5-8 9" />
+								</svg>
+							{/if}
+						</button>
+						<label class="flex min-w-0 flex-1 flex-col gap-1">
+							<span class="text-xs text-gray-600 dark:text-gray-400">{$i18n.t('Name')}</span>
 							<input
 								id="folder-name"
-								class="w-full text-sm bg-transparent placeholder:text-gray-300 dark:placeholder:text-gray-700 outline-hidden"
+								class="w-full min-w-0 border-b-[1.5px] border-gray-200 bg-transparent pt-0.5 pb-2 text-xl font-medium outline-hidden placeholder:text-gray-400 focus:border-gray-900 dark:border-gray-800 dark:placeholder:text-gray-600 dark:focus:border-gray-100 md:text-[1.375rem]"
 								type="text"
 								bind:value={name}
-								placeholder={$i18n.t('Enter folder name')}
+								placeholder={$i18n.t('Folder name')}
 								autocomplete="off"
 							/>
-						</div>
+						</label>
 					</div>
-
-					<input
-						id="folder-background-image-input"
-						type="file"
-						hidden
-						accept="image/*"
-						on:change={(e) => {
-							const inputFiles = e.target.files;
-
-							let reader = new FileReader();
-							reader.onload = (event) => {
-								let originalImageUrl = `${event.target.result}`;
-								meta.background_image_url = originalImageUrl;
-							};
-
-							if (
-								inputFiles &&
-								inputFiles.length > 0 &&
-								['image/gif', 'image/webp', 'image/jpeg', 'image/png'].includes(
-									inputFiles[0]['type']
-								)
-							) {
-								reader.readAsDataURL(inputFiles[0]);
-							} else {
-								console.log(`Unsupported File Type '${inputFiles[0]['type']}'.`);
-
-								// clear the input
-								e.target.value = '';
-							}
-						}}
-					/>
-
-					<div class="flex justify-between w-full mt-1 items-center">
-						<div class="text-xs text-gray-500">{$i18n.t('Folder Background Image')}</div>
-
-						<div class="">
-							<button
-								aria-labelledby="chat-background-label background-image-url-state"
-								class="p-1 px-3 text-xs flex rounded-sm transition"
-								on:click={() => {
-									if (meta?.background_image_url !== null) {
-										meta.background_image_url = null;
-									} else {
-										const input = document.getElementById('folder-background-image-input');
-										if (input) {
-											input.click();
-										}
-									}
-								}}
-								type="button"
-							>
-								<span class="ml-2 self-center" id="background-image-url-state"
-									>{(meta?.background_image_url ?? null) === null
-										? $i18n.t('Upload')
-										: $i18n.t('Reset')}</span
-								>
-							</button>
-						</div>
-					</div>
-
-					<hr class=" border-gray-50 dark:border-gray-850/30 my-2.5 w-full" />
-
-					{#if $user?.role === 'admin' || ($user?.permissions.chat?.system_prompt ?? true)}
-						<div class="my-1">
-							<div class="mb-2 text-xs text-gray-500">{$i18n.t('System Prompt')}</div>
-							<div>
-								<Textarea
-									className=" text-sm w-full bg-transparent outline-hidden "
-									placeholder={$i18n.t(
-										'Write your model system prompt content here\ne.g.) You are Mario from Super Mario Bros, acting as an assistant.'
-									)}
-									maxSize={200}
-									bind:value={data.system_prompt}
-								/>
-							</div>
-						</div>
+					{#if meta?.background_image_url}
+						<button
+							type="button"
+							class="min-h-11 self-start rounded-lg px-2 text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-850 md:min-h-8"
+							on:click={removeBackgroundImage}
+						>
+							{$i18n.t('Remove background image')}
+						</button>
 					{/if}
+				</div>
 
-					<div class="my-2">
-						<Knowledge bind:selectedItems={data.files}>
-							<div slot="label">
-								<div class="flex w-full justify-between">
-									<div class=" text-xs text-gray-500">
-										{$i18n.t('Knowledge')}
-									</div>
-								</div>
-							</div>
+				{#if canEditInstructions}
+					<div
+						id="{formId}-instructions"
+						class="flex flex-col gap-2"
+						hidden={!shownOnMain($mobile, screen)}
+					>
+						<span class="text-sm font-medium">{$i18n.t('Instructions')}</span>
+						<Textarea
+							className="w-full rounded-[14px] border border-gray-200 bg-gray-50 px-3.5 py-3 text-base leading-relaxed outline-hidden placeholder:text-gray-400 dark:border-gray-800 dark:bg-gray-850 dark:placeholder:text-gray-600 md:text-sm"
+							ariaLabel={$i18n.t('Instructions')}
+							placeholder={$i18n.t(
+								'How should chats in this folder behave? For example: answer as a friendly code reviewer.'
+							)}
+							rows={3}
+							minSize={92}
+							maxSize={200}
+							bind:value={data.system_prompt}
+						/>
+					</div>
+				{/if}
+
+				<div class="flex flex-col {layout.rows}">
+					<button
+						type="button"
+						id="{formId}-row-knowledge"
+						class="flex min-h-16 w-full items-center gap-3.5 border-b border-gray-100 py-3 text-left dark:border-gray-850 md:min-h-[60px] md:py-3.5"
+						hidden={!shownOnMain($mobile, screen)}
+						aria-expanded={$mobile ? undefined : knowledgeOpen}
+						aria-controls="{formId}-knowledge-panel"
+						on:click={() => {
+							if ($mobile) void openScreen('knowledge');
+							else knowledgeOpen = !knowledgeOpen;
+						}}
+					>
+						<span
+							class="flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-gray-100 text-gray-700 dark:bg-gray-850 dark:text-gray-300"
+						>
+							<svg
+								aria-hidden="true"
+								class="size-[18px]"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="1.8"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+							>
+								<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z" />
+								<path d="M4 21V5" />
+								<path d="M9 8h6" />
+							</svg>
+						</span>
+						<span class="flex min-w-0 flex-1 flex-col gap-0.5">
+							<span class="text-[0.9375rem] font-medium md:text-sm">{$i18n.t('Knowledge')}</span>
+							<span class="text-[0.8125rem] text-gray-600 dark:text-gray-400">
+								{knowledgeSummary(knowledgeCount)}
+							</span>
+						</span>
+						<svg
+							aria-hidden="true"
+							class="size-[18px] shrink-0 text-gray-500 transition {rowChevronClass(
+								$mobile,
+								knowledgeOpen
+							)}"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						>
+							<path d="M6 9l6 6 6-6" />
+						</svg>
+					</button>
+					<div
+						id="{formId}-knowledge-panel"
+						class={layout.knowledgePanel}
+						hidden={!panelShown($mobile, screen, 'knowledge', knowledgeOpen)}
+					>
+						<Knowledge bind:selectedItems={data.files} phoneTouchTargets>
+							<span slot="label" class="sr-only">{$i18n.t('Knowledge')}</span>
 						</Knowledge>
 					</div>
 
-					{#if edit && folderId}
-						<hr class=" border-gray-50 dark:border-gray-850/30 my-2.5 w-full" />
-						<ProjectFolderSection bind:this={projectSection} {folderId} />
-					{/if}
-
-					<div class="flex justify-end pt-3 text-sm font-normal gap-1.5">
+					{#if projectHosted}
 						<button
-							class="px-3.5 py-1.5 text-sm font-normal bg-black hover:bg-gray-950 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full flex flex-row space-x-1 items-center {loading
-								? ' cursor-not-allowed'
-								: ''}"
-							type="submit"
-							disabled={loading}
+							type="button"
+							id="{formId}-row-project"
+							class="flex min-h-16 w-full items-center gap-3.5 border-b border-gray-100 py-3 text-left dark:border-gray-850 md:min-h-[60px] md:py-3.5"
+							hidden={!shownOnMain($mobile, screen) ||
+								!projectRowShown(projectAvailable, projectLoadError)}
+							aria-expanded={$mobile ? undefined : projectOpen}
+							aria-controls="folder-project-panel-{projectKey}"
+							on:click={() => {
+								if ($mobile) void openScreen('project');
+								else void toggleProjectRow();
+							}}
 						>
-							{$i18n.t('Save')}
-
-							{#if loading}
-								<div class="ml-2 self-center">
-									<Spinner />
-								</div>
-							{/if}
+							<span
+								class="flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-gray-100 text-gray-700 dark:bg-gray-850 dark:text-gray-300"
+							>
+								<svg
+									aria-hidden="true"
+									class="size-[18px]"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="1.8"
+									stroke-linecap="round"
+									stroke-linejoin="round"
+								>
+									<path
+										d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+									/>
+									<path d="M9 12l2 2-2 2" />
+									<path d="M13 16h3" />
+								</svg>
+							</span>
+							<span class="flex min-w-0 flex-1 flex-col gap-0.5">
+								<span
+									id="folder-project-heading-{projectKey}"
+									class="text-[0.9375rem] font-medium md:text-sm"
+								>
+									{$i18n.t('Project folder')}
+								</span>
+								<span class="truncate text-[0.8125rem] text-gray-600 dark:text-gray-400">
+									{projectRowSummary(projectSummary, projectLoadError)}
+								</span>
+							</span>
+							<svg
+								aria-hidden="true"
+								class="size-[18px] shrink-0 text-gray-500 transition {rowChevronClass(
+									$mobile,
+									projectOpen
+								)}"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+							>
+								<path d="M6 9l6 6 6-6" />
+							</svg>
 						</button>
-					</div>
-				</form>
+						<!-- Kept mounted while closed, so the summary and an unsaved choice stay. -->
+						<div
+							id="folder-project-panel-{projectKey}"
+							class={layout.projectPanel}
+							hidden={!panelShown($mobile, screen, 'project', projectOpen)}
+						>
+							<ProjectFolderSection
+								bind:this={projectSection}
+								{folderId}
+								{parentId}
+								labelledBy="folder-project-heading-{projectKey}"
+								bind:summary={projectSummary}
+								bind:error={projectError}
+								bind:loadError={projectLoadError}
+								bind:picking={projectPicking}
+								bind:available={projectAvailable}
+								addsInstructions={folderAddsInstructions(data)}
+							/>
+						</div>
+					{/if}
+				</div>
 			</div>
-		</div>
+
+			{#if !$mobile}
+				<div class="flex justify-end gap-2 px-6 pt-5 pb-6">
+					<button
+						type="button"
+						class="h-11 rounded-full px-[18px] text-sm font-medium text-gray-700 transition hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-850"
+						on:click={() => {
+							show = false;
+						}}
+					>
+						{$i18n.t('Cancel')}
+					</button>
+					<button
+						class="flex h-11 items-center gap-2 rounded-full bg-gray-900 px-6 text-sm font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white"
+						type="submit"
+						disabled={loading}
+					>
+						{#if edit}
+							{$i18n.t('Save')}
+						{:else}
+							{$i18n.t('Create')}
+						{/if}
+						{#if loading}
+							<Spinner className="size-4" />
+						{/if}
+					</button>
+				</div>
+			{/if}
+		</form>
 	</div>
 </Modal>
