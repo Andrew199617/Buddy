@@ -364,7 +364,6 @@
 
 	let imageGenerationEnabled = false;
 	let webSearchEnabled = false;
-	let codeInterpreterEnabled = false;
 	let webSearchActive = false;
 	let showWebSearchConfirm = false;
 	let pendingWebSearchPrompt: string | null = null;
@@ -993,7 +992,6 @@
 			selectedFilterIds = input.selectedFilterIds ?? [];
 			webSearchEnabled = input.webSearchEnabled ?? false;
 			imageGenerationEnabled = input.imageGenerationEnabled ?? false;
-			codeInterpreterEnabled = input.codeInterpreterEnabled ?? false;
 			if (input.toolApprovalMode) {
 				await handleToolApprovalModeChange(input.toolApprovalMode);
 			}
@@ -1132,7 +1130,6 @@
 		selectedFilterIds = [];
 		webSearchEnabled = false;
 		imageGenerationEnabled = false;
-		codeInterpreterEnabled = false;
 		prompt = '';
 		messageInput?.setText('');
 		await chatId.set('');
@@ -1204,7 +1201,6 @@
 		pendingOAuthTools = [];
 		webSearchEnabled = false;
 		imageGenerationEnabled = false;
-		codeInterpreterEnabled = false;
 
 		if (selectedModelIds.filter((id) => id).length > 0) {
 			await setDefaults();
@@ -1325,14 +1321,6 @@
 						($user?.role === 'admin' || $user?.permissions?.features?.web_search)
 					) {
 						webSearchEnabled = model.info.meta.defaultFeatureIds.includes('web_search');
-					}
-
-					if (
-						model.info?.meta?.capabilities?.['code_interpreter'] &&
-						$config?.features?.enable_code_interpreter &&
-						($user?.role === 'admin' || $user?.permissions?.features?.code_interpreter)
-					) {
-						codeInterpreterEnabled = model.info.meta.defaultFeatureIds.includes('code_interpreter');
 					}
 				}
 
@@ -1855,7 +1843,6 @@
 				selectedFilterIds = [];
 				webSearchEnabled = false;
 				imageGenerationEnabled = false;
-				codeInterpreterEnabled = false;
 
 				await restoreChatInput(storageChatInput);
 			}
@@ -2414,10 +2401,6 @@
 
 		if ($page.url.searchParams.get('image-generation') === 'true') {
 			imageGenerationEnabled = true;
-		}
-
-		if ($page.url.searchParams.get('code-interpreter') === 'true') {
-			codeInterpreterEnabled = true;
 		}
 
 		if ($page.url.searchParams.get('tools')) {
@@ -3638,11 +3621,6 @@
 					($user?.role === 'admin' || $user?.permissions?.features?.image_generation)
 						? imageGenerationEnabled
 						: false,
-				code_interpreter:
-					$config?.features?.enable_code_interpreter &&
-					($user?.role === 'admin' || $user?.permissions?.features?.code_interpreter)
-						? codeInterpreterEnabled
-						: false,
 				web_search: webSearchActive
 			};
 
@@ -4313,7 +4291,6 @@
 		selectedFilterIds,
 		imageGenerationEnabled,
 		webSearchEnabled,
-		codeInterpreterEnabled,
 		toolApprovalMode
 	});
 
@@ -4726,7 +4703,6 @@
 										{selectedAgent}
 										onAgentChange={changeAgent}
 										bind:imageGenerationEnabled
-										bind:codeInterpreterEnabled
 										{pendingOAuthTools}
 										{oauthRedirectHandler}
 										bind:webSearchEnabled
@@ -4822,7 +4798,6 @@
 										bind:selectedSkillIds
 										bind:selectedFilterIds
 										bind:imageGenerationEnabled
-										bind:codeInterpreterEnabled
 										{pendingOAuthTools}
 										{oauthRedirectHandler}
 										bind:webSearchEnabled
@@ -4887,7 +4862,6 @@
 									{selectedAgent}
 									onAgentChange={changeAgent}
 									bind:imageGenerationEnabled
-									bind:codeInterpreterEnabled
 									bind:webSearchEnabled
 									bind:atSelectedModel
 									bind:showCommands
@@ -4954,7 +4928,6 @@
 						{stopResponse}
 						{showMessage}
 						{eventTarget}
-						{codeInterpreterEnabled}
 						folderId={sidePanelFolderId}
 						chatTarget={projectChatTarget}
 						chatTargetLoading={projectChatTargetLoading}

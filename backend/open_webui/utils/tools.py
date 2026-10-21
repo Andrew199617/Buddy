@@ -56,7 +56,6 @@ from open_webui.tools.builtin import (
     delete_calendar_event,
     delete_memory,
     edit_image,
-    execute_code,
     fetch_url,
     generate_image,
     get_current_timestamp,
@@ -546,7 +545,6 @@ async def get_builtin_tools(
         'web.search.enable',
         'image_generation.enable',
         'images.edit.enable',
-        'code_interpreter.enable',
         'notes.enable',
         'channels.enable',
         'automations.enable',
@@ -702,17 +700,6 @@ async def get_builtin_tools(
         and await has_user_permission('image_generation')
     ):
         builtin_functions.append(edit_image)
-
-    # Add code interpreter tool if builtin category enabled,
-    # globally enabled, and allowed by model capability.
-    if (
-        is_builtin_tool_enabled('code_interpreter')
-        and config.get('code_interpreter.enable')
-        and get_model_capability('code_interpreter')
-        and features.get('code_interpreter')
-        and await has_user_permission('code_interpreter')
-    ):
-        builtin_functions.append(execute_code)
 
     # Notes tools - search, view, create, and update user's notes
     if is_note_chat or (

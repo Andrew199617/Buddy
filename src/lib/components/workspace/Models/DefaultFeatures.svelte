@@ -17,16 +17,12 @@
 		image_generation: {
 			label: $i18n.t('settings.admin.models.defaultFeatures.imageGeneration.label'),
 			description: $i18n.t('settings.admin.models.defaultFeatures.imageGeneration.description')
-		},
-		code_interpreter: {
-			label: $i18n.t('settings.admin.models.defaultFeatures.codeInterpreter.label'),
-			description: $i18n.t('settings.admin.models.defaultFeatures.codeInterpreter.description')
 		}
 	};
 
 	type Feature = keyof typeof featureLabels;
 
-	export let availableFeatures: string[] = ['web_search', 'image_generation', 'code_interpreter'];
+	export let availableFeatures: string[] = ['web_search', 'image_generation'];
 	export let featureIds: string[] = [];
 
 	const getFeatureLabel = (feature: string) => featureLabels[feature as Feature];

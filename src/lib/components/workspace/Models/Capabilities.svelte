@@ -30,10 +30,6 @@
 			label: $i18n.t('settings.admin.models.capabilities.imageGeneration.label'),
 			description: $i18n.t('settings.admin.models.capabilities.imageGeneration.description')
 		},
-		code_interpreter: {
-			label: $i18n.t('settings.admin.models.capabilities.codeInterpreter.label'),
-			description: $i18n.t('settings.admin.models.capabilities.codeInterpreter.description')
-		},
 		terminal: {
 			label: $i18n.t('settings.admin.models.capabilities.terminal.label'),
 			description: $i18n.t('settings.admin.models.capabilities.terminal.description')

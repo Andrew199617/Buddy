@@ -45,7 +45,7 @@ export const user = {
   profile_image_url: `data:image/svg+xml,${encodeURIComponent(avatar)}`,
   permissions: {
     chat: { controls: true, multiple_models: true, temporary: true, stt: true, call: true, file_upload: true },
-    features: { web_search: true, image_generation: true, code_interpreter: true }
+    features: { web_search: true, image_generation: true }
   },
   expires_at: now + 86400
 };
@@ -53,7 +53,7 @@ export const config = {
   status: true, name: 'Open WebUI', version: '0.11.4', default_locale: 'en-US', i18n: {}, oauth: { providers: {} },
   features: {
     auth: true, enable_websocket: false, enable_direct_connections: false, enable_folders: true,
-    enable_web_search: true, enable_image_generation: true, enable_code_interpreter: true,
+    enable_web_search: true, enable_image_generation: true,
     enable_code_execution: false, enable_channels: false, enable_calendar: false, enable_automations: false,
     enable_notes: false, enable_plugins: false, enable_user_status: false, enable_version_update_check: false
   },
@@ -63,7 +63,7 @@ export const config = {
     { title: ['Explain', 'a complex topic'], content: 'Help me understand something new.' },
     { title: ['Write', 'a clear message'], content: 'Help me write a concise and useful message.' }
   ],
-  code: { engine: 'pyodide', interpreter_engine: 'pyodide' },
+  code: { engine: 'pyodide' },
   audio: { tts: { engine: '', voice: '', split_on: 'punctuation' }, stt: { engine: 'web' } },
   file: { max_size: 25, max_count: 10, image_compression: { width: 1024, height: 1024 } },
   permissions: user.permissions, ui: { default_interface_settings: {}, response_watermark: '' }, license_metadata: null

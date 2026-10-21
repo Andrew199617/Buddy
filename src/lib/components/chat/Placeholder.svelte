@@ -55,7 +55,6 @@
 	export let showCommands = false;
 
 	export let imageGenerationEnabled = false;
-	export let codeInterpreterEnabled = false;
 	export let webSearchEnabled = false;
 	export let toolApprovalMode = 'full';
 	export let onToolApprovalModeChange: Function = () => {};
@@ -188,7 +187,6 @@
 				{selectedAgent}
 				{onAgentChange}
 				bind:imageGenerationEnabled
-				bind:codeInterpreterEnabled
 				bind:webSearchEnabled
 				bind:atSelectedModel
 				bind:showCommands

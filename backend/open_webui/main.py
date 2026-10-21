@@ -2312,7 +2312,6 @@ async def get_app_config(request: Request):
         'web.search.confirmation.enable',
         'web.search.confirmation.content',
         'code_execution.enable',
-        'code_interpreter.enable',
         'image_generation.enable',
         'task.autocomplete.enable',
         'ui.enable_community_sharing',
@@ -2329,7 +2328,6 @@ async def get_app_config(request: Request):
         'ui.prompt_suggestions',
         'ui.prompt_suggestions_i18n',
         'code_execution.engine',
-        'code_interpreter.engine',
         'audio.tts.engine',
         'audio.tts.voice',
         'audio.tts.split_on',
@@ -2400,7 +2398,6 @@ async def get_app_config(request: Request):
                     'enable_web_search_confirmation': config.get('web.search.confirmation.enable'),
                     'web_search_confirmation_content': config.get('web.search.confirmation.content'),
                     'enable_code_execution': config.get('code_execution.enable'),
-                    'enable_code_interpreter': config.get('code_interpreter.enable'),
                     'enable_image_generation': config.get('image_generation.enable'),
                     'enable_autocomplete_generation': config.get('task.autocomplete.enable'),
                     'enable_community_sharing': config.get('ui.enable_community_sharing'),
@@ -2435,7 +2432,6 @@ async def get_app_config(request: Request):
                 **({'user_count': user_count} if user_count is not None else {}),
                 'code': {
                     'engine': config.get('code_execution.engine'),
-                    'interpreter_engine': config.get('code_interpreter.engine'),
                 },
                 'audio': {
                     'tts': {

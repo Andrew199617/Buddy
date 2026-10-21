@@ -174,7 +174,7 @@ exercise Escape without relying on a previously focused draft. Desktop menus
 retain their existing compact layout. A fresh landscape reload also checks
 coarse-pointer opt-in, visual-viewport-only resize/pan events, and menu reopening
 for both Plus and Tools, including nonzero viewport offsets. Tools label
-checks verify the full Code Interpreter label at normal size and at an enlarged
+checks verify the full Web Search label at normal size and at an enlarged
 font offset, then restore the original size before the final screenshot.
 
 Exact iPhone 12 Pro Max cases use the installed descriptor's 428 by 926 CSS
