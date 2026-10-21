@@ -572,6 +572,24 @@ export function workerPill(
 	return parts.join(' · ');
 }
 
+/**
+ * The pill every worker shares, for the card's header to show once; null when the
+ * workers' pills differ or there is nothing to show.
+ */
+export function sharedWorkerPill(
+	i18n: Translator,
+	items: WorkerItem[],
+	chatModelName: string | null = null
+): string | null {
+	if (items.length === 0) return null;
+	const pill = workerPill(i18n, items[0], chatModelName);
+	if (pill === '') return null;
+	for (const item of items) {
+		if (workerPill(i18n, item, chatModelName) !== pill) return null;
+	}
+	return pill;
+}
+
 export function runningWorkers(items: WorkerItem[]): number {
 	return items.filter((item) => item.state === 'running').length;
 }

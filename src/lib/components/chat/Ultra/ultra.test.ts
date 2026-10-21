@@ -22,6 +22,7 @@ import {
 	savedReplyWorkers,
 	savedUltra,
 	savedWorkers,
+	sharedWorkerPill,
 	shortModelName,
 	startingUltra,
 	stopControl,
@@ -746,6 +747,35 @@ describe('workerPill', () => {
 	it('is empty with nothing to show', () => {
 		expect(workerPill(i18n, worker())).toBe('');
 		expect(workerPill(i18n, worker({ effort: 'medium' }))).toBe('medium');
+	});
+});
+
+describe('sharedWorkerPill', () => {
+	it('is the pill every worker shows', () => {
+		const team = [
+			worker({ id: 'task-1', model: 'Claude Haiku', effort: 'medium' }),
+			worker({ id: 'task-2', model: 'Claude Haiku', effort: 'medium' })
+		];
+		expect(sharedWorkerPill(i18n, team)).toBe('Haiku · medium');
+	});
+
+	it('counts the chat’s model for workers that run on it', () => {
+		const team = [
+			worker({ id: 'task-1', model: 'Claude Opus 4.1', effort: 'low' }),
+			worker({ id: 'task-2', effort: 'low' })
+		];
+		expect(sharedWorkerPill(i18n, team, 'Claude Opus 4.1')).toBe('Opus 4.1 · low');
+		expect(sharedWorkerPill(i18n, team, 'Claude Sonnet 4.5')).toBeNull();
+	});
+
+	it('is null when the workers differ or show nothing', () => {
+		const mixed = [
+			worker({ id: 'task-1', model: 'Claude Haiku', effort: 'medium' }),
+			worker({ id: 'task-2', model: 'Claude Haiku', effort: 'high' })
+		];
+		expect(sharedWorkerPill(i18n, mixed)).toBeNull();
+		expect(sharedWorkerPill(i18n, [worker(), worker({ id: 'task-2' })])).toBeNull();
+		expect(sharedWorkerPill(i18n, [])).toBeNull();
 	});
 });
 

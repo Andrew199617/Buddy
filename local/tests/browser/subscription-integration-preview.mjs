@@ -4211,6 +4211,8 @@ async function stopWorkerOnPhone(page, card, fixtures) {
 	for (const target of touchTargets) {
 		assert.ok(target.height >= 44, 'Workers card rows are 44px: ' + JSON.stringify(target));
 	}
+	await card.scrollIntoViewIfNeeded();
+	await captureScreenshot(page, 'phone-ultra-workers');
 	// The keyboard is still up from sending; the first tap opens the row.
 	assert.equal(await draftHasFocus(page), true, 'The draft still has the keyboard');
 	const row = card
@@ -4279,7 +4281,19 @@ async function checkWorkersCard(page, profile, fixtures, replyId) {
 		.boundingBox();
 	assert.ok(subLabel.x >= parentLabel.x + 12, 'The sub-worker is indented under its parent');
 	const pills = card.getByText('Synthetic Haiku · medium', { exact: true });
-	assert.equal(await pills.count(), 3, 'Each row has its model · effort pill');
+	if (profile.mobile) {
+		assert.equal(await pills.count(), 1, 'Phone rows leave the pill they share to the header');
+		assert.ok(
+			(await header.innerText()).includes('Synthetic Haiku · medium'),
+			'The header names the model and thinking every worker shares'
+		);
+		const statusLine = await rows
+			.getByText('Editing parse.ts', { exact: true })
+			.evaluate((line) => line.scrollWidth <= line.clientWidth + 1);
+		assert.ok(statusLine, 'A phone row’s status line has room to show whole');
+	} else {
+		assert.equal(await pills.count(), 3, 'Each row has its model · effort pill');
+	}
 	const stopFix = card.getByRole('button', { name: 'Stop Fix the parser', exact: true });
 	const stopTest = card.getByRole('button', { name: 'Stop Write a failing test', exact: true });
 	const stopRead = card.getByRole('button', { name: 'Stop Read the parser', exact: true });

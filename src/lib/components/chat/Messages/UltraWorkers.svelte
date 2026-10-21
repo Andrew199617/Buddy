@@ -4,7 +4,8 @@
 	// a Stop for each one still running. The card stays open while workers run, also
 	// after the reply has ended, and collapses to what the reply used once they have
 	// all ended. On desktop a row opens in place to show the worker's report; on
-	// phones the rows are 44px tall and each opens a bottom sheet.
+	// phones the rows are 44px tall and each opens a bottom sheet, which shows the
+	// worker's model and thinking. A model all workers share shows in the header.
 	import { getContext, onDestroy, onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import equal from 'fast-deep-equal';
@@ -27,6 +28,7 @@
 		runningWorkers,
 		savedReplyWorkers,
 		savedWorkers,
+		sharedWorkerPill,
 		stopControl,
 		stopFailedMessage,
 		workerDetails,
@@ -106,6 +108,14 @@
 	$: sheetWorker = items.find((item) => item.id === sheetWorkerId) ?? null;
 	$: sheetTitle = sheetWorker?.label ?? $i18n.t('Worker');
 	$: if (!touchLayout) showSheet = false;
+	// Phone rows leave each worker's pill to its sheet, so the header names the one
+	// they all share.
+	let headerPill: string | null = null;
+	$: if (touchLayout) {
+		headerPill = sharedWorkerPill($i18n, items, chatModelName);
+	} else {
+		headerPill = null;
+	}
 
 	// The live region names workers as they end, a few at a time.
 	let announcement = '';
@@ -289,7 +299,8 @@
 	</span>
 {/snippet}
 
-<!-- On phones the pill starts the second line, so the label keeps the width it needs. -->
+<!-- On phones the pill is left to the row's sheet, so the line under the label has the
+	row's width. -->
 {#snippet rowSummary(worker: WorkerItem)}
 	{@const pill = workerPill($i18n, worker, chatModelName)}
 	{@render stateIcon(worker)}
@@ -303,11 +314,8 @@
 				{@render pillTag(pill)}
 			{/if}
 		</span>
-		<span class="flex min-w-0 items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
-			{#if pill && touchLayout}
-				{@render pillTag(pill)}
-			{/if}
-			<span class="min-w-0 truncate">{workerLine($i18n, worker, stopRequests[worker.id])}</span>
+		<span class="min-w-0 truncate text-xs text-gray-500 dark:text-gray-400">
+			{workerLine($i18n, worker, stopRequests[worker.id])}
 		</span>
 	</span>
 {/snippet}
@@ -390,8 +398,11 @@
 			on:click={() => (open = !open)}
 		>
 			<Sparkles className="size-4 shrink-0 text-sky-500 dark:text-sky-300" strokeWidth="1.75" />
-			<span class="min-w-0 flex-1 py-1 font-medium leading-snug text-gray-800 dark:text-gray-100">
-				{title}
+			<span class="flex min-w-0 flex-1 flex-col py-1">
+				<span class="font-medium leading-snug text-gray-800 dark:text-gray-100">{title}</span>
+				{#if headerPill}
+					<span class="text-xs text-gray-500 dark:text-gray-400">{headerPill}</span>
+				{/if}
 			</span>
 			{#if elapsed}
 				<span class="shrink-0 text-xs tabular-nums text-gray-500 dark:text-gray-400">
