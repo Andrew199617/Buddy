@@ -128,13 +128,22 @@
 
 	$: listId = `ultra-workers-${messageId}`;
 
+	let cardFrame = '';
 	let headerSize = '';
+	let listInset = '';
 	let rowSize = '';
 	$: if (touchLayout) {
-		headerSize = 'min-h-11';
+		// Inside the reply's bubble without a frame of its own, which leaves the rows
+		// the width a second frame would take.
+		cardFrame = 'my-1';
+		headerSize = 'min-h-11 px-2';
+		listInset = 'pb-1';
 		rowSize = 'min-h-11';
 	} else {
-		headerSize = 'min-h-9';
+		cardFrame =
+			'my-1.5 rounded-2xl border border-gray-100 bg-gray-50/50 dark:border-gray-800 dark:bg-gray-900/30';
+		headerSize = 'min-h-9 px-3';
+		listInset = 'px-1 pb-1.5';
 		rowSize = 'min-h-9';
 	}
 
@@ -390,9 +399,7 @@
 	{/if}
 {/snippet}
 
-<div
-	class="buddy-ultra-workers my-1.5 w-full min-w-0 rounded-2xl border border-gray-100 bg-gray-50/50 dark:border-gray-800 dark:bg-gray-900/30"
->
+<div class="buddy-ultra-workers w-full min-w-0 {cardFrame}">
 	{#if phase === 'none'}
 		<div class="flex items-center gap-2 px-3 py-2 text-sm text-gray-500 dark:text-gray-400">
 			<Sparkles className="size-4 shrink-0" strokeWidth="1.75" />
@@ -401,7 +408,7 @@
 	{:else}
 		<button
 			type="button"
-			class="flex w-full min-w-0 items-center gap-2 rounded-2xl px-3 text-left text-sm outline-hidden focus-visible:ring-2 focus-visible:ring-sky-500/60 {headerSize}"
+			class="flex w-full min-w-0 items-center gap-2 rounded-2xl text-left text-sm outline-hidden focus-visible:ring-2 focus-visible:ring-sky-500/60 {headerSize}"
 			aria-expanded={open}
 			aria-controls={open ? listId : undefined}
 			on:click={() => (open = !open)}
@@ -424,7 +431,7 @@
 			/>
 		</button>
 		{#if open}
-			<ul id={listId} class="flex flex-col gap-0.5 px-1 pb-1.5" aria-label={$i18n.t('Workers')}>
+			<ul id={listId} class="flex flex-col gap-0.5 {listInset}" aria-label={$i18n.t('Workers')}>
 				{#each rows as row (row.worker.id)}
 					<li class="min-w-0">
 						{@render workerRow(row.worker)}

@@ -4301,6 +4301,8 @@ async function checkWorkersCard(page, profile, fixtures, replyId) {
 			.getByText('Editing parse.ts', { exact: true })
 			.evaluate((line) => line.scrollWidth <= line.clientWidth + 1);
 		assert.ok(statusLine, 'A phone row’s status line has room to show whole');
+		const cardFrame = await card.evaluate((element) => getComputedStyle(element).borderTopWidth);
+		assert.equal(cardFrame, '0px', 'Inside the reply’s bubble the phone card draws no frame');
 	} else {
 		assert.equal(await pills.count(), 3, 'Each row has its model · effort pill');
 	}
