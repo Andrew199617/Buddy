@@ -1,14 +1,17 @@
 """Ultra turns on the server.
 
 The person's worker choice resolves on the computer that runs the turn, and
-while the turn runs, the person can stop its workers one by one.
+while the turn runs, the person can stop its workers one by one, through
+the stop route of their own chat.
 
 Run from the repository root:
     python -m unittest discover -s local/tests -p test_ultra_turns.py -v
 """
 
+import ast
 import asyncio
 import os
+import re
 import time
 import types
 import unittest
@@ -52,6 +55,13 @@ NOT_OFFERED_MESSAGE = "Claude on your computer does not offer the workers' model
 OFF_UNLISTED = "Ultra is off for this reply: Claude on your computer hasn't listed this chat's model yet."
 # What another user's computer reported under the same model IDs.
 OTHER_USERS_TEXT = 'Text from another user for your orchestrator'
+ROUTER_PATH = ROOT / 'backend' / 'open_webui' / 'routers' / 'subscriptions.py'
+WORKER_NOT_RUNNING = "That worker isn't running any more."
+CHAT_NOT_FOUND = 'That chat no longer exists.'
+# Worker ids as Claude Code and Codex make them: a task id and a thread id.
+CLAUDE_WORKER_ID = 'a11e9815d2c932410'
+OTHER_CLAUDE_WORKER_ID = 'a3531475ffe57698f'
+CODEX_WORKER_ID = '01a15c83-ea2e-7c33-a7e8-6bbabc140f75'
 
 
 def plan_model(key, name, efforts, ultra=True):
@@ -383,7 +393,9 @@ class UltraTurnTests(UltraServiceTestCase):
         self.assertIn('Start every worker with model `fixture-codex-cli`', turn.conversation.system)
 
 
-class LiveUltraTurnTests(UltraServiceTestCase):
+class LiveUltraTurnTestCase(UltraServiceTestCase):
+    """Ultra turns that run until the test ends them, with the stops the providers were asked for."""
+
     def setUp(self):
         super().setUp()
         # The held turns that the next turns run as, in order.
@@ -429,6 +441,8 @@ class LiveUltraTurnTests(UltraServiceTestCase):
     async def stop_worker(self, worker_id, user=OWNER_USER, chat_id='chat-1'):
         return await self.service.stop_worker(user, chat_id, worker_id)
 
+
+class LiveUltraTurnTests(LiveUltraTurnTestCase):
     async def test_an_ultra_turn_is_live_from_its_start_until_it_ends(self):
         await self.bind()
         held = HeldTurn('worker-1')
@@ -576,6 +590,140 @@ class LiveUltraTurnTests(UltraServiceTestCase):
         second.end()
         await second_reply
         self.assertEqual(self.service._live_ultra_turns, {})
+
+
+def router_functions(*names):
+    """The router's own definitions of these functions, parsed from its source."""
+    tree = ast.parse(ROUTER_PATH.read_text(encoding='utf-8'))
+    functions = {
+        node.name: node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    return [functions[name] for name in names]
+
+
+def load_stop_route(service, chats):
+    """The real stop route and its id check, run without FastAPI, sign-in or the database.
+
+    ``chats`` answers whether the person owns a chat. The tests pass the
+    signed-in user to the route themselves.
+    """
+    nodes = router_functions('_is_plain_id', 'stop_chat_worker')
+    for node in nodes:
+        node.decorator_list = []
+    module = types.ModuleType('ultra_stop_route_under_test')
+    module.__dict__.update({
+        're': re,
+        'Depends': lambda dependency: None,
+        'get_machine_session_user': None,
+        'HTTPException': service.HTTPException,
+        'status': types.SimpleNamespace(HTTP_404_NOT_FOUND=404),
+        'Chats': chats,
+        'service': service,
+    })
+    tree = ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[]))
+    exec(compile(tree, str(ROUTER_PATH), 'exec'), module.__dict__)
+    return module.stop_chat_worker
+
+
+class OwnerChecks:
+    """The service's chats, noting each chat the route asks about."""
+
+    def __init__(self, chats):
+        self.chats = chats
+        self.asked = []
+
+    async def is_chat_owner(self, chat_id, user_id):
+        self.asked.append(chat_id)
+        return await self.chats.is_chat_owner(chat_id, user_id)
+
+
+class StopWorkerRouteTests(LiveUltraTurnTestCase):
+    def setUp(self):
+        super().setUp()
+        self.owner_checks = OwnerChecks(self.service.Chats)
+        self.stop_route = load_stop_route(self.service, self.owner_checks)
+
+    async def post_stop(self, worker_id, chat_id='chat-1', user=OWNER_USER):
+        return await self.stop_route(chat_id, worker_id, user=user)
+
+    async def assert_not_found(self, detail, worker_id, chat_id='chat-1', user=OWNER_USER):
+        with self.assertRaises(self.service.HTTPException) as refused:
+            await self.post_stop(worker_id, chat_id, user)
+        self.assertEqual((refused.exception.status_code, str(refused.exception)), (404, detail))
+
+    def test_the_route_is_a_post_that_needs_a_signed_in_session(self):
+        # Like changing machines or sign-ins, stopping a worker is refused to API keys.
+        [route] = router_functions('stop_chat_worker')
+        decorators = [ast.unparse(decorator) for decorator in route.decorator_list]
+        self.assertEqual(decorators, ["router.post('/chats/{chat_id}/workers/{worker_id}/stop')"])
+        user_default = route.args.defaults[-1]
+        self.assertEqual(ast.unparse(user_default), 'Depends(get_machine_session_user)')
+
+    async def test_the_owner_stops_a_running_claude_worker(self):
+        await self.bind()
+        held = HeldTurn(CLAUDE_WORKER_ID, OTHER_CLAUDE_WORKER_ID)
+        reply = await self.start_turn(held)
+        self.assertEqual(await self.post_stop(CLAUDE_WORKER_ID), {'stopped': True})
+        self.assertEqual(self.stops, [('claude', CLAUDE_WORKER_ID)])
+        self.assertEqual(held.running_workers, {OTHER_CLAUDE_WORKER_ID})
+        held.end()
+        await reply
+
+    async def test_the_owner_stops_a_running_codex_worker(self):
+        await self.bind()
+        held = HeldTurn(CODEX_WORKER_ID)
+        reply = await self.start_turn(held, model=CODEX_MODEL_ID)
+        self.assertEqual(await self.post_stop(CODEX_WORKER_ID), {'stopped': True})
+        self.assertEqual(self.stops, [('codex', CODEX_WORKER_ID)])
+        self.assertEqual(held.running_workers, set())
+        held.end()
+        await reply
+
+    async def test_a_worker_that_is_not_running_is_not_found(self):
+        await self.bind()
+        # No reply runs in the chat yet.
+        await self.assert_not_found(WORKER_NOT_RUNNING, CLAUDE_WORKER_ID)
+        held = HeldTurn(CLAUDE_WORKER_ID)
+        reply = await self.start_turn(held)
+        await self.post_stop(CLAUDE_WORKER_ID)
+        # Stopped already, and never started.
+        await self.assert_not_found(WORKER_NOT_RUNNING, CLAUDE_WORKER_ID)
+        await self.assert_not_found(WORKER_NOT_RUNNING, OTHER_CLAUDE_WORKER_ID)
+        held.end()
+        await reply
+        # The reply has ended, and its workers with it.
+        await self.assert_not_found(WORKER_NOT_RUNNING, CLAUDE_WORKER_ID)
+
+    async def test_someone_elses_chat_is_answered_as_if_it_did_not_exist(self):
+        await self.bind()
+        held = HeldTurn(CLAUDE_WORKER_ID)
+        reply = await self.start_turn(held)
+        someone_else = types.SimpleNamespace(id='user-2', role='admin')
+        await self.assert_not_found(CHAT_NOT_FOUND, CLAUDE_WORKER_ID, user=someone_else)
+        await self.assert_not_found(CHAT_NOT_FOUND, CLAUDE_WORKER_ID, chat_id='chat-gone')
+        self.assertEqual(self.stops, [])
+        self.assertEqual(held.running_workers, {CLAUDE_WORKER_ID})
+        held.end()
+        await reply
+
+    async def test_ids_buddy_never_makes_are_refused_before_anything_is_asked(self):
+        await self.bind()
+        held = HeldTurn(CLAUDE_WORKER_ID)
+        reply = await self.start_turn(held)
+        bad_chat_ids = ('temporary:chat-1', 'channel:chat-1', '', 'chat 1', 'chat-1\n', 'c' * 129)
+        for chat_id in bad_chat_ids:
+            with self.subTest(chat_id=chat_id):
+                await self.assert_not_found(CHAT_NOT_FOUND, CLAUDE_WORKER_ID, chat_id=chat_id)
+        bad_worker_ids = ('', 'a11e9815 d2c932410', f'{CLAUDE_WORKER_ID}\n', f'../{CLAUDE_WORKER_ID}', 'a' * 129)
+        for worker_id in bad_worker_ids:
+            with self.subTest(worker_id=worker_id):
+                await self.assert_not_found(WORKER_NOT_RUNNING, worker_id)
+        # Only the well-formed chat id reached the database, and no provider was asked.
+        self.assertEqual(set(self.owner_checks.asked), {'chat-1'})
+        self.assertEqual(self.stops, [])
+        self.assertEqual(held.running_workers, {CLAUDE_WORKER_ID})
+        held.end()
+        await reply
 
 
 if __name__ == '__main__':
