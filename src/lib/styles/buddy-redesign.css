@@ -529,8 +529,24 @@
 	width: 100%;
 }
 
+/* The chips look 36px tall and take taps at least 4px above and below them too, 44px
+   in all, within the row's own spacing. The tap area starts inside a chip's border,
+   so it reaches 5px out. The model chip's wrapper clips only sideways, to truncate
+   the model's name, so the taps above and below reach it. */
 .buddy-chat .buddy-composer-settings button {
+	position: relative;
 	min-height: 36px;
+}
+
+.buddy-chat .buddy-composer-settings button::before {
+	content: '';
+	position: absolute;
+	inset: -5px 0;
+}
+
+.buddy-chat .buddy-composer-settings .buddy-composer-model .overflow-hidden {
+	overflow-x: clip;
+	overflow-y: visible;
 }
 
 .buddy-chat .buddy-composer-settings .owui-rl-chip {

@@ -3536,6 +3536,37 @@ async function textContrast(locator) {
 	});
 }
 
+/** The phone's settings-row chips look 36px tall but take taps across 44px. */
+async function assertSettingsChipsTakeTaps(page) {
+	const chips = await page.locator('.buddy-composer-settings').evaluate((row) => {
+		const buttons = [
+			row.querySelector('button[id^="model-selector-"]'),
+			row.querySelector('#owui-reasoning-chip'),
+			row.querySelector('#ultra-menu-button')
+		];
+		return buttons.map((button) => {
+			const rect = button.getBoundingClientRect();
+			const x = rect.left + rect.width / 2;
+			function takesTap(y) {
+				const hit = document.elementFromPoint(x, y);
+				return Boolean(hit && button.contains(hit));
+			}
+			return {
+				name: button.id,
+				height: rect.height,
+				above: takesTap(rect.top - 3.5),
+				below: takesTap(rect.bottom + 3.5)
+			};
+		});
+	});
+	for (const chip of chips) {
+		assert.ok(
+			chip.above && chip.below,
+			'Settings chips take taps across 44px: ' + JSON.stringify(chip)
+		);
+	}
+}
+
 /** Closes the Ultra menu as a person would: its button again, or Escape when the menu covers it. */
 async function closeUltraMenu(page, profile) {
 	const triggerReceivesTap = await page.locator(ultraTrigger).evaluate((button) => {
@@ -3962,6 +3993,7 @@ async function checkUltraMenu(page, profile) {
 	assert.equal((await input.innerText()).trim(), ultraDraft, 'The draft survives the menu');
 	if (profile.mobile) {
 		assert.equal(await draftHasFocus(page), true, 'Closing the menu keeps the keyboard');
+		await assertSettingsChipsTakeTaps(page);
 		await captureScreenshot(page, 'phone-ultra-settings-row');
 	} else {
 		await captureScreenshot(page, 'desktop-ultra-composer');
